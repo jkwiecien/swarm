@@ -1,6 +1,6 @@
 ---
 name: solve-issue
-description: Implements a GitHub issue from the project's GitHub Projects board end-to-end in its own git worktree — implementation, then an independent subagent review posted as a comment on the issue, then a separate subagent that responds to that review in the same issue thread — and opens a PR for human merge.
+description: Implements a GitHub issue from the project's GitHub Projects board end-to-end in its own git worktree — implementation, then an independent subagent review posted as a comment on the PR, then a separate subagent that responds to that review in the same PR thread — and opens a PR for human merge.
 ---
 
 # Solve Issue Skill
@@ -83,13 +83,13 @@ Spawn a subagent via the Agent tool. Do **not** review the work in this same con
 - The absolute worktree path to `cd` into, the issue number `<N>`, the PR number/branch, and instructions to read the **full diff** (`gh pr diff <PR>` or `git diff main...HEAD`) — not just the commit messages.
 - `ai/CODING_STANDARDS.md` and `ai/ARCHITECTURE.md` as the standard to check against.
 - Instructions to look for correctness bugs, missed edge cases, deviations from the coding standards, and missing test coverage.
-- Instructions to post its findings as a **comment on the GitHub issue** (`<N>`), not as a PR review — this mirrors SWARM's board-centric model, where agent output lands on the linked Issue (`ai/ARCHITECTURE.md`, PM section). Lead the comment with a clear verdict line so the respond step and any human can parse it at a glance:
+- Instructions to post its findings as a **plain comment on the PR** (`gh pr comment <PR>`), where they sit alongside the diff being reviewed — matching the Review phase in `ai/ARCHITECTURE.md`, which posts the review on the PR. Use a plain PR comment, **not** a formal GitHub PR review (`gh pr review`): this skill runs under a single `gh` identity, and GitHub refuses to let an author approve or request changes on their own PR, so `gh pr review` would fail here. Lead the comment with a clear verdict line so the respond step and any human can parse it at a glance:
   ```bash
-  gh issue comment <N> --repo jkwiecien/swarm --body "**Review verdict: changes requested** (PR #<PR>)
+  gh pr comment <PR> --repo jkwiecien/swarm --body "**Review verdict: changes requested** (PR #<PR>)
 
   <findings>"
   # or, if nothing worth blocking on:
-  gh issue comment <N> --repo jkwiecien/swarm --body "**Review verdict: approved** (PR #<PR>)
+  gh pr comment <PR> --repo jkwiecien/swarm --body "**Review verdict: approved** (PR #<PR>)
 
   <summary>"
   ```
@@ -100,13 +100,13 @@ Wait for it to finish and report back exactly what it posted.
 
 Spawn another subagent — not the same one, and not you — to act as the implementer responding to that review. Give it:
 
-- The absolute worktree path to `cd` into, the issue number `<N>`, the PR number, and instructions to fetch the review comment posted in Step 5 and any follow-ups (`gh issue view <N> --repo jkwiecien/swarm --json comments`).
+- The absolute worktree path to `cd` into, the issue number `<N>`, the PR number, and instructions to fetch the review comment posted in Step 5 and any follow-ups (`gh pr view <PR> --repo jkwiecien/swarm --json comments`).
 - Instructions that for **each** point raised it must either:
   - fix the code, then commit and push the fix, or
   - if the comment is mistaken, reply explaining why — mirroring the Path A / Path B split in `PROJECT.md` §5.4.
-- Instructions to post its response as a **comment on the GitHub issue** (`<N>`), point by point, saying for each whether it fixed the code (with the commit) or pushed back (with rationale) — matching where the review was posted:
+- Instructions to post its response as a **plain comment on the PR** (`gh pr comment <PR>`), point by point, saying for each whether it fixed the code (with the commit) or pushed back (with rationale) — matching where the review was posted:
   ```bash
-  gh issue comment <N> --repo jkwiecien/swarm --body "<point-by-point response>"
+  gh pr comment <PR> --repo jkwiecien/swarm --body "<point-by-point response>"
   ```
 - Instructions to re-run lint/typecheck/tests after any fix, before pushing.
 - Instructions to leave the PR in a mergeable state when done — this skill does not loop back into another review round automatically, and does not auto-merge.
