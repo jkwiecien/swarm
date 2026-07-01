@@ -60,7 +60,10 @@ All four services run in one Docker Compose stack:
 ```bash
 cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
 docker compose up --build     # postgres, redis, router, worker
+npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 ```
+
+The Postgres schema (project config + credentials at rest) is defined with **Drizzle** in `src/db/` — `npm run db:generate` regenerates migrations from the schema, `npm run db:migrate` applies them. Credentials are encrypted with AES-256-GCM before storage when `CREDENTIAL_MASTER_KEY` is set (plaintext otherwise, for local dev).
 
 The router exposes a health check at `http://localhost:${ROUTER_PORT:-3000}/health`. Router and worker are placeholder services for now — the webhook/enqueue logic (SWARM-9), BullMQ consumer (SWARM-17), and agent-CLI runtime (SWARM-16) land in later tasks; this stack is the Phase 0 foundation they build on.
 
@@ -68,7 +71,7 @@ To let GitHub reach this local router with webhooks, expose it over a public HTT
 
 ## Status
 
-Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests). Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live on the **[GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)** (see `ai/RULES.md` §5 for ids/field details; `KANBAN_BOARD.md` is retired). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
+Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests), and the Postgres persistence layer (Drizzle schema + migrations for project config and encrypted-at-rest credentials) is in place. Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live on the **[GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)** (see `ai/RULES.md` §5 for ids/field details; `KANBAN_BOARD.md` is retired). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
 
 ## Contributing
 

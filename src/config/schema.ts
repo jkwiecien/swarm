@@ -98,6 +98,7 @@ export const SwarmConfigSchema = z.object({
 	projects: z.array(ProjectConfigSchema).min(1),
 });
 
+export type Credentials = z.infer<typeof CredentialsSchema>;
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type SwarmConfig = z.infer<typeof SwarmConfigSchema>;
 
