@@ -1,0 +1,23 @@
+# Worker image — consumes queued jobs and drives the worktree/harness lifecycle.
+# The agent-CLI runtime (claude / antigravity) and git worktree tooling are added
+# in SWARM-16; this image stays minimal until then.
+FROM node:22-slim AS builder
+WORKDIR /app
+
+# --ignore-scripts skips the lefthook `prepare` hook, which needs a git repo.
+COPY package*.json ./
+RUN npm ci --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+FROM node:22-slim AS production
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+COPY --from=builder /app/dist ./dist
+
+CMD ["node", "dist/worker/index.js"]

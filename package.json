@@ -6,6 +6,8 @@
 	"main": "dist/index.js",
 	"scripts": {
 		"dev": "node --env-file=.env --import tsx/esm --watch src/index.ts",
+		"dev:router": "node --env-file=.env --import tsx/esm --watch src/router/index.ts",
+		"dev:worker": "node --env-file=.env --import tsx/esm --watch src/worker/index.ts",
 		"build": "tsc",
 		"start": "node dist/index.js",
 		"test": "vitest run --project unit",
