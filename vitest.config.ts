@@ -27,6 +27,13 @@ export default defineConfig({
 			reporter: ['text', 'lcov', 'html'],
 			include: ['src/**/*.ts'],
 			exclude: ['src/**/*.test.ts', 'src/index.ts'],
+			// Mirror Cascade's thresholds so coverage can't silently regress.
+			thresholds: {
+				lines: 80,
+				functions: 80,
+				branches: 75,
+				statements: 80,
+			},
 		},
 
 		projects: [
