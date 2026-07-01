@@ -21,7 +21,6 @@ Full detail: `ai/ARCHITECTURE.md`, `ai/CODING_STANDARDS.md`, `ai/TESTING.md`.
 ## Backlog
 
 ### Phase 0 — Foundation
-- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
 - [ ] SWARM-2 — Docker Compose stack: Redis, Postgres, router service, worker service
 - [ ] SWARM-3 — Document Cloudflare Tunnel setup for exposing the local router to GitHub webhooks (ops doc, not code — tunnel itself is external)
 - [ ] SWARM-4 — Project config Zod schema: repo, worktree root, GitHub Projects board mapping, credential references
@@ -58,6 +57,8 @@ Full detail: `ai/ARCHITECTURE.md`, `ai/CODING_STANDARDS.md`, `ai/TESTING.md`.
 ## To do
 
 ## In progress
+
+- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
 
 ## In review
 
