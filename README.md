@@ -64,6 +64,8 @@ docker compose up --build     # postgres, redis, router, worker
 
 The router exposes a health check at `http://localhost:${ROUTER_PORT:-3000}/health`. Router and worker are placeholder services for now — the webhook/enqueue logic (SWARM-9), BullMQ consumer (SWARM-17), and agent-CLI runtime (SWARM-16) land in later tasks; this stack is the Phase 0 foundation they build on.
 
+To let GitHub reach this local router with webhooks, expose it over a public HTTPS URL with a Cloudflare Tunnel — see **[`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md)** for the setup (quick tunnel for dev, named tunnel for a stable URL) and the GitHub webhook configuration.
+
 ## Status
 
 Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests). Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live on the **[GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)** (see `ai/RULES.md` §5 for ids/field details; `KANBAN_BOARD.md` is retired). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
