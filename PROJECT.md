@@ -188,9 +188,9 @@ SWARM operates under a standardized home-directory structure:
 When the worker receives a `TaskAssignment`-shaped job (from BullMQ in the MVP, from the gRPC stream once §2.2 exists):
 
 1. **Sanity Check & Sync:** The worker verifies that the primary project folder `~/swarm/{project-name}/` exists and is a valid git repository. It runs a non-blocking background fetch (`git fetch origin`) to ensure all remote refs are local.
-2. **Worktree Creation:** The worker generates a clean, unique workspace path for the task:
+2. **Worktree Creation:** The worker generates a clean, unique workspace path for the task, nested under the workspace root defined in §4.1 (run from `~/swarm/{project-name}/`, the main repository location):
    ```bash
-   git worktree add ../.swarm-workspaces/task-${task_id} ${target_branch}
+   git worktree add .swarm-workspaces/task-${task_id} ${target_branch}
    ```
    *Impact:* This takes mere milliseconds and shares the main `.git` compression history, avoiding expensive network operations.
 3. **Environment Grafting (Symlink Layer):** Un-tracked files, configurations, and large caches are critical for builds to pass. The worker scans the main workspace and builds target symbolic links into the worktree:
@@ -200,7 +200,7 @@ When the worker receives a `TaskAssignment`-shaped job (from BullMQ in the MVP, 
 4. **Agent Executable Execution:** SWARM spawns the targeted CLI binary (`claude` or `antigravity`), overriding the current working directory (CWD) to the newly created worktree path.
 5. **Cleanup & De-allocation:** Upon process completion, any local modifications are pushed directly to remote origin by the agent using the internal tools. The worker then cleans up the sandbox:
    ```bash
-   git worktree remove --force ../.swarm-workspaces/task-${task_id}
+   git worktree remove --force .swarm-workspaces/task-${task_id}
    ```
 
 ---
