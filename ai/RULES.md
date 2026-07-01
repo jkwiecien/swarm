@@ -70,9 +70,14 @@ Do this as part of creating the skill, not as a separate follow-up step — a Cl
 
 ## 5. Task board
 
-@../KANBAN_BOARD.md
+The backlog/task board lives in **GitHub Projects**. `KANBAN_BOARD.md`, the stand-in board used before this was wired up, has been removed — its full backlog was migrated to GitHub issues (see below).
 
-Until GitHub Projects (the PM tool this project will itself support — see `PROJECT.md`) is wired up, `KANBAN_BOARD.md` at the repo root is the backlog/task board. Keep it current: when you pick up a task move it to **In progress**, move it to **In review** when a PR is open, and to **Done** once merged. When new work is identified mid-task, add it to **Backlog** rather than letting it evaporate.
+- **Board**: <https://github.com/users/jkwiecien/projects/3/views/1> — owner `jkwiecien` (user-level project), project number `3`, project (node) id `PVT_kwHOAC3TF84BcNwD`.
+- **Repo**: `jkwiecien/swarm`. Every task is a GitHub issue in this repo, added as an item to project `3`.
+- **Status field**: id `PVTSSF_lAHOAC3TF84BcNwDzhW4MKo`, options — `Backlog` (`f75ad846`), `Ready` (`61e4505c`), `In progress` (`47fc9ee4`), `In review` (`df73e18b`), `Done` (`98236657`). `Ready` is this board's equivalent of the old `To do` column.
+- **Labels**: each issue also carries a `phase-<N>` label (`phase-0` … `phase-5`) mirroring the old Phase 0–5 groupings, since the project has no native "phase" field.
+
+Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-add`, `gh project item-edit` — see §3 for the account to run these as). Keep it current: when you pick up a task move its Status to **In progress**, to **In review** when a PR is open, and to **Done** once merged. When new work is identified mid-task, file it as a new issue and add it to the project with Status **Backlog** rather than letting it evaporate.
 
 ---
 

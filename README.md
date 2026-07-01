@@ -4,7 +4,7 @@
 
 > Full architecture, protocol spec, and implementation roadmap: **[`PROJECT.md`](./PROJECT.md)** — the baseline Architecture Design Document (ADD). This README is the short orientation; `PROJECT.md` is the source of truth for exact message shapes, phases, and task breakdown.
 
-> **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue + worker (Docker Compose), reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and `KANBAN_BOARD.md` for the current backlog.
+> **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue + worker (Docker Compose), reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1) for the current backlog.
 
 ## Core idea
 
@@ -55,7 +55,7 @@ PM boards plug in via an agnostic `PMProvider` interface (verify webhook, get/li
 
 ## Status
 
-Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests). Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live in **[`KANBAN_BOARD.md`](./KANBAN_BOARD.md)** (used until SWARM's own GitHub Projects integration exists to host it). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
+Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests). Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live on the **[GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)** (see `ai/RULES.md` §5 for ids/field details; `KANBAN_BOARD.md` is retired). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
 
 ## Contributing
 

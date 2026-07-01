@@ -1,6 +1,6 @@
 # ARCHITECTURE DESIGN DOCUMENT (ADD) & PROJECT SPECIFICATION
 ## System Name: SWARM (Federated Multi-Agent Automation Framework)
-**Status:** MVP scope defined — local (Cascade-shaped) implementation in progress. See `KANBAN_BOARD.md` for the active backlog and `ai/ARCHITECTURE.md` for the agent-facing summary of §2.1.
+**Status:** MVP scope defined — local (Cascade-shaped) implementation in progress. See the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1) for the active backlog and `ai/ARCHITECTURE.md` for the agent-facing summary of §2.1.
 **Target Audience:** Engineering Team, Core Architects
 **Version:** 1.2.0
 
@@ -27,7 +27,7 @@ The two concrete product differences from Cascade — what makes SWARM its own p
 1. **PM provider = GitHub Projects** (v2), not Trello/JIRA/Linear — Cascade has no GitHub Projects adapter; this is net-new.
 2. **SCM = GitHub**, same as Cascade — this piece is copied closely.
 
-MVP scope is single-user (see `ai/ARCHITECTURE.md` and `KANBAN_BOARD.md`); multi-tenancy is deferred to the long-term vision along with the cloud engine.
+MVP scope is single-user (see `ai/ARCHITECTURE.md` and the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)); multi-tenancy is deferred to the long-term vision along with the cloud engine.
 
 ---
 
@@ -207,7 +207,7 @@ When the worker receives a `TaskAssignment`-shaped job (from BullMQ in the MVP, 
 
 ## 5. Multi-Agent Pipeline Flows & Lifecycle Management
 
-SWARM treats multi-agent execution as independent, sequential, and entirely stateless phases connected by **GitHub Projects**. All four phases below are in MVP scope (granular tasks: `KANBAN_BOARD.md`).
+SWARM treats multi-agent execution as independent, sequential, and entirely stateless phases connected by **GitHub Projects**. All four phases below are in MVP scope (granular tasks: [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1)).
 
 ### 5.1. Phase 1: Planning (Antigravity Pipeline)
 
@@ -319,7 +319,7 @@ GitHub Projects (v2) is the MVP's only concrete implementation — see `ai/ARCHI
 
 ## 8. Implementation Roadmap
 
-Granular tasks live in `KANBAN_BOARD.md`; this is the phase-level view.
+Granular tasks live on the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1); this is the phase-level view.
 
 ### Phase 1: Local Foundation
 * Scaffold the Node.js/TypeScript project with Cascade's tooling (strict TS, Biome, Vitest, Lefthook).

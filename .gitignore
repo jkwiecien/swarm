@@ -58,3 +58,6 @@ coverage/
 # Logs
 logs/
 *.log
+
+# SWARM task worktrees (ai/ARCHITECTURE.md "Worktree lifecycle")
+.swarm-workspaces/
