@@ -34,6 +34,26 @@ describe('githubProjectsConfigSchema', () => {
 		).toThrow();
 	});
 
+	it('rejects an empty statusOptions record', () => {
+		expect(() =>
+			githubProjectsConfigSchema.parse({
+				projectId: 'PVT_x',
+				statusFieldId: 'PVTSSF_y',
+				statusOptions: {},
+			}),
+		).toThrow();
+	});
+
+	it('strips unknown keys rather than rejecting them (non-strict object)', () => {
+		const parsed = githubProjectsConfigSchema.parse({
+			projectId: 'PVT_x',
+			statusFieldId: 'PVTSSF_y',
+			statusOptions: { backlog: 'opt-1' },
+			unexpected: 'dropped',
+		});
+		expect(parsed).not.toHaveProperty('unexpected');
+	});
+
 	it('rejects an empty status-option value', () => {
 		expect(() =>
 			githubProjectsConfigSchema.parse({

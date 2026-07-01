@@ -48,9 +48,16 @@ export const githubProjectsConfigSchema = z
 		 * the pipeline phases (ai/ARCHITECTURE.md §"Pipeline phases"):
 		 * `backlog`, `ready`, `planning`, `inProgress`, `inReview`, `done`.
 		 * Kept as an open record — a board may add or omit options, and validating
-		 * exact key presence belongs to setup/wizard code, not this schema.
+		 * exact key presence belongs to setup/wizard code, not this schema. The
+		 * one bound the schema does enforce: the record can't be empty, since a
+		 * board mapping with zero status→optionId entries gives the PM adapter no
+		 * transition targets to move items to.
 		 */
-		statusOptions: z.record(z.string().min(1), z.string().min(1)),
+		statusOptions: z
+			.record(z.string().min(1), z.string().min(1))
+			.refine((r) => Object.keys(r).length > 0, {
+				message: 'statusOptions must map at least one pipeline status to an option ID',
+			}),
 
 		/**
 		 * Optional mapping from SWARM phase keys (`phase-0` … `phase-5`) to the
