@@ -21,7 +21,6 @@ Full detail: `ai/ARCHITECTURE.md`, `ai/CODING_STANDARDS.md`, `ai/TESTING.md`.
 ## Backlog
 
 ### Phase 0 — Foundation
-- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
 - [ ] SWARM-2 — Docker Compose stack: Redis, Postgres, router service, worker service
 - [ ] SWARM-3 — Document Cloudflare Tunnel setup for exposing the local router to GitHub webhooks (ops doc, not code — tunnel itself is external)
 - [ ] SWARM-4 — Project config Zod schema: repo, worktree root, GitHub Projects board mapping, credential references
@@ -54,11 +53,14 @@ Full detail: `ai/ARCHITECTURE.md`, `ai/CODING_STANDARDS.md`, `ai/TESTING.md`.
 - [ ] SWARM-21 — `swarm-cli` commands: init project config, start/stop local stack, status, logs
 - [ ] SWARM-22 — Structured logging across router/worker
 - [ ] SWARM-23 — End-to-end smoke test: one full Planning→Implementation→Review→Respond-to-review run against a scratch repo/project
+- [ ] SWARM-24 — Type-check test files: `tsconfig`'s `include: ["src"]` leaves `tests/**` unchecked by `tsc --noEmit`, so type errors in tests ship silently (same gap as Cascade). Close via a `tsconfig` that also covers `tests/` or `vitest --typecheck`. (PR #1 review nit)
 
 ## To do
 
 ## In progress
 
 ## In review
+
+- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
 
 ## Done

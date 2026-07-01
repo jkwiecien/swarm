@@ -55,7 +55,7 @@ PM boards plug in via an agnostic `PMProvider` interface (verify webhook, get/li
 
 ## Status
 
-Baseline specification, pre-implementation. MVP scope and the active backlog live in **[`KANBAN_BOARD.md`](./KANBAN_BOARD.md)** (used until SWARM's own GitHub Projects integration exists to host it). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
+Early implementation — the Node.js/TypeScript toolchain is scaffolded (strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests). Application code (router/worker/providers) is not built yet. MVP scope and the active backlog live in **[`KANBAN_BOARD.md`](./KANBAN_BOARD.md)** (used until SWARM's own GitHub Projects integration exists to host it). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted above.
 
 ## Contributing
 
