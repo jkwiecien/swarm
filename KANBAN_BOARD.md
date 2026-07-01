@@ -58,8 +58,8 @@ Full detail: `ai/ARCHITECTURE.md`, `ai/CODING_STANDARDS.md`, `ai/TESTING.md`.
 
 ## In progress
 
-- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
-
 ## In review
+
+- [ ] SWARM-1 — Scaffold Node.js/TypeScript project: package.json, strict tsconfig + `@/*` alias, Biome, Vitest, Lefthook, commitlint (mirror Cascade's configs)
 
 ## Done
