@@ -21,9 +21,14 @@ export function createMockGitHubProjectsConfig(
 	return githubProjectsConfigSchema.parse({
 		projectId: 'PVT_kwHOAC3TF84BcNwD',
 		statusFieldId: 'PVTSSF_lAHOAC3TF84BcNwDzhW4MKo',
+		// Keys are the canonical PM_STATUS_KEYS (src/pm/pipeline.ts); values are the
+		// real board's Status option IDs (ai/RULES.md §5). `61e4505c` is Planning,
+		// `3121a97d` is ToDo — mapping them to their matching canonical keys keeps
+		// the fixture faithful to the board so the Planning trigger resolves.
 		statusOptions: {
 			backlog: 'f75ad846',
-			ready: '61e4505c',
+			planning: '61e4505c',
+			todo: '3121a97d',
 			inProgress: '47fc9ee4',
 			inReview: 'df73e18b',
 			done: '98236657',

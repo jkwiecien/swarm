@@ -56,8 +56,9 @@ export interface WorkItem {
 /** Optional server-side filters for {@link PMProvider.listWorkItems}. */
 export interface ListWorkItemsFilter {
 	/**
-	 * A canonical SWARM pipeline status key (e.g. `backlog`, `ready`,
-	 * `inProgress`, `inReview`, `done`) — the same keys used in the config's
+	 * A canonical SWARM pipeline status key (e.g. `backlog`, `planning`, `todo`,
+	 * `inProgress`, `inReview`, `done` — `PM_STATUS_KEYS` in `src/pm/pipeline.ts`
+	 * is the source of truth) — the same keys used in the config's
 	 * `statusOptions` map. The adapter resolves it to a `SingleSelectOptionId`
 	 * and filters the board's items by that Status option. Omit to list every
 	 * item on the board.

@@ -31,7 +31,7 @@ const row = {
 	githubProjects: {
 		projectId: 'PVT_x',
 		statusFieldId: 'PVTSSF_x',
-		statusOptions: { backlog: 'a', ready: 'b', inProgress: 'c', inReview: 'd', done: 'e' },
+		statusOptions: { backlog: 'a', planning: 'b', inProgress: 'c', inReview: 'd', done: 'e' },
 	},
 	credentials: { implementer: 'IMPL', reviewer: 'REV', webhookSecret: 'HOOK' },
 	createdAt: new Date(),

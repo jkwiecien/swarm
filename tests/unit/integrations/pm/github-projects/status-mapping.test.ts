@@ -6,18 +6,12 @@ import {
 } from '@/integrations/pm/github-projects/status-mapping.js';
 import { createMockGitHubProjectsConfig } from '../../../../helpers/factories.js';
 
-// The real board's Status option IDs (ai/RULES.md §5), mapped to the canonical
-// pipeline status keys the config uses.
-const config = createMockGitHubProjectsConfig({
-	statusOptions: {
-		backlog: 'f75ad846',
-		planning: '61e4505c',
-		todo: '3121a97d',
-		inProgress: '47fc9ee4',
-		inReview: 'df73e18b',
-		done: '98236657',
-	},
-});
+// The default factory config already maps the canonical pipeline status keys to
+// the real board's Status option IDs (ai/RULES.md §5). Using it directly here —
+// rather than a hand-written override — means a regression in the factory's
+// key→optionId mapping (e.g. the old `ready`-for-Planning mislabel) is caught by
+// these resolution assertions, not silently tolerated.
+const config = createMockGitHubProjectsConfig();
 
 describe('resolveStatusKeyByOptionId', () => {
 	it('inverts the statusOptions map (option ID → status key)', () => {

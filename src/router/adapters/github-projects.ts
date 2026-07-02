@@ -123,9 +123,20 @@ export class GitHubProjectsRouterAdapter {
 	 * change must be dropped, since a persona moving a card is exactly the
 	 * feedback loop to break (ai/CODING_STANDARDS.md "Loop prevention").
 	 *
-	 * On any identity-resolution failure this returns `false` but logs it: a
-	 * swallowed error must not silently drop a real human-driven status change as
-	 * "ours".
+	 * On any identity-resolution failure this returns `false` but logs it —
+	 * failing *open* (enqueue) rather than closed (drop), mirroring the SCM
+	 * adapter's documented tradeoff (`src/router/adapters/github.ts`): a swallowed
+	 * error must not silently drop a real human-driven status change as "ours".
+	 *
+	 * The residual risk carries more weight here than on the SCM side, though: an
+	 * SCM false-negative re-enqueues a self-authored *comment* (usually inert),
+	 * whereas here it could re-enqueue a persona's own status move and re-fire the
+	 * trigger that produced it. Two things bound it — identity resolution failing
+	 * is the rare (credential) case, and the authoritative downstream re-read
+	 * (docs/github-projects-v2-api.md §5 step 4) is the second line of defense that
+	 * decides whether the re-fired transition actually starts a phase. If this
+	 * proves too loose in practice, the fix is a bounded retry on resolution here,
+	 * not flipping to fail-closed (which would strand real human changes).
 	 */
 	async isSelfAuthored(event: GitHubProjectsParsedEvent, project: ProjectConfig): Promise<boolean> {
 		if (!event.actorLogin) return false;

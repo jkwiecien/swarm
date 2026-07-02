@@ -294,6 +294,15 @@ describe('createWebhookApp', () => {
 			expect(enqueueProjects).not.toHaveBeenCalled();
 		});
 
+		it('rejects with 401 when the project has no webhook secret configured', async () => {
+			const { app, enqueueProjects } = makePmApp({
+				getWebhookSecret: vi.fn<WebhookReceiverDeps['getWebhookSecret']>().mockResolvedValue(null),
+			});
+			const res = await postPm(app);
+			expect(res.status).toBe(401);
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
 		it('rejects with 401 when the signature does not verify', async () => {
 			const { app, enqueueProjects } = makePmApp({
 				verifySignature: vi.fn<WebhookReceiverDeps['verifySignature']>().mockReturnValue(false),
