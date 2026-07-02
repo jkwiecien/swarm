@@ -17,9 +17,17 @@ Each invocation does its work in a **dedicated git worktree**, not the shared wo
 
 ## Step-by-step procedure
 
-### Step 0: Confirm identity
+### Step 0: Sync main, then confirm identity
 
-Before any GitHub action, run the account check from `ai/RULES.md` §3 (`gh auth status --active` / switch to `jkwiecien` if needed) and make sure the local git author override is set. Don't skip this — it's what keeps commits attributed correctly.
+**First thing — before anything else — pull the latest `main`** so every worktree branches off current history and never stale code. From the main repo root:
+
+```bash
+git checkout main && git pull --ff-only origin main
+```
+
+If there's no remote yet (`git pull` fails with no configured remote), that's fine — carry on with local `main`. If the fast-forward is refused because local `main` has diverged, stop and tell the user rather than force-anything.
+
+Then, before any GitHub action, run the account check from `ai/RULES.md` §3 (`gh auth status --active` / switch to `jkwiecien` if needed) and make sure the local git author override is set. Don't skip this — it's what keeps commits attributed correctly.
 
 ### Step 1: Resolve the issue
 
@@ -37,21 +45,16 @@ Before any GitHub action, run the account check from `ai/RULES.md` §3 (`gh auth
 
 Per `ai/ARCHITECTURE.md` "Worktree lifecycle": worktrees live under `.swarm-workspaces/` inside the main repo, one per task, so multiple issues can be worked concurrently without touching each other's checkout.
 
-1. From the main repo root, sync main (don't fail if there's no remote yet):
-   ```bash
-   git fetch origin 2>/dev/null && git log --oneline main..origin/main | grep -q . && echo "warn: local main is behind origin/main — consider fast-forwarding before branching" || true
-   ```
-   If local `main` is behind `origin/main`, fast-forward it first (`git checkout main && git pull --ff-only origin main`) — don't branch from stale history.
-2. Create the worktree on a fresh branch off `main`, without touching the current checkout:
+1. `main` is already up to date from Step 0, so branch straight from it. Create the worktree on a fresh branch off `main`, without touching the current checkout:
    ```bash
    git worktree add .swarm-workspaces/issue-<N>-<kebab-slug-of-the-issue-title> -b issue-<N>-<kebab-slug> main
    ```
-3. Graft untracked-but-required state into the worktree (symlinks, not copies — per `ai/ARCHITECTURE.md`):
+2. Graft untracked-but-required state into the worktree (symlinks, not copies — per `ai/ARCHITECTURE.md`):
    ```bash
    ln -s "$(pwd)/node_modules" ".swarm-workspaces/issue-<N>-<slug>/node_modules"
    [ -f .env ] && ln -s "$(pwd)/.env" ".swarm-workspaces/issue-<N>-<slug>/.env"
    ```
-4. All remaining steps run with CWD set to that worktree path (`cd .swarm-workspaces/issue-<N>-<slug>`), including subagents spawned in Steps 5–6 — give them the absolute worktree path explicitly since they don't inherit your shell CWD.
+3. All remaining steps run with CWD set to that worktree path (`cd .swarm-workspaces/issue-<N>-<slug>`), including subagents spawned in Steps 5–6 — give them the absolute worktree path explicitly since they don't inherit your shell CWD.
 
 ### Step 3: Move the project item to "In progress"
 
