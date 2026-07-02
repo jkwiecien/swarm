@@ -39,11 +39,11 @@ Two integrations, each following the manifest/registry pattern from `ai/CODING_S
 
 ### SCM: GitHub (`src/integrations/scm/github/`)
 
-Mirror Cascade's `src/github/scm-integration.ts` + `src/router/adapters/github.ts` closely:
+The integration itself lives under `src/integrations/scm/github/` — consistent with the PM provider (`src/integrations/pm/github-projects/`) and the module shape in `ai/CODING_STANDARDS.md` — but its internals are ported close to verbatim from Cascade's `src/github/*`, so match Cascade's file shapes (`scm-integration.ts`, `client.ts`, `personas.ts`) rather than reinventing them. The router adapter is router infrastructure, so it lives under `src/router/adapters/github.ts` (mirroring Cascade), not inside the integration folder.
 
-- Dual-persona tokens (`implementer`, `reviewer`) scoped via `AsyncLocalStorage`, never passed as plain arguments.
-- Router adapter parses `pull_request`, `pull_request_review`, `issue_comment`, `check_suite` events, resolves the SWARM project from the repo, and dispatches with the right persona's credentials in scope.
-- Loop prevention via a `isSwarmBot(login)` check on every inbound event, exactly as described in `ai/CODING_STANDARDS.md`.
+- Dual-persona tokens (`implementer`, `reviewer`) scoped via `AsyncLocalStorage` (`src/integrations/scm/github/client.ts`'s `withGitHubToken`), never passed as plain arguments. Token references live in the project config's `credentials` block; the secrets themselves are resolved from Postgres per-persona (`src/config/provider.ts` → `src/db/repositories/credentialsRepository.ts`).
+- Router adapter (`src/router/adapters/github.ts`) parses `pull_request`, `pull_request_review`, `issue_comment`, `check_suite` events, resolves the SWARM project from the repo, and dispatches with the right persona's credentials in scope.
+- Loop prevention via an `isSwarmBot(login)` check (`src/integrations/scm/github/personas.ts`) on comment events, exactly as described in `ai/CODING_STANDARDS.md` — a persona never reacts to its own ack/reply comments; PR/review lifecycle routing between personas is handled by `getPersonaForLogin`, not by the drop gate.
 
 ### PM: GitHub Projects (`src/integrations/pm/github-projects/`) — net-new, no Cascade equivalent
 
