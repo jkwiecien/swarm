@@ -70,7 +70,7 @@ Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the 
 Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-specific and already correct:
 
 - Main repo at `~/swarm/{project-name}/`, worktrees under `~/swarm/{project-name}/.swarm-workspaces/task-<id>/`.
-- `git worktree add` per task; untracked config/caches (`.env`, `node_modules`, build caches) grafted in via symlinks.
+- `git worktree add` per task; config/caches and the `cascade` sibling-checkout pointer (`.env`, `node_modules`, `cascade`, build caches) grafted in via symlinks with **absolute** targets — a relative link would dangle at the worktree's `.swarm-workspaces/<name>/` depth (see `ai/RULES.md` §1).
 - `git worktree remove --force` on completion.
 
 ## Single-user scope
