@@ -50,6 +50,50 @@ export function createMockWorkItem(overrides: Partial<WorkItem> = {}): WorkItem 
 	};
 }
 
+/**
+ * A raw `projects_v2_item` webhook body (the shape GitHub delivers, per
+ * docs/github-projects-v2-api.md §5), for driving the PM router adapter /
+ * receiver. Defaults describe a Status-field edit on the real board's IDs; pass
+ * a partial `changes` / `projects_v2_item` to exercise other actions. Returns a
+ * plain object — a webhook payload is untrusted input the adapter parses, not a
+ * validated config shape.
+ */
+export function createMockProjectsV2ItemPayload(
+	overrides: {
+		action?: string;
+		projectsV2Item?: Record<string, unknown>;
+		changes?: Record<string, unknown> | null;
+		sender?: Record<string, unknown>;
+	} = {},
+): Record<string, unknown> {
+	const payload: Record<string, unknown> = {
+		action: overrides.action ?? 'edited',
+		projects_v2_item: {
+			node_id: 'PVTI_lAHOAC3TF84BcNwDzgxczms',
+			project_node_id: 'PVT_kwHOAC3TF84BcNwD',
+			content_node_id: 'I_kwDONODE',
+			content_type: 'Issue',
+			creator: { login: 'human-dev' },
+			created_at: '2026-07-02T00:00:00Z',
+			updated_at: '2026-07-02T00:00:00Z',
+			archived_at: null,
+			...overrides.projectsV2Item,
+		},
+		sender: overrides.sender ?? { login: 'human-dev' },
+	};
+	// `changes` is present on `edited` events; allow callers to drop it (e.g. for
+	// a `created` event) by passing `null`.
+	if (overrides.changes !== null) {
+		payload.changes = overrides.changes ?? {
+			field_value: {
+				field_node_id: 'PVTSSF_lAHOAC3TF84BcNwDzhW4MKo',
+				field_type: 'single_select',
+			},
+		};
+	}
+	return payload;
+}
+
 export function createMockProjectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
 	return ProjectConfigSchema.parse({
 		id: 'swarm',

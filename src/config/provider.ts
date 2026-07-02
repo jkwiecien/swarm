@@ -10,7 +10,10 @@
  */
 
 import { resolveProjectCredential } from '../db/repositories/credentialsRepository.js';
-import { findProjectByRepoFromDb } from '../db/repositories/projectsRepository.js';
+import {
+	findProjectByBoardFromDb,
+	findProjectByRepoFromDb,
+} from '../db/repositories/projectsRepository.js';
 import type { GitHubPersona } from '../integrations/scm/github/personas.js';
 import type { ProjectConfig } from './schema.js';
 
@@ -21,6 +24,19 @@ import type { ProjectConfig } from './schema.js';
  */
 export async function findProjectByRepo(repo: string): Promise<ProjectConfig | undefined> {
 	return findProjectByRepoFromDb(repo);
+}
+
+/**
+ * Resolve the SWARM project that owns a GitHub Projects (v2) board, by its node
+ * ID (`githubProjects.projectId`). The PM-side counterpart of
+ * {@link findProjectByRepo}: a `projects_v2_item` webhook is a board event with
+ * no repo, so the board node ID is what identifies the project. Returns
+ * `undefined` when the board isn't tracked — "not ours", not an error.
+ */
+export async function findProjectByBoard(
+	projectNodeId: string,
+): Promise<ProjectConfig | undefined> {
+	return findProjectByBoardFromDb(projectNodeId);
 }
 
 /**

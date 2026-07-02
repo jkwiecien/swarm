@@ -11,7 +11,7 @@
  * "Zod is the source of truth").
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 import type { ProjectConfig } from '../../config/schema.js';
 import { getDb } from '../client.js';
@@ -42,6 +42,27 @@ function rowToProjectConfig(row: ProjectRow): ProjectConfig {
  */
 export async function findProjectByRepoFromDb(repo: string): Promise<ProjectConfig | undefined> {
 	const rows = await getDb().select().from(projects).where(eq(projects.repo, repo)).limit(1);
+	const row = rows[0];
+	return row ? rowToProjectConfig(row) : undefined;
+}
+
+/**
+ * Resolve a project by its GitHub Projects (v2) board node ID
+ * (`githubProjects.projectId`, e.g. `PVT_kwHOAC3TF84BcNwD`). This is the PM-side
+ * analogue of {@link findProjectByRepoFromDb}: a `projects_v2_item` webhook
+ * carries the board node ID, not a repo, so the board mapping is how its SWARM
+ * project is found. Matches inside the jsonb `github_projects` column via its
+ * `projectId` key. Returns `undefined` for an untracked board — not our board
+ * isn't an error (ai/CODING_STANDARDS.md "Error handling").
+ */
+export async function findProjectByBoardFromDb(
+	projectNodeId: string,
+): Promise<ProjectConfig | undefined> {
+	const rows = await getDb()
+		.select()
+		.from(projects)
+		.where(sql`${projects.githubProjects}->>'projectId' = ${projectNodeId}`)
+		.limit(1);
 	const row = rows[0];
 	return row ? rowToProjectConfig(row) : undefined;
 }
