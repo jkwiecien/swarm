@@ -11,9 +11,9 @@
  * refusing to act on events a SWARM persona itself produced (`isSwarmBot`).
  */
 
-import { getPersonaTokenOrNull } from '../config/provider.js';
-import type { ProjectConfig } from '../config/schema.js';
-import { logger } from '../lib/logger.js';
+import { getPersonaTokenOrNull } from '../../../config/provider.js';
+import type { ProjectConfig } from '../../../config/schema.js';
+import { logger } from '../../../lib/logger.js';
 import { getGitHubUserForToken } from './client.js';
 
 // ============================================================================

@@ -19,7 +19,11 @@ vi.mock('@octokit/rest', () => ({
 	},
 }));
 
-import { getGitHubUserForToken, getScopedClient, withGitHubToken } from '@/github/client.js';
+import {
+	getGitHubUserForToken,
+	getScopedClient,
+	withGitHubToken,
+} from '@/integrations/scm/github/client.js';
 
 describe('github client', () => {
 	beforeEach(() => {

@@ -20,8 +20,8 @@ import {
 	isSwarmBot,
 	type PersonaIdentities,
 	resolvePersonaIdentities,
-} from '../../github/personas.js';
-import { GitHubSCMIntegration } from '../../github/scm-integration.js';
+} from '../../integrations/scm/github/personas.js';
+import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integration.js';
 import { logger } from '../../lib/logger.js';
 
 /** The GitHub webhook event types SWARM acts on. */
@@ -114,14 +114,25 @@ export class GitHubRouterAdapter {
 	}
 
 	/**
-	 * Loop prevention: whether this event was produced by one of SWARM's own
-	 * personas. Events with no actor (e.g. a `check_suite` that names no sender)
-	 * are treated as not self-authored. On any resolution failure this returns
-	 * `false` — but logs it, because a swallowed identity error would silently
-	 * disable the guard and let a persona react to its own output.
+	 * Loop prevention for the *comment* reply loop: whether a SWARM persona
+	 * authored this comment event, so the router can drop it instead of treating
+	 * it as new human input. This is a **drop gate**, and it is deliberately
+	 * scoped to comment events (mirroring Cascade) — a persona's own ack/reply
+	 * comments are what create the runaway feedback loop.
+	 *
+	 * It intentionally does *not* fire for `pull_request` / `pull_request_review`
+	 * / `check_suite` events even when a persona produced them: those must flow
+	 * through so the *other* persona can act (the implementer opens a PR → the
+	 * reviewer reviews it; the reviewer requests changes → the implementer
+	 * responds). That cross-persona routing is `personaForEvent`'s job, not this
+	 * gate's — using `isSelfAuthored` as a blanket drop for lifecycle events
+	 * would suppress exactly the events the pipeline depends on.
+	 *
+	 * On any identity-resolution failure this returns `false` but logs it: a
+	 * swallowed error must not silently drop a real comment as "ours".
 	 */
 	async isSelfAuthored(event: GitHubParsedEvent, project: ProjectConfig): Promise<boolean> {
-		if (!event.actorLogin) return false;
+		if (!event.isCommentEvent || !event.actorLogin) return false;
 		try {
 			const identities = await resolvePersonaIdentities(project);
 			return isSwarmBot(event.actorLogin, identities);
@@ -138,12 +149,9 @@ export class GitHubRouterAdapter {
 	/**
 	 * Which SWARM persona, if any, authored the event — the routing primitive
 	 * behind "the reviewer's changes_requested goes back to the implementer".
-	 * Returns `null` for human-authored events.
+	 * Returns `null` for human-authored events (and events with no actor).
 	 */
-	async personaForEvent(
-		event: GitHubParsedEvent,
-		identities: PersonaIdentities,
-	): Promise<GitHubPersona | null> {
+	personaForEvent(event: GitHubParsedEvent, identities: PersonaIdentities): GitHubPersona | null {
 		if (!event.actorLogin) return null;
 		return getPersonaForLogin(event.actorLogin, identities);
 	}

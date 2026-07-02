@@ -1,16 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMockProjectConfig } from '../../helpers/factories.js';
+import { createMockProjectConfig } from '../../../../helpers/factories.js';
 
 vi.mock('@/config/provider.js', () => ({
 	getPersonaTokenOrNull: vi.fn(),
 }));
-vi.mock('@/github/client.js', () => ({
+vi.mock('@/integrations/scm/github/client.js', () => ({
 	getGitHubUserForToken: vi.fn(),
 }));
 
 import { getPersonaTokenOrNull } from '@/config/provider.js';
-import { getGitHubUserForToken } from '@/github/client.js';
+import { getGitHubUserForToken } from '@/integrations/scm/github/client.js';
 import {
 	_resetPersonaIdentityCache,
 	getPersonaForAgentType,
@@ -18,7 +18,7 @@ import {
 	isSwarmBot,
 	type PersonaIdentities,
 	resolvePersonaIdentities,
-} from '@/github/personas.js';
+} from '@/integrations/scm/github/personas.js';
 
 const IDENTITIES: PersonaIdentities = { implementer: 'swarm-impl', reviewer: 'swarm-rev' };
 

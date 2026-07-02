@@ -11,7 +11,7 @@
 
 import { resolveProjectCredential } from '../db/repositories/credentialsRepository.js';
 import { findProjectByRepoFromDb } from '../db/repositories/projectsRepository.js';
-import type { GitHubPersona } from '../github/personas.js';
+import type { GitHubPersona } from '../integrations/scm/github/personas.js';
 import type { ProjectConfig } from './schema.js';
 
 /**

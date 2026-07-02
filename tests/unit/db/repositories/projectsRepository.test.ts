@@ -63,6 +63,12 @@ describe('projectsRepository', () => {
 	});
 
 	describe('findProjectByIdFromDb', () => {
+		it('maps a row back to a ProjectConfig', async () => {
+			stubDb([row]);
+			const project = await findProjectByIdFromDb('proj-1');
+			expect(project).toMatchObject({ id: 'proj-1', pm: { type: 'github-projects' } });
+		});
+
 		it('returns undefined for an unknown id', async () => {
 			stubDb([]);
 			expect(await findProjectByIdFromDb('nope')).toBeUndefined();

@@ -11,8 +11,8 @@
  * (ai/CODING_STANDARDS.md "Scope credentials with AsyncLocalStorage").
  */
 
-import { getPersonaToken, getPersonaTokenOrNull } from '../config/provider.js';
-import type { ProjectConfig } from '../config/schema.js';
+import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider.js';
+import type { ProjectConfig } from '../../../config/schema.js';
 import { withGitHubToken } from './client.js';
 import type { GitHubPersona } from './personas.js';
 

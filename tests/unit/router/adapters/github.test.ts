@@ -5,7 +5,7 @@ import { createMockProjectConfig } from '../../../helpers/factories.js';
 vi.mock('@/config/provider.js', () => ({
 	findProjectByRepo: vi.fn(),
 }));
-vi.mock('@/github/personas.js', () => ({
+vi.mock('@/integrations/scm/github/personas.js', () => ({
 	resolvePersonaIdentities: vi.fn(),
 	isSwarmBot: vi.fn(),
 	getPersonaForLogin: vi.fn(),
@@ -13,7 +13,7 @@ vi.mock('@/github/personas.js', () => ({
 const withPersonaCredentials = vi.fn(
 	(_project: unknown, _persona: unknown, fn: () => Promise<unknown>) => fn(),
 );
-vi.mock('@/github/scm-integration.js', () => ({
+vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		withPersonaCredentials = withPersonaCredentials;
 	},
@@ -25,7 +25,7 @@ import {
 	isSwarmBot,
 	type PersonaIdentities,
 	resolvePersonaIdentities,
-} from '@/github/personas.js';
+} from '@/integrations/scm/github/personas.js';
 import { GitHubRouterAdapter } from '@/router/adapters/github.js';
 
 const IDENTITIES: PersonaIdentities = { implementer: 'swarm-impl', reviewer: 'swarm-rev' };
@@ -99,6 +99,20 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.actorLogin).toBeUndefined();
 		});
 
+		it('leaves workItemId undefined for a check_suite with no PRs', () => {
+			const parsed = adapter.parseWebhook('check_suite', {
+				action: 'completed',
+				repository: repo(),
+				check_suite: { conclusion: 'success', pull_requests: [] },
+			});
+			expect(parsed?.workItemId).toBeUndefined();
+		});
+
+		it('falls back to "unknown" when the payload has no repository', () => {
+			const parsed = adapter.parseWebhook('pull_request', { pull_request: { number: 1 } });
+			expect(parsed?.repoFullName).toBe('unknown');
+		});
+
 		it('parses a pull_request_review event', () => {
 			const parsed = adapter.parseWebhook('pull_request_review', {
 				action: 'submitted',
@@ -167,6 +181,20 @@ describe('GitHubRouterAdapter', () => {
 			expect(resolvePersonaIdentities).not.toHaveBeenCalled();
 		});
 
+		it('is false for a lifecycle (non-comment) event even when a persona authored it', async () => {
+			// The reviewer opening/acting on a PR must reach the implementer — this
+			// drop gate must not fire for pull_request/pull_request_review events, so
+			// it short-circuits before ever resolving identities.
+			const event = parse('pull_request', {
+				repository: repo(),
+				pull_request: { number: 1 },
+				sender: { login: 'swarm-impl' },
+			});
+			expect(await adapter.isSelfAuthored(event, project)).toBe(false);
+			expect(resolvePersonaIdentities).not.toHaveBeenCalled();
+			expect(isSwarmBot).not.toHaveBeenCalled();
+		});
+
 		it('fails safe to false (and does not throw) when identity resolution errors', async () => {
 			vi.mocked(resolvePersonaIdentities).mockRejectedValue(new Error('no token'));
 			const event = parse('issue_comment', {
@@ -180,22 +208,22 @@ describe('GitHubRouterAdapter', () => {
 	});
 
 	describe('personaForEvent', () => {
-		it('returns the persona that authored the event', async () => {
+		it('returns the persona that authored the event', () => {
 			vi.mocked(getPersonaForLogin).mockReturnValue('reviewer');
 			const event = parse('pull_request_review', {
 				repository: repo(),
 				pull_request: { number: 1 },
 				sender: { login: 'swarm-rev' },
 			});
-			expect(await adapter.personaForEvent(event, IDENTITIES)).toBe('reviewer');
+			expect(adapter.personaForEvent(event, IDENTITIES)).toBe('reviewer');
 		});
 
-		it('returns null when there is no actor', async () => {
+		it('returns null when there is no actor', () => {
 			const event = parse('check_suite', {
 				repository: repo(),
 				check_suite: { pull_requests: [{ number: 1 }] },
 			});
-			expect(await adapter.personaForEvent(event, IDENTITIES)).toBeNull();
+			expect(adapter.personaForEvent(event, IDENTITIES)).toBeNull();
 			expect(getPersonaForLogin).not.toHaveBeenCalled();
 		});
 	});

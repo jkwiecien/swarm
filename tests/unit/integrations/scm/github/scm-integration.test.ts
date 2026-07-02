@@ -1,19 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createMockProjectConfig } from '../../helpers/factories.js';
+import { createMockProjectConfig } from '../../../../helpers/factories.js';
 
 vi.mock('@/config/provider.js', () => ({
 	getPersonaToken: vi.fn(),
 	getPersonaTokenOrNull: vi.fn(),
 }));
-vi.mock('@/github/client.js', () => ({
+vi.mock('@/integrations/scm/github/client.js', () => ({
 	// Pass-through so we can assert the token that would be scoped without a real Octokit.
 	withGitHubToken: vi.fn((_token: string, fn: () => Promise<unknown>) => fn()),
 }));
 
 import { getPersonaToken, getPersonaTokenOrNull } from '@/config/provider.js';
-import { withGitHubToken } from '@/github/client.js';
-import { GitHubSCMIntegration } from '@/github/scm-integration.js';
+import { withGitHubToken } from '@/integrations/scm/github/client.js';
+import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 
 const project = createMockProjectConfig();
 
@@ -27,9 +27,16 @@ describe('GitHubSCMIntegration', () => {
 	});
 
 	describe('hasIntegration', () => {
-		it('is true when only one persona token is configured', async () => {
+		it('is true when only the implementer token is configured', async () => {
 			vi.mocked(getPersonaTokenOrNull).mockImplementation(async (_p, persona) =>
 				persona === 'implementer' ? 'tok' : null,
+			);
+			expect(await scm.hasIntegration(project)).toBe(true);
+		});
+
+		it('is true when only the reviewer token is configured', async () => {
+			vi.mocked(getPersonaTokenOrNull).mockImplementation(async (_p, persona) =>
+				persona === 'reviewer' ? 'tok' : null,
 			);
 			expect(await scm.hasIntegration(project)).toBe(true);
 		});
