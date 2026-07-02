@@ -9,7 +9,7 @@ description: Implements a GitHub issue from the project's GitHub Projects board 
 
 Trigger with `/solve-issue <issue-number>` — e.g. `/solve-issue 6`. Also trigger by asking to "solve issue 6" / "work issue 6" / "pick up issue 6 from the board".
 
-This is a manual, single-persona stand-in for the automated pipeline described in `PROJECT.md` §5.2–§5.4 (Implementation → Review → Respond-to-review) — everything except the Planning phase, which stays out of scope for this skill. Since SWARM's own dual-persona bot setup (`ai/CODING_STANDARDS.md` "Loop prevention") doesn't exist yet, all GitHub actions here happen under whatever `gh` identity is currently active — that's fine because this skill runs once, linearly, on explicit human invocation; it isn't a webhook-triggered loop.
+This is a manual, single-persona stand-in for the automated pipeline described in `PROJECT.md` §5.1–§5.4 (Planning → Implementation → Review → Respond-to-review). It runs a **lightweight** Planning phase — a short written plan appended to the issue, no separate Antigravity/CLI persona — before implementing; see Step 3. Since SWARM's own dual-persona bot setup (`ai/CODING_STANDARDS.md` "Loop prevention") doesn't exist yet, all GitHub actions here happen under whatever `gh` identity is currently active — that's fine because this skill runs once, linearly, on explicit human invocation; it isn't a webhook-triggered loop.
 
 Each invocation does its work in a **dedicated git worktree**, not the shared working directory — see Step 2. This is what lets you run `/solve-issue 6` and `/solve-issue 9` back to back (or hand them to separate subagents) without one issue's branch checkout stepping on the other's.
 
@@ -30,7 +30,7 @@ Before any GitHub action, run the account check from `ai/RULES.md` §3 (`gh auth
    gh project item-list 3 --owner jkwiecien --format json --limit 100 \
      | jq '.items[] | select(.content.number == <N>)'
    ```
-   If it isn't on the board, stop and ask. If its Status is already `In progress`, `In review`, or `Done`, confirm with the user before proceeding — someone may already be working it.
+   If it isn't on the board, stop and ask. If its Status is already `Planning`, `In progress`, `In review`, or `Done`, confirm with the user before proceeding — someone may already be working it.
 4. Read the issue title/body in full; that's the spec. If it's underspecified and the intent isn't obvious from `PROJECT.md` / `ai/ARCHITECTURE.md`, stop and ask — don't invent scope.
 
 ### Step 2: Provision a worktree
@@ -53,13 +53,28 @@ Per `ai/ARCHITECTURE.md` "Worktree lifecycle": worktrees live under `.swarm-work
    ```
 4. All remaining steps run with CWD set to that worktree path (`cd .swarm-workspaces/issue-<N>-<slug>`), including subagents spawned in Steps 5–6 — give them the absolute worktree path explicitly since they don't inherit your shell CWD.
 
-### Step 3: Move the project item to "In progress"
+### Step 3: Plan (move to "Planning", write the plan, then "In progress")
 
-```bash
-gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
-  --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 47fc9ee4
-```
-(`<item-id>` is the `.id` field from the Step 1.3 lookup; ids are documented in `ai/RULES.md` §5.)
+Before writing any code, do a short planning pass and record it on the issue. `<item-id>` is the `.id` field from the Step 1.3 lookup; all field/option ids are documented in `ai/RULES.md` §5.
+
+1. Move the project item to **Planning**:
+   ```bash
+   gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
+     --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 61e4505c
+   ```
+2. Read the issue spec (from Step 1) plus `ai/ARCHITECTURE.md` / `PROJECT.md` as needed, and write a **concise** implementation plan: the files you expect to add/change, the approach, and anything you're deliberately leaving out of scope. Keep it short — a handful of bullets, not a design doc.
+3. Append the plan to the **issue body** (not a comment), preserving the original spec. Fetch the current body, append a `## Plan` section, and write it back:
+   ```bash
+   body=$(gh issue view <N> --repo jkwiecien/swarm --json body -q .body)
+   printf '%s\n\n## Plan\n\n<your plan markdown>\n' "$body" \
+     | gh issue edit <N> --repo jkwiecien/swarm --body-file -
+   ```
+   (If the body already has a `## Plan` section from a previous run, replace that section rather than appending a second one.)
+4. Move the project item to **In progress**:
+   ```bash
+   gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
+     --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 47fc9ee4
+   ```
 
 ### Step 4: Implement (you do this directly — no subagent)
 
