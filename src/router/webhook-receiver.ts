@@ -14,7 +14,7 @@
  * logic out of the side-effect-heavy entry point.
  */
 
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
 
 import { findProjectByRepo, getWebhookSecretOrNull } from '../config/provider.js';
 import type { ProjectConfig } from '../config/schema.js';
@@ -29,6 +29,13 @@ const EVENT_TYPE_HEADER = 'x-github-event';
 const SIGNATURE_HEADER = 'x-hub-signature-256';
 /** Per-delivery id GitHub sends; carried through for idempotency/tracing. */
 const DELIVERY_HEADER = 'x-github-delivery';
+/**
+ * Upper bound on the webhook body we'll buffer. GitHub never sends deliveries
+ * larger than 25 MB, so anything above that isn't a legitimate GitHub webhook —
+ * reject it up front rather than reading an arbitrarily large (still
+ * unauthenticated) body into memory via `c.req.text()`.
+ */
+const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
 
 /**
  * Collaborators the receiver depends on. Defaulted to the real implementations
@@ -57,12 +64,56 @@ function defaultDeps(): WebhookReceiverDeps {
 }
 
 /**
+ * Read the raw body (never re-serialized — the HMAC covers the exact bytes) and
+ * parse it as JSON. Returns the parsed payload alongside the raw bytes, or a
+ * short-circuit `Response` (413 oversized / 400 non-JSON) for the caller to return.
+ */
+async function readJsonBody(c: Context): Promise<{ rawBody: string; payload: unknown } | Response> {
+	// Reject oversized bodies before buffering — the body is unauthenticated here
+	// (the secret is per-project, resolved further down).
+	const contentLength = Number(c.req.header('content-length'));
+	if (Number.isFinite(contentLength) && contentLength > MAX_WEBHOOK_BODY_BYTES) {
+		return c.json({ ok: false, reason: 'payload too large' }, 413);
+	}
+
+	const rawBody = await c.req.text();
+	try {
+		return { rawBody, payload: JSON.parse(rawBody) };
+	} catch {
+		// The most common cause is a webhook misconfigured with GitHub's
+		// `application/x-www-form-urlencoded` content type; the diagnostic points at
+		// the fix (docs mandate `application/json`).
+		return c.json(
+			{
+				ok: false,
+				reason: 'invalid JSON body (webhook must use the application/json content type)',
+			},
+			400,
+		);
+	}
+}
+
+/**
  * Build the router'\''s Hono app. Pass `overrides` to substitute collaborators in
  * tests; omit for the production wiring.
  */
 export function createWebhookApp(overrides: Partial<WebhookReceiverDeps> = {}): Hono {
 	const deps = { ...defaultDeps(), ...overrides };
 	const app = new Hono();
+
+	// A throw from a collaborator (DB down, secret store unreachable) would
+	// otherwise surface as a bare, unlogged Hono 500. Log it so a processing
+	// outage leaves a trace, and keep the 500 — GitHub retries 5xx, which is the
+	// right behavior for a transient collaborator failure. Mirrors Cascade's
+	// `app.onError` in `src/router/index.ts`.
+	app.onError((err, c) => {
+		logger.error('Unhandled error in webhook receiver', {
+			path: c.req.path,
+			method: c.req.method,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return c.json({ ok: false, reason: 'internal error' }, 500);
+	});
 
 	// Liveness probe for the Docker Compose healthcheck.
 	app.get('/health', (c) => c.json({ status: 'ok', service: 'router' }));
@@ -71,18 +122,12 @@ export function createWebhookApp(overrides: Partial<WebhookReceiverDeps> = {}): 
 	app.get('/github/webhook', (c) => c.text('OK', 200));
 
 	app.post('/github/webhook', async (c) => {
-		// The signature covers the exact bytes GitHub sent — read the raw body and
-		// never re-serialize it, or the HMAC will not match.
-		const rawBody = await c.req.text();
+		const body = await readJsonBody(c);
+		if (body instanceof Response) return body;
+		const { rawBody, payload } = body;
+
 		const eventType = c.req.header(EVENT_TYPE_HEADER) ?? 'unknown';
 		const deliveryId = c.req.header(DELIVERY_HEADER);
-
-		let payload: unknown;
-		try {
-			payload = JSON.parse(rawBody);
-		} catch {
-			return c.json({ ok: false, reason: 'invalid JSON body' }, 400);
-		}
 
 		// Non-actionable event type → acknowledge so GitHub stops retrying, but do
 		// no work. `parseWebhook` returns null for anything outside PROCESSABLE_EVENTS.

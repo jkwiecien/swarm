@@ -1,6 +1,8 @@
+import { createHmac } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProjectConfig } from '@/config/schema.js';
+import { logger } from '@/lib/logger.js';
 import type { GitHubParsedEvent, GitHubRouterAdapter } from '@/router/adapters/github.js';
 import { createWebhookApp, type WebhookReceiverDeps } from '@/router/webhook-receiver.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
@@ -162,6 +164,79 @@ describe('createWebhookApp', () => {
 			const res = await post(app, VALID_BODY, { 'x-github-event': 'issue_comment' });
 			expect(res.status).toBe(202);
 			expect((await res.json()).ignored).toBe(true);
+			expect(enqueue).not.toHaveBeenCalled();
+		});
+
+		it('enqueues with deliveryId undefined when the delivery header is absent', async () => {
+			const { app, enqueue } = makeApp();
+			// Bypass the `post` helper, which always injects x-github-delivery.
+			const res = await app.request('/github/webhook', {
+				method: 'POST',
+				headers: {
+					'x-github-event': 'pull_request',
+					'x-hub-signature-256': 'sha256=abc',
+					'content-type': 'application/json',
+				},
+				body: VALID_BODY,
+			});
+			expect(res.status).toBe(202);
+			expect(enqueue).toHaveBeenCalledWith(prEvent, project, undefined);
+		});
+
+		it('logs and returns 500 when a collaborator throws', async () => {
+			const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+			const { app } = makeApp({
+				enqueue: vi
+					.fn<WebhookReceiverDeps['enqueue']>()
+					.mockRejectedValue(new Error('queue unreachable')),
+			});
+			const res = await post(app, VALID_BODY);
+			expect(res.status).toBe(500);
+			expect(await res.json()).toEqual({ ok: false, reason: 'internal error' });
+			expect(errorSpy).toHaveBeenCalled();
+			errorSpy.mockRestore();
+		});
+	});
+
+	// The receiver tests above inject a fake `verifySignature`; these exercise the
+	// real `verifyGitHubSignature` wired by `defaultDeps()`, so a regression that
+	// points the default at the wrong function is caught.
+	describe('real signature verification (defaultDeps wiring)', () => {
+		const secret = 'topsecret';
+
+		function realVerifierApp() {
+			const enqueue = vi.fn<WebhookReceiverDeps['enqueue']>().mockResolvedValue(undefined);
+			const adapter = {
+				parseWebhook: vi.fn().mockReturnValue(prEvent),
+				isSelfAuthored: vi.fn().mockResolvedValue(false),
+			} as unknown as GitHubRouterAdapter;
+			// Fake only the secret + repo lookups; leave verifySignature to the default.
+			const app = createWebhookApp({
+				adapter,
+				findProject: vi
+					.fn<(repo: string) => Promise<ProjectConfig | undefined>>()
+					.mockResolvedValue(project),
+				getWebhookSecret: vi
+					.fn<WebhookReceiverDeps['getWebhookSecret']>()
+					.mockResolvedValue(secret),
+				enqueue,
+			});
+			return { app, enqueue };
+		}
+
+		it('accepts a body signed with the genuine HMAC-SHA256 signature', async () => {
+			const { app, enqueue } = realVerifierApp();
+			const signature = `sha256=${createHmac('sha256', secret).update(VALID_BODY, 'utf8').digest('hex')}`;
+			const res = await post(app, VALID_BODY, { 'x-hub-signature-256': signature });
+			expect(res.status).toBe(202);
+			expect(enqueue).toHaveBeenCalledWith(prEvent, project, 'delivery-1');
+		});
+
+		it('rejects a body whose real signature does not match with 401', async () => {
+			const { app, enqueue } = realVerifierApp();
+			const signature = `sha256=${createHmac('sha256', 'wrong-secret').update(VALID_BODY, 'utf8').digest('hex')}`;
+			const res = await post(app, VALID_BODY, { 'x-hub-signature-256': signature });
+			expect(res.status).toBe(401);
 			expect(enqueue).not.toHaveBeenCalled();
 		});
 	});
