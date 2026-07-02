@@ -46,10 +46,14 @@ Per `ai/ARCHITECTURE.md` "Worktree lifecycle": worktrees live under `.swarm-work
    ```bash
    git worktree add .swarm-workspaces/issue-<N>-<kebab-slug-of-the-issue-title> -b issue-<N>-<kebab-slug> main
    ```
-3. Graft untracked-but-required state into the worktree (symlinks, not copies — per `ai/ARCHITECTURE.md`):
+3. Graft untracked-but-required state into the worktree (symlinks, not copies — per `ai/ARCHITECTURE.md`). Use **absolute** targets so they resolve from the worktree's depth (`.swarm-workspaces/<name>/`), not just the repo root — a relative `../…` link would dangle two levels down:
    ```bash
-   ln -s "$(pwd)/node_modules" ".swarm-workspaces/issue-<N>-<slug>/node_modules"
-   [ -f .env ] && ln -s "$(pwd)/.env" ".swarm-workspaces/issue-<N>-<slug>/.env"
+   ln -sfn "$(pwd)/node_modules" ".swarm-workspaces/issue-<N>-<slug>/node_modules"
+   [ -f .env ] && ln -sfn "$(pwd)/.env" ".swarm-workspaces/issue-<N>-<slug>/.env"
+   # cascade points at the sibling Cascade checkout (ai/RULES.md §1); re-point it at an
+   # absolute path so the worktree can resolve it too. The committed `cascade` symlink is
+   # absolute for the same reason, so this just re-affirms that target (leaves git clean).
+   [ -e cascade ] && ln -sfn "$(cd cascade && pwd -P)" ".swarm-workspaces/issue-<N>-<slug>/cascade"
    ```
 4. All remaining steps run with CWD set to that worktree path (`cd .swarm-workspaces/issue-<N>-<slug>`), including subagents spawned in Steps 5–6 — give them the absolute worktree path explicitly since they don't inherit your shell CWD.
 
