@@ -1,0 +1,54 @@
+/**
+ * Project lookups from Postgres — mirrors the read side of Cascade's
+ * `src/db/repositories/projectsRepository.ts`, trimmed to SWARM's single-user
+ * scope (one row per project, no org hierarchy — ai/ARCHITECTURE.md
+ * "Single-user scope").
+ *
+ * A `projects` row is the persisted form of `ProjectConfig`; the jsonb columns
+ * are already typed with the config's inferred types (`src/db/schema/projects.ts`),
+ * so mapping a row back to `ProjectConfig` is a re-assembly, not a re-validation.
+ * The Zod schema stays the source of truth for the shape (ai/CODING_STANDARDS.md
+ * "Zod is the source of truth").
+ */
+
+import { eq } from 'drizzle-orm';
+
+import type { ProjectConfig } from '../../config/schema.js';
+import { getDb } from '../client.js';
+import { projects } from '../schema/projects.js';
+
+type ProjectRow = typeof projects.$inferSelect;
+
+/** Re-assemble a `ProjectConfig` from a persisted `projects` row. */
+function rowToProjectConfig(row: ProjectRow): ProjectConfig {
+	return {
+		id: row.id,
+		name: row.name,
+		repo: row.repo,
+		repoRoot: row.repoRoot,
+		worktreeRoot: row.worktreeRoot,
+		baseBranch: row.baseBranch,
+		branchPrefix: row.branchPrefix,
+		pm: { type: row.pmType as 'github-projects' },
+		githubProjects: row.githubProjects,
+		credentials: row.credentials,
+	};
+}
+
+/**
+ * Resolve a project by its GitHub repository (`owner/repo`). Returns `undefined`
+ * when no project owns that repo — a webhook for an unknown repo isn't an error,
+ * it just isn't ours (ai/CODING_STANDARDS.md "Error handling").
+ */
+export async function findProjectByRepoFromDb(repo: string): Promise<ProjectConfig | undefined> {
+	const rows = await getDb().select().from(projects).where(eq(projects.repo, repo)).limit(1);
+	const row = rows[0];
+	return row ? rowToProjectConfig(row) : undefined;
+}
+
+/** Resolve a project by its stable internal id. Returns `undefined` if unknown. */
+export async function findProjectByIdFromDb(id: string): Promise<ProjectConfig | undefined> {
+	const rows = await getDb().select().from(projects).where(eq(projects.id, id)).limit(1);
+	const row = rows[0];
+	return row ? rowToProjectConfig(row) : undefined;
+}

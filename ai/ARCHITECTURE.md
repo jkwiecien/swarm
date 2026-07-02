@@ -37,13 +37,13 @@ Redis (for BullMQ) and Postgres (for project config, credentials at rest, and ru
 
 Two integrations, each following the manifest/registry pattern from `ai/CODING_STANDARDS.md`:
 
-### SCM: GitHub (`src/integrations/scm/github/`)
+### SCM: GitHub (`src/github/` + `src/router/adapters/github.ts`)
 
-Mirror Cascade's `src/github/scm-integration.ts` + `src/router/adapters/github.ts` closely:
+Because the SCM piece is copied close to verbatim from Cascade (unlike the net-new PM provider), it keeps Cascade's file layout rather than the generic `src/integrations/<kind>/<provider>/` shape — mirror Cascade's `src/github/scm-integration.ts` + `src/router/adapters/github.ts` closely:
 
-- Dual-persona tokens (`implementer`, `reviewer`) scoped via `AsyncLocalStorage`, never passed as plain arguments.
-- Router adapter parses `pull_request`, `pull_request_review`, `issue_comment`, `check_suite` events, resolves the SWARM project from the repo, and dispatches with the right persona's credentials in scope.
-- Loop prevention via a `isSwarmBot(login)` check on every inbound event, exactly as described in `ai/CODING_STANDARDS.md`.
+- Dual-persona tokens (`implementer`, `reviewer`) scoped via `AsyncLocalStorage` (`src/github/client.ts`'s `withGitHubToken`), never passed as plain arguments. Token references live in the project config's `credentials` block; the secrets themselves are resolved from Postgres per-persona (`src/config/provider.ts` → `src/db/repositories/credentialsRepository.ts`).
+- Router adapter (`src/router/adapters/github.ts`) parses `pull_request`, `pull_request_review`, `issue_comment`, `check_suite` events, resolves the SWARM project from the repo, and dispatches with the right persona's credentials in scope.
+- Loop prevention via an `isSwarmBot(login)` check (`src/github/personas.ts`) on every inbound event, exactly as described in `ai/CODING_STANDARDS.md` — a persona never acts on an event it itself produced.
 
 ### PM: GitHub Projects (`src/integrations/pm/github-projects/`) — net-new, no Cascade equivalent
 
