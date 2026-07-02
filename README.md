@@ -65,7 +65,9 @@ npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL fro
 
 The Postgres schema (project config + credentials at rest) is defined with **Drizzle** in `src/db/` — `npm run db:generate` regenerates migrations from the schema, `npm run db:migrate` applies them. Credentials are encrypted with AES-256-GCM before storage when `CREDENTIAL_MASTER_KEY` is set (plaintext otherwise, for local dev).
 
-The router exposes a health check at `http://localhost:${ROUTER_PORT:-3000}/health`. Router and worker are placeholder services for now — the webhook/enqueue logic (SWARM-9), BullMQ consumer (SWARM-17), and agent-CLI runtime (SWARM-16) land in later tasks; this stack is the Phase 0 foundation they build on.
+SWARM's host ports are offset from Cascade's defaults (router `3100` vs `3000`, Postgres `5433` vs `5432`, Redis `6380` vs `6379`) so both stacks can run in parallel without a host-port clash — the compose project name is fixed to `swarm`, giving it its own network and volumes. Override any of them via `ROUTER_PORT` / `POSTGRES_PORT` / `REDIS_PORT` in `.env`.
+
+The router exposes a health check at `http://localhost:${ROUTER_PORT:-3100}/health`. Router and worker are placeholder services for now — the webhook/enqueue logic (SWARM-9), BullMQ consumer (SWARM-17), and agent-CLI runtime (SWARM-16) land in later tasks; this stack is the Phase 0 foundation they build on.
 
 To let GitHub reach this local router with webhooks, expose it over a public HTTPS URL with a Cloudflare Tunnel — see **[`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md)** for the setup (quick tunnel for dev, named tunnel for a stable URL) and the GitHub webhook configuration.
 
