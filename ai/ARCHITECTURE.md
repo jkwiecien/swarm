@@ -51,7 +51,7 @@ GitHub Projects (v2) is GraphQL-only; there is no REST equivalent for reading/wr
 
 - **Work item** = a Projects v2 item (usually backed by an Issue or PR in the repo).
 - **Status** = the item's single-select "Status" custom field — moving a task through the pipeline (Backlog → Planning → In Progress → In Review → Done) means updating that field's option value via `updateProjectV2ItemFieldValue`.
-- **Events** = the `projects_v2_item` webhook event (`created`, `edited`, `reordered`, `deleted`) at the org or repo level, filtered to status-field edits — this is the equivalent of Cascade's `pm:status-changed` trigger.
+- **Events** = the `projects_v2_item` webhook event (`created`, `edited`, `reordered`, `deleted`), filtered to status-field edits — this is the equivalent of Cascade's `pm:status-changed` trigger. It is **never** a repo-level event: GitHub delivers it on an **organization** webhook or to a **GitHub App** with the Projects permission (there is no plain user-account webhook). For SWARM's user-owned board the App route is effectively the only option — see `docs/github-projects-v2-api.md` §5.
 - **Comments** = GitHub Projects items don't have their own comment thread; write agent output (e.g. Antigravity's plan) as a comment on the linked Issue/PR, not as a Projects-native comment.
 
 Implement it against the same `PMProvider`-shaped interface Cascade uses (`getWorkItem`, `moveWorkItem`, `addComment`, `listWorkItems`, …) so the router/trigger/dispatch code stays provider-agnostic — see Cascade's `src/pm/types.ts` for the exact interface to mirror.

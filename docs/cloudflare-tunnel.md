@@ -137,19 +137,27 @@ Repo Settings → **Webhooks** → **Add webhook**:
   request reviews**, **Issue comments**, and **Check suites**. These are the four repo
   events the router adapter parses (`ai/ARCHITECTURE.md`, SCM section).
 
-### User/org-level event (`projects_v2_item`)
+### Projects v2 board event (`projects_v2_item`)
 
 GitHub Projects (v2) boards are owned by the **user or org**, not the repo, so the
 `projects_v2_item` event — the one that fires when a card's **Status** changes and drives
-the pipeline — is **not** available on a repo webhook. Add a **second** webhook at the
-account level:
+the pipeline — is **not** available on a repo webhook. It is **also not** available as a
+plain user-account webhook: GitHub *"[cannot] create webhooks for individual user
+accounts,"* and a personal account's **Settings → Developer settings** has no "Webhooks"
+entry at all. The event's docs list it as an **organization** webhook event, or one
+delivered to a **GitHub App** that holds the Projects org permission. So the second,
+non-repo subscription depends on who owns the board:
 
-- User: **Settings → Developer settings → Webhooks** (org: **Org Settings → Webhooks**).
-- Same Payload URL, content type, and secret as above.
-- Select the **Projects v2 item** event.
+- **User-owned board** (SWARM's default — project `3` is owned by user `jkwiecien`): there is
+  no user-level webhook to add. Receive the event either via a **GitHub App** installed on
+  the account and subscribed to `projects_v2_item` (the App has its own webhook URL — point
+  it at the same tunnel path), or by recreating the board under an **org** (below).
+- **Org-owned board:** **Org Settings → Webhooks → Add webhook** — same Payload URL, content
+  type, and secret as the repo webhook; select the **Projects v2 item** event.
 
 (This is the equivalent of Cascade's `pm:status-changed` trigger — see
-`ai/ARCHITECTURE.md`, PM section.)
+`ai/ARCHITECTURE.md`, PM section. `docs/github-projects-v2-api.md` §5 is the authoritative
+detail on this event's delivery scope.)
 
 ---
 
@@ -177,7 +185,7 @@ account level:
 | Health check works locally but not via tunnel | Router is bound inside Docker but the host port isn't published, or `cloudflared` targets `localhost` on a machine where the port isn't mapped. Check `docker compose ps` and the `ROUTER_PORT` mapping. |
 | GitHub delivery shows `couldn't connect` | Quick-tunnel URL changed after a restart (Path A) — grab the new URL and update the Payload URL, or switch to a named tunnel (Path B). |
 | Deliveries arrive but signature checks fail (post-SWARM-9) | Webhook **Secret** in GitHub doesn't match the secret the router is configured with. |
-| No `projects_v2_item` deliveries when moving cards | That event lives on the **user/org** webhook, not the repo one — see above. |
+| No `projects_v2_item` deliveries when moving cards | That event never rides the repo webhook — it comes via a **GitHub App** (user-owned board) or an **org** webhook, not a user-account webhook (which GitHub doesn't offer) — see above. |
 
 ---
 

@@ -126,7 +126,8 @@ query($itemId: ID!) {
 ```
 
 Real result for issue #10's card (`PVTI_lAHOAC3TF84BcNwDzgxczms`), captured while it sat in
-Planning:
+Planning (a **point-in-time snapshot** — the card advances through the board as this issue
+progresses, so its live Status will differ from the `Planning`/`61e4505c` shown here):
 
 ```json
 {
@@ -206,19 +207,35 @@ signal from Trello/Linear webhooks). Verified against GitHub's webhook-events do
 (2026-07-02); project webhooks are flagged **public preview, subject to change**, so treat
 the payload shape as a moving target and pin behaviour to the stable bits below.
 
-### Delivery scope — NOT a repo event
+### Delivery scope — NOT a repo event, and NOT a plain user webhook
 
-`projects_v2_item` is delivered at the **organization / user account level, never the
-repository level.** A Projects v2 board is owned by the user or org, not a repo, so:
+A Projects v2 board is owned by the user or org, not a repo, so `projects_v2_item` is
+**never** delivered on a repository webhook. But the naive "just add a user-level webhook"
+path does **not exist** — and SWARM's board is user-owned, so this is our actual case.
+GitHub's own docs pin down two facts that constrain us (verified 2026-07-02):
 
-- **User-owned board** (SWARM's case — project `3` is owned by user `jkwiecien`):
-  register the webhook under **Settings → Developer settings → Webhooks**.
-- **Org-owned board:** **Org Settings → Webhooks**.
+- **Types of webhooks:** *"You cannot create webhooks for individual user accounts, or
+  for events that are specific to user resources."* A personal account's **Settings →
+  Developer settings** has GitHub Apps, OAuth Apps and PATs — but **no "Webhooks" entry**.
+  There is simply no account-level webhook UI for a user.
+- **The `projects_v2_item` event page** lists its availability as **organization webhooks
+  only**; to receive it any other way, *"a GitHub App must have at least read-level access
+  for the Projects organization permission."*
 
-The four repo events (`pull_request`, `pull_request_review`, `issue_comment`,
-`check_suite`) stay on the repo webhook; `projects_v2_item` needs this **second** webhook.
-`docs/cloudflare-tunnel.md` → "User/org-level event" covers the click-path; both webhooks
-point at the same router URL and share the same secret.
+So for SWARM's **user-owned board** (project `3`, owner `jkwiecien`) the realistic routes are:
+
+- **(a) A GitHub App installed on the account, subscribed to `projects_v2_item`** — this is
+  effectively the *only* way to receive the event for a user-owned board. The App delivers
+  the event to its own webhook URL (no manual account-level webhook needed); see §6 → GitHub
+  App for the required Projects permission.
+- **(b) Recreate the board under an organization and use an org webhook** — **Org Settings →
+  Webhooks** is the only place a plain (non-App) `projects_v2_item` webhook can live.
+
+Either way this is a **second, non-repo** subscription: the four repo events (`pull_request`,
+`pull_request_review`, `issue_comment`, `check_suite`) stay on the repo webhook, while
+`projects_v2_item` arrives via the App installation (a) or the org webhook (b) — both pointed
+at the same router URL and sharing the same secret. `docs/cloudflare-tunnel.md` → "Projects v2
+board event" covers the click-path.
 
 ### Actions
 
@@ -292,7 +309,13 @@ need `project` because the pipeline moves cards.
 
 ### Fine-grained PAT
 
-- **Projects** permission → **Read and write** (user- or org-level, matching the board owner).
+- **Projects** permission → **Read and write** — but note GitHub documents Projects as an
+  **organization** permission only (the "Permissions required for fine-grained PATs"
+  reference lists it under *Organization permissions for "Projects"*, with org-scoped
+  endpoints). A fine-grained PAT scoped to a **user** resource owner has **no** Projects
+  permission to grant, so it **cannot** move cards on our user-owned board `3`. In practice
+  fine-grained PATs are only a viable PM credential for an **org-owned** board; the classic
+  `project` scope (above) or a GitHub App is what covers the user-owned case.
 - Repository **Issues** and **Pull requests** → **Read and write** (comments, PR lifecycle).
 - The board owner must fall inside the PAT's resource owner / selected repositories.
 
@@ -317,8 +340,10 @@ token machinery as the SCM side rather than holding its own.
   over the three operations in §2–§4, with IDs branded via `src/pm/ids.ts`.
 - **Status = option ID, not name.** Config already models this (`statusOptions`); resolution
   is a two-way map between pipeline phase keys and `SingleSelectOptionId`s.
-- **The webhook is a second, account-level webhook** and only a *trigger* — always re-read
-  the item for the authoritative Status.
+- **The webhook is a second, non-repo subscription** — and for our user-owned board it can
+  only arrive via a **GitHub App** subscribed to `projects_v2_item` (or by moving the board
+  under an org); there is no plain user-account webhook. It is only a *trigger* — always
+  re-read the item for the authoritative Status.
 - **No card comments** — agent output lands on the linked Issue/PR via the SCM integration.
 - **`project` scope** (classic) / Projects read-write (fine-grained/App) is the extra grant
   beyond what the SCM side already needs.
