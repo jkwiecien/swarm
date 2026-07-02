@@ -40,8 +40,10 @@
 		"node": ">=22.0.0"
 	},
 	"dependencies": {
+		"@hono/node-server": "^1.19.14",
 		"@octokit/rest": "^22.0.1",
 		"drizzle-orm": "^0.45.2",
+		"hono": "^4.12.27",
 		"pg": "^8.22.0",
 		"zod": "^3.25.0"
 	},

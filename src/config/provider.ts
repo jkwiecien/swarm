@@ -42,6 +42,17 @@ export async function getPersonaTokenOrNull(
 }
 
 /**
+ * Resolve a project's GitHub webhook HMAC secret, or `null` if the reference
+ * resolves to no stored credential. Like the persona tokens, the config holds
+ * only the *reference* (an env-var key) in its `credentials` block; this maps it
+ * to the stored secret. Returning `null` (rather than throwing) lets the router
+ * decide how to treat a project with no secret configured.
+ */
+export async function getWebhookSecretOrNull(project: ProjectConfig): Promise<string | null> {
+	return resolveProjectCredential(project.id, project.credentials.webhookSecret);
+}
+
+/**
  * Resolve a persona's GitHub token for a project. Throws if the reference
  * resolves to no stored credential — an operation that needs a persona token
  * but has none configured is a deployment error, not a soft "not found"
