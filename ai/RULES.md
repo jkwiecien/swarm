@@ -74,10 +74,10 @@ The backlog/task board lives in **GitHub Projects**. `KANBAN_BOARD.md`, the stan
 
 - **Board**: <https://github.com/users/jkwiecien/projects/3/views/1> — owner `jkwiecien` (user-level project), project number `3`, project (node) id `PVT_kwHOAC3TF84BcNwD`.
 - **Repo**: `jkwiecien/swarm`. Every task is a GitHub issue in this repo, added as an item to project `3`.
-- **Status field**: id `PVTSSF_lAHOAC3TF84BcNwDzhW4MKo`, options — `Backlog` (`f75ad846`), `Ready` (`61e4505c`), `In progress` (`47fc9ee4`), `In review` (`df73e18b`), `Done` (`98236657`). `Ready` is this board's equivalent of the old `To do` column.
+- **Status field**: id `PVTSSF_lAHOAC3TF84BcNwDzhW4MKo`, options — `Backlog` (`f75ad846`), `Planning` (`61e4505c`), `ToDo` (`3121a97d`), `In progress` (`47fc9ee4`), `In review` (`df73e18b`), `Done` (`98236657`).
 - **Labels**: each issue also carries a `phase-<N>` label (`phase-0` … `phase-5`) mirroring the old Phase 0–5 groupings, since the project has no native "phase" field.
 
-Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-add`, `gh project item-edit` — see §3 for the account to run these as). Keep it current: when you pick up a task move its Status to **In progress**, to **In review** when a PR is open, and to **Done** once merged. When new work is identified mid-task, file it as a new issue and add it to the project with Status **Backlog** rather than letting it evaporate.
+Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-add`, `gh project item-edit` — see §3 for the account to run these as). Keep it current: when you pick up a task move its Status to **Planning** while you scope it, to **In progress** once you start implementing, to **In review** when a PR is open, and to **Done** once merged. When new work is identified mid-task, file it as a new issue and add it to the project with Status **Backlog** rather than letting it evaporate.
 
 ---
 
