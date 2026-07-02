@@ -9,7 +9,12 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	findProjectByRepoFromDb: vi.fn(),
 }));
 
-import { findProjectByRepo, getPersonaToken, getPersonaTokenOrNull } from '@/config/provider.js';
+import {
+	findProjectByRepo,
+	getPersonaToken,
+	getPersonaTokenOrNull,
+	getWebhookSecretOrNull,
+} from '@/config/provider.js';
 import { resolveProjectCredential } from '@/db/repositories/credentialsRepository.js';
 import { findProjectByRepoFromDb } from '@/db/repositories/projectsRepository.js';
 
@@ -65,6 +70,19 @@ describe('config provider', () => {
 		it('throws when the persona token is not configured', async () => {
 			vi.mocked(resolveProjectCredential).mockResolvedValue(null);
 			await expect(getPersonaToken(project, 'reviewer')).rejects.toThrow(/reviewer token/);
+		});
+	});
+
+	describe('getWebhookSecretOrNull', () => {
+		it("resolves the project's webhook-secret reference to its secret", async () => {
+			vi.mocked(resolveProjectCredential).mockResolvedValue('whsec_123');
+			expect(await getWebhookSecretOrNull(project)).toBe('whsec_123');
+			expect(resolveProjectCredential).toHaveBeenCalledWith('proj-1', 'WEBHOOK_KEY');
+		});
+
+		it('returns null when the reference resolves to nothing', async () => {
+			vi.mocked(resolveProjectCredential).mockResolvedValue(null);
+			expect(await getWebhookSecretOrNull(project)).toBeNull();
 		});
 	});
 });
