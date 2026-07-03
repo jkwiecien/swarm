@@ -50,6 +50,23 @@ export interface RunAgentCliOptions {
 	onStdout?: (line: string) => void;
 	/** Called once per complete stderr line as it streams in. */
 	onStderr?: (line: string) => void;
+	/**
+	 * Cap on how many bytes of stdout/stderr are retained in the returned result
+	 * (each stream counted independently). Once a stream crosses the cap the
+	 * captured buffer stops growing and `outputTruncated` is set; the per-line
+	 * `onStdout`/`onStderr` callbacks keep firing regardless, so a caller that
+	 * streams output is unaffected. Omit for unbounded capture — sensible for
+	 * short runs, but the worker (SWARM-17) driving long, chatty agents should
+	 * set this to bound memory.
+	 */
+	maxOutputBytes?: number;
+	/**
+	 * Echo every output line to the logger at `debug`. Off by default: the logger
+	 * has no level gating (see src/lib/logger.ts), so leaving this on floods the
+	 * daemon console for a verbose agent. Opt in when debugging a run; production
+	 * callers consume output via the `onStdout`/`onStderr` callbacks instead.
+	 */
+	logLines?: boolean;
 	/** Kill the run if it exceeds this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the child. */
@@ -67,8 +84,47 @@ export interface AgentCliResult {
 	stderr: string;
 	/** Wall-clock duration of the run, in ms. */
 	durationMs: number;
-	/** True when the run was killed because `timeoutMs` elapsed. */
+	/**
+	 * True when `timeoutMs` elapsed and the run was killed for it. Authoritative
+	 * on the timeout having fired; if a process happens to exit on its own at the
+	 * same instant the timeout elapses this can still read `true` (the deadline
+	 * genuinely passed), so don't treat it as "the timeout is the sole reason the
+	 * process is gone".
+	 */
 	timedOut: boolean;
+	/**
+	 * True when `maxOutputBytes` was hit and `stdout`/`stderr` below were
+	 * truncated. The per-line callbacks still saw the full stream.
+	 */
+	outputTruncated: boolean;
+}
+
+/**
+ * Accumulate stream chunks into a single string, capped at `maxBytes`. Once the
+ * cap is crossed the buffer stops growing and `truncated` latches — bounding
+ * memory for a runaway, chatty agent without disturbing the line callbacks that
+ * consume the live stream elsewhere.
+ */
+function cappedBuffer(maxBytes: number | undefined) {
+	let text = '';
+	let bytes = 0;
+	let truncated = false;
+	return {
+		add(chunk: string): void {
+			if (truncated) return;
+			text += chunk;
+			if (maxBytes !== undefined) {
+				bytes += Buffer.byteLength(chunk);
+				if (bytes >= maxBytes) truncated = true;
+			}
+		},
+		get text(): string {
+			return text;
+		},
+		get truncated(): boolean {
+			return truncated;
+		},
+	};
 }
 
 /**
@@ -119,8 +175,8 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 
-		let stdout = '';
-		let stderr = '';
+		const stdout = cappedBuffer(options.maxOutputBytes);
+		const stderr = cappedBuffer(options.maxOutputBytes);
 		let timedOut = false;
 		let killRequested = false;
 		let settled = false;
@@ -128,22 +184,22 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		let graceTimer: NodeJS.Timeout | undefined;
 
 		const forwardStdout = lineForwarder((line) => {
-			logger.debug('agent stdout', { cli, line });
+			if (options.logLines) logger.debug('agent stdout', { cli, line });
 			options.onStdout?.(line);
 		});
 		const forwardStderr = lineForwarder((line) => {
-			logger.debug('agent stderr', { cli, line });
+			if (options.logLines) logger.debug('agent stderr', { cli, line });
 			options.onStderr?.(line);
 		});
 
 		child.stdout?.setEncoding('utf8');
 		child.stderr?.setEncoding('utf8');
 		child.stdout?.on('data', (chunk: string) => {
-			stdout += chunk;
+			stdout.add(chunk);
 			forwardStdout.push(chunk);
 		});
 		child.stderr?.on('data', (chunk: string) => {
-			stderr += chunk;
+			stderr.add(chunk);
 			forwardStderr.push(chunk);
 		});
 
@@ -192,10 +248,11 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				cli,
 				exitCode: code,
 				signal,
-				stdout,
-				stderr,
+				stdout: stdout.text,
+				stderr: stderr.text,
 				durationMs: Date.now() - start,
 				timedOut,
+				outputTruncated: stdout.truncated || stderr.truncated,
 			};
 			logger.info('agent run finished', {
 				cli,
@@ -203,6 +260,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				signal: result.signal,
 				durationMs: result.durationMs,
 				timedOut,
+				outputTruncated: result.outputTruncated,
 			});
 			resolve(result);
 		});

@@ -9,11 +9,27 @@
  */
 
 import { type ProjectConfig, ProjectConfigSchema } from '@/config/schema.js';
+import type { RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
 	type GitHubProjectsIntegrationConfig,
 	githubProjectsConfigSchema,
 } from '@/integrations/pm/github-projects/config-schema.js';
 import type { WorkItem } from '@/pm/types.js';
+
+/**
+ * `runAgentCli` options with the two required fields defaulted. `RunAgentCliOptions`
+ * is a plain interface (not a boundary-crossing config), so this returns a raw
+ * object rather than parsing through a schema.
+ */
+export function createMockRunAgentCliOptions(
+	overrides: Partial<RunAgentCliOptions> = {},
+): RunAgentCliOptions {
+	return {
+		cli: 'claude',
+		cwd: '/wt',
+		...overrides,
+	};
+}
 
 export function createMockGitHubProjectsConfig(
 	overrides: Partial<GitHubProjectsIntegrationConfig> = {},

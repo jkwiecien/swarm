@@ -10,6 +10,8 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
+import { logger } from '@/lib/logger.js';
+import { createMockRunAgentCliOptions } from '../../helpers/factories.js';
 
 class FakeStream extends EventEmitter {
 	setEncoding(): void {}
@@ -40,7 +42,7 @@ beforeEach(() => {
 
 describe('runAgentCli', () => {
 	it('spawns the CLI in the worktree and captures stdout, stderr, and exit code', async () => {
-		const promise = runAgentCli({ cli: 'claude', cwd: '/wt' });
+		const promise = runAgentCli(createMockRunAgentCliOptions());
 		const child = lastChild();
 		child.stdout.emit('data', 'hello\nworld\n');
 		child.stderr.emit('data', 'a warning\n');
@@ -54,6 +56,7 @@ describe('runAgentCli', () => {
 			stdout: 'hello\nworld\n',
 			stderr: 'a warning\n',
 			timedOut: false,
+			outputTruncated: false,
 		});
 
 		expect(spawnMock).toHaveBeenCalledWith('claude', [], {
@@ -66,12 +69,13 @@ describe('runAgentCli', () => {
 	it('forwards output line-by-line, including partial and CRLF lines', async () => {
 		const stdoutLines: string[] = [];
 		const stderrLines: string[] = [];
-		const promise = runAgentCli({
-			cli: 'antigravity',
-			cwd: '/wt',
-			onStdout: (line) => stdoutLines.push(line),
-			onStderr: (line) => stderrLines.push(line),
-		});
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'antigravity',
+				onStdout: (line) => stdoutLines.push(line),
+				onStderr: (line) => stderrLines.push(line),
+			}),
+		);
 		const child = lastChild();
 		// Split mid-line across chunks; the buffer should stitch it back together.
 		child.stdout.emit('data', 'first\r\nseco');
@@ -86,7 +90,7 @@ describe('runAgentCli', () => {
 	});
 
 	it('returns a non-zero exit code rather than throwing', async () => {
-		const promise = runAgentCli({ cli: 'claude', cwd: '/wt' });
+		const promise = runAgentCli(createMockRunAgentCliOptions());
 		const child = lastChild();
 		child.stderr.emit('data', 'boom\n');
 		child.emit('close', 2, null);
@@ -97,7 +101,7 @@ describe('runAgentCli', () => {
 	});
 
 	it('rejects when the CLI fails to spawn (e.g. not installed)', async () => {
-		const promise = runAgentCli({ cli: 'claude', cwd: '/wt' });
+		const promise = runAgentCli(createMockRunAgentCliOptions());
 		lastChild().emit('error', new Error('spawn claude ENOENT'));
 
 		await expect(promise).rejects.toThrow(
@@ -106,13 +110,13 @@ describe('runAgentCli', () => {
 	});
 
 	it('passes through args, a custom command, and merges env over process.env', async () => {
-		const promise = runAgentCli({
-			cli: 'claude',
-			cwd: '/wt',
-			command: '/usr/bin/fake-claude',
-			args: ['--print', 'do the thing'],
-			env: { SWARM_TASK: '42' },
-		});
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				command: '/usr/bin/fake-claude',
+				args: ['--print', 'do the thing'],
+				env: { SWARM_TASK: '42' },
+			}),
+		);
 		lastChild().emit('close', 0, null);
 		await promise;
 
@@ -133,12 +137,51 @@ describe('runAgentCli', () => {
 		await expect(runAgentCli({ cli: 'codex', cwd: '/wt' })).rejects.toThrow();
 	});
 
+	it('caps captured output at maxOutputBytes while still streaming every line', async () => {
+		const lines: string[] = [];
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({ maxOutputBytes: 5, onStdout: (line) => lines.push(line) }),
+		);
+		const child = lastChild();
+		child.stdout.emit('data', 'aaa\n'); // 4 bytes — under the cap
+		child.stdout.emit('data', 'bbbbbb\n'); // crosses the cap; retained, then latches
+		child.stdout.emit('data', 'ccc\n'); // dropped from the captured buffer
+		child.emit('close', 0, null);
+
+		const result = await promise;
+		expect(result.stdout).toBe('aaa\nbbbbbb\n');
+		expect(result.outputTruncated).toBe(true);
+		// The line callbacks are unaffected by the cap — they saw the full stream.
+		expect(lines).toEqual(['aaa', 'bbbbbb', 'ccc']);
+	});
+
+	it('does not echo output lines to the logger by default, but does when logLines is set', async () => {
+		const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+		try {
+			const quiet = runAgentCli(createMockRunAgentCliOptions());
+			const quietChild = lastChild();
+			quietChild.stdout.emit('data', 'quiet line\n');
+			quietChild.emit('close', 0, null);
+			await quiet;
+			expect(debugSpy).not.toHaveBeenCalled();
+
+			const loud = runAgentCli(createMockRunAgentCliOptions({ logLines: true }));
+			const loudChild = lastChild();
+			loudChild.stdout.emit('data', 'loud line\n');
+			loudChild.emit('close', 0, null);
+			await loud;
+			expect(debugSpy).toHaveBeenCalledWith('agent stdout', { cli: 'claude', line: 'loud line' });
+		} finally {
+			debugSpy.mockRestore();
+		}
+	});
+
 	describe('termination', () => {
 		beforeEach(() => vi.useFakeTimers());
 		afterEach(() => vi.useRealTimers());
 
 		it('kills on timeout and reports timedOut, escalating to SIGKILL after the grace period', async () => {
-			const promise = runAgentCli({ cli: 'claude', cwd: '/wt', timeoutMs: 1_000 });
+			const promise = runAgentCli(createMockRunAgentCliOptions({ timeoutMs: 1_000 }));
 			const child = lastChild();
 
 			vi.advanceTimersByTime(1_000);
@@ -157,7 +200,7 @@ describe('runAgentCli', () => {
 
 		it('kills when the abort signal fires, without marking it as a timeout', async () => {
 			const controller = new AbortController();
-			const promise = runAgentCli({ cli: 'claude', cwd: '/wt', signal: controller.signal });
+			const promise = runAgentCli(createMockRunAgentCliOptions({ signal: controller.signal }));
 			const child = lastChild();
 
 			controller.abort();
@@ -170,11 +213,7 @@ describe('runAgentCli', () => {
 		});
 
 		it('kills immediately when given an already-aborted signal', async () => {
-			const promise = runAgentCli({
-				cli: 'claude',
-				cwd: '/wt',
-				signal: AbortSignal.abort(),
-			});
+			const promise = runAgentCli(createMockRunAgentCliOptions({ signal: AbortSignal.abort() }));
 			const child = lastChild();
 			expect(child.kill).toHaveBeenCalledWith('SIGTERM');
 
