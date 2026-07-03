@@ -22,10 +22,15 @@ import {
 	getWebhookSecretOrNull,
 } from '../config/provider.js';
 import type { ProjectConfig } from '../config/schema.js';
+// Side-effect import: registers every PM provider manifest into
+// pmProviderRegistry before defaultDeps() reads it below.
+import '../integrations/entrypoint.js';
+import { getPMProvider } from '../integrations/pm/registry.js';
 import { logger } from '../lib/logger.js';
 import { verifyGitHubSignature } from '../webhook/signature-verification.js';
 import { GitHubRouterAdapter } from './adapters/github.js';
-import { GitHubProjectsRouterAdapter, PROJECTS_V2_ITEM_EVENT } from './adapters/github-projects.js';
+import type { GitHubProjectsRouterAdapter } from './adapters/github-projects.js';
+import { PROJECTS_V2_ITEM_EVENT } from './adapters/github-projects.js';
 import { enqueueProjectsEvent, enqueueWebhookEvent } from './enqueue.js';
 
 /** Header GitHub delivers the event type in (not carried in the body). */
@@ -66,10 +71,27 @@ export interface WebhookReceiverDeps {
 	verifySignature: (rawBody: string, signature: string, secret: string) => boolean;
 }
 
+/**
+ * Resolve the GitHub Projects router adapter from the manifest registry rather
+ * than constructing it here, so the receiver never hardcodes a concrete PM
+ * provider (ai/CODING_STANDARDS.md "Module shape for a provider"). The
+ * entrypoint import above guarantees registration ran; a missing manifest means
+ * the entrypoint failed to load, which is a wiring bug, not a runtime condition.
+ */
+function resolvePmAdapter(): GitHubProjectsRouterAdapter {
+	const manifest = getPMProvider('github-projects');
+	if (!manifest) {
+		throw new Error(
+			"PM provider 'github-projects' is not registered — did src/integrations/entrypoint.ts fail to load?",
+		);
+	}
+	return manifest.routerAdapter;
+}
+
 function defaultDeps(): WebhookReceiverDeps {
 	return {
 		adapter: new GitHubRouterAdapter(),
-		pmAdapter: new GitHubProjectsRouterAdapter(),
+		pmAdapter: resolvePmAdapter(),
 		findProject: findProjectByRepo,
 		findProjectByBoard,
 		getWebhookSecret: getWebhookSecretOrNull,

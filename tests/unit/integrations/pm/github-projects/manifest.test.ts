@@ -1,0 +1,35 @@
+import { describe, expect, it } from 'vitest';
+// Importing the entrypoint is what a real runtime surface does; it triggers the
+// github-projects side-effect registration. Vitest isolates module state per
+// test file, so this registration is independent of registry.test.ts's resets.
+import '@/integrations/entrypoint.js';
+import { githubProjectsManifest } from '@/integrations/pm/github-projects/index.js';
+import { getPMProvider, listPMProviders } from '@/integrations/pm/registry.js';
+import { createMockGitHubProjectsConfig } from '../../../../helpers/factories.js';
+
+describe('github-projects manifest registration', () => {
+	it('registers itself into the registry via the entrypoint import', () => {
+		expect(getPMProvider('github-projects')).toBe(githubProjectsManifest);
+	});
+
+	it('registers exactly once (the entrypoint has one PM provider today)', () => {
+		expect(listPMProviders().map((m) => m.id)).toEqual(['github-projects']);
+	});
+
+	it('declares the expected identity', () => {
+		expect(githubProjectsManifest).toMatchObject({
+			id: 'github-projects',
+			label: 'GitHub Projects',
+			category: 'pm',
+		});
+	});
+
+	it('exposes the provider config schema, which parses a valid board mapping', () => {
+		const config = createMockGitHubProjectsConfig();
+		expect(githubProjectsManifest.configSchema.parse(config)).toEqual(config);
+	});
+
+	it('exposes a router adapter wired to the same provider id', () => {
+		expect(githubProjectsManifest.routerAdapter.type).toBe('github-projects');
+	});
+});
