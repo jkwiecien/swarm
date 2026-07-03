@@ -73,6 +73,10 @@ Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-spec
 - `git worktree add` per task; config/caches and the `cascade` sibling-checkout pointer (`.env`, `node_modules`, `cascade`, build caches) grafted in via symlinks with **absolute** targets — a relative link would dangle at the worktree's `.swarm-workspaces/<name>/` depth (see `ai/RULES.md` §1).
 - `git worktree remove --force` on completion.
 
+## Harness (agent-CLI execution engine)
+
+Once the worker has a provisioned worktree, it hands off to the harness (`src/harness/agent-cli.ts`, `runAgentCli`) to actually run the agent. The harness is deliberately narrow: it spawns `claude` or `antigravity` (Node's `child_process.spawn`, no subprocess library) with the worktree as CWD, streams stdout/stderr line-by-line (optional callbacks + `logger.debug`) while accumulating the full output, and resolves with `{ exitCode, signal, stdout, stderr, durationMs, timedOut }`. A non-zero exit is a normal outcome the caller inspects — only a spawn failure (e.g. the CLI isn't installed) throws. `timeoutMs` and an `AbortSignal` both kill the run (SIGTERM, escalating to SIGKILL). Prompt construction, persona/token selection, and the queue→worktree→harness→cleanup lifecycle live in the worker (SWARM-17), not here.
+
 ## Single-user scope
 
 No user-to-device mapping, no per-org config, no multi-tenant Firestore layer. One Postgres row per SWARM project, one set of GitHub credentials (per persona) per project. Revisit if SWARM is ever shared with another user.
