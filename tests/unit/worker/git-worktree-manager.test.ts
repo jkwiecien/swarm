@@ -1,0 +1,152 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createMockProjectConfig } from '../../helpers/factories.js';
+
+// The module under test wraps `execFile` in `promisify`. `execFile` is
+// callback-style and our mock carries no custom-promisify symbol, so
+// `promisify` resolves with whatever we pass as the callback's second arg —
+// i.e. `{ stdout, stderr }`. `gitHandler` lets each test decide the outcome of
+// every git invocation; `gitCalls` records the exact argv for assertions.
+type GitOutcome = { stdout?: string; stderr?: string } | Error;
+let gitHandler: (args: string[]) => GitOutcome;
+const gitCalls: string[][] = [];
+
+vi.mock('node:child_process', () => ({
+	execFile: (
+		_cmd: string,
+		args: string[],
+		_opts: unknown,
+		cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void,
+	) => {
+		gitCalls.push(args);
+		const outcome = gitHandler(args);
+		if (outcome instanceof Error) cb(outcome);
+		else cb(null, { stdout: outcome.stdout ?? '', stderr: outcome.stderr ?? '' });
+	},
+}));
+
+// Filesystem presence is fully controlled per test via `existingPaths`.
+let existingPaths: Set<string>;
+vi.mock('node:fs', () => ({
+	existsSync: (p: string) => existingPaths.has(p),
+}));
+
+import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+
+const REPO_ROOT = '/Users/dev/swarm/swarm';
+const WORKTREE_14 = `${REPO_ROOT}/.swarm-workspaces/task-14`;
+
+function makeManager(overrides = {}) {
+	return new GitWorktreeManager(createMockProjectConfig({ repoRoot: REPO_ROOT, ...overrides }));
+}
+
+describe('GitWorktreeManager', () => {
+	beforeEach(() => {
+		gitCalls.length = 0;
+		gitHandler = () => ({ stdout: '' });
+		// Default world: the repo root exists and is a git repo; no worktrees yet.
+		existingPaths = new Set([REPO_ROOT]);
+	});
+
+	describe('worktreePath', () => {
+		it('resolves to <repoRoot>/<worktreeRoot>/task-<id>', () => {
+			expect(makeManager().worktreePath('14')).toBe(WORKTREE_14);
+		});
+	});
+
+	describe('provision', () => {
+		it('sanity-checks, fetches, then creates a fresh branch off baseBranch by default', async () => {
+			const handle = await makeManager().provision('14');
+
+			expect(gitCalls).toEqual([
+				['rev-parse', '--is-inside-work-tree'],
+				['fetch', 'origin'],
+				['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main'],
+			]);
+			expect(handle).toEqual({ taskId: '14', path: WORKTREE_14, branch: 'issue-14' });
+		});
+
+		it('checks out an existing branch when createBranch is false (review phase)', async () => {
+			const handle = await makeManager().provision('14', {
+				createBranch: false,
+				branch: 'issue-14-some-feature',
+			});
+
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', WORKTREE_14, 'issue-14-some-feature']);
+			expect(handle.branch).toBe('issue-14-some-feature');
+		});
+
+		it('honours explicit branch and baseBranch overrides', async () => {
+			await makeManager().provision('14', { branch: 'hotfix', baseBranch: 'develop' });
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '-b', 'hotfix', WORKTREE_14, 'develop']);
+		});
+
+		it('skips the fetch when fetch is false', async () => {
+			await makeManager().provision('14', { fetch: false });
+			expect(gitCalls.some((c) => c[0] === 'fetch')).toBe(false);
+		});
+
+		it('continues (best-effort) when git fetch fails', async () => {
+			gitHandler = (args) => (args[0] === 'fetch' ? new Error('no remote') : { stdout: '' });
+			const handle = await makeManager().provision('14');
+			expect(handle.path).toBe(WORKTREE_14);
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'add')).toBe(true);
+		});
+
+		it('throws if a worktree for the task already exists', async () => {
+			existingPaths.add(WORKTREE_14);
+			await expect(makeManager().provision('14')).rejects.toThrow(/already exists/);
+			expect(gitCalls.some((c) => c[1] === 'add')).toBe(false);
+		});
+
+		it('throws when the repo root does not exist', async () => {
+			existingPaths = new Set();
+			await expect(makeManager().provision('14')).rejects.toThrow(/repo root does not exist/);
+			expect(gitCalls).toHaveLength(0);
+		});
+
+		it('throws when the repo root is not a git repository', async () => {
+			gitHandler = (args) =>
+				args[0] === 'rev-parse' ? new Error('fatal: not a git repository') : { stdout: '' };
+			await expect(makeManager().provision('14')).rejects.toThrow(/Not a git repository/);
+		});
+
+		it('surfaces git stderr when worktree add fails', async () => {
+			gitHandler = (args) => {
+				if (args[1] === 'add') return Object.assign(new Error('exit 128'), { stderr: 'boom' });
+				return { stdout: '' };
+			};
+			await expect(makeManager().provision('14')).rejects.toThrow(/git worktree add.*boom/);
+		});
+	});
+
+	describe('cleanup', () => {
+		it('force-removes the worktree when it exists', async () => {
+			existingPaths.add(WORKTREE_14);
+			await makeManager().cleanup('14');
+			expect(gitCalls).toEqual([['worktree', 'remove', '--force', WORKTREE_14]]);
+		});
+
+		it('is a no-op when the worktree is already gone', async () => {
+			await makeManager().cleanup('14');
+			expect(gitCalls).toHaveLength(0);
+		});
+	});
+
+	describe('list', () => {
+		it('returns tracked worktrees excluding the main checkout', async () => {
+			gitHandler = () => ({
+				stdout: [
+					`worktree ${REPO_ROOT}`,
+					'HEAD abc123',
+					'branch refs/heads/main',
+					'',
+					`worktree ${WORKTREE_14}`,
+					'HEAD def456',
+					'branch refs/heads/issue-14',
+					'',
+				].join('\n'),
+			});
+			expect(await makeManager().list()).toEqual([WORKTREE_14]);
+		});
+	});
+});
