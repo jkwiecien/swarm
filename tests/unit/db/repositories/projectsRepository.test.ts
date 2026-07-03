@@ -4,6 +4,7 @@ vi.mock('@/db/client.js', () => ({ getDb: vi.fn() }));
 
 import { getDb } from '@/db/client.js';
 import {
+	findProjectByBoardFromDb,
 	findProjectByIdFromDb,
 	findProjectByRepoFromDb,
 } from '@/db/repositories/projectsRepository.js';
@@ -30,7 +31,7 @@ const row = {
 	githubProjects: {
 		projectId: 'PVT_x',
 		statusFieldId: 'PVTSSF_x',
-		statusOptions: { backlog: 'a', ready: 'b', inProgress: 'c', inReview: 'd', done: 'e' },
+		statusOptions: { backlog: 'a', planning: 'b', inProgress: 'c', inReview: 'd', done: 'e' },
 	},
 	credentials: { implementer: 'IMPL', reviewer: 'REV', webhookSecret: 'HOOK' },
 	createdAt: new Date(),
@@ -59,6 +60,22 @@ describe('projectsRepository', () => {
 		it('returns undefined when no project owns the repo', async () => {
 			stubDb([]);
 			expect(await findProjectByRepoFromDb('someone/else')).toBeUndefined();
+		});
+	});
+
+	describe('findProjectByBoardFromDb', () => {
+		it('maps a row back to a ProjectConfig', async () => {
+			stubDb([row]);
+			const project = await findProjectByBoardFromDb('PVT_x');
+			expect(project).toMatchObject({
+				id: 'proj-1',
+				githubProjects: { projectId: 'PVT_x' },
+			});
+		});
+
+		it('returns undefined when no project owns the board', async () => {
+			stubDb([]);
+			expect(await findProjectByBoardFromDb('PVT_unknown')).toBeUndefined();
 		});
 	});
 

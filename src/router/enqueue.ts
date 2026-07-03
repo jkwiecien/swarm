@@ -16,6 +16,7 @@
 import type { ProjectConfig } from '../config/schema.js';
 import { logger } from '../lib/logger.js';
 import type { GitHubParsedEvent } from '../router/adapters/github.js';
+import type { GitHubProjectsParsedEvent } from '../router/adapters/github-projects.js';
 
 /**
  * Hand a verified, project-matched, non-self-authored webhook event off toward
@@ -33,6 +34,30 @@ export async function enqueueWebhookEvent(
 		eventType: event.eventType,
 		action: event.action,
 		workItemId: event.workItemId,
+		deliveryId,
+	});
+}
+
+/**
+ * Hand a verified, project-matched, non-self-authored `projects_v2_item` status
+ * change off toward the job queue — the PM-side counterpart of
+ * {@link enqueueWebhookEvent}. Like it, this is a stub: turning the event into a
+ * job needs the authoritative item re-read (the GraphQL client) plus the trigger
+ * registry and worker consumer, none of which exist yet. Replace the body with
+ * the real producer once those land; the receiver call site does not change.
+ */
+export async function enqueueProjectsEvent(
+	event: GitHubProjectsParsedEvent,
+	project: ProjectConfig,
+	deliveryId: string | undefined,
+): Promise<void> {
+	logger.info('Projects webhook event accepted (enqueue seam — no producer wired yet)', {
+		projectId: project.id,
+		projectNodeId: event.projectNodeId,
+		eventType: event.eventType,
+		action: event.action,
+		itemNodeId: event.itemNodeId,
+		changedFieldNodeId: event.changedFieldNodeId,
 		deliveryId,
 	});
 }

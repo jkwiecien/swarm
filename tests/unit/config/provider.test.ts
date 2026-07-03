@@ -7,16 +7,21 @@ vi.mock('@/db/repositories/credentialsRepository.js', () => ({
 }));
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	findProjectByRepoFromDb: vi.fn(),
+	findProjectByBoardFromDb: vi.fn(),
 }));
 
 import {
+	findProjectByBoard,
 	findProjectByRepo,
 	getPersonaToken,
 	getPersonaTokenOrNull,
 	getWebhookSecretOrNull,
 } from '@/config/provider.js';
 import { resolveProjectCredential } from '@/db/repositories/credentialsRepository.js';
-import { findProjectByRepoFromDb } from '@/db/repositories/projectsRepository.js';
+import {
+	findProjectByBoardFromDb,
+	findProjectByRepoFromDb,
+} from '@/db/repositories/projectsRepository.js';
 
 const project = createMockProjectConfig({
 	id: 'proj-1',
@@ -31,6 +36,7 @@ describe('config provider', () => {
 	beforeEach(() => {
 		vi.mocked(resolveProjectCredential).mockReset();
 		vi.mocked(findProjectByRepoFromDb).mockReset();
+		vi.mocked(findProjectByBoardFromDb).mockReset();
 	});
 
 	describe('findProjectByRepo', () => {
@@ -38,6 +44,14 @@ describe('config provider', () => {
 			vi.mocked(findProjectByRepoFromDb).mockResolvedValue(project);
 			expect(await findProjectByRepo('jkwiecien/swarm')).toBe(project);
 			expect(findProjectByRepoFromDb).toHaveBeenCalledWith('jkwiecien/swarm');
+		});
+	});
+
+	describe('findProjectByBoard', () => {
+		it('delegates to the repository with the board node ID', async () => {
+			vi.mocked(findProjectByBoardFromDb).mockResolvedValue(project);
+			expect(await findProjectByBoard('PVT_kwHOAC3TF84BcNwD')).toBe(project);
+			expect(findProjectByBoardFromDb).toHaveBeenCalledWith('PVT_kwHOAC3TF84BcNwD');
 		});
 	});
 

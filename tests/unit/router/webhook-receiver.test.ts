@@ -4,6 +4,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import { logger } from '@/lib/logger.js';
 import type { GitHubParsedEvent, GitHubRouterAdapter } from '@/router/adapters/github.js';
+import type {
+	GitHubProjectsParsedEvent,
+	GitHubProjectsRouterAdapter,
+} from '@/router/adapters/github-projects.js';
 import { createWebhookApp, type WebhookReceiverDeps } from '@/router/webhook-receiver.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 
@@ -195,6 +199,143 @@ describe('createWebhookApp', () => {
 			expect(await res.json()).toEqual({ ok: false, reason: 'internal error' });
 			expect(errorSpy).toHaveBeenCalled();
 			errorSpy.mockRestore();
+		});
+	});
+
+	describe('POST /github/webhook — projects_v2_item', () => {
+		const pmEvent: GitHubProjectsParsedEvent = {
+			eventType: 'projects_v2_item',
+			action: 'edited',
+			itemNodeId: 'PVTI_x',
+			projectNodeId: 'PVT_kwHOAC3TF84BcNwD',
+			changedFieldNodeId: 'PVTSSF_x',
+			changedFieldType: 'single_select',
+			actorLogin: 'human-dev',
+		};
+
+		/** App whose PM collaborators are all faked on the happy path. */
+		function makePmApp(overrides: Partial<WebhookReceiverDeps> = {}) {
+			const enqueueProjects = vi
+				.fn<WebhookReceiverDeps['enqueueProjects']>()
+				.mockResolvedValue(undefined);
+			const pmAdapter = {
+				parseWebhook: vi.fn().mockReturnValue(pmEvent),
+				isStatusChange: vi.fn().mockReturnValue(true),
+				isSelfAuthored: vi.fn().mockResolvedValue(false),
+			} as unknown as GitHubProjectsRouterAdapter;
+
+			const app = createWebhookApp({
+				pmAdapter,
+				findProjectByBoard: vi
+					.fn<(id: string) => Promise<ProjectConfig | undefined>>()
+					.mockResolvedValue(project),
+				getWebhookSecret: vi
+					.fn<WebhookReceiverDeps['getWebhookSecret']>()
+					.mockResolvedValue('whsec'),
+				verifySignature: vi.fn<WebhookReceiverDeps['verifySignature']>().mockReturnValue(true),
+				enqueueProjects,
+				...overrides,
+			});
+			return { app, enqueueProjects, pmAdapter };
+		}
+
+		function postPm(
+			app: ReturnType<typeof makePmApp>['app'],
+			headers: Record<string, string> = {},
+		) {
+			return app.request('/github/webhook', {
+				method: 'POST',
+				headers: {
+					'x-github-event': 'projects_v2_item',
+					'x-hub-signature-256': 'sha256=abc',
+					'x-github-delivery': 'delivery-pm',
+					'content-type': 'application/json',
+					...headers,
+				},
+				body: JSON.stringify({ action: 'edited' }),
+			});
+		}
+
+		it('accepts and enqueues a verified, human-authored status change', async () => {
+			const { app, enqueueProjects } = makePmApp();
+			const res = await postPm(app);
+			expect(res.status).toBe(202);
+			expect(await res.json()).toEqual({ ok: true, accepted: true });
+			expect(enqueueProjects).toHaveBeenCalledWith(pmEvent, project, 'delivery-pm');
+		});
+
+		it('ignores an unactionable projects_v2_item payload', async () => {
+			const pmAdapter = {
+				parseWebhook: vi.fn().mockReturnValue(null),
+				isStatusChange: vi.fn(),
+				isSelfAuthored: vi.fn(),
+			} as unknown as GitHubProjectsRouterAdapter;
+			const { app, enqueueProjects } = makePmApp({ pmAdapter });
+			const res = await postPm(app);
+			expect(res.status).toBe(202);
+			expect((await res.json()).ignored).toBe(true);
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
+		it('ignores an event for an untracked board (before touching secrets)', async () => {
+			const getWebhookSecret = vi
+				.fn<WebhookReceiverDeps['getWebhookSecret']>()
+				.mockResolvedValue('whsec');
+			const { app, enqueueProjects } = makePmApp({
+				findProjectByBoard: vi
+					.fn<(id: string) => Promise<ProjectConfig | undefined>>()
+					.mockResolvedValue(undefined),
+				getWebhookSecret,
+			});
+			const res = await postPm(app);
+			expect(res.status).toBe(202);
+			expect((await res.json()).ignored).toBe(true);
+			expect(getWebhookSecret).not.toHaveBeenCalled();
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
+		it('rejects with 401 when the project has no webhook secret configured', async () => {
+			const { app, enqueueProjects } = makePmApp({
+				getWebhookSecret: vi.fn<WebhookReceiverDeps['getWebhookSecret']>().mockResolvedValue(null),
+			});
+			const res = await postPm(app);
+			expect(res.status).toBe(401);
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
+		it('rejects with 401 when the signature does not verify', async () => {
+			const { app, enqueueProjects } = makePmApp({
+				verifySignature: vi.fn<WebhookReceiverDeps['verifySignature']>().mockReturnValue(false),
+			});
+			const res = await postPm(app);
+			expect(res.status).toBe(401);
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
+		it('ignores a non-Status field edit without enqueueing', async () => {
+			const pmAdapter = {
+				parseWebhook: vi.fn().mockReturnValue(pmEvent),
+				isStatusChange: vi.fn().mockReturnValue(false),
+				isSelfAuthored: vi.fn().mockResolvedValue(false),
+			} as unknown as GitHubProjectsRouterAdapter;
+			const { app, enqueueProjects } = makePmApp({ pmAdapter });
+			const res = await postPm(app);
+			expect(res.status).toBe(202);
+			expect((await res.json()).reason).toBe('not a status-field change');
+			expect(enqueueProjects).not.toHaveBeenCalled();
+		});
+
+		it('drops a self-authored status change (loop prevention)', async () => {
+			const pmAdapter = {
+				parseWebhook: vi.fn().mockReturnValue(pmEvent),
+				isStatusChange: vi.fn().mockReturnValue(true),
+				isSelfAuthored: vi.fn().mockResolvedValue(true),
+			} as unknown as GitHubProjectsRouterAdapter;
+			const { app, enqueueProjects } = makePmApp({ pmAdapter });
+			const res = await postPm(app);
+			expect(res.status).toBe(202);
+			expect((await res.json()).ignored).toBe(true);
+			expect(enqueueProjects).not.toHaveBeenCalled();
 		});
 	});
 

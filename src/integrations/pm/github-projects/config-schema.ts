@@ -44,9 +44,10 @@ export const githubProjectsConfigSchema = z
 		 * single-select *option* IDs (not option names — names are display-only
 		 * and rename-prone; the option ID is stable).
 		 *
-		 * Recognized keys mirror the board's Status options (ai/RULES.md §5) plus
-		 * the pipeline phases (ai/ARCHITECTURE.md §"Pipeline phases"):
-		 * `backlog`, `ready`, `planning`, `inProgress`, `inReview`, `done`.
+		 * Recognized keys are the canonical SWARM pipeline status keys
+		 * (`PM_STATUS_KEYS` in `src/pm/pipeline.ts` — the single source of truth),
+		 * which mirror the board's Status options (ai/RULES.md §5) one-for-one:
+		 * `backlog`, `planning`, `todo`, `inProgress`, `inReview`, `done`.
 		 * Kept as an open record — a board may add or omit options, and validating
 		 * exact key presence belongs to setup/wizard code, not this schema. The
 		 * one bound the schema does enforce: the record can't be empty, since a

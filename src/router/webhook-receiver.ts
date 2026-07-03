@@ -16,12 +16,17 @@
 
 import { type Context, Hono } from 'hono';
 
-import { findProjectByRepo, getWebhookSecretOrNull } from '../config/provider.js';
+import {
+	findProjectByBoard,
+	findProjectByRepo,
+	getWebhookSecretOrNull,
+} from '../config/provider.js';
 import type { ProjectConfig } from '../config/schema.js';
 import { logger } from '../lib/logger.js';
 import { verifyGitHubSignature } from '../webhook/signature-verification.js';
 import { GitHubRouterAdapter } from './adapters/github.js';
-import { enqueueWebhookEvent } from './enqueue.js';
+import { GitHubProjectsRouterAdapter, PROJECTS_V2_ITEM_EVENT } from './adapters/github-projects.js';
+import { enqueueProjectsEvent, enqueueWebhookEvent } from './enqueue.js';
 
 /** Header GitHub delivers the event type in (not carried in the body). */
 const EVENT_TYPE_HEADER = 'x-github-event';
@@ -43,10 +48,18 @@ const MAX_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
  */
 export interface WebhookReceiverDeps {
 	adapter: GitHubRouterAdapter;
+	pmAdapter: GitHubProjectsRouterAdapter;
 	findProject: (repo: string) => Promise<ProjectConfig | undefined>;
+	/** Resolve the SWARM project owning a Projects v2 board, by its node ID. */
+	findProjectByBoard: (projectNodeId: string) => Promise<ProjectConfig | undefined>;
 	getWebhookSecret: (project: ProjectConfig) => Promise<string | null>;
 	enqueue: (
 		event: import('./adapters/github.js').GitHubParsedEvent,
+		project: ProjectConfig,
+		deliveryId: string | undefined,
+	) => Promise<void>;
+	enqueueProjects: (
+		event: import('./adapters/github-projects.js').GitHubProjectsParsedEvent,
 		project: ProjectConfig,
 		deliveryId: string | undefined,
 	) => Promise<void>;
@@ -56,9 +69,12 @@ export interface WebhookReceiverDeps {
 function defaultDeps(): WebhookReceiverDeps {
 	return {
 		adapter: new GitHubRouterAdapter(),
+		pmAdapter: new GitHubProjectsRouterAdapter(),
 		findProject: findProjectByRepo,
+		findProjectByBoard,
 		getWebhookSecret: getWebhookSecretOrNull,
 		enqueue: enqueueWebhookEvent,
+		enqueueProjects: enqueueProjectsEvent,
 		verifySignature: verifyGitHubSignature,
 	};
 }
@@ -91,6 +107,139 @@ async function readJsonBody(c: Context): Promise<{ rawBody: string; payload: unk
 			400,
 		);
 	}
+}
+
+/**
+ * Authenticate a webhook against its project'\''s HMAC secret — shared by the SCM
+ * and PM paths, since both subscriptions point at the same URL and share the
+ * same secret (docs/github-projects-v2-api.md §5). Returns a short-circuit
+ * `Response` (401) the caller must return, or `null` when the body is authentic.
+ * A project with no secret configured can'\''t be verified, so we refuse rather
+ * than trust an unauthenticated payload.
+ */
+async function authenticateWebhook(
+	c: Context,
+	deps: WebhookReceiverDeps,
+	project: ProjectConfig,
+	rawBody: string,
+	logContext: Record<string, unknown>,
+): Promise<Response | null> {
+	const secret = await deps.getWebhookSecret(project);
+	if (!secret) {
+		logger.error('No webhook secret configured for project; rejecting webhook', {
+			projectId: project.id,
+			...logContext,
+		});
+		return c.json({ ok: false, reason: 'webhook secret not configured' }, 401);
+	}
+
+	const signature = c.req.header(SIGNATURE_HEADER) ?? '';
+	if (!deps.verifySignature(rawBody, signature, secret)) {
+		logger.warn('GitHub webhook signature verification failed', {
+			projectId: project.id,
+			...logContext,
+		});
+		return c.json({ ok: false, reason: 'signature verification failed' }, 401);
+	}
+
+	return null;
+}
+
+/** Handle the four repo-scoped SCM events (`pull_request`, …). */
+async function handleScmEvent(
+	c: Context,
+	deps: WebhookReceiverDeps,
+	rawBody: string,
+	payload: unknown,
+	eventType: string,
+	deliveryId: string | undefined,
+): Promise<Response> {
+	// Non-actionable event type → acknowledge so GitHub stops retrying, but do
+	// no work. `parseWebhook` returns null for anything outside PROCESSABLE_EVENTS.
+	const event = deps.adapter.parseWebhook(eventType, payload);
+	if (!event) {
+		return c.json({ ok: true, ignored: true, reason: `unhandled event type: ${eventType}` }, 202);
+	}
+
+	// Untracked repo → not ours. Ack without work (and before touching secrets).
+	const project = await deps.findProject(event.repoFullName);
+	if (!project) {
+		return c.json({ ok: true, ignored: true, reason: 'repo not tracked by any project' }, 202);
+	}
+
+	const authFailure = await authenticateWebhook(c, deps, project, rawBody, {
+		repo: event.repoFullName,
+		eventType: event.eventType,
+	});
+	if (authFailure) return authFailure;
+
+	// Loop prevention: drop SWARM'\''s own comment events so a persona never
+	// reacts to its own ack/reply. PR/review lifecycle events flow through even
+	// when a persona produced them (the *other* persona must act) — that
+	// cross-persona routing is the adapter'\''s job, not this gate'\''s.
+	if (await deps.adapter.isSelfAuthored(event, project)) {
+		return c.json(
+			{ ok: true, ignored: true, reason: 'self-authored comment (loop prevention)' },
+			202,
+		);
+	}
+
+	await deps.enqueue(event, project, deliveryId);
+	return c.json({ ok: true, accepted: true }, 202);
+}
+
+/**
+ * Handle the `projects_v2_item` board event — SWARM'\''s `pm:status-changed`
+ * ingress. Unlike the SCM path it resolves the project by board node ID (a
+ * Projects event carries no repo) and filters to Status-field edits before
+ * enqueueing.
+ */
+async function handleProjectsEvent(
+	c: Context,
+	deps: WebhookReceiverDeps,
+	rawBody: string,
+	payload: unknown,
+	eventType: string,
+	deliveryId: string | undefined,
+): Promise<Response> {
+	const event = deps.pmAdapter.parseWebhook(eventType, payload);
+	if (!event) {
+		return c.json(
+			{ ok: true, ignored: true, reason: 'unactionable projects_v2_item payload' },
+			202,
+		);
+	}
+
+	// Untracked board → not ours. Ack without work (and before touching secrets).
+	const project = await deps.findProjectByBoard(event.projectNodeId);
+	if (!project) {
+		return c.json({ ok: true, ignored: true, reason: 'board not tracked by any project' }, 202);
+	}
+
+	const authFailure = await authenticateWebhook(c, deps, project, rawBody, {
+		projectNodeId: event.projectNodeId,
+		eventType: event.eventType,
+		action: event.action,
+	});
+	if (authFailure) return authFailure;
+
+	// Only Status-field edits (and new cards) wake the pipeline; every other
+	// field edit — Priority, Size, assignees — is acknowledged and dropped.
+	if (!deps.pmAdapter.isStatusChange(event, project)) {
+		return c.json({ ok: true, ignored: true, reason: 'not a status-field change' }, 202);
+	}
+
+	// Loop prevention: drop status changes a SWARM persona itself made, so the
+	// worker moving a card doesn'\''t re-fire the trigger that started it.
+	if (await deps.pmAdapter.isSelfAuthored(event, project)) {
+		return c.json(
+			{ ok: true, ignored: true, reason: 'self-authored status change (loop prevention)' },
+			202,
+		);
+	}
+
+	await deps.enqueueProjects(event, project, deliveryId);
+	return c.json({ ok: true, accepted: true }, 202);
 }
 
 /**
@@ -129,53 +278,14 @@ export function createWebhookApp(overrides: Partial<WebhookReceiverDeps> = {}): 
 		const eventType = c.req.header(EVENT_TYPE_HEADER) ?? 'unknown';
 		const deliveryId = c.req.header(DELIVERY_HEADER);
 
-		// Non-actionable event type → acknowledge so GitHub stops retrying, but do
-		// no work. `parseWebhook` returns null for anything outside PROCESSABLE_EVENTS.
-		const event = deps.adapter.parseWebhook(eventType, payload);
-		if (!event) {
-			return c.json({ ok: true, ignored: true, reason: `unhandled event type: ${eventType}` }, 202);
+		// A Projects board event carries no repo, so it routes through the PM
+		// adapter (resolves by board node ID); everything else is a repo-scoped SCM
+		// event. Branching on the event type — not on a provider discriminator —
+		// keeps each adapter owning its own parse/resolve.
+		if (eventType === PROJECTS_V2_ITEM_EVENT) {
+			return handleProjectsEvent(c, deps, rawBody, payload, eventType, deliveryId);
 		}
-
-		// Untracked repo → not ours. Ack without work (and before touching secrets).
-		const project = await deps.findProject(event.repoFullName);
-		if (!project) {
-			return c.json({ ok: true, ignored: true, reason: 'repo not tracked by any project' }, 202);
-		}
-
-		// Authenticate before acting. A project with no secret configured cannot be
-		// verified, so we refuse rather than trusting an unauthenticated payload.
-		const secret = await deps.getWebhookSecret(project);
-		if (!secret) {
-			logger.error('No webhook secret configured for project; rejecting webhook', {
-				projectId: project.id,
-				repo: event.repoFullName,
-			});
-			return c.json({ ok: false, reason: 'webhook secret not configured' }, 401);
-		}
-
-		const signature = c.req.header(SIGNATURE_HEADER) ?? '';
-		if (!deps.verifySignature(rawBody, signature, secret)) {
-			logger.warn('GitHub webhook signature verification failed', {
-				projectId: project.id,
-				repo: event.repoFullName,
-				eventType: event.eventType,
-			});
-			return c.json({ ok: false, reason: 'signature verification failed' }, 401);
-		}
-
-		// Loop prevention: drop SWARM'\''s own comment events so a persona never
-		// reacts to its own ack/reply. PR/review lifecycle events flow through even
-		// when a persona produced them (the *other* persona must act) — that
-		// cross-persona routing is the adapter'\''s job, not this gate'\''s.
-		if (await deps.adapter.isSelfAuthored(event, project)) {
-			return c.json(
-				{ ok: true, ignored: true, reason: 'self-authored comment (loop prevention)' },
-				202,
-			);
-		}
-
-		await deps.enqueue(event, project, deliveryId);
-		return c.json({ ok: true, accepted: true }, 202);
+		return handleScmEvent(c, deps, rawBody, payload, eventType, deliveryId);
 	});
 
 	return app;
