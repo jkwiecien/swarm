@@ -24,10 +24,19 @@ vi.mock('node:child_process', () => ({
 	},
 }));
 
-// Filesystem presence is fully controlled per test via `existingPaths`.
+// Filesystem presence is fully controlled per test via `existingPaths`;
+// `realpaths` overrides symlink resolution for the symlink-robustness test
+// (default: identity).
 let existingPaths: Set<string>;
+let realpaths: Map<string, string>;
 vi.mock('node:fs', () => ({
 	existsSync: (p: string) => existingPaths.has(p),
+	realpathSync: (p: string) => {
+		const real = realpaths.get(p);
+		if (real !== undefined) return real;
+		if (existingPaths.has(p)) return p;
+		throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+	},
 }));
 
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
@@ -45,6 +54,7 @@ describe('GitWorktreeManager', () => {
 		gitHandler = () => ({ stdout: '' });
 		// Default world: the repo root exists and is a git repo; no worktrees yet.
 		existingPaths = new Set([REPO_ROOT]);
+		realpaths = new Map();
 	});
 
 	describe('worktreePath', () => {
@@ -90,6 +100,13 @@ describe('GitWorktreeManager', () => {
 			const handle = await makeManager().provision('14');
 			expect(handle.path).toBe(WORKTREE_14);
 			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'add')).toBe(true);
+		});
+
+		it('throws when createBranch is false and no branch is given', async () => {
+			await expect(makeManager().provision('14', { createBranch: false })).rejects.toThrow(
+				/without an explicit 'branch'/,
+			);
+			expect(gitCalls.some((c) => c[1] === 'add')).toBe(false);
 		});
 
 		it('throws if a worktree for the task already exists', async () => {
@@ -147,6 +164,30 @@ describe('GitWorktreeManager', () => {
 				].join('\n'),
 			});
 			expect(await makeManager().list()).toEqual([WORKTREE_14]);
+		});
+
+		it('excludes the main checkout even when repoRoot sits under a symlink', async () => {
+			// repoRoot is given via a symlinked path (e.g. /tmp), but git reports the
+			// realpath (/private/tmp). Canonicalizing both sides must still match, so
+			// the main checkout is not leaked into the list.
+			const SYMLINKED_ROOT = '/tmp/swarm/swarm';
+			const REAL_ROOT = '/private/tmp/swarm/swarm';
+			const REAL_WORKTREE = '/private/tmp/swarm/swarm/.swarm-workspaces/task-14';
+			existingPaths = new Set([SYMLINKED_ROOT]);
+			realpaths = new Map([[SYMLINKED_ROOT, REAL_ROOT]]);
+			gitHandler = () => ({
+				stdout: [
+					`worktree ${REAL_ROOT}`,
+					'HEAD abc123',
+					'branch refs/heads/main',
+					'',
+					`worktree ${REAL_WORKTREE}`,
+					'HEAD def456',
+					'branch refs/heads/issue-14',
+					'',
+				].join('\n'),
+			});
+			expect(await makeManager({ repoRoot: SYMLINKED_ROOT }).list()).toEqual([REAL_WORKTREE]);
 		});
 	});
 });

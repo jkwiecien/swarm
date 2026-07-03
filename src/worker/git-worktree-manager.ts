@@ -14,13 +14,28 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from '../config/schema.js';
 import { logger } from '../lib/logger.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Canonicalize a path for equality comparison. `git worktree list --porcelain`
+ * reports realpaths (symlinks resolved), so plain `resolve` on our side can miss
+ * a match when a component is symlinked (classic case: macOS `/tmp` →
+ * `/private/tmp`) — which would leak the main checkout into `list()`. Falls back
+ * to `resolve` for a path that doesn't exist on disk yet.
+ */
+function canonicalize(p: string): string {
+	try {
+		return realpathSync(p);
+	} catch {
+		return resolve(p);
+	}
+}
 
 /** A provisioned worktree — the handle callers hold onto for the task's lifetime. */
 export interface WorktreeHandle {
@@ -36,7 +51,9 @@ export interface WorktreeHandle {
 export interface ProvisionOptions {
 	/**
 	 * Branch to check out in the worktree. Defaults to `<branchPrefix><taskId>`
-	 * (SWARM's `issue-<n>` convention, from the project config).
+	 * (SWARM's `issue-<n>` convention, from the project config) when creating a
+	 * branch; **required** when `createBranch` is false (there's no sensible
+	 * default for an existing checkout target).
 	 */
 	branch?: string;
 	/**
@@ -85,8 +102,14 @@ export class GitWorktreeManager {
 			);
 		}
 
-		const branch = options.branch ?? `${this.project.branchPrefix}${taskId}`;
 		const createBranch = options.createBranch ?? true;
+		if (!createBranch && options.branch === undefined) {
+			throw new Error(
+				`Cannot check out an existing branch for task '${taskId}' without an explicit 'branch' — pass ProvisionOptions.branch when createBranch is false`,
+			);
+		}
+
+		const branch = options.branch ?? `${this.project.branchPrefix}${taskId}`;
 		const args = ['worktree', 'add'];
 		if (createBranch) {
 			args.push('-b', branch, path, options.baseBranch ?? this.project.baseBranch);
@@ -129,11 +152,11 @@ export class GitWorktreeManager {
 	 */
 	async list(): Promise<string[]> {
 		const stdout = await this.git(['worktree', 'list', '--porcelain']);
-		const mainRoot = resolve(this.project.repoRoot);
+		const mainRoot = canonicalize(this.project.repoRoot);
 		const paths: string[] = [];
 		for (const line of stdout.split('\n')) {
 			if (!line.startsWith('worktree ')) continue;
-			const worktree = resolve(line.slice('worktree '.length).trim());
+			const worktree = canonicalize(line.slice('worktree '.length).trim());
 			if (worktree !== mainRoot) paths.push(worktree);
 		}
 		return paths;
