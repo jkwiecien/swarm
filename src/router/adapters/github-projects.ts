@@ -16,6 +16,7 @@
  * the webhook body.
  */
 
+import { z } from 'zod';
 import { findProjectByBoard } from '../../config/provider.js';
 import type { ProjectConfig } from '../../config/schema.js';
 import { isSwarmBot, resolvePersonaIdentities } from '../../integrations/scm/github/personas.js';
@@ -31,26 +32,33 @@ export const PROJECTS_V2_ITEM_EVENT = 'projects_v2_item';
  */
 const TRIGGERING_ACTIONS = new Set(['edited', 'created']);
 
-/** A raw `projects_v2_item` webhook parsed into the fields the router needs. */
-export interface GitHubProjectsParsedEvent {
-	eventType: typeof PROJECTS_V2_ITEM_EVENT;
+/**
+ * A raw `projects_v2_item` webhook parsed into the fields the router needs. A
+ * Zod schema (not a hand-written interface) because the parsed event rides
+ * inside a queue job across the router→Redis→worker boundary
+ * (`src/queue/jobs.ts`) — same rationale as `GitHubParsedEventSchema`.
+ */
+export const GitHubProjectsParsedEventSchema = z.object({
+	eventType: z.literal(PROJECTS_V2_ITEM_EVENT),
 	/** The webhook `action` (`edited`, `created`, `deleted`, …), if present. */
-	action?: string;
+	action: z.string().optional(),
 	/** The Projects v2 item (card) node ID — used to re-read the item downstream. */
-	itemNodeId: string;
+	itemNodeId: z.string(),
 	/** The board (ProjectV2) node ID — how the SWARM project is resolved. */
-	projectNodeId: string;
+	projectNodeId: z.string(),
 	/** The backing Issue/PR node ID the card wraps, if present. */
-	contentNodeId?: string;
+	contentNodeId: z.string().optional(),
 	/** `Issue` | `PullRequest` | `DraftIssue`, if present. */
-	contentType?: string;
+	contentType: z.string().optional(),
 	/** On an `edited` event, the node ID of the field that changed. */
-	changedFieldNodeId?: string;
+	changedFieldNodeId: z.string().optional(),
 	/** On an `edited` event, the changed field's type (e.g. `single_select`). */
-	changedFieldType?: string;
+	changedFieldType: z.string().optional(),
 	/** Login of the account that produced the event (`sender.login`). */
-	actorLogin?: string;
-}
+	actorLogin: z.string().optional(),
+});
+
+export type GitHubProjectsParsedEvent = z.infer<typeof GitHubProjectsParsedEventSchema>;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === 'object' && value !== null

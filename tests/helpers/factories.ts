@@ -15,6 +15,17 @@ import {
 	githubProjectsConfigSchema,
 } from '@/integrations/pm/github-projects/config-schema.js';
 import type { WorkItem } from '@/pm/types.js';
+import {
+	type GitHubProjectsWebhookJob,
+	GitHubProjectsWebhookJobSchema,
+	type GitHubWebhookJob,
+	GitHubWebhookJobSchema,
+} from '@/queue/jobs.js';
+import { type GitHubParsedEvent, GitHubParsedEventSchema } from '@/router/adapters/github.js';
+import {
+	type GitHubProjectsParsedEvent,
+	GitHubProjectsParsedEventSchema,
+} from '@/router/adapters/github-projects.js';
 
 /**
  * `runAgentCli` options with the two required fields defaulted. `RunAgentCliOptions`
@@ -113,6 +124,61 @@ export function createMockProjectsV2ItemPayload(
 		};
 	}
 	return payload;
+}
+
+export function createMockGitHubParsedEvent(
+	overrides: Partial<GitHubParsedEvent> = {},
+): GitHubParsedEvent {
+	return GitHubParsedEventSchema.parse({
+		eventType: 'pull_request',
+		action: 'opened',
+		repoFullName: 'jkwiecien/swarm',
+		workItemId: '17',
+		actorLogin: 'human-dev',
+		isCommentEvent: false,
+		...overrides,
+	});
+}
+
+export function createMockGitHubProjectsParsedEvent(
+	overrides: Partial<GitHubProjectsParsedEvent> = {},
+): GitHubProjectsParsedEvent {
+	return GitHubProjectsParsedEventSchema.parse({
+		eventType: 'projects_v2_item',
+		action: 'edited',
+		itemNodeId: 'PVTI_lAHOAC3TF84BcNwDzgxczms',
+		projectNodeId: 'PVT_kwHOAC3TF84BcNwD',
+		contentNodeId: 'I_kwDONODE',
+		contentType: 'Issue',
+		changedFieldNodeId: 'PVTSSF_lAHOAC3TF84BcNwDzhW4MKo',
+		changedFieldType: 'single_select',
+		actorLogin: 'human-dev',
+		...overrides,
+	});
+}
+
+export function createMockGitHubWebhookJob(
+	overrides: Partial<GitHubWebhookJob> = {},
+): GitHubWebhookJob {
+	return GitHubWebhookJobSchema.parse({
+		type: 'github',
+		projectId: 'swarm',
+		deliveryId: 'delivery-uuid-1',
+		event: createMockGitHubParsedEvent(),
+		...overrides,
+	});
+}
+
+export function createMockGitHubProjectsWebhookJob(
+	overrides: Partial<GitHubProjectsWebhookJob> = {},
+): GitHubProjectsWebhookJob {
+	return GitHubProjectsWebhookJobSchema.parse({
+		type: 'github-projects',
+		projectId: 'swarm',
+		deliveryId: 'delivery-uuid-2',
+		event: createMockGitHubProjectsParsedEvent(),
+		...overrides,
+	});
 }
 
 export function createMockProjectConfig(overrides: Partial<ProjectConfig> = {}): ProjectConfig {

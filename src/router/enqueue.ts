@@ -1,16 +1,14 @@
 /**
  * Enqueue seam — the boundary between the webhook receiver and the job queue.
  *
- * This is deliberately a stub. The receiver'\''s job (SWARM-9) ends once an event
+ * This is deliberately a stub. The receiver's job (SWARM-9) ends once an event
  * has been authenticated, matched to a project, and cleared by loop prevention;
- * at that point it hands the normalized event here. Turning that event into a
- * `TASK_TYPE_*` job and pushing it onto BullMQ requires the **trigger registry**
- * (which decides *what* to do with an event) and the **worker consumer**
- * (SWARM-17) — neither exists yet, and both own the router→worker job contract
- * (PROJECT.md §5, "Orchestration Input"). Enqueuing a provisional job shape here
- * now would just have to be reworked to match them, so this only logs the
- * hand-off. Replace the body with the real BullMQ producer once the trigger
- * registry lands; the receiver call site does not need to change.
+ * at that point it hands the normalized event here. The router→worker job
+ * contract these events must be shaped into now exists — `SwarmJobSchema` on
+ * `QUEUE_NAME` (`src/queue/jobs.ts`, SWARM-17), consumed by the worker in
+ * `src/worker/consumer.ts` — so all that's left is the BullMQ producer itself,
+ * which is SWARM-35's scope. Replace the bodies below with it; the receiver
+ * call sites do not need to change.
  */
 
 import type { ProjectConfig } from '../config/schema.js';
@@ -20,7 +18,7 @@ import type { GitHubProjectsParsedEvent } from '../router/adapters/github-projec
 
 /**
  * Hand a verified, project-matched, non-self-authored webhook event off toward
- * the job queue. `deliveryId` is GitHub'\''s `X-GitHub-Delivery` — carried through
+ * the job queue. `deliveryId` is GitHub's `X-GitHub-Delivery` — carried through
  * for idempotency/tracing once a real producer consumes it.
  */
 export async function enqueueWebhookEvent(
@@ -41,10 +39,11 @@ export async function enqueueWebhookEvent(
 /**
  * Hand a verified, project-matched, non-self-authored `projects_v2_item` status
  * change off toward the job queue — the PM-side counterpart of
- * {@link enqueueWebhookEvent}. Like it, this is a stub: turning the event into a
- * job needs the authoritative item re-read (the GraphQL client) plus the trigger
- * registry and worker consumer, none of which exist yet. Replace the body with
- * the real producer once those land; the receiver call site does not change.
+ * {@link enqueueWebhookEvent}. Like it, this is a stub: the trigger registry
+ * (`src/triggers/`) and worker consumer (`src/worker/consumer.ts`) now exist, so
+ * turning the event into a job only awaits the authoritative item re-read (the
+ * GraphQL client) and the BullMQ producer itself (SWARM-35). Replace the body
+ * with the real producer once those land; the receiver call site does not change.
  */
 export async function enqueueProjectsEvent(
 	event: GitHubProjectsParsedEvent,
