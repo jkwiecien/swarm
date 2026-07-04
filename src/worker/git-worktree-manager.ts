@@ -43,8 +43,13 @@ export interface WorktreeHandle {
 	taskId: string;
 	/** Absolute path to the worktree checkout. */
 	path: string;
-	/** The branch checked out in the worktree. */
+	/**
+	 * The branch checked out in the worktree. For a `detach`ed worktree there is no
+	 * branch — this holds the ref the detached HEAD was placed at (the base branch).
+	 */
 	branch: string;
+	/** True when the worktree is in detached HEAD (see {@link ProvisionOptions.detach}). */
+	detached: boolean;
 }
 
 /** Options for {@link GitWorktreeManager.provision}. */
@@ -64,6 +69,18 @@ export interface ProvisionOptions {
 	createBranch?: boolean;
 	/** Ref the new branch is cut from when `createBranch` is true. Defaults to the project's `baseBranch`. */
 	baseBranch?: string;
+	/**
+	 * Check out `baseBranch` in **detached HEAD** instead of on a branch — for a
+	 * read-only phase (Planning: explore the code, write `proposed_plan.md`, throw
+	 * the checkout away) that must not create or hold a task branch. It sidesteps
+	 * two problems a branch would cause here: `git worktree add <path> main` refuses
+	 * because `main` is already checked out in the primary tree, and cutting a fresh
+	 * `issue-<n>` branch would both collide with the implementation phase (which
+	 * wants that branch) and leave an orphan branch that breaks a re-run. Detached
+	 * HEAD claims no branch, so cleanup is just `worktree remove` with nothing to
+	 * delete. Takes precedence over `createBranch`; `branch` is ignored when set.
+	 */
+	detach?: boolean;
 	/**
 	 * Run `git fetch origin` before creating the worktree so the branch is cut
 	 * from up-to-date refs (§4.2 step 1). Defaults to true; the fetch is
@@ -102,29 +119,36 @@ export class GitWorktreeManager {
 			);
 		}
 
+		const baseBranch = options.baseBranch ?? this.project.baseBranch;
 		const createBranch = options.createBranch ?? true;
-		if (!createBranch && options.branch === undefined) {
+		if (!options.detach && !createBranch && options.branch === undefined) {
 			throw new Error(
 				`Cannot check out an existing branch for task '${taskId}' without an explicit 'branch' — pass ProvisionOptions.branch when createBranch is false`,
 			);
 		}
 
-		const branch = options.branch ?? `${this.project.branchPrefix}${taskId}`;
+		const detached = options.detach ?? false;
+		// Detached HEAD has no branch; the handle reports the base ref it points at.
+		const branch = detached
+			? baseBranch
+			: (options.branch ?? `${this.project.branchPrefix}${taskId}`);
 		const args = ['worktree', 'add'];
-		if (createBranch) {
-			args.push('-b', branch, path, options.baseBranch ?? this.project.baseBranch);
+		if (detached) {
+			args.push('--detach', path, baseBranch);
+		} else if (createBranch) {
+			args.push('-b', branch, path, baseBranch);
 		} else {
 			args.push(path, branch);
 		}
 
-		logger.info('Provisioning worktree', { taskId, path, branch, createBranch });
+		logger.info('Provisioning worktree', { taskId, path, branch, createBranch, detached });
 		await this.git(args);
 
 		// SWARM-15 grafts untracked build state (node_modules, .env, caches) in here
 		// via symlinks before the agent runs; git-tracked files (incl. the committed
 		// `cascade` symlink) are already checked out by `git worktree add`.
 
-		return { taskId, path, branch };
+		return { taskId, path, branch, detached };
 	}
 
 	/**

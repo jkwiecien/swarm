@@ -72,7 +72,34 @@ describe('GitWorktreeManager', () => {
 				['fetch', 'origin'],
 				['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main'],
 			]);
-			expect(handle).toEqual({ taskId: '14', path: WORKTREE_14, branch: 'issue-14' });
+			expect(handle).toEqual({
+				taskId: '14',
+				path: WORKTREE_14,
+				branch: 'issue-14',
+				detached: false,
+			});
+		});
+
+		it('checks out baseBranch in detached HEAD when detach is set (planning phase)', async () => {
+			const handle = await makeManager().provision('14', { detach: true });
+
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '--detach', WORKTREE_14, 'main']);
+			expect(handle).toEqual({
+				taskId: '14',
+				path: WORKTREE_14,
+				branch: 'main',
+				detached: true,
+			});
+		});
+
+		it('detach takes precedence over createBranch and ignores an explicit branch', async () => {
+			await makeManager().provision('14', {
+				detach: true,
+				createBranch: true,
+				branch: 'ignored',
+				baseBranch: 'develop',
+			});
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '--detach', WORKTREE_14, 'develop']);
 		});
 
 		it('checks out an existing branch when createBranch is false (review phase)', async () => {
