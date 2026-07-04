@@ -141,6 +141,26 @@ export function planCommentBody(plan: string): string {
 }
 
 /**
+ * Log a failed planning run's captured output before the phase throws, so the
+ * worker (SWARM-17) that marks the job failed has the agent's own stdout/stderr
+ * to diagnose *why* — the thrown Error carries only a message. Output is already
+ * bounded by {@link MAX_AGENT_OUTPUT_BYTES}, so this can't blow up the log.
+ */
+function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResult): void {
+	logger.error('planning phase: agent failed', {
+		taskId,
+		workItemId,
+		cli: agent.cli,
+		exitCode: agent.exitCode,
+		timedOut: agent.timedOut,
+		durationMs: agent.durationMs,
+		outputTruncated: agent.outputTruncated,
+		stdout: agent.stdout,
+		stderr: agent.stderr,
+	});
+}
+
+/**
  * Run the Planning phase for one work item. Provisions a detached worktree, runs
  * the planning agent to produce `proposed_plan.md`, posts it as a comment on the
  * linked Issue, and moves the item to "ToDo".
@@ -183,6 +203,7 @@ export async function runPlanningPhase(
 		});
 
 		if (agent.exitCode !== 0) {
+			logAgentFailure(taskId, workItem.id, agent);
 			throw new Error(
 				`Planning agent (${cli}) exited with code ${agent.exitCode}${
 					agent.timedOut ? ' (timed out)' : ''
@@ -192,12 +213,14 @@ export async function runPlanningPhase(
 
 		const planPath = join(handle.path, PROPOSED_PLAN_FILENAME);
 		if (!existsSync(planPath)) {
+			logAgentFailure(taskId, workItem.id, agent);
 			throw new Error(
 				`Planning agent (${cli}) did not write ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
 			);
 		}
 		const plan = readFileSync(planPath, 'utf8').trim();
 		if (plan.length === 0) {
+			logAgentFailure(taskId, workItem.id, agent);
 			throw new Error(
 				`Planning agent (${cli}) wrote an empty ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
 			);

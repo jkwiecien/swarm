@@ -102,6 +102,41 @@ describe('runPlanningPhase', () => {
 		});
 	});
 
+	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
+		const deps = makeDeps();
+		const signal = new AbortController().signal;
+		await runPlanningPhase({ ...deps, timeoutMs: 60_000, signal });
+		const runArgs = deps.runAgent.mock.calls[0][0];
+		expect(runArgs.timeoutMs).toBe(60_000);
+		expect(runArgs.signal).toBe(signal);
+		expect(runArgs.maxOutputBytes).toBeGreaterThan(0);
+	});
+
+	it('grafts the environment before running the agent', async () => {
+		const deps = makeDeps();
+		const order: string[] = [];
+		deps.graft = vi.fn(() => {
+			order.push('graft');
+			return [];
+		});
+		deps.runAgent = vi.fn(async () => {
+			order.push('agent');
+			return agentResult();
+		});
+		await runPlanningPhase(deps);
+		expect(order).toEqual(['graft', 'agent']);
+	});
+
+	it('cleans up the worktree and never runs the agent when graft throws', async () => {
+		const deps = makeDeps();
+		deps.graft = vi.fn(() => {
+			throw new Error('graft failed: node_modules missing');
+		});
+		await expect(runPlanningPhase(deps)).rejects.toThrow(/graft failed/);
+		expect(deps.runAgent).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
 	it('honours a cli override (e.g. claude)', async () => {
 		const deps = makeDeps();
 		deps.runAgent = vi.fn(async () => agentResult({ cli: 'claude' }));
