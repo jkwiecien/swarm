@@ -225,6 +225,18 @@ describe('buildImplementationPrompt', () => {
 		expect(prompt).toContain('D');
 	});
 
+	it('tells the agent to read the linked issue and its posted plan first', () => {
+		const prompt = buildImplementationPrompt(createMockWorkItem(), context);
+		expect(prompt).toContain('gh issue view 19');
+	});
+
+	it('specifies non-interactive gh pr create flags and keeps the PR-URL file uncommitted', () => {
+		const prompt = buildImplementationPrompt(createMockWorkItem(), context);
+		expect(prompt).toContain('--base main');
+		expect(prompt).toContain('--head issue-19');
+		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
+	});
+
 	it('falls back to a placeholder when the work item has no description', () => {
 		const prompt = buildImplementationPrompt(createMockWorkItem({ description: '' }), context);
 		expect(prompt).toContain('(no description provided)');

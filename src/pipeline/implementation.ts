@@ -128,8 +128,8 @@ export function buildImplementationPrompt(
 		'2. Explore the repository to learn its conventions, then implement the work item, following the posted plan where one exists.',
 		'3. Run the project lint, type-check, and the relevant tests; fix whatever they surface before continuing.',
 		`4. Commit your work with a conventional-commit message, then push the branch: \`git push -u origin ${branch}\`.`,
-		`5. Open a pull request against "${baseBranch}" with \`gh pr create\`. The PR body MUST contain the line \`Closes #${taskId}\` so the PR links back to the issue.`,
-		`6. Write ONLY the resulting PR URL (nothing else) to a file named "${OPENED_PR_FILENAME}" at the root of this worktree.`,
+		`5. Open a pull request against "${baseBranch}" non-interactively: \`gh pr create --base ${baseBranch} --head ${branch} --title <title> --body <body>\` (pass every flag — a bare \`gh pr create\` prompts interactively and will hang in this headless run). The \`--body\` MUST contain the line \`Closes #${taskId}\` so the PR links back to the issue.`,
+		`6. Write ONLY the resulting PR URL (nothing else) to a file named "${OPENED_PR_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file — it is a scratch hand-off read by SWARM, not part of the change.`,
 		'',
 		'Do not merge the PR — a human does that. Keep the change scoped to the work item.',
 		'',
@@ -188,6 +188,13 @@ function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResu
  * (ai/CODING_STANDARDS.md "Error handling"), and the throw lets the worker mark
  * the job failed. The worktree is always removed, success or failure; the pushed
  * branch survives cleanup so the PR is unaffected.
+ *
+ * Note that `GitWorktreeManager.cleanup` removes the worktree but not the local
+ * `<branchPrefix><taskId>` branch it created, so a re-run after a mid-flight
+ * failure (e.g. `moveWorkItem` rejecting after `addComment` succeeded) would hit
+ * `git worktree add -b` "branch already exists". Retry/leftover-branch handling
+ * belongs to the worker that dequeues and retries jobs (SWARM-17), which is
+ * explicitly out of scope here — see the module header.
  */
 export async function runImplementationPhase(
 	options: RunImplementationPhaseOptions,
