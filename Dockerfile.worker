@@ -1,6 +1,8 @@
 # Worker image — consumes queued jobs and drives the worktree/harness lifecycle.
-# The agent-CLI runtime (claude / antigravity) and git worktree tooling are added
-# in SWARM-16; this image stays minimal until then.
+# The consumer wiring is in place (SWARM-17), but the image still lacks git and
+# the agent-CLI runtimes (claude / antigravity), so a containerized worker can
+# only complete jobs as no-ops today — installing that tooling is a follow-up
+# tracked on the board.
 FROM node:22-slim AS builder
 WORKDIR /app
 

@@ -3,14 +3,12 @@
  *
  * This is deliberately a stub. The receiver'\''s job (SWARM-9) ends once an event
  * has been authenticated, matched to a project, and cleared by loop prevention;
- * at that point it hands the normalized event here. Turning that event into a
- * `TASK_TYPE_*` job and pushing it onto BullMQ requires the **trigger registry**
- * (which decides *what* to do with an event) and the **worker consumer**
- * (SWARM-17) — neither exists yet, and both own the router→worker job contract
- * (PROJECT.md §5, "Orchestration Input"). Enqueuing a provisional job shape here
- * now would just have to be reworked to match them, so this only logs the
- * hand-off. Replace the body with the real BullMQ producer once the trigger
- * registry lands; the receiver call site does not need to change.
+ * at that point it hands the normalized event here. The router→worker job
+ * contract these events must be shaped into now exists — `SwarmJobSchema` on
+ * `QUEUE_NAME` (`src/queue/jobs.ts`, SWARM-17), consumed by the worker in
+ * `src/worker/consumer.ts` — so all that's left is the BullMQ producer itself,
+ * which is SWARM-35'\''s scope. Replace the bodies below with it; the receiver
+ * call sites do not need to change.
  */
 
 import type { ProjectConfig } from '../config/schema.js';

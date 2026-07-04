@@ -12,6 +12,7 @@
  * including "which persona acts, and never on our own output".
  */
 
+import { z } from 'zod';
 import { findProjectByRepo } from '../../config/provider.js';
 import type { ProjectConfig } from '../../config/schema.js';
 import {
@@ -34,20 +35,28 @@ export const PROCESSABLE_EVENTS = [
 
 export type ProcessableEvent = (typeof PROCESSABLE_EVENTS)[number];
 
-/** A raw webhook parsed into the fields the router pipeline needs. */
-export interface GitHubParsedEvent {
-	eventType: ProcessableEvent;
+/**
+ * A raw webhook parsed into the fields the router pipeline needs. A Zod schema
+ * (not a hand-written interface) because the parsed event rides inside a queue
+ * job across the router→Redis→worker boundary (`src/queue/jobs.ts`), and shapes
+ * that cross a boundary keep schema and type in one place
+ * (ai/CODING_STANDARDS.md "Zod is the source of truth").
+ */
+export const GitHubParsedEventSchema = z.object({
+	eventType: z.enum(PROCESSABLE_EVENTS),
 	/** The webhook `action` (e.g. `opened`, `submitted`, `completed`), if present. */
-	action?: string;
+	action: z.string().optional(),
 	/** Repository as `owner/repo`. */
-	repoFullName: string;
+	repoFullName: z.string(),
 	/** PR/issue number as a string, when the event carries one. */
-	workItemId?: string;
+	workItemId: z.string().optional(),
 	/** Login of the account that produced the event (`sender.login`). */
-	actorLogin?: string;
+	actorLogin: z.string().optional(),
 	/** Comment-carrying events (`issue_comment`) — the ones a persona can author in reply. */
-	isCommentEvent: boolean;
-}
+	isCommentEvent: z.boolean(),
+});
+
+export type GitHubParsedEvent = z.infer<typeof GitHubParsedEventSchema>;
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return typeof value === 'object' && value !== null
