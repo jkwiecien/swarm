@@ -17,20 +17,32 @@ import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { processJob } from './consumer.js';
 
-const concurrency = Number(optionalEnv('SWARM_WORKER_CONCURRENCY', '1'));
+const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
+const concurrency = Number(rawConcurrency);
 if (!Number.isInteger(concurrency) || concurrency < 1) {
-	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${concurrency}'`);
+	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${rawConcurrency}'`);
 }
 
 const registry = createTriggerRegistry();
 registerBuiltInTriggers(registry);
 
+// Aborted on SIGTERM/SIGINT so an in-flight agent run is killed (SIGTERM→SIGKILL
+// via `runAgentCli`'s signal option) instead of outliving the stop grace period.
+const shutdown = new AbortController();
+
 const worker = new Worker(
 	QUEUE_NAME,
 	// Job data is untrusted at this boundary (anything could have been pushed to
 	// Redis) — validate before acting on it.
-	async (job) => processJob(SwarmJobSchema.parse(job.data), registry),
-	{ connection: parseRedisUrl(requireEnv('REDIS_URL')), concurrency },
+	async (job) => processJob(SwarmJobSchema.parse(job.data), registry, shutdown.signal),
+	{
+		connection: parseRedisUrl(requireEnv('REDIS_URL')),
+		concurrency,
+		// Agent runs aren't idempotent (see processJob's doc comment), so a job
+		// interrupted by process death must fail visibly rather than be re-queued
+		// by the stalled-job checker and silently re-run on restart.
+		maxStalledCount: 0,
+	},
 );
 
 worker.on('completed', (job, outcome) => {
@@ -47,11 +59,13 @@ worker.on('error', (err) => {
 
 logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 
-// Docker sends SIGTERM on `compose down`/`stop`; finish the in-flight job
-// (worker.close() waits for it), then exit.
+// Docker sends SIGTERM on `compose down`/`stop`; abort the in-flight agent run
+// (it completes as `agent-failed`, cleanup still runs), then let worker.close()
+// wait for the job to finish before exiting.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
-		logger.info(`Received ${signal} — closing worker`);
+		logger.info(`Received ${signal} — aborting in-flight agent run and closing worker`);
+		shutdown.abort();
 		void worker.close().then(
 			() => process.exit(0),
 			(err) => {

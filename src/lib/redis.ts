@@ -5,6 +5,12 @@
 
 import type { ConnectionOptions } from 'bullmq';
 
+/**
+ * Deliberately minimal, matching what the Compose-provided `REDIS_URL` uses:
+ * host, port, and optional password. `username`, a `/db` path, and `rediss://`
+ * TLS are ignored — extend this (don't work around it) if a deployment ever
+ * needs them.
+ */
 export function parseRedisUrl(url: string): ConnectionOptions {
 	const parsed = new URL(url);
 	return {

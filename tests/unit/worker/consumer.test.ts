@@ -198,6 +198,19 @@ describe('processJob', () => {
 		});
 	});
 
+	it('threads the shutdown signal through to the agent run', async () => {
+		const controller = new AbortController();
+
+		await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning({ taskId: '17', cli: 'claude' }),
+			controller.signal,
+		);
+
+		expect(runCalls).toHaveLength(1);
+		expect(runCalls[0].signal).toBe(controller.signal);
+	});
+
 	it('reports a non-zero agent exit as agent-failed, not an error', async () => {
 		runImpl = async () => agentResult({ exitCode: 3 });
 

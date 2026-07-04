@@ -47,8 +47,16 @@ export type JobOutcome =
  * than surfacing the failure in the outcome (reporting it to the PM board is
  * the phase handlers' job). Only infrastructure errors — unknown project,
  * worktree provisioning, graft, spawn failures — throw and fail the job.
+ *
+ * `signal` is the worker's shutdown signal: aborting kills a running agent CLI
+ * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run; the
+ * job then completes as `agent-failed` and the worktree cleanup still runs.
  */
-export async function processJob(job: SwarmJob, registry: TriggerRegistry): Promise<JobOutcome> {
+export async function processJob(
+	job: SwarmJob,
+	registry: TriggerRegistry,
+	signal?: AbortSignal,
+): Promise<JobOutcome> {
 	const project = await findProjectByIdFromDb(job.projectId);
 	if (!project) {
 		// The producer only enqueues for projects it resolved from Postgres, so a
@@ -84,6 +92,7 @@ export async function processJob(job: SwarmJob, registry: TriggerRegistry): Prom
 			env: trigger.env,
 			timeoutMs: trigger.timeoutMs,
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+			signal,
 		});
 
 		const succeeded = result.exitCode === 0;
