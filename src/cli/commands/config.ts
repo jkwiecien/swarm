@@ -51,8 +51,12 @@ export async function run(argv: string[]): Promise<number> {
 
 	const { values } = parseArgs({
 		args: rest,
-		options: { config: { type: 'string' } },
+		options: { config: { type: 'string' }, help: { type: 'boolean', short: 'h' } },
 	});
+	if (values.help) {
+		out.info(USAGE);
+		return 0;
+	}
 	const configPath = values.config ? resolve(values.config) : resolve(REPO_ROOT, CONFIG_FILE);
 
 	out.step(`applying ${configPath}…`);

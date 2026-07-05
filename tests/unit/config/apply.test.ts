@@ -51,6 +51,16 @@ describe('applyConfig', () => {
 		expect(writeProjectCredential).toHaveBeenCalledWith('proj-1', 'HOOK_KEY', 'whsec');
 	});
 
+	it('writes the project row before its credentials (FK-safety ordering)', async () => {
+		await applyConfig(config);
+
+		// project_credentials.project_id FKs the project row, so upsertProjectToDb
+		// must run before any writeProjectCredential for that project.
+		const projectOrder = vi.mocked(upsertProjectToDb).mock.invocationCallOrder[0];
+		const firstCredentialOrder = vi.mocked(writeProjectCredential).mock.invocationCallOrder[0];
+		expect(projectOrder).toBeLessThan(firstCredentialOrder);
+	});
+
 	it('skips (does not write) a credential reference whose env var is unset', async () => {
 		delete process.env.REV_KEY;
 
