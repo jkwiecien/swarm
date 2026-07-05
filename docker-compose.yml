@@ -59,19 +59,11 @@ services:
       timeout: 10s
       retries: 3
 
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: postgresql://swarm:${POSTGRES_PASSWORD:-swarm}@postgres:5432/swarm
-      DATABASE_SSL: "false"
-      REDIS_URL: redis://redis:6379
-      CREDENTIAL_MASTER_KEY: ${CREDENTIAL_MASTER_KEY:-}
-    depends_on:
-      postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
+  # The worker is NOT containerized: it provisions Git worktrees and spawns the
+  # `claude` / `antigravity` CLIs, which need the developer's own PATH, auth, and
+  # config. It runs on the host instead (`npm run dev:worker`), talking to the
+  # containers below over their published host ports. See README "Running the
+  # stack" and ai/ARCHITECTURE.md.
 
 volumes:
   postgres-data:
