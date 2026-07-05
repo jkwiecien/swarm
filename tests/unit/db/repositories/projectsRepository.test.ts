@@ -7,7 +7,9 @@ import {
 	findProjectByBoardFromDb,
 	findProjectByIdFromDb,
 	findProjectByRepoFromDb,
+	upsertProjectToDb,
 } from '@/db/repositories/projectsRepository.js';
+import { createMockProjectConfig } from '../../../helpers/factories.js';
 
 function stubDb(rows: unknown[]): void {
 	const builder = {
@@ -17,6 +19,18 @@ function stubDb(rows: unknown[]): void {
 		limit: () => Promise.resolve(rows),
 	};
 	vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+}
+
+/** Capture the `.values()` / `.onConflictDoUpdate()` args of an insert-upsert chain. */
+function stubInsert(): {
+	values: ReturnType<typeof vi.fn>;
+	onConflictDoUpdate: ReturnType<typeof vi.fn>;
+} {
+	const onConflictDoUpdate = vi.fn(() => Promise.resolve());
+	const values = vi.fn(() => ({ onConflictDoUpdate }));
+	const insert = vi.fn(() => ({ values }));
+	vi.mocked(getDb).mockReturnValue({ insert } as unknown as ReturnType<typeof getDb>);
+	return { values, onConflictDoUpdate };
 }
 
 const row = {
@@ -89,6 +103,25 @@ describe('projectsRepository', () => {
 		it('returns undefined for an unknown id', async () => {
 			stubDb([]);
 			expect(await findProjectByIdFromDb('nope')).toBeUndefined();
+		});
+	});
+
+	describe('upsertProjectToDb', () => {
+		it('flattens pm.type into a column and upserts on the id', async () => {
+			const { values, onConflictDoUpdate } = stubInsert();
+			const project = createMockProjectConfig({ id: 'proj-1' });
+
+			await upsertProjectToDb(project);
+
+			const inserted = values.mock.calls[0][0];
+			expect(inserted).toMatchObject({ id: 'proj-1', pmType: 'github-projects' });
+			// The row shape is columns, not the nested `pm` object of the config.
+			expect(inserted).not.toHaveProperty('pm');
+
+			const [conflict] = onConflictDoUpdate.mock.calls[0];
+			// Keyed on the id, which is itself excluded from the update set.
+			expect(conflict.set).not.toHaveProperty('id');
+			expect(conflict.set).toMatchObject({ pmType: 'github-projects' });
 		});
 	});
 });
