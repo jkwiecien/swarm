@@ -39,7 +39,10 @@
  * `pull_request` opened / `check_suite` success events and calls this —
  * including the aggregate-check-state and dedup policy Cascade's
  * `check-suite-success` trigger encodes — is its own issue, wired via
- * `src/triggers/builtins.ts` when it lands.
+ * `src/triggers/builtins.ts` when it lands. That handler must accept only
+ * same-repo PRs: `provision`'s best-effort `git fetch origin` fetches branch
+ * refs, so a fork PR's head SHA is unreachable here and the detached checkout
+ * would fail the job.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
