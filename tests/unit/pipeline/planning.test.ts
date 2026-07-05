@@ -8,7 +8,7 @@ vi.mock('node:fs', () => ({
 	readFileSync: () => planContents,
 }));
 
-import type { AgentCliResult } from '@/harness/agent-cli.js';
+import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
 	buildPlanningPrompt,
 	PROPOSED_PLAN_FILENAME,
@@ -49,7 +49,7 @@ function makeDeps() {
 		type: 'github-projects' as const,
 		getWorkItem: vi.fn(),
 		listWorkItems: vi.fn(),
-		addComment: vi.fn(async () => 'comment-1'),
+		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
 		moveWorkItem: vi.fn(async () => {}),
 	};
 	return {
@@ -58,7 +58,9 @@ function makeDeps() {
 		taskId: '18',
 		pm,
 		worktrees: worktrees as unknown as GitWorktreeManager,
-		runAgent: vi.fn(async () => agentResult()),
+		runAgent: vi.fn<(opts: RunAgentCliOptions) => Promise<AgentCliResult>>(async () =>
+			agentResult(),
+		),
 		graft: vi.fn(() => []),
 	};
 }

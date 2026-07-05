@@ -71,6 +71,7 @@ const HANDLE: WorktreeHandle = {
 	taskId: '17',
 	path: `${PROJECT.repoRoot}/.swarm-workspaces/task-17`,
 	branch: 'issue-17',
+	detached: false,
 };
 
 function agentResult(overrides: Partial<AgentCliResult> = {}): AgentCliResult {

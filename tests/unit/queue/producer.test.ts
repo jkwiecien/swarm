@@ -1,3 +1,4 @@
+import type { QueueOptions } from 'bullmq';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
 	createMockGitHubProjectsWebhookJob,
@@ -10,7 +11,12 @@ import {
 const { QueueMock, add, close } = vi.hoisted(() => {
 	const add = vi.fn();
 	const close = vi.fn();
-	const QueueMock = vi.fn(() => ({ add, close }));
+	// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
+	// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
+	// `calls[0]` fails to typecheck.
+	const QueueMock = vi.fn<
+		(name: string, opts?: QueueOptions) => { add: typeof add; close: typeof close }
+	>(() => ({ add, close }));
 	return { QueueMock, add, close };
 });
 

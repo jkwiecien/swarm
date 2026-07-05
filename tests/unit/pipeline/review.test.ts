@@ -8,7 +8,7 @@ vi.mock('node:fs', () => ({
 	readFileSync: () => verdictFileContents,
 }));
 
-import type { AgentCliResult } from '@/harness/agent-cli.js';
+import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import { buildReviewPrompt, REVIEW_VERDICT_FILENAME, runReviewPhase } from '@/pipeline/review.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
@@ -48,7 +48,9 @@ function makeDeps() {
 		headSha: HEAD_SHA,
 		taskId: 'review-20',
 		worktrees: worktrees as unknown as GitWorktreeManager,
-		runAgent: vi.fn(async () => agentResult()),
+		runAgent: vi.fn<(opts: RunAgentCliOptions) => Promise<AgentCliResult>>(async () =>
+			agentResult(),
+		),
 		graft: vi.fn(() => []),
 		getToken: vi.fn(async () => 'reviewer-token'),
 	};

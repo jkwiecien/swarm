@@ -6,7 +6,7 @@ pre-commit:
       run: npx biome check --write {staged_files}
       stage_fixed: true
     typecheck:
-      run: npx tsc --noEmit
+      run: npx tsc --noEmit -p tsconfig.typecheck.json
 
 pre-push:
   parallel: true

@@ -3,7 +3,7 @@
  * so producer (router) and consumer (worker) parse `REDIS_URL` one way.
  */
 
-import type { ConnectionOptions } from 'bullmq';
+import type { RedisOptions } from 'bullmq';
 
 /**
  * Deliberately minimal, matching what the Compose-provided `REDIS_URL` uses:
@@ -11,7 +11,7 @@ import type { ConnectionOptions } from 'bullmq';
  * TLS are ignored — extend this (don't work around it) if a deployment ever
  * needs them.
  */
-export function parseRedisUrl(url: string): ConnectionOptions {
+export function parseRedisUrl(url: string): RedisOptions {
 	const parsed = new URL(url);
 	return {
 		host: parsed.hostname,
