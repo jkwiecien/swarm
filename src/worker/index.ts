@@ -1,8 +1,9 @@
 /**
  * Worker entry point — the BullMQ consumer side of the router→worker queue
  * (ai/ARCHITECTURE.md "Components"). A long-lived process, not Cascade's
- * one-container-per-job model: the MVP runs one worker service in Docker
- * Compose, pulling jobs off `swarm-jobs` one at a time (env-overridable pool).
+ * one-container-per-job model: the MVP runs one worker on the host (NOT in
+ * Docker Compose — it needs the developer's PATH/auth for git and the agent
+ * CLIs), pulling jobs off `swarm-jobs` one at a time (env-overridable pool).
  */
 
 // Single canonical integration registration — same entrypoint as the router,

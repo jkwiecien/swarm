@@ -24,14 +24,14 @@ Router  (Hono HTTP server, local Docker container)
    — resolves which SWARM project the event belongs to
    — enqueues a job (BullMQ / Redis)
    ▼
-Worker  (local Docker container, one job at a time or a small pool)
+Worker  (host process — NOT containerized, one job at a time or a small pool)
    — looks up the trigger handler for the event
    — provisions a Git worktree (see "Worktree lifecycle" below)
    — spawns `claude` or `antigravity` CLI with the worktree as CWD
    — commits/pushes, opens/updates a PR, posts back to GitHub Projects
 ```
 
-Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run alongside the router/worker in the same Docker Compose stack. There is no separate "cloud" process for the MVP; router, worker, Redis, and Postgres are all local.
+Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker is the exception**: it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs, which need the developer's own PATH, auth, and config, so it runs directly on the host (`npm run dev:worker`) rather than in a container — reaching Redis/Postgres over their published host ports. There is no separate "cloud" process for the MVP; router, worker, Redis, and Postgres are all local.
 
 ## Provider abstraction
 
