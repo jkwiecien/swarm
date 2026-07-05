@@ -29,7 +29,7 @@
 		"test:coverage": "vitest run --project unit --coverage",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
 		"verify": "npm run lint && npm run typecheck && npm test",
 		"prepare": "lefthook install"
 	},

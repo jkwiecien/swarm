@@ -8,7 +8,7 @@ vi.mock('node:fs', () => ({
 	readFileSync: () => outcomeFileContents,
 }));
 
-import type { AgentCliResult } from '@/harness/agent-cli.js';
+import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
 	buildRespondToReviewPrompt,
 	RESPOND_OUTCOME_FILENAME,
@@ -53,7 +53,9 @@ function makeDeps() {
 		reviewId: '4242',
 		taskId: 'respond-21',
 		worktrees: worktrees as unknown as GitWorktreeManager,
-		runAgent: vi.fn(async () => agentResult()),
+		runAgent: vi.fn<(opts: RunAgentCliOptions) => Promise<AgentCliResult>>(async () =>
+			agentResult(),
+		),
 		graft: vi.fn(() => []),
 	};
 }
