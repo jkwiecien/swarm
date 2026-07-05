@@ -207,6 +207,9 @@ describe('buildRespondToReviewPrompt', () => {
 	it('instructs syncing the branch, reading the pinned review, replying point by point, and recording the outcome', () => {
 		const prompt = buildRespondToReviewPrompt(context);
 		expect(prompt).toContain(`git pull --ff-only origin ${PR_BRANCH}`);
+		// Explicit remote/branch on the push — the checkout may have no upstream
+		// configured (e.g. a human-created PR branch), so a bare `git push` could fail.
+		expect(prompt).toContain(`git push origin ${PR_BRANCH}`);
 		expect(prompt).toContain('gh api repos/jkwiecien/swarm/pulls/99/reviews/4242');
 		expect(prompt).toContain('gh api repos/jkwiecien/swarm/pulls/99/reviews/4242/comments');
 		expect(prompt).toContain('gh pr view 99 --repo jkwiecien/swarm --comments');
