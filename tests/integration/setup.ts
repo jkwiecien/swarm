@@ -13,6 +13,12 @@ import { closeTestDb, resolveTestDbUrl, runMigrations } from './helpers/db.js';
  * (ai/TESTING.md).
  */
 
+// A malformed CREDENTIAL_MASTER_KEY inherited from the shell would make
+// encryptCredential throw in tests that don't stub it. Drop it so the suite is
+// deterministic regardless of ambient env — tests that need a key stub one via
+// `vi.stubEnv`.
+delete process.env.CREDENTIAL_MASTER_KEY;
+
 const resolvedUrl = await resolveTestDbUrl();
 
 if (!resolvedUrl) {

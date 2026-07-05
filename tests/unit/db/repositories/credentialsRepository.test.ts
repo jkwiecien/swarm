@@ -4,10 +4,12 @@ vi.mock('@/db/client.js', () => ({ getDb: vi.fn() }));
 
 import { getDb } from '@/db/client.js';
 import {
+	deleteProjectCredential,
 	resolveAllProjectCredentials,
 	resolveProjectCredential,
 	writeProjectCredential,
 } from '@/db/repositories/credentialsRepository.js';
+import { projectCredentials } from '@/db/schema/projectCredentials.js';
 
 /**
  * Stub the drizzle fluent chain `select().from().where().limit()` so it resolves
@@ -132,5 +134,32 @@ describe('writeProjectCredential', () => {
 		expect(inserted && decryptCredential(inserted.value, 'proj-1')).toBe('ghp_secret');
 		// The conflict branch must update to the same ciphertext, not re-encrypt.
 		expect(conflictSet?.value).toBe(inserted?.value);
+	});
+});
+
+describe('deleteProjectCredential', () => {
+	beforeEach(() => {
+		vi.mocked(getDb).mockReset();
+	});
+
+	it('issues a filtered delete against project_credentials and resolves even with no match', async () => {
+		let deletedTable: unknown;
+		let whereCalls = 0;
+		const builder = {
+			delete: (table: unknown) => {
+				deletedTable = table;
+				return builder;
+			},
+			where: () => {
+				whereCalls++;
+				// Zero rows affected — deleting a key that was never written is a no-op.
+				return Promise.resolve();
+			},
+		};
+		vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+
+		await expect(deleteProjectCredential('proj-1', 'IMPL')).resolves.toBeUndefined();
+		expect(deletedTable).toBe(projectCredentials);
+		expect(whereCalls).toBe(1);
 	});
 });
