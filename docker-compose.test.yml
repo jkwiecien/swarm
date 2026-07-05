@@ -1,0 +1,24 @@
+# Ephemeral Postgres for the integration suite (ai/TESTING.md) — same
+# `test:db:up` pattern as Cascade's docker-compose.test.yml. tmpfs-backed so
+# every `up` starts from a blank database; migrations run in the suite's setup.
+name: swarm-test # Fixed name so worktree checkouts don't each mint a compose project
+
+services:
+  postgres-test:
+    container_name: swarm-postgres-test
+    image: postgres:16-alpine
+    ports:
+      # 5432 is a system Postgres, 5433 is SWARM's dev compose, and Cascade's
+      # test DB also claims 5433 — so the test instance sits on 5434.
+      - "127.0.0.1:5434:5432"
+    environment:
+      POSTGRES_USER: swarm_test
+      POSTGRES_PASSWORD: swarm_test
+      POSTGRES_DB: swarm_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swarm_test -d swarm_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10

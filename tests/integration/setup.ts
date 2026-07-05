@@ -1,0 +1,41 @@
+import { afterAll, beforeAll } from 'vitest';
+import { closeTestDb, resolveTestDbUrl, runMigrations } from './helpers/db.js';
+
+/**
+ * Integration-project setup (vitest.config.ts wires this in for the
+ * `integration` project only) — trimmed from Cascade's `tests/integration/setup.ts`.
+ *
+ * Points the app's own `getDb()` at the ephemeral test database by setting
+ * `DATABASE_URL`, runs migrations once, and closes the pool afterwards. When no
+ * test database is reachable the suites skip themselves (via the
+ * `SWARM_TEST_DB_AVAILABLE` flag each file gates on with `describe.skipIf`)
+ * rather than fail — a machine without Docker still gets a green run
+ * (ai/TESTING.md).
+ */
+
+const resolvedUrl = await resolveTestDbUrl();
+
+if (!resolvedUrl) {
+	console.warn(
+		'[integration] No reachable test database found — skipping all integration tests.\n' +
+			'  Run `npm run test:db:up` to start the Docker Compose test database.',
+	);
+	// A DATABASE_URL inherited from the shell would point getDb() at a *real*
+	// database — and these suites TRUNCATE. Drop it so any test that forgets its
+	// skipIf gate fails loudly in getDb() instead of touching live data.
+	delete process.env.DATABASE_URL;
+	delete process.env.SWARM_POSTGRES_HOST;
+	process.env.SWARM_TEST_DB_AVAILABLE = '';
+} else {
+	process.env.DATABASE_URL = resolvedUrl;
+	process.env.DATABASE_SSL = 'false';
+	process.env.SWARM_TEST_DB_AVAILABLE = '1';
+
+	beforeAll(async () => {
+		await runMigrations();
+	});
+
+	afterAll(async () => {
+		await closeTestDb();
+	});
+}

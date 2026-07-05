@@ -19,7 +19,8 @@ const sharedTest = {
 
 export default defineConfig({
 	test: {
-		// Integration tests don't exist yet; don't fail the run over an empty project.
+		// The integration project may legitimately run zero tests (suites skip
+		// themselves when no test database is reachable — tests/integration/setup.ts).
 		passWithNoTests: true,
 
 		coverage: {
@@ -52,6 +53,7 @@ export default defineConfig({
 					name: 'integration',
 					include: ['tests/integration/**/*.test.ts'],
 					...sharedTest,
+					setupFiles: [...sharedTest.setupFiles, './tests/integration/setup.ts'],
 					testTimeout: 30_000,
 					hookTimeout: 30_000,
 					pool: 'forks',
