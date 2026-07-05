@@ -50,6 +50,10 @@ services:
       DATABASE_SSL: "false"
       REDIS_URL: redis://redis:6379
       CREDENTIAL_MASTER_KEY: ${CREDENTIAL_MASTER_KEY:-}
+      # Structured logging (src/lib/logger.ts). Containers have no TTY, so the
+      # logger already defaults to JSON here; set these to tune level/format.
+      SWARM_LOG_LEVEL: ${SWARM_LOG_LEVEL:-info}
+      SWARM_LOG_FORMAT: ${SWARM_LOG_FORMAT:-json}
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }

@@ -9,9 +9,13 @@
 
 import { serve } from '@hono/node-server';
 
-import { logger } from '../lib/logger.js';
+import { configureLogger, logger } from '../lib/logger.js';
 import { closeQueue } from '../queue/producer.js';
 import { createWebhookApp } from './webhook-receiver.js';
+
+// Tag every line this process emits so router and worker logs stay
+// distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
+configureLogger({ component: 'router' });
 
 const port = Number(process.env.PORT ?? 3000);
 

@@ -12,11 +12,15 @@ import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
 import { optionalEnv, requireEnv } from '../lib/env.js';
-import { logger } from '../lib/logger.js';
+import { configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { processJob } from './consumer.js';
+
+// Tag every line this process emits so router and worker logs stay
+// distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
+configureLogger({ component: 'worker' });
 
 const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
 const concurrency = Number(rawConcurrency);
