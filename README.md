@@ -59,7 +59,7 @@ Postgres, Redis, and the router run in Docker Compose; the **worker runs on the 
 
 ```bash
 cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
-docker compose up --build     # postgres, redis, router (NOT the worker)
+docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker)
 ```

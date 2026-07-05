@@ -60,9 +60,9 @@ worker.on('error', (err) => {
 
 logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 
-// Docker sends SIGTERM on `compose down`/`stop`; abort the in-flight agent run
-// (it completes as `agent-failed`, cleanup still runs), then let worker.close()
-// wait for the job to finish before exiting.
+// On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
+// the in-flight agent run (it completes as `agent-failed`, cleanup still runs),
+// then let worker.close() wait for the job to finish before exiting.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
 		logger.info(`Received ${signal} — aborting in-flight agent run and closing worker`);
