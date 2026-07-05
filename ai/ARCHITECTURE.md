@@ -33,6 +33,10 @@ Worker  (host process — NOT containerized, one job at a time or a small pool)
 
 Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker is the exception**: it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs, which need the developer's own PATH, auth, and config, so it runs directly on the host (`npm run dev:worker`) rather than in a container — reaching Redis/Postgres over their published host ports. There is no separate "cloud" process for the MVP; router, worker, Redis, and Postgres are all local.
 
+### Observability
+
+All code logs through one shared logger (`src/lib/logger.ts`) — a deliberately tiny, dependency-free wrapper (no pino/winston) mirroring Cascade's `logger.info/warn/error/debug(message, context)` shape. It emits **structured JSON** (one `{level,time,msg,...context}` object per line) for machine parsing, or a readable `[level] msg {context}` form for local dev; format follows `SWARM_LOG_FORMAT` (`json`|`pretty`) and auto-picks pretty on an interactive TTY, json when piped/containerized. `SWARM_LOG_LEVEL` (`debug|info|warn|error`, default `info`) sets the minimum emitted level. Because router and worker share a log stream, each entry point calls `configureLogger({ component })` at startup so every line it emits is tagged `component: "router"` / `"worker"` and stays attributable.
+
 ## Provider abstraction
 
 Two integrations, each following the manifest/registry pattern from `ai/CODING_STANDARDS.md`:
