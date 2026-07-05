@@ -1,8 +1,9 @@
 /**
  * Worker entry point — the BullMQ consumer side of the router→worker queue
  * (ai/ARCHITECTURE.md "Components"). A long-lived process, not Cascade's
- * one-container-per-job model: the MVP runs one worker service in Docker
- * Compose, pulling jobs off `swarm-jobs` one at a time (env-overridable pool).
+ * one-container-per-job model: the MVP runs one worker on the host (NOT in
+ * Docker Compose — it needs the developer's PATH/auth for git and the agent
+ * CLIs), pulling jobs off `swarm-jobs` one at a time (env-overridable pool).
  */
 
 // Single canonical integration registration — same entrypoint as the router,
@@ -59,9 +60,9 @@ worker.on('error', (err) => {
 
 logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 
-// Docker sends SIGTERM on `compose down`/`stop`; abort the in-flight agent run
-// (it completes as `agent-failed`, cleanup still runs), then let worker.close()
-// wait for the job to finish before exiting.
+// On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
+// the in-flight agent run (it completes as `agent-failed`, cleanup still runs),
+// then let worker.close() wait for the job to finish before exiting.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
 		logger.info(`Received ${signal} — aborting in-flight agent run and closing worker`);

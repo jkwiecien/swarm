@@ -4,7 +4,7 @@
 
 > Full architecture, protocol spec, and implementation roadmap: **[`PROJECT.md`](./PROJECT.md)** — the baseline Architecture Design Document (ADD). This README is the short orientation; `PROJECT.md` is the source of truth for exact message shapes, phases, and task breakdown.
 
-> **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue + worker (Docker Compose), reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1) for the current backlog.
+> **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue in Docker Compose plus a host-run worker, reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and the [GitHub Projects board](https://github.com/users/jkwiecien/projects/3/views/1) for the current backlog.
 
 ## Core idea
 
@@ -23,16 +23,16 @@ Router  (Hono HTTP server, Docker container)
    ▼
 BullMQ / Redis  (job queue, Docker container)
    ▼
-Worker  (Docker container)
+Worker  (host process — NOT containerized; needs local git + agent CLIs)
    — resolves trigger handler → git worktree add (isolated sandbox) → claude / antigravity-cli (CWD = worktree)
    — commit + push → PR opened/updated → GitHub Projects item updated
 ```
 
 - **Router**: Node.js/TypeScript, Hono — verifies GitHub webhook signatures, resolves the project, enqueues jobs.
 - **Queue**: BullMQ on Redis — retries, backoff, concurrency limits.
-- **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity`, streams their stdout/stderr, pushes and opens PRs.
+- **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity`, streams their stdout/stderr, pushes and opens PRs. Runs on the host (not containerized) so the agent CLIs have the developer's PATH/auth/config.
 - **Postgres**: project config, credentials, run history.
-- All of the above run in one Docker Compose stack, on one machine — see `PROJECT.md` §2.1 and `ai/ARCHITECTURE.md`.
+- Router, Redis, and Postgres run in one Docker Compose stack; the worker runs alongside on the host — one machine either way, see `PROJECT.md` §2.1 and `ai/ARCHITECTURE.md`.
 
 The original cloud-engine design (Cloud Run + Pub/Sub + Firestore + a gRPC-connected daemon) is deferred — see `PROJECT.md` §2.2/§3 for that design once it's revisited.
 
@@ -55,13 +55,16 @@ PM boards plug in via an agnostic `PMProvider` interface (verify webhook, get/li
 
 ## Running the stack (local)
 
-All four services run in one Docker Compose stack:
+Postgres, Redis, and the router run in Docker Compose; the **worker runs on the host**:
 
 ```bash
 cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
-docker compose up --build     # postgres, redis, router, worker
+docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
+npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker)
 ```
+
+The worker isn't containerized because it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs — those need the developer's own PATH, authentication, and config, which a container wouldn't have. Running it on the host is the local-first fit. It connects to the Compose Redis/Postgres over their published host ports (`REDIS_URL` / `DATABASE_URL` in `.env`), so **`git` and the `claude` / `antigravity` CLIs must be installed and authenticated on your machine** for the worker to get past provision/spawn.
 
 The Postgres schema (project config + credentials at rest) is defined with **Drizzle** in `src/db/` — `npm run db:generate` regenerates migrations from the schema, `npm run db:migrate` applies them. Credentials are encrypted with AES-256-GCM before storage when `CREDENTIAL_MASTER_KEY` is set (plaintext otherwise, for local dev).
 
