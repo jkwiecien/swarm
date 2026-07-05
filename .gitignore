@@ -18,7 +18,9 @@ Temporary Items
 .apdisk
 
 # Node.js
-node_modules/
+# No trailing slash: also ignores a `node_modules` symlink (git worktrees graft one in
+# per ai/ARCHITECTURE.md), not just a real directory — see #32.
+node_modules
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

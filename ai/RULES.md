@@ -14,7 +14,7 @@ System prompt and working conventions for AI agents in this repository — the *
 
 **SWARM is based on Cascade.** SWARM's task modelling, webhook ingestion, and CLI-runner patterns take structural inspiration from Cascade's implementation — consult it for architectural precedent whenever a pattern here is underspecified. Resolve it in this order:
 
-1. `cascade` at the repo root — a symlink to the sibling checkout. This is the expected setup; if it's missing, create it with an **absolute** target: `ln -sfn "$(cd ../cascade && pwd -P)" cascade`. (Use an absolute target, not a relative `../cascade`: git worktrees under `.swarm-workspaces/<name>/` check out the same committed symlink two levels deeper, where a relative `../cascade` dangles — the same reason the committed `node_modules` symlink is absolute.)
+1. `cascade` at the repo root — a symlink to the sibling checkout. This is the expected setup; if it's missing, create it with an **absolute** target: `ln -sfn "$(cd ../cascade && pwd -P)" cascade`. (Use an absolute target, not a relative `../cascade`: git worktrees under `.swarm-workspaces/<name>/` check out the same committed symlink two levels deeper, where a relative `../cascade` dangles. The per-worktree `node_modules` symlink is grafted at runtime with an absolute target for the same reason.)
 2. If not symlinked, look for a sibling checkout directly at `../cascade`.
 3. If neither exists locally, it's the open-source project at <https://github.com/mongrel-intelligence/cascade> — clone it or read it there.
 
