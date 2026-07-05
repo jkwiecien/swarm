@@ -39,6 +39,23 @@ describe('enqueueJob', () => {
 		expect(opts).toMatchObject({ connection: { host: 'localhost', port: 6379 } });
 	});
 
+	it('configures the load-bearing default job options', async () => {
+		const { enqueueJob } = await import('@/queue/producer.js');
+		await enqueueJob(createMockGitHubWebhookJob());
+
+		const [, opts] = QueueMock.mock.calls[0];
+		// The retry-safety + Redis-hygiene story hinges on these exact values —
+		// lock them against accidental regression (see producer.ts rationale).
+		expect(opts).toMatchObject({
+			defaultJobOptions: {
+				attempts: 3,
+				backoff: { type: 'exponential', delay: 5_000 },
+				removeOnComplete: { age: 24 * 60 * 60, count: 100 },
+				removeOnFail: { age: 7 * 24 * 60 * 60 },
+			},
+		});
+	});
+
 	it('adds a github job named by its type, using deliveryId as the job id', async () => {
 		const { enqueueJob } = await import('@/queue/producer.js');
 		const job = createMockGitHubWebhookJob();

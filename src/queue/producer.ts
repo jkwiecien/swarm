@@ -50,6 +50,12 @@ function getQueue(): Queue<SwarmJob> {
  * redelivered webhook — GitHub retries deliveries that don't 2xx promptly —
  * dedupes to a single job instead of re-running the pipeline. Events without a
  * delivery id (synthetic/manual) get a BullMQ-assigned id and no dedup.
+ *
+ * The dedup guarantee is retention-scoped, not permanent: it only holds while
+ * the completed job still lives in Redis (`removeOnComplete` below). Under
+ * bursty load the `count: 100` cap can evict a completed job sooner than its
+ * 24h age, freeing the `jobId` so a later redelivery of that same delivery id
+ * would re-run. Low risk in practice — GitHub's redelivery window is short.
  */
 export async function enqueueJob(job: SwarmJob): Promise<string | undefined> {
 	const added = await getQueue().add(
