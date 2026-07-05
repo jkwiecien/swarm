@@ -4,7 +4,11 @@
 	"description": "Local-First, Federated Multi-Agent Framework for automating software engineering workflows",
 	"type": "module",
 	"main": "dist/index.js",
+	"bin": {
+		"swarm": "./bin/swarm.js"
+	},
 	"scripts": {
+		"swarm": "node --import tsx/esm src/cli/index.ts",
 		"dev": "node --env-file=.env --import tsx/esm --watch src/index.ts",
 		"dev:router": "node --env-file=.env --import tsx/esm --watch src/router/index.ts",
 		"dev:worker": "node --env-file=.env --import tsx/esm --watch src/worker/index.ts",

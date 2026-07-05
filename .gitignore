@@ -42,6 +42,10 @@ lerna-debug.log*
 .env.production.local
 .env.*.local
 
+# SWARM project config scaffolded by `swarm init` — per-user (repo paths, board
+# IDs, credential references), not committed. See src/cli/commands/init.ts.
+swarm.config.json
+
 # TypeScript
 *.tsbuildinfo
 dist/

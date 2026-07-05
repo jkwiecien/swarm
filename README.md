@@ -64,6 +64,8 @@ npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL fro
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker)
 ```
 
+The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps above: `swarm init` scaffolds `.env` (from `.env.docker.example`) and a `swarm.config.json` project-config template — validating it if it already exists; `swarm start [--build]` / `swarm stop [-v]` bring the Compose stack up/down; `swarm status` shows the container states and probes the router's `/health`; `swarm logs [service] [-f]` tails the logs. It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.
+
 The worker isn't containerized because it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs — those need the developer's own PATH, authentication, and config, which a container wouldn't have. Running it on the host is the local-first fit. It connects to the Compose Redis/Postgres over their published host ports (`REDIS_URL` / `DATABASE_URL` in `.env`), so **`git` and the `claude` / `antigravity` CLIs must be installed and authenticated on your machine** for the worker to get past provision/spawn.
 
 The Postgres schema (project config + credentials at rest) is defined with **Drizzle** in `src/db/` — `npm run db:generate` regenerates migrations from the schema, `npm run db:migrate` applies them. Credentials are encrypted with AES-256-GCM before storage when `CREDENTIAL_MASTER_KEY` is set (plaintext otherwise, for local dev).
