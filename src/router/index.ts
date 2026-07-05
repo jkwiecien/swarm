@@ -3,13 +3,14 @@
  *
  * All the request logic lives in `webhook-receiver.ts` (testable without a live
  * server); this module is just the process boundary: build the app, bind the
- * port, and shut down cleanly. Enqueuing onto BullMQ is deferred to the trigger
- * registry / worker phase — see `enqueue.ts`.
+ * port, and shut down cleanly. Verified events are enqueued onto BullMQ at the
+ * `enqueue.ts` seam (producer in `queue/producer.ts`).
  */
 
 import { serve } from '@hono/node-server';
 
 import { logger } from '../lib/logger.js';
+import { closeQueue } from '../queue/producer.js';
 import { createWebhookApp } from './webhook-receiver.js';
 
 const port = Number(process.env.PORT ?? 3000);
@@ -23,6 +24,18 @@ const server = serve({ fetch: app.fetch, port }, () => {
 // container stops promptly instead of being killed after the grace period.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
-		server.close(() => process.exit(0));
+		// Stop accepting requests, then drain the BullMQ producer connection so the
+		// process exits instead of hanging on an open Redis socket.
+		server.close(() => {
+			void closeQueue().then(
+				() => process.exit(0),
+				(err) => {
+					logger.error('Producer queue close failed', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+					process.exit(1);
+				},
+			);
+		});
 	});
 }
