@@ -91,11 +91,12 @@ describe('graftEnvironment', () => {
 	});
 
 	it('leaves a pre-existing committed-style link (already at the realpath) untouched', () => {
-		// A worktree checks out the *committed* `cascade`/`node_modules` symlink,
-		// whose target is already the absolute realpath. graft must recognise it as
-		// correct and not re-point it — re-pointing would dirty the worktree and leak
-		// into the agent's PR. This differs from the idempotency test above, which
-		// re-runs over a link graft itself created.
+		// A pre-existing symlink already points at the absolute realpath — either the
+		// *committed* `cascade` link a worktree checks out, or a `node_modules` link a
+		// prior graft (or the solve-issue skill) already created at runtime. graft must
+		// recognise it as correct and not re-point it — re-pointing would dirty the
+		// worktree and leak into the agent's PR. This differs from the idempotency test
+		// above, which re-runs over a link graft itself created.
 		const nodeModules = seedSource('node_modules', 'dir');
 		symlinkSync(nodeModules, join(worktreeDir, 'node_modules'), 'dir');
 
