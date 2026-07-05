@@ -59,11 +59,37 @@ function resolveFormat(): 'json' | 'pretty' {
 	return process.stdout.isTTY ? 'pretty' : 'json';
 }
 
+// A logger must never crash its caller, so JSON.stringify is guarded on two
+// fronts: a replacer coerces BigInt (which stringify throws on outright) to a
+// string, and a try/catch fallback emits a still-valid line carrying the
+// message plus a _logError marker if anything else is unserializable (e.g. a
+// circular reference). Call sites pass plain ids/strings today, so this is
+// belt-and-suspenders — but the logger is the sanctioned structured path now.
+function safeStringify(value: unknown): string {
+	return JSON.stringify(value, (_key, val) => (typeof val === 'bigint' ? val.toString() : val));
+}
+
 function format(level: LogLevel, message: string, context: LogContext, time: string): string {
 	if (resolveFormat() === 'json') {
-		return JSON.stringify({ level, time, msg: message, ...context });
+		try {
+			return safeStringify({ level, time, msg: message, ...context });
+		} catch (err) {
+			return safeStringify({
+				level,
+				time,
+				msg: message,
+				_logError: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
-	const suffix = Object.keys(context).length > 0 ? ` ${JSON.stringify(context)}` : '';
+	let suffix = '';
+	if (Object.keys(context).length > 0) {
+		try {
+			suffix = ` ${safeStringify(context)}`;
+		} catch (err) {
+			suffix = ` {"_logError":${JSON.stringify(err instanceof Error ? err.message : String(err))}}`;
+		}
+	}
 	return `[${level}] ${message}${suffix}`;
 }
 

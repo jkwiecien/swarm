@@ -20,6 +20,9 @@ import { processJob } from './consumer.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
+// This runs after the hoisted imports above (notably the integrations
+// entrypoint), so any module that logs at import time would emit an untagged
+// line before this call — nothing does today; keep it that way.
 configureLogger({ component: 'worker' });
 
 const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');

@@ -98,6 +98,86 @@ describe('pretty format', () => {
 	});
 });
 
+describe('crash-safety against un-serializable context', () => {
+	it('coerces a BigInt to a string rather than throwing', () => {
+		expect(() => logger.info('big', { amount: 9007199254740993n })).not.toThrow();
+
+		const parsed = JSON.parse(infoSpy.mock.calls[0][0] as string);
+		expect(parsed).toMatchObject({ msg: 'big', amount: '9007199254740993' });
+	});
+
+	it('emits a _logError line instead of throwing on a circular reference', () => {
+		const circular: Record<string, unknown> = { name: 'loop' };
+		circular.self = circular;
+
+		expect(() => logger.error('cycle', circular)).not.toThrow();
+
+		const parsed = JSON.parse(errorSpy.mock.calls[0][0] as string);
+		expect(parsed).toMatchObject({ level: 'error', msg: 'cycle' });
+		expect(typeof parsed._logError).toBe('string');
+	});
+
+	it('degrades gracefully in pretty format too', () => {
+		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty');
+		const circular: Record<string, unknown> = {};
+		circular.self = circular;
+
+		expect(() => logger.warn('cycle', circular)).not.toThrow();
+
+		const line = warnSpy.mock.calls[0][0] as string;
+		expect(line).toContain('[warn] cycle');
+		expect(line).toContain('_logError');
+	});
+});
+
+describe('format auto-detection when SWARM_LOG_FORMAT is unset', () => {
+	// resolveFormat falls back to process.stdout.isTTY when no explicit format
+	// is set — the default production path that every other test bypasses by
+	// stubbing the env. Stub isTTY around each case and restore it after.
+	let originalIsTTY: boolean | undefined;
+
+	beforeEach(() => {
+		originalIsTTY = process.stdout.isTTY;
+		vi.stubEnv('SWARM_LOG_FORMAT', undefined);
+	});
+
+	afterEach(() => {
+		Object.defineProperty(process.stdout, 'isTTY', {
+			value: originalIsTTY,
+			configurable: true,
+		});
+	});
+
+	it('renders pretty on an interactive terminal', () => {
+		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+
+		logger.info('hi', { port: 3000 });
+
+		expect(infoSpy.mock.calls[0][0]).toBe('[info] hi {"port":3000}');
+	});
+
+	it('renders json when stdout is piped/containerized', () => {
+		Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+
+		logger.info('hi', { port: 3000 });
+
+		expect(JSON.parse(infoSpy.mock.calls[0][0] as string)).toMatchObject({
+			level: 'info',
+			msg: 'hi',
+			port: 3000,
+		});
+	});
+
+	it('falls through to auto-detect for an unrecognized format value', () => {
+		vi.stubEnv('SWARM_LOG_FORMAT', 'yaml');
+		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+
+		logger.info('hi');
+
+		expect(infoSpy.mock.calls[0][0]).toBe('[info] hi');
+	});
+});
+
 describe('configureLogger base context', () => {
 	it('merges the process-wide context into every line', () => {
 		configureLogger({ component: 'worker' });
