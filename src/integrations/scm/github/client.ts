@@ -113,6 +113,29 @@ export async function getCheckSuiteStatus(
 }
 
 /**
+ * Resolve the GitHub login that opened a PR (`pull_request.user.login`), or
+ * `null` if the PR carries no author (e.g. a deleted account). Used by the
+ * review handler's author-persona gate on the `check_suite` path, where the
+ * webhook payload — unlike a `pull_request` event — carries no author, so a
+ * single `pulls.get` is the only way to learn who opened the PR.
+ *
+ * Throws on an API failure (transient 5xx / rate-limit / network blip) rather
+ * than swallowing it: the caller degrades a "can't determine authorship" error
+ * to a bounded recheck, distinct from a resolved-but-not-ours author, which is a
+ * definitive skip. Runs against whatever token is in scope (the reviewer
+ * persona, per the aggregate query that follows it).
+ */
+export async function getPullRequestAuthorLogin(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<string | null> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	return data.user?.login ?? null;
+}
+
+/**
  * Resolve the GitHub login a token authenticates as, or `null` if the token is
  * absent or the lookup fails. Used to map a persona's token to its bot identity
  * for loop prevention (see `personas.ts`). Failures return `null` rather than

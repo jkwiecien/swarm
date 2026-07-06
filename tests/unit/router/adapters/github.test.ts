@@ -144,6 +144,29 @@ describe('GitHubRouterAdapter', () => {
 			});
 		});
 
+		it('extracts the PR author login from a pull_request event', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'opened',
+				repository: repo(),
+				pull_request: {
+					number: 42,
+					user: { login: 'swarm-impl' },
+					head: { sha: 'abc', ref: 'issue-42', repo: { full_name: 'jkwiecien/swarm' } },
+					base: { ref: 'main', repo: { full_name: 'jkwiecien/swarm' } },
+				},
+			});
+			expect(parsed?.prAuthorLogin).toBe('swarm-impl');
+		});
+
+		it('leaves prAuthorLogin undefined when the pull_request has no user', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'opened',
+				repository: repo(),
+				pull_request: { number: 42 },
+			});
+			expect(parsed?.prAuthorLogin).toBeUndefined();
+		});
+
 		it('marks a same-repo pull_request as not cross-repo', () => {
 			const parsed = adapter.parseWebhook('pull_request', {
 				action: 'opened',
