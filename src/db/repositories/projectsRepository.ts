@@ -73,3 +73,36 @@ export async function findProjectByIdFromDb(id: string): Promise<ProjectConfig |
 	const row = rows[0];
 	return row ? rowToProjectConfig(row) : undefined;
 }
+
+/**
+ * Upsert a project row from its `ProjectConfig` — the write side of the
+ * config-file → DB loader (`swarm config apply`). Keyed on `id`, so re-applying
+ * an edited `swarm.config.json` updates the existing row in place rather than
+ * inserting a duplicate; the loader is idempotent by design.
+ *
+ * The `credentials` block is persisted as-is — it holds only *references*
+ * (env-var keys), never the secrets themselves. The secret values are written
+ * separately into `project_credentials` (see `credentialsRepository`).
+ */
+export async function upsertProjectToDb(config: ProjectConfig): Promise<void> {
+	const values = {
+		id: config.id,
+		name: config.name,
+		repo: config.repo,
+		repoRoot: config.repoRoot,
+		worktreeRoot: config.worktreeRoot,
+		baseBranch: config.baseBranch,
+		branchPrefix: config.branchPrefix,
+		pmType: config.pm.type,
+		githubProjects: config.githubProjects,
+		credentials: config.credentials,
+	};
+	const { id: _id, ...updateValues } = values;
+	await getDb()
+		.insert(projects)
+		.values(values)
+		.onConflictDoUpdate({
+			target: projects.id,
+			set: { ...updateValues, updatedAt: new Date() },
+		});
+}

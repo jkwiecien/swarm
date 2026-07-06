@@ -11,6 +11,7 @@
  */
 
 import * as out from './_shared/output.js';
+import * as config from './commands/config.js';
 import * as init from './commands/init.js';
 import * as logs from './commands/logs.js';
 import * as start from './commands/start.js';
@@ -21,6 +22,7 @@ type Command = { run: (argv: string[]) => Promise<number> };
 
 const COMMANDS: Record<string, Command> = {
 	init,
+	config,
 	start,
 	stop,
 	status,
@@ -33,6 +35,7 @@ Usage: swarm <command> [options]
 
 Commands:
   init             Bootstrap local config (.env + swarm.config.json)
+  config apply     Load swarm.config.json into Postgres (projects + credentials)
   start [--build]  Start the local stack (postgres, redis, router)
   stop [-v]        Stop the stack (-v/--volumes also drops its volumes)
   status           Show stack container states and probe the router's health

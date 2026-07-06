@@ -17,6 +17,7 @@
 		"start:worker": "node --env-file=.env dist/worker/index.js",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "node --env-file=.env ./node_modules/.bin/drizzle-kit migrate",
+		"db:seed": "node --env-file=.env --import tsx/esm src/cli/index.ts config apply",
 		"db:push": "node --env-file=.env ./node_modules/.bin/drizzle-kit push",
 		"db:studio": "node --env-file=.env ./node_modules/.bin/drizzle-kit studio",
 		"test": "vitest run --project unit",
@@ -29,7 +30,7 @@
 		"test:coverage": "vitest run --project unit --coverage",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
-		"typecheck": "tsc --noEmit",
+		"typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
 		"verify": "npm run lint && npm run typecheck && npm test",
 		"prepare": "lefthook install"
 	},

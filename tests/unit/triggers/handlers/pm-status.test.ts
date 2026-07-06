@@ -46,9 +46,7 @@ describe('pm-status trigger', () => {
 		});
 
 		it('matches a created card', () => {
-			expect(trigger(createMockWorkItem()).matches(ctx({ action: 'created', changes: null }))).toBe(
-				true,
-			);
+			expect(trigger(createMockWorkItem()).matches(ctx({ action: 'created' }))).toBe(true);
 		});
 
 		it('ignores an edit to a non-Status field', () => {
