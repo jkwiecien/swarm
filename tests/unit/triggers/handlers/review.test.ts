@@ -17,6 +17,15 @@ vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
 		`${repo}:${prNumber}:${headSha}`,
 }));
 
+// The respond-to-ci path also applies a per-PR fix-attempt cap; mock it so these
+// tests need no Redis. Defaults to allowing the attempt; a test flips it to
+// exercise the cap.
+const { claimRespondToCiAttempt } = vi.hoisted(() => ({ claimRespondToCiAttempt: vi.fn() }));
+vi.mock('@/triggers/respond-to-ci-attempts.js', () => ({
+	claimRespondToCiAttempt,
+	buildRespondToCiAttemptKey: (repo: string, prNumber: string) => `${repo}:${prNumber}`,
+}));
+
 // A `check_suite` event re-queries aggregate CI state and may schedule a
 // coalesced recheck — mock both so the tests need neither GitHub nor Redis.
 const { getCheckSuiteStatus, scheduleCoalescedJob, withPersonaCredentials } = vi.hoisted(() => ({
@@ -43,6 +52,8 @@ function checkStatus(runs: Array<[string, string, string | null]>): CheckSuiteSt
 beforeEach(() => {
 	claimReviewDispatch.mockReset();
 	claimReviewDispatch.mockResolvedValue(true);
+	claimRespondToCiAttempt.mockReset();
+	claimRespondToCiAttempt.mockResolvedValue({ allowed: true, attempt: 1 });
 	getCheckSuiteStatus.mockReset();
 	scheduleCoalescedJob.mockReset();
 	// The integration just runs the callback under (mocked) credentials.
@@ -140,16 +151,55 @@ describe('review trigger', () => {
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
 		});
 
-		it('skips (no review) when a check failed', async () => {
+		it('dispatches Respond-to-CI when a check failed', async () => {
 			getCheckSuiteStatus.mockResolvedValue(
 				checkStatus([
 					['build', 'completed', 'success'],
 					['test', 'completed', 'failure'],
 				]),
 			);
-			expect(await handler.handle(ctx({ ...base, headSha: 'cafe' }))).toBeNull();
+			const result = await handler.handle(ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' }));
+			expect(result).toEqual({
+				phase: 'respond-to-ci',
+				taskId: '9',
+				prNumber: '9',
+				prBranch: 'issue-9',
+				headSha: 'cafe',
+			});
+			// Same PR+SHA dedup slot as review, plus the per-PR attempt cap.
+			expect(claimReviewDispatch).toHaveBeenCalledWith(`${PROJECT.repo}:9:cafe`, 'pr-review', {
+				prNumber: '9',
+				headSha: 'cafe',
+			});
+			expect(claimRespondToCiAttempt).toHaveBeenCalledWith(`${PROJECT.repo}:9`, {
+				prNumber: '9',
+				headSha: 'cafe',
+			});
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
-			expect(claimReviewDispatch).not.toHaveBeenCalled();
+		});
+
+		it('does not dispatch Respond-to-CI when the PR+SHA slot is already claimed', async () => {
+			claimReviewDispatch.mockResolvedValue(false);
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' })),
+			).toBeNull();
+			expect(claimRespondToCiAttempt).not.toHaveBeenCalled();
+		});
+
+		it('drops the CI-fix dispatch once the per-PR attempt cap is hit', async () => {
+			claimRespondToCiAttempt.mockResolvedValue({ allowed: false, attempt: 4 });
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' })),
+			).toBeNull();
+		});
+
+		it('skips Respond-to-CI when the check suite carries no PR branch', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			// prBranch absent — the fix phase would have no branch to check out.
+			expect(await handler.handle(ctx({ ...base, headSha: 'cafe' }))).toBeNull();
+			expect(claimRespondToCiAttempt).not.toHaveBeenCalled();
 		});
 
 		it('defers and schedules a coalesced recheck when a check is still running', async () => {

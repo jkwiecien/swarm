@@ -6,7 +6,7 @@
  * "Components" — the worker "looks up the trigger handler for the event"), so
  * the job carries only the parsed event and the context is rebuilt here.
  *
- * A `TriggerResult` names one of the four pipeline phases (ai/ARCHITECTURE.md
+ * A `TriggerResult` names one of the pipeline phases (ai/ARCHITECTURE.md
  * "Pipeline phases") plus the inputs that phase's orchestrator
  * (`src/pipeline/*.ts`) needs — the handler resolves those from the event (and,
  * for the PM phases, an authoritative board re-read), and the worker's
@@ -44,7 +44,12 @@ export type TriggerContext = {
 export type TriggerSource = TriggerContext['source'];
 
 /** The pipeline phase a matched trigger runs. */
-export type TriggerPhase = 'planning' | 'implementation' | 'review' | 'respond-to-review';
+export type TriggerPhase =
+	| 'planning'
+	| 'implementation'
+	| 'review'
+	| 'respond-to-review'
+	| 'respond-to-ci';
 
 /**
  * The `taskId` every result carries — the identifier the phase's worktree is
@@ -80,6 +85,15 @@ export type TriggerResult =
 			prBranch: string;
 			/** The submitted review's numeric ID the implementer must answer. */
 			reviewId: string;
+	  })
+	| (TriggerResultBase & {
+			phase: 'respond-to-ci';
+			/** The PR whose check suite failed. */
+			prNumber: string;
+			/** The PR head branch the implementer checks out and pushes the build fix to. */
+			prBranch: string;
+			/** The head commit whose checks failed — pins the fix to the commit CI ran against. */
+			headSha: string;
 	  });
 
 export interface TriggerHandler {

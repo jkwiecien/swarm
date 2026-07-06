@@ -25,7 +25,7 @@ System prompt and working conventions for AI agents in this repository — the *
 Read before writing code in the relevant area — these encode Cascade's actual conventions, adapted for SWARM, so agents here write code that looks like Cascade's rather than improvising a different style:
 
 - **`ai/CODING_STANDARDS.md`** — language/tooling (TypeScript strict/ESM, Biome), Zod-as-source-of-truth, error handling, naming, the provider/integration module shape, comment density, GitHub loop-prevention.
-- **`ai/ARCHITECTURE.md`** — the MVP architecture (local router/queue/worker, no GCP layer yet — a deliberate deviation from `PROJECT.md`'s cloud design), the GitHub SCM and GitHub Projects PM provider shapes, the four pipeline phases, worktree lifecycle.
+- **`ai/ARCHITECTURE.md`** — the MVP architecture (local router/queue/worker, no GCP layer yet — a deliberate deviation from `PROJECT.md`'s cloud design), the GitHub SCM and GitHub Projects PM provider shapes, the pipeline phases, worktree lifecycle.
 - **`ai/TESTING.md`** — Vitest conventions, test data factories, git hooks (Lefthook), what "done" means for a change.
 
 Keep these three current the same way `README.md` must stay current (§1): if a change makes one of them inaccurate, update it in the same change.

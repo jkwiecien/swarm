@@ -70,9 +70,11 @@ export const GitHubParsedEventSchema = z.object({
 	 */
 	headSha: z.string().optional(),
 	/**
-	 * The PR head branch (`pull_request.head.ref`) — the existing task branch the
-	 * Respond-to-review phase checks out and pushes fixes to
-	 * (`src/pipeline/respond-to-review.ts`).
+	 * The PR head branch — the existing task branch the Respond-to-review phase
+	 * (`src/pipeline/respond-to-review.ts`) and the Respond-to-CI phase
+	 * (`src/pipeline/respond-to-ci.ts`) check out and push fixes to. Read from
+	 * `pull_request.head.ref` on a `pull_request`/`pull_request_review` event and
+	 * from `check_suite.pull_requests[0].head.ref` on a `check_suite` event.
 	 */
 	prBranch: z.string().optional(),
 	/**
@@ -180,9 +182,16 @@ function reviewFields(p: Record<string, unknown>): LifecycleFields {
 
 function checkSuiteFields(p: Record<string, unknown>): LifecycleFields {
 	const suite = asRecord(p.check_suite);
+	// `check_suite.pull_requests[0]` is the PR the suite ran for — same array
+	// `extractWorkItemId` reads the number from. Its `head.ref` is the branch the
+	// Respond-to-CI phase checks out to push a build fix (`src/pipeline/respond-to-ci.ts`);
+	// a passing suite routes to Review, which pins to the SHA and never needs it.
+	const prs = suite?.pull_requests as Array<Record<string, unknown>> | undefined;
+	const prBranch = prs && prs.length > 0 ? (asRecord(prs[0]?.head)?.ref as string) : undefined;
 	return {
 		headSha: (suite?.head_sha as string) ?? undefined,
 		checkConclusion: (suite?.conclusion as string) ?? undefined,
+		prBranch: prBranch ?? undefined,
 	};
 }
 

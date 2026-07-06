@@ -1,21 +1,30 @@
 /**
- * Review trigger — starts the Review phase (`src/pipeline/review.ts`) when a PR
- * is opened or its checks finish, mirroring Cascade's review-agent trigger on
- * `check_suite` completion (ai/ARCHITECTURE.md "Pipeline phases" #3).
+ * `pr-review` trigger — the PR-lifecycle handler. It starts the Review phase
+ * (`src/pipeline/review.ts`) when a PR is opened or its checks pass, and routes
+ * a *failing* check suite to the Respond-to-CI phase (`src/pipeline/respond-to-ci.ts`),
+ * mirroring Cascade's review-agent + respond-to-ci triggers on `check_suite`
+ * completion (ai/ARCHITECTURE.md "Pipeline phases" #3 / respond-to-ci).
  *
  * Two entry events, one handler:
  *  - `pull_request` `opened` (non-draft) — review the freshly opened PR.
- *  - `check_suite` `completed` — review the commit CI just validated, which is
- *    why the phase pins its checkout to the head SHA.
+ *  - `check_suite` `completed` — review the commit CI just validated (why the
+ *    phase pins its checkout to the head SHA), or fix it if CI failed.
  *
  * **Aggregate check state, not this suite's conclusion.** GitHub fires one
  * `check_suite.completed` per workflow, so any single event's own `conclusion`
  * describes only its suite while siblings may still be running. On a
  * `check_suite` event the handler re-queries *every* check on the head SHA
  * (`getCheckSuiteStatus`) and decides via `decideCheckSuiteOutcome`
- * (`check-suite-decision.ts`): review if all complete and none failed, skip if
- * a check failed (respond-to-ci is deferred to #64), or **defer** if some check
- * is still incomplete. Ported from Cascade's `check-suite-success` trigger.
+ * (`check-suite-decision.ts`): review if all complete and none failed,
+ * respond-to-ci if a check failed, or **defer** if some check is still
+ * incomplete. Ported from Cascade's `check-suite-success`/`-failure` triggers.
+ *
+ * **Respond-to-CI loop guard.** Fixing a build pushes a commit → a new head SHA
+ * → a fresh `check_suite`, so if the fix doesn't stick the same PR routes back
+ * here. The PR+SHA dedup can't stop that (each attempt is a new SHA), so
+ * `dispatchRespondToCi` adds a per-PR fix-attempt cap (`respond-to-ci-attempts.ts`)
+ * that winds a never-sticking fix down to a warn-and-drop, mirroring Cascade's
+ * `MAX_ATTEMPTS`.
  *
  * **Deferred recheck.** A defer schedules a coalesced re-enqueue of this same
  * event ~30s out (`scheduleCoalescedJob`). This guards the case where the
@@ -54,9 +63,21 @@ import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integrat
 import { logger } from '../../lib/logger.js';
 import { scheduleCoalescedJob } from '../../queue/producer.js';
 import type { GitHubParsedEvent } from '../../router/adapters/github.js';
+import { buildRespondToCiAttemptKey, claimRespondToCiAttempt } from '../respond-to-ci-attempts.js';
 import { buildReviewDispatchKey, claimReviewDispatch } from '../review-dispatch-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 import { decideCheckSuiteOutcome } from './check-suite-decision.js';
+
+/**
+ * What a shape-matched event resolves to once its per-event-type gate has run.
+ * A `check_suite` whose checks all passed → `review`; one where a check failed →
+ * `respond-to-ci` (carrying the failing run names for the dispatch log); a
+ * draft/fork PR or an incomplete/deferred suite → `none`.
+ */
+type ReviewDisposition =
+	| { kind: 'review' }
+	| { kind: 'respond-to-ci'; failedChecks: string[] }
+	| { kind: 'none' };
 
 /** How long to wait before re-querying check state when the Actions API looks stale. */
 const RECHECK_DELAY_MS = 30_000;
@@ -85,26 +106,27 @@ function matchesReviewShape(ctx: TriggerContext): boolean {
 
 /**
  * The `pull_request`-only gate: a PR must be a non-draft, same-repo PR to be
- * reviewable. Logs and returns false on a near-miss so `handle` can fall through
- * to the registry's next handler.
+ * reviewable. Logs and returns `none` on a near-miss so `handle` can fall
+ * through to the registry's next handler. A `pull_request` event never routes to
+ * Respond-to-CI — that path is driven only by a failed `check_suite`.
  */
-function isReviewablePullRequest(event: GitHubParsedEvent, prNumber: string): boolean {
+function isReviewablePullRequest(event: GitHubParsedEvent, prNumber: string): ReviewDisposition {
 	if (event.isDraft) {
 		logger.debug('review: PR is a draft — skipping', { prNumber });
-		return false;
+		return { kind: 'none' };
 	}
 	if (event.isCrossRepo) {
 		logger.info('review: fork PR — skipping (head SHA unreachable for review)', { prNumber });
-		return false;
+		return { kind: 'none' };
 	}
-	return true;
+	return { kind: 'review' };
 }
 
 /**
  * Schedule a bounded, coalesced recheck of this `check_suite` event, or give up
- * once {@link MAX_CHECK_SUITE_RECHECKS} is reached. Always returns `false` — the
- * event is fully handled here whether a recheck was queued or the cap stopped
- * the loop. Shared by the two defer paths in {@link resolveCheckSuiteReview}:
+ * once {@link MAX_CHECK_SUITE_RECHECKS} is reached. Always returns `{ kind: 'none' }`
+ * — the event is fully handled here whether a recheck was queued or the cap
+ * stopped the loop. Shared by the two defer paths in {@link resolveCheckSuiteReview}:
  * some check still incomplete, and a failed aggregate query. `details` is merged
  * into the log line so each caller records why it deferred.
  */
@@ -116,7 +138,7 @@ async function scheduleCheckSuiteRecheck(
 	prNumber: string,
 	headSha: string,
 	details: Record<string, unknown>,
-): Promise<false> {
+): Promise<ReviewDisposition> {
 	if (recheckAttempt >= MAX_CHECK_SUITE_RECHECKS) {
 		logger.warn('review: giving up on check-suite recheck (cap reached)', {
 			prNumber,
@@ -124,7 +146,7 @@ async function scheduleCheckSuiteRecheck(
 			recheckAttempt,
 			...details,
 		});
-		return false;
+		return { kind: 'none' };
 	}
 
 	const coalesceKey = `check-suite:${project.repo}:${prNumber}:${headSha}`;
@@ -147,15 +169,16 @@ async function scheduleCheckSuiteRecheck(
 		coalesceKey,
 		...details,
 	});
-	return false;
+	return { kind: 'none' };
 }
 
 /**
  * Decide a `check_suite` event's fate from the head SHA's *aggregate* check
- * state. Returns `true` to proceed to review; `false` when the event was
- * handled here (a failed suite skipped, or an incomplete suite's recheck
- * scheduled). The aggregate query runs as the reviewer persona — read-only, and
- * the persona whose review follows.
+ * state. Returns `review` to proceed to review, `respond-to-ci` when a check
+ * failed (routing the PR to the build-fix phase), or `none` when the event is
+ * handled here (an incomplete suite's recheck scheduled, or a bounded give-up).
+ * The aggregate query runs as the reviewer persona — read-only, and the persona
+ * whose review follows.
  *
  * The query resolves the reviewer token and hits the Actions API, so it can
  * throw — a transient 5xx/rate-limit/network blip, or a project with no
@@ -174,7 +197,7 @@ async function resolveCheckSuiteReview(
 	recheckAttempt: number,
 	prNumber: string,
 	headSha: string,
-): Promise<boolean> {
+): Promise<ReviewDisposition> {
 	const [owner, repo] = project.repo.split('/');
 	const scm = new GitHubSCMIntegration();
 
@@ -196,14 +219,10 @@ async function resolveCheckSuiteReview(
 	}
 
 	const decision = decideCheckSuiteOutcome(checkStatus, prNumber);
-	if (decision.action === 'review') return true;
+	if (decision.action === 'review') return { kind: 'review' };
 
-	if (decision.action === 'skip') {
-		logger.info('review: check suite not reviewable — skipping', {
-			prNumber,
-			message: decision.message,
-		});
-		return false;
+	if (decision.action === 'respond-to-ci') {
+		return { kind: 'respond-to-ci', failedChecks: decision.failedChecks };
 	}
 
 	// defer — some check is still incomplete; re-query fresh API state shortly.
@@ -213,22 +232,68 @@ async function resolveCheckSuiteReview(
 }
 
 /**
- * Whether a shape-matched event should proceed to a Review dispatch, routing to
- * the per-event-type gate: a `pull_request`'s draft/fork check, or a
- * `check_suite`'s aggregate-CI decision (which may defer/skip in place).
+ * What a shape-matched event resolves to, routing to the per-event-type gate: a
+ * `pull_request`'s draft/fork check (`review`/`none`), or a `check_suite`'s
+ * aggregate-CI decision (`review`/`respond-to-ci`/`none`, and it may defer a
+ * recheck in place).
  */
-function isReviewable(
+function resolveDisposition(
 	project: ProjectConfig,
 	event: GitHubParsedEvent,
 	deliveryId: string | undefined,
 	recheckAttempt: number,
 	prNumber: string,
 	headSha: string,
-): Promise<boolean> {
+): Promise<ReviewDisposition> {
 	if (event.eventType === 'pull_request') {
 		return Promise.resolve(isReviewablePullRequest(event, prNumber));
 	}
 	return resolveCheckSuiteReview(project, event, deliveryId, recheckAttempt, prNumber, headSha);
+}
+
+/**
+ * Turn a resolved `respond-to-ci` disposition into a dispatch. The PR+SHA dedup
+ * slot is already claimed by the caller; this adds the per-PR fix-attempt cap
+ * (`claimRespondToCiAttempt`) — the guard the per-SHA dedup can't provide, since
+ * each fix commit is a new SHA — and requires the PR branch the fix is pushed
+ * to. Returns `null` (not a dispatch) when the cap is hit or the branch is
+ * missing, leaving the failing PR to a human.
+ */
+async function dispatchRespondToCi(
+	project: ProjectConfig,
+	event: GitHubParsedEvent,
+	prNumber: string,
+	headSha: string,
+	failedChecks: string[],
+): Promise<TriggerResult | null> {
+	if (!event.prBranch) {
+		// A `check_suite` payload should carry its PR's head ref; without it the
+		// fix phase has no branch to check out and push to.
+		logger.warn('respond-to-ci: check suite carries no PR branch — skipping', {
+			prNumber,
+			headSha,
+		});
+		return null;
+	}
+
+	const attemptKey = buildRespondToCiAttemptKey(project.repo, prNumber);
+	const { allowed, attempt } = await claimRespondToCiAttempt(attemptKey, { prNumber, headSha });
+	if (!allowed) return null;
+
+	logger.info('respond-to-ci: dispatching Respond-to-CI phase', {
+		prNumber,
+		headSha,
+		prBranch: event.prBranch,
+		attempt,
+		failedChecks,
+	});
+	return {
+		phase: 'respond-to-ci',
+		taskId: prNumber,
+		prNumber,
+		prBranch: event.prBranch,
+		headSha,
+	};
 }
 
 export function createReviewTrigger(): TriggerHandler {
@@ -262,7 +327,7 @@ export function createReviewTrigger(): TriggerHandler {
 				return null;
 			}
 
-			const proceed = await isReviewable(
+			const disposition = await resolveDisposition(
 				ctx.project,
 				event,
 				ctx.deliveryId,
@@ -270,18 +335,33 @@ export function createReviewTrigger(): TriggerHandler {
 				prNumber,
 				event.headSha,
 			);
-			if (!proceed) return null;
+			if (disposition.kind === 'none') return null;
 
 			// Cross-process dedup: claim this PR+SHA before dispatching so a sibling
 			// event for the same commit (PR opened → check suite passed, or one
-			// success per CI suite) doesn't launch a second review. Fails closed, so
-			// a claim we can't obtain (duplicate, or Redis down) drops to a skip.
+			// event per CI suite) doesn't launch a second phase. Fails closed, so a
+			// claim we can't obtain (duplicate, or Redis down) drops to a skip. The
+			// review and respond-to-ci paths share this slot deliberately: they are
+			// mutually exclusive for a given SHA (a commit's checks either all pass or
+			// one failed), and each is only dispatched once every check has completed,
+			// so there is never a legitimate second dispatch for the same PR+SHA to
+			// contend for it.
 			const dispatchKey = buildReviewDispatchKey(ctx.project.repo, prNumber, event.headSha);
 			const claimed = await claimReviewDispatch(dispatchKey, 'pr-review', {
 				prNumber,
 				headSha: event.headSha,
 			});
 			if (!claimed) return null;
+
+			if (disposition.kind === 'respond-to-ci') {
+				return dispatchRespondToCi(
+					ctx.project,
+					event,
+					prNumber,
+					event.headSha,
+					disposition.failedChecks,
+				);
+			}
 
 			logger.info('review: dispatching Review phase', { prNumber, headSha: event.headSha });
 			return { phase: 'review', taskId: prNumber, prNumber, headSha: event.headSha };

@@ -60,7 +60,7 @@ describe('decideCheckSuiteOutcome', () => {
 		expect(decision).toMatchObject({ action: 'defer' });
 	});
 
-	it('skips when all checks completed and one failed', () => {
+	it('routes to respond-to-ci, naming the failed checks, when all completed and one failed', () => {
 		const decision = decideCheckSuiteOutcome(
 			status([
 				['build', 'completed', 'success'],
@@ -68,16 +68,17 @@ describe('decideCheckSuiteOutcome', () => {
 			]),
 			'9',
 		);
-		expect(decision).toMatchObject({ action: 'skip' });
+		expect(decision).toEqual({ action: 'respond-to-ci', failedChecks: ['test'] });
 	});
 
 	it.each([
 		'failure',
 		'timed_out',
 		'action_required',
-	])('treats a %s conclusion as a failure → skip', (conclusion) => {
-		expect(decideCheckSuiteOutcome(status([['test', 'completed', conclusion]]), '9')).toMatchObject(
-			{ action: 'skip' },
-		);
+	])('treats a %s conclusion as a failure → respond-to-ci', (conclusion) => {
+		expect(decideCheckSuiteOutcome(status([['test', 'completed', conclusion]]), '9')).toEqual({
+			action: 'respond-to-ci',
+			failedChecks: ['test'],
+		});
 	});
 });

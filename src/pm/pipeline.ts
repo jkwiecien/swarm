@@ -3,10 +3,10 @@
  * so the trigger and dispatch code never branch on a concrete PM provider
  * (ai/CODING_STANDARDS.md "Module shape for a provider").
  *
- * Only two of the four pipeline phases (ai/ARCHITECTURE.md "Pipeline phases")
- * are entered by a *board status change*: Planning (item → "Planning") and
- * Implementation (item → "In Progress"). The other two — Review and
- * Respond-to-review — are driven by SCM events (a PR opening / a check suite
+ * Only two of the pipeline phases (ai/ARCHITECTURE.md "Pipeline phases") are
+ * entered by a *board status change*: Planning (item → "Planning") and
+ * Implementation (item → "In Progress"). The rest — Review, Respond-to-review,
+ * and Respond-to-CI — are driven by SCM events (a PR opening / a check suite
  * completing / a review being submitted), not by the PM board, so they have no
  * entry in this map. That asymmetry is intentional: this map is exactly the set
  * of statuses whose transition should fire a PM `status-changed` trigger.

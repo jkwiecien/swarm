@@ -3,11 +3,13 @@
  * pipeline-phase handlers into a fresh registry, mirroring Cascade's
  * `registerBuiltInTriggers`.
  *
- * The three handlers map inbound events onto the four pipeline phases
+ * The three handlers map inbound events onto the pipeline phases
  * (ai/ARCHITECTURE.md "Pipeline phases"): a board card entering Planning / In
  * progress starts Planning / Implementation (`pm-status-changed` — one handler
  * covers both, since which phase to start comes from an authoritative board
- * re-read); a PR opening or its checks passing starts Review (`pr-review`); the
+ * re-read); a PR opening or its checks passing starts Review, while a check
+ * suite that *failed* starts Respond-to-CI (`pr-review` — one handler covers
+ * both, since the review-vs-fix split comes from one aggregate-CI query); the
  * reviewer persona requesting changes starts Respond-to-review
  * (`pr-review-submitted`). Each handler resolves the phase's inputs and the
  * worker's `processJob` runs the matching orchestrator (`src/pipeline/*`).
