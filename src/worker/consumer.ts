@@ -163,6 +163,12 @@ export async function processJob(
 			taskId: trigger.taskId,
 			error,
 		});
+		// The review handler's claim intentionally survives a failed run: the review
+		// agent submits its formal `gh pr review` *inside* the run, so a phase that
+		// threw afterward may have already posted the review — releasing the claim
+		// here would let a sibling event for the same PR+SHA post a duplicate, the
+		// exact incident the dedup guards against. The 5-minute TTL reaps a claim
+		// whose run genuinely failed before submitting. See review-dispatch-dedup.ts.
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 }

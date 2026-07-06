@@ -1,10 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createReviewTrigger } from '@/triggers/handlers/review.js';
 import type { TriggerContext } from '@/triggers/types.js';
 import {
 	createMockGitHubParsedEvent,
 	createMockProjectConfig,
 } from '../../../helpers/factories.js';
+
+// The handler gates dispatch on a Redis-backed dedup claim; mock it so these
+// tests stay pure-in-memory. `claimReviewDispatch` defaults to granting the
+// claim (the common path); individual tests flip it to exercise a skip.
+const { claimReviewDispatch } = vi.hoisted(() => ({ claimReviewDispatch: vi.fn() }));
+vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
+	claimReviewDispatch,
+	buildReviewDispatchKey: (repo: string, prNumber: string, headSha: string) =>
+		`${repo}:${prNumber}:${headSha}`,
+}));
+
+beforeEach(() => {
+	claimReviewDispatch.mockReset();
+	claimReviewDispatch.mockResolvedValue(true);
+});
 
 const PROJECT = createMockProjectConfig();
 const handler = createReviewTrigger();
@@ -95,6 +110,35 @@ describe('review trigger', () => {
 					}),
 				),
 			).toBeNull();
+		});
+	});
+
+	describe('handle — dedup gate', () => {
+		const reviewable = {
+			eventType: 'pull_request',
+			action: 'opened',
+			workItemId: '42',
+			headSha: 'abc123',
+			isDraft: false,
+			isCrossRepo: false,
+		} as const;
+
+		it('claims the PR+SHA slot before dispatching', async () => {
+			await handler.handle(ctx(reviewable));
+			expect(claimReviewDispatch).toHaveBeenCalledWith(`${PROJECT.repo}:42:abc123`, 'pr-review', {
+				prNumber: '42',
+				headSha: 'abc123',
+			});
+		});
+
+		it('skips dispatch when the slot is already claimed (or Redis is down)', async () => {
+			claimReviewDispatch.mockResolvedValue(false);
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
+		it('does not claim for an unreviewable event', async () => {
+			await handler.handle(ctx({ ...reviewable, isDraft: true }));
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
 		});
 	});
 });

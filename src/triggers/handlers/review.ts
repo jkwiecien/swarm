@@ -15,11 +15,15 @@
  * doesn't reliably tell us fork-ness, so that path can't pre-filter forks — an
  * unreachable SHA there surfaces as a failed job rather than a silent drop.
  *
+ * **Cross-process dedup.** A PR that opens *and* then passes checks (or a PR
+ * with several check suites) would otherwise dispatch Review more than once for
+ * the same head SHA, each burning agent tokens. `handle` claims a Redis-backed
+ * slot keyed on the PR+SHA (`review-dispatch-dedup.ts`) before returning a
+ * dispatch; a duplicate claim short-circuits to a skip. The claim happens here,
+ * at the single dispatch-decision point, so the duplicate is dropped before any
+ * worktree is provisioned.
+ *
  * **MVP simplifications vs Cascade** (filed as follow-ups, ai/RULES.md §5):
- *  - No cross-process review dedup. Cascade uses a Redis `SET NX` claim so a PR
- *    reviewed via one path isn't re-reviewed via another; SWARM has no such
- *    store yet, so a PR that opens *and* then passes checks can be reviewed
- *    twice.
  *  - No incomplete-check deferral/recheck and no respond-to-ci path. SWARM keys
  *    off the suite's own aggregate `conclusion` rather than re-querying every
  *    check run on the SHA, and has no respond-to-ci phase to route CI failures
@@ -28,6 +32,7 @@
 
 import { logger } from '../../lib/logger.js';
 import type { GitHubParsedEvent } from '../../router/adapters/github.js';
+import { buildReviewDispatchKey, claimReviewDispatch } from '../review-dispatch-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 
 /**
@@ -104,6 +109,17 @@ export function createReviewTrigger(): TriggerHandler {
 				});
 				return null;
 			}
+
+			// Cross-process dedup: claim this PR+SHA before dispatching so a sibling
+			// event for the same commit (PR opened → check suite passed, or one
+			// success per CI suite) doesn't launch a second review. Fails closed, so
+			// a claim we can't obtain (duplicate, or Redis down) drops to a skip.
+			const dispatchKey = buildReviewDispatchKey(ctx.project.repo, prNumber, event.headSha);
+			const claimed = await claimReviewDispatch(dispatchKey, 'pr-review', {
+				prNumber,
+				headSha: event.headSha,
+			});
+			if (!claimed) return null;
 
 			logger.info('review: dispatching Review phase', { prNumber, headSha: event.headSha });
 			return { phase: 'review', taskId: prNumber, prNumber, headSha: event.headSha };
