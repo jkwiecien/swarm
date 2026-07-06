@@ -20,9 +20,13 @@
  *   implementer/reviewer/webhookSecret triple (`src/config/schema.ts`), not a
  *   provider-specific role list.
  * - `pmIntegration` (the agent-facing `PMProvider` GraphQL adapter),
- *   `triggerHandlers`, `platformClientFactory`, `extractProjectIdFromJob` — the
- *   adapter, trigger registry, and worker job dispatch are separate Phase-2/
- *   later issues; they get manifest fields when they exist, not before.
+ *   `triggerHandlers`, `platformClientFactory`, `extractProjectIdFromJob`. The
+ *   concrete `PMProvider` (`github-projects/provider.ts`) and the trigger
+ *   handlers (`src/triggers/handlers/`) now exist, but they're reached via a
+ *   direct factory / the trigger registry — not through the manifest. With one
+ *   provider, threading them through the manifest would be indirection for its
+ *   own sake; those fields get added the day a second provider makes the
+ *   registry lookup earn its keep, not before.
  * - wizard / discovery / lifecycle-conformance fields — SWARM has no setup
  *   wizard, and the conformance harness is explicitly deferred until there's a
  *   second provider (ai/TESTING.md "Provider conformance").

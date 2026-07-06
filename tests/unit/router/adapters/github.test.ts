@@ -124,6 +124,62 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.eventType).toBe('pull_request_review');
 			expect(parsed?.workItemId).toBe('3');
 		});
+
+		it('enriches a pull_request event with head SHA, branch, draft and fork state', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'opened',
+				repository: repo(),
+				pull_request: {
+					number: 42,
+					draft: true,
+					head: { sha: 'abc123', ref: 'issue-42', repo: { full_name: 'a-fork/swarm' } },
+					base: { ref: 'main', repo: { full_name: 'jkwiecien/swarm' } },
+				},
+			});
+			expect(parsed).toMatchObject({
+				headSha: 'abc123',
+				prBranch: 'issue-42',
+				isDraft: true,
+				isCrossRepo: true,
+			});
+		});
+
+		it('marks a same-repo pull_request as not cross-repo', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'opened',
+				repository: repo(),
+				pull_request: {
+					number: 42,
+					head: { sha: 'abc', ref: 'issue-42', repo: { full_name: 'jkwiecien/swarm' } },
+					base: { ref: 'main', repo: { full_name: 'jkwiecien/swarm' } },
+				},
+			});
+			expect(parsed?.isCrossRepo).toBe(false);
+		});
+
+		it('enriches a pull_request_review event with state, id and branch', () => {
+			const parsed = adapter.parseWebhook('pull_request_review', {
+				action: 'submitted',
+				repository: repo(),
+				pull_request: { number: 3, head: { ref: 'issue-3' } },
+				review: { id: 987654, state: 'changes_requested' },
+				sender: { login: 'swarm-rev' },
+			});
+			expect(parsed).toMatchObject({
+				reviewState: 'changes_requested',
+				reviewId: '987654',
+				prBranch: 'issue-3',
+			});
+		});
+
+		it('enriches a check_suite event with head SHA and conclusion', () => {
+			const parsed = adapter.parseWebhook('check_suite', {
+				action: 'completed',
+				repository: repo(),
+				check_suite: { conclusion: 'success', head_sha: 'cafe', pull_requests: [{ number: 9 }] },
+			});
+			expect(parsed).toMatchObject({ headSha: 'cafe', checkConclusion: 'success' });
+		});
 	});
 
 	describe('resolveProject', () => {

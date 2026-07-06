@@ -69,6 +69,16 @@ Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the 
 3. **Review** — PR opened / check suite completes → Claude Code (reviewer persona) reviews the diff, posts PR review comments — mirrors Cascade's review-agent trigger on `check_suite` success.
 4. **Respond to review** — reviewer persona submits a review with `changes_requested` → Claude Code (implementer persona) addresses the batched review comments, pushes a fix, or pushes back with a rationale — mirrors Cascade's `respond-to-review` trigger and its "wait for the final submitted review, not individual line comments" rule.
 
+### Trigger wiring (SWARM-53)
+
+The phases are self-contained orchestrators; the trigger registry (`src/triggers/`) is what connects inbound events to them. `registerBuiltInTriggers` (`src/triggers/builtins.ts`) registers three handlers under `src/triggers/handlers/`:
+
+- **`pm-status-changed`** — one handler for both PM-driven phases. On a `projects_v2_item` Status edit (or a card added), it re-reads the item authoritatively via the `PMProvider` (never trusting the webhook's Status value — `docs/github-projects-v2-api.md` §5) and, per `resolvePipelinePhaseForOptionId`, starts Planning (→ Planning) or Implementation (→ In progress), or returns `null` for any other status.
+- **`pr-review`** — starts Review on a non-draft, **same-repo** PR opening or its check suite completing with `success`. Fork PRs are dropped (their head SHA is unreachable for the detached review checkout).
+- **`pr-review-submitted`** — starts Respond-to-review on a `pull_request_review` `submitted` that isn't an approval and is authored by the *reviewer* persona (`getPersonaForLogin`).
+
+A matched handler returns a `TriggerResult` naming the phase plus its resolved inputs; the worker's `processJob` (`src/worker/consumer.ts`) dispatches on that phase and calls the matching `runXPhase`, building the concrete GitHub Projects `PMProvider` (`src/integrations/pm/github-projects/provider.ts`) for the two board-driven phases. Deliberately deferred vs Cascade (filed as follow-ups): cross-process review dedup, check-suite incomplete-check recheck, and a respond-to-ci path.
+
 ## Worktree lifecycle
 
 Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-specific and already correct:

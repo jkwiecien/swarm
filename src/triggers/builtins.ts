@@ -1,17 +1,32 @@
 /**
- * Built-in trigger registration — the worker's one call site for wiring
- * handlers into a fresh registry, mirroring Cascade's `registerBuiltInTriggers`.
+ * Built-in trigger registration — the worker's one call site for wiring the
+ * pipeline-phase handlers into a fresh registry, mirroring Cascade's
+ * `registerBuiltInTriggers`.
  *
- * Empty on purpose: all four pipeline-phase orchestrators exist
- * (`src/pipeline/` — Planning SWARM-18, Implementation SWARM-19, Review
- * SWARM-20, Respond-to-review SWARM-21) but the trigger handlers that match
- * inbound events and call them register here as SWARM-53. Until then every
- * dequeued job resolves to "no trigger matched" and completes as a logged
- * no-op.
+ * The three handlers map inbound events onto the four pipeline phases
+ * (ai/ARCHITECTURE.md "Pipeline phases"): a board card entering Planning / In
+ * progress starts Planning / Implementation (`pm-status-changed` — one handler
+ * covers both, since which phase to start comes from an authoritative board
+ * re-read); a PR opening or its checks passing starts Review (`pr-review`); the
+ * reviewer persona requesting changes starts Respond-to-review
+ * (`pr-review-submitted`). Each handler resolves the phase's inputs and the
+ * worker's `processJob` runs the matching orchestrator (`src/pipeline/*`).
+ *
+ * Registration order matters — the registry dispatches first-match-wins
+ * (`registry.ts`) — but these handlers key off disjoint event types
+ * (`projects_v2_item` vs `pull_request` vs `check_suite` vs
+ * `pull_request_review`), so no two ever both match the same event. The order
+ * below follows Cascade's (review-lifecycle handlers ahead of the PM one) for
+ * familiarity, not correctness.
  */
 
+import { createPmStatusTrigger } from './handlers/pm-status.js';
+import { createRespondToReviewTrigger } from './handlers/respond-to-review.js';
+import { createReviewTrigger } from './handlers/review.js';
 import type { TriggerRegistry } from './registry.js';
 
-export function registerBuiltInTriggers(_registry: TriggerRegistry): void {
-	// Intentionally empty — see the module doc comment.
+export function registerBuiltInTriggers(registry: TriggerRegistry): void {
+	registry.register(createReviewTrigger());
+	registry.register(createRespondToReviewTrigger());
+	registry.register(createPmStatusTrigger());
 }

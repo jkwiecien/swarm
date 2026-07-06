@@ -1,56 +1,115 @@
 /**
  * The worker's job processor — the Phase-3 wiring: dequeued job → trigger
- * lookup → worktree (SWARM-14) → environment graft (SWARM-15) → agent CLI
- * (SWARM-16) → cleanup (ai/ARCHITECTURE.md "Components").
+ * lookup → pipeline phase (ai/ARCHITECTURE.md "Components").
+ *
+ * A matched trigger names one of the four pipeline phases plus its inputs
+ * (`src/triggers/types.ts`); this dispatches on that phase and hands off to the
+ * phase orchestrator (`src/pipeline/*`), which owns the whole run — worktree
+ * provisioning + environment graft (SWARM-14/15), the agent CLI (SWARM-16),
+ * reading its hand-off file, posting back to the PM board, and cleanup. The
+ * worker's job here is just to resolve the project, build the PM provider the
+ * PM-driven phases need, and translate the phase's result (or failure) into a
+ * `JobOutcome`.
  *
  * Queue-agnostic on purpose: `processJob` takes an already-validated `SwarmJob`
  * and knows nothing about BullMQ, so tests drive it directly and the entry
  * point (`src/worker/index.ts`) stays a thin shell.
  */
 
+import type { ProjectConfig } from '../config/schema.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
-import { runAgentCli } from '../harness/agent-cli.js';
+import type { AgentCliResult } from '../harness/agent-cli.js';
+import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { logger } from '../lib/logger.js';
+import { runImplementationPhase } from '../pipeline/implementation.js';
+import { runPlanningPhase } from '../pipeline/planning.js';
+import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
+import { runReviewPhase } from '../pipeline/review.js';
 import type { SwarmJob } from '../queue/jobs.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
-import type { TriggerContext } from '../triggers/types.js';
-import { graftEnvironment } from '../worktree/graft.js';
-import { GitWorktreeManager } from './git-worktree-manager.js';
-
-/**
- * Cap on captured agent stdout/stderr per stream. Long agent runs are chatty;
- * unbounded capture in a long-lived worker process is a slow memory leak
- * (`RunAgentCliOptions.maxOutputBytes` — the harness told SWARM-17 to set this).
- */
-export const MAX_AGENT_OUTPUT_BYTES = 10 * 1024 * 1024;
+import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
 	| { status: 'no-trigger' }
 	| {
-			status: 'agent-succeeded' | 'agent-failed';
+			status: 'phase-succeeded';
+			phase: TriggerPhase;
 			taskId: string;
-			branch: string;
 			exitCode: number | null;
 			signal: NodeJS.Signals | null;
 			timedOut: boolean;
 			durationMs: number;
+	  }
+	| {
+			status: 'phase-failed';
+			phase: TriggerPhase;
+			taskId: string;
+			error: string;
 	  };
+
+/**
+ * Run the pipeline phase a matched trigger resolved to. The four orchestrators
+ * differ in their inputs but all resolve to a result carrying the agent run
+ * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
+ * provision anything. `signal` (the worker's shutdown signal) is threaded
+ * through so a graceful shutdown kills any in-flight agent CLI.
+ */
+function runPhase(
+	trigger: TriggerResult,
+	project: ProjectConfig,
+	signal?: AbortSignal,
+): Promise<{ agent: AgentCliResult }> {
+	switch (trigger.phase) {
+		case 'planning':
+			return runPlanningPhase({
+				project,
+				workItem: trigger.workItem,
+				taskId: trigger.taskId,
+				pm: createGitHubProjectsProvider(project),
+				signal,
+			});
+		case 'implementation':
+			return runImplementationPhase({
+				project,
+				workItem: trigger.workItem,
+				taskId: trigger.taskId,
+				pm: createGitHubProjectsProvider(project),
+				signal,
+			});
+		case 'review':
+			return runReviewPhase({
+				project,
+				prNumber: trigger.prNumber,
+				headSha: trigger.headSha,
+				taskId: trigger.taskId,
+				signal,
+			});
+		case 'respond-to-review':
+			return runRespondToReviewPhase({
+				project,
+				prNumber: trigger.prNumber,
+				prBranch: trigger.prBranch,
+				reviewId: trigger.reviewId,
+				taskId: trigger.taskId,
+				signal,
+			});
+	}
+}
 
 /**
  * Process one dequeued job end to end.
  *
- * A job no handler claims completes as `no-trigger` — with the pipeline-phase
- * handlers (SWARM-18…21) not registered yet, that's every job today. A job
- * whose agent ran and exited non-zero completes as `agent-failed` rather than
- * throwing: the agent run isn't idempotent, so a BullMQ retry storm is worse
- * than surfacing the failure in the outcome (reporting it to the PM board is
- * the phase handlers' job). Only infrastructure errors — unknown project,
- * worktree provisioning, graft, spawn failures — throw and fail the job.
+ * A job no handler claims completes as `no-trigger`. A job whose phase ran but
+ * failed — the agent exited non-zero, a hand-off file was missing, or worktree
+ * setup failed — completes as `phase-failed` rather than throwing: an agent run
+ * isn't idempotent, so a BullMQ retry storm is worse than surfacing the failure
+ * in the outcome (the phase already logs the agent's own stdout/stderr, and
+ * reporting to the PM board is the phase's job). The one thing that still
+ * throws is an unknown project — infrastructure the job can't proceed without.
  *
  * `signal` is the worker's shutdown signal: aborting kills a running agent CLI
- * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run; the
- * job then completes as `agent-failed` and the worktree cleanup still runs.
+ * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run.
  */
 export async function processJob(
 	job: SwarmJob,
@@ -80,52 +139,30 @@ export async function processJob(
 		return { status: 'no-trigger' };
 	}
 
-	const worktrees = new GitWorktreeManager(project);
-	const handle = await worktrees.provision(trigger.taskId, trigger.worktree);
 	try {
-		graftEnvironment(project.repoRoot, handle.path);
-
-		const result = await runAgentCli({
-			cli: trigger.cli,
-			cwd: handle.path,
-			args: trigger.args,
-			env: trigger.env,
-			timeoutMs: trigger.timeoutMs,
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			signal,
+		const result = await runPhase(trigger, project, signal);
+		logger.info('Pipeline phase completed', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
 		});
-
-		const succeeded = result.exitCode === 0;
-		if (!succeeded) {
-			logger.error('Agent run failed', {
-				projectId: project.id,
-				taskId: trigger.taskId,
-				cli: trigger.cli,
-				exitCode: result.exitCode,
-				signal: result.signal,
-				timedOut: result.timedOut,
-			});
-		}
 		return {
-			status: succeeded ? 'agent-succeeded' : 'agent-failed',
-			taskId: handle.taskId,
-			branch: handle.branch,
-			exitCode: result.exitCode,
-			signal: result.signal,
-			timedOut: result.timedOut,
-			durationMs: result.durationMs,
+			status: 'phase-succeeded',
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			exitCode: result.agent.exitCode,
+			signal: result.agent.signal,
+			timedOut: result.agent.timedOut,
+			durationMs: result.agent.durationMs,
 		};
-	} finally {
-		// Cleanup must not mask the run's real outcome/error: a failure here just
-		// leaves a stale worktree behind (visible via GitWorktreeManager.list()).
-		try {
-			await worktrees.cleanup(trigger.taskId);
-		} catch (err) {
-			logger.error('Worktree cleanup failed — stale worktree left behind', {
-				projectId: project.id,
-				taskId: trigger.taskId,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
+	} catch (err) {
+		const error = err instanceof Error ? err.message : String(err);
+		logger.error('Pipeline phase failed', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			error,
+		});
+		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 }
