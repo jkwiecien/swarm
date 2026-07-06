@@ -2,7 +2,7 @@
  * The worker's job processor — the Phase-3 wiring: dequeued job → trigger
  * lookup → pipeline phase (ai/ARCHITECTURE.md "Components").
  *
- * A matched trigger names one of the four pipeline phases plus its inputs
+ * A matched trigger names one of the pipeline phases plus its inputs
  * (`src/triggers/types.ts`); this dispatches on that phase and hands off to the
  * phase orchestrator (`src/pipeline/*`), which owns the whole run — worktree
  * provisioning + environment graft (SWARM-14/15), the agent CLI (SWARM-16),
@@ -23,6 +23,7 @@ import { createGitHubProjectsProvider } from '../integrations/pm/github-projects
 import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
 import { runPlanningPhase } from '../pipeline/planning.js';
+import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
 import type { SwarmJob } from '../queue/jobs.js';
@@ -49,7 +50,7 @@ export type JobOutcome =
 	  };
 
 /**
- * Run the pipeline phase a matched trigger resolved to. The four orchestrators
+ * Run the pipeline phase a matched trigger resolved to. The orchestrators
  * differ in their inputs but all resolve to a result carrying the agent run
  * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
  * provision anything. `signal` (the worker's shutdown signal) is threaded
@@ -91,6 +92,15 @@ function runPhase(
 				prNumber: trigger.prNumber,
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
+				taskId: trigger.taskId,
+				signal,
+			});
+		case 'respond-to-ci':
+			return runRespondToCiPhase({
+				project,
+				prNumber: trigger.prNumber,
+				prBranch: trigger.prBranch,
+				headSha: trigger.headSha,
 				taskId: trigger.taskId,
 				signal,
 			});

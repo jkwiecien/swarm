@@ -186,13 +186,31 @@ describe('GitHubRouterAdapter', () => {
 			});
 		});
 
-		it('enriches a check_suite event with head SHA and conclusion', () => {
+		it('enriches a check_suite event with head SHA, conclusion, and the PR branch', () => {
 			const parsed = adapter.parseWebhook('check_suite', {
 				action: 'completed',
 				repository: repo(),
-				check_suite: { conclusion: 'success', head_sha: 'cafe', pull_requests: [{ number: 9 }] },
+				check_suite: {
+					conclusion: 'failure',
+					head_sha: 'cafe',
+					pull_requests: [{ number: 9, head: { ref: 'issue-9' } }],
+				},
 			});
-			expect(parsed).toMatchObject({ headSha: 'cafe', checkConclusion: 'success' });
+			// The PR branch is what the Respond-to-CI phase checks out to push the fix.
+			expect(parsed).toMatchObject({
+				headSha: 'cafe',
+				checkConclusion: 'failure',
+				prBranch: 'issue-9',
+			});
+		});
+
+		it('leaves prBranch undefined for a check_suite with no PRs', () => {
+			const parsed = adapter.parseWebhook('check_suite', {
+				action: 'completed',
+				repository: repo(),
+				check_suite: { conclusion: 'failure', head_sha: 'cafe', pull_requests: [] },
+			});
+			expect(parsed?.prBranch).toBeUndefined();
 		});
 	});
 
