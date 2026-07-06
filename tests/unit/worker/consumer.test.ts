@@ -48,15 +48,6 @@ vi.mock('@/pipeline/respond-to-review.js', () => ({
 	runRespondToReviewPhase: mockPhase('respond-to-review'),
 }));
 
-// A failed Review phase releases its dedup claim (consumer.ts); mock the helper
-// so the assertion is on the call, not a real Redis.
-const { releaseReviewDispatch } = vi.hoisted(() => ({ releaseReviewDispatch: vi.fn() }));
-vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
-	releaseReviewDispatch,
-	buildReviewDispatchKey: (repo: string, prNumber: string, headSha: string) =>
-		`${repo}:${prNumber}:${headSha}`,
-}));
-
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
 import { processJob } from '@/worker/consumer.js';
@@ -104,8 +95,6 @@ describe('processJob', () => {
 		providerBuiltWith.length = 0;
 		projectLookup = () => PROJECT;
 		phaseImpl = async () => ({ agent: agentResult() });
-		releaseReviewDispatch.mockReset();
-		releaseReviewDispatch.mockResolvedValue(undefined);
 	});
 
 	it('throws for a job referencing an unknown project', async () => {
@@ -216,36 +205,5 @@ describe('processJob', () => {
 			taskId: '17',
 			error: 'review agent exited with code 3',
 		});
-	});
-
-	it('releases the dedup claim when the Review phase fails', async () => {
-		phaseImpl = async () => {
-			throw new Error('review agent exited with code 3');
-		};
-
-		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
-
-		expect(releaseReviewDispatch).toHaveBeenCalledWith(`${PROJECT.repo}:17:deadbeef`);
-	});
-
-	it('keeps the dedup claim when the Review phase succeeds', async () => {
-		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
-
-		expect(releaseReviewDispatch).not.toHaveBeenCalled();
-	});
-
-	it('does not release for a non-review phase failure', async () => {
-		phaseImpl = async () => {
-			throw new Error('planning agent exited with code 3');
-		};
-		const trigger: TriggerResult = {
-			phase: 'planning',
-			taskId: '10',
-			workItem: createMockWorkItem({ statusId: '61e4505c' }),
-		};
-
-		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
-
-		expect(releaseReviewDispatch).not.toHaveBeenCalled();
 	});
 });

@@ -3,14 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock ioredis so nothing touches a real Redis — capture the constructor and the
 // set()/del() calls the helper makes. Hoisted so the vi.mock factory (itself
 // hoisted above imports) can reference them.
-const { RedisMock, set, del, keys, quit, on } = vi.hoisted(() => {
+const { RedisMock, set, del, on } = vi.hoisted(() => {
 	const set = vi.fn();
 	const del = vi.fn();
-	const keys = vi.fn();
-	const quit = vi.fn();
 	const on = vi.fn();
-	const RedisMock = vi.fn(() => ({ set, del, keys, quit, on }));
-	return { RedisMock, set, del, keys, quit, on };
+	const RedisMock = vi.fn(() => ({ set, del, on }));
+	return { RedisMock, set, del, on };
 });
 
 vi.mock('ioredis', () => ({ Redis: RedisMock }));
@@ -24,10 +22,6 @@ beforeEach(() => {
 	set.mockResolvedValue('OK');
 	del.mockReset();
 	del.mockResolvedValue(1);
-	keys.mockReset();
-	keys.mockResolvedValue([]);
-	quit.mockReset();
-	quit.mockResolvedValue('OK');
 	on.mockReset();
 	process.env.REDIS_URL = 'redis://localhost:6379';
 });
@@ -99,6 +93,19 @@ describe('claimReviewDispatch', () => {
 
 		expect(RedisMock).toHaveBeenCalledOnce();
 		expect(set).toHaveBeenCalledTimes(2);
+	});
+
+	// The fail-fast mechanism is exactly two things: capping retries so an
+	// unreachable Redis rejects instead of hanging, and an 'error' listener so
+	// reconnect failures don't crash the process. Pin both to the constructor.
+	it('constructs the client fail-fast: caps retries and registers an error listener', async () => {
+		const { claimReviewDispatch } = await import('@/triggers/review-dispatch-dedup.js');
+
+		await claimReviewDispatch('acme/widgets:1:a', 'pr-review', { prNumber: '1', headSha: 'a' });
+
+		expect(RedisMock).toHaveBeenCalledOnce();
+		expect(RedisMock).toHaveBeenCalledWith(expect.objectContaining({ maxRetriesPerRequest: 1 }));
+		expect(on).toHaveBeenCalledWith('error', expect.any(Function));
 	});
 });
 

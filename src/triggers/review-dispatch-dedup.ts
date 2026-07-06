@@ -9,16 +9,21 @@
  * `opened` and, moments later, its `check_suite` passing (a PR with several CI
  * apps emits one success per suite) — and without the claim each would provision
  * a worktree and burn agent tokens reviewing the identical head SHA. An in-memory
- * guard wouldn't help: the router and worker are separate processes (and may be
- * replicated), so the claim has to live in shared state. Ported from Cascade's
- * `src/triggers/github/review-dispatch-dedup.ts`.
+ * guard wouldn't help: those sibling events become two distinct BullMQ jobs, and
+ * the claim is taken worker-side (`processJob` → `registry.dispatch` → `handle`),
+ * so the two jobs may run concurrently — or on different worker replicas — with
+ * no shared process memory between them. The claim therefore has to live in
+ * shared state. Ported from Cascade's `src/triggers/github/review-dispatch-dedup.ts`.
  *
  * Redis primitive: `SET key value NX EX <ttl>` — atomic check-and-set with TTL,
  * `'OK'` on first claim and `null` on a duplicate, so there's no race window.
  *
  * Fails closed: when Redis is unreachable, `claimReviewDispatch` returns `false`
  * (treats the call as a duplicate) — skipping a legitimate review is cheaper than
- * dispatching a duplicate one.
+ * dispatching a duplicate one. Same posture on a worker crash: a worker that dies
+ * after claiming but before completing the review leaves the PR+SHA skipped until
+ * the 5-minute TTL reaps the claim (and a fresh event re-triggers) — an accepted
+ * consequence of failing closed rather than risking a duplicate.
  */
 
 import { Redis } from 'ioredis';
@@ -52,6 +57,13 @@ function getRedis(): Redis {
 		redisInstance = new Redis({
 			...parseRedisUrl(requireEnv('REDIS_URL')),
 			maxRetriesPerRequest: 1,
+			// `enableOfflineQueue` is left at its default (true) on purpose: with it
+			// off, the very first claim on a freshly-started worker — issued before
+			// the connection finishes handshaking — would reject and fail closed,
+			// skipping a *legitimate* review even though Redis is healthy. Keeping it
+			// on trades a brief stall during (re)connect for not dropping legit
+			// reviews on cold start; a genuinely down Redis still rejects promptly
+			// once `maxRetriesPerRequest` trips.
 		});
 		// ioredis emits 'error' on every failed reconnect; without a listener those
 		// become unhandled-error crashes. The actual failures still surface (and
@@ -112,9 +124,20 @@ export async function claimReviewDispatch(
 }
 
 /**
- * Release a previously-claimed slot so the next legitimate trigger for the same
- * PR+SHA can claim it before the TTL would otherwise reap it. Best-effort: errors
- * are logged, never thrown — the TTL is the safety net.
+ * Release a claim taken by {@link claimReviewDispatch} — the claim's counterpart,
+ * for the case where a dispatch is abandoned *before the review is submitted* so
+ * the next legitimate trigger for the same PR+SHA needn't wait out the TTL. That
+ * is Cascade's pre-run `onBlocked` case: a capacity/lock gate that rejects the
+ * dispatch before the agent ever runs. SWARM's MVP has no such pre-dispatch gate
+ * yet — the review handler relies on the claim + TTL alone — so nothing calls
+ * this today; it is kept as the deliberate, documented counterpart to the claim
+ * (issue #62 asked to port an equivalent claim/release). It must NOT be called on
+ * a *failed* review run: the agent submits the formal `gh pr review` inside its
+ * run (`src/pipeline/review.ts`), so a run that threw afterward may have already
+ * posted the review, and releasing then would let a sibling event post a
+ * duplicate — the exact incident this dedup exists to prevent.
+ *
+ * Best-effort: errors are logged, never thrown — the TTL is the safety net.
  */
 export async function releaseReviewDispatch(key: string): Promise<void> {
 	const namespacedKey = `${KEY_NS}${key}`;
@@ -126,18 +149,4 @@ export async function releaseReviewDispatch(key: string): Promise<void> {
 			error: String(err),
 		});
 	}
-}
-
-/**
- * Test-only: flush the dedup namespace and drop the singleton so each test gets
- * a fresh client. Never call from production code.
- *
- * @internal
- */
-export async function __resetForTests(): Promise<void> {
-	if (!redisInstance) return;
-	const keys = await redisInstance.keys(`${KEY_NS}*`);
-	if (keys.length > 0) await redisInstance.del(...keys);
-	await redisInstance.quit().catch(() => {});
-	redisInstance = null;
 }
