@@ -179,6 +179,17 @@ describe('GitHubProjectsPMProvider', () => {
 			expect(items.map((i) => i.id)).toEqual(['PVTI_x']);
 		});
 
+		it('throws for a requested status with no option mapping (rather than returning all)', async () => {
+			// An unmapped status key must not fall through to the no-filter path and
+			// return every item — it's a config/logic error, like moveWorkItem's.
+			graphql.mockResolvedValue({ node: { items: { nodes: [ITEM_NODE, TODO_NODE] } } });
+
+			await expect(provider.listWorkItems({ status: 'nonsense' })).rejects.toThrow(
+				"status 'nonsense' has no option ID",
+			);
+			expect(graphql).not.toHaveBeenCalled();
+		});
+
 		it('drops null/id-less nodes', async () => {
 			graphql.mockResolvedValue({ node: { items: { nodes: [null, ITEM_NODE, { id: '' }] } } });
 
