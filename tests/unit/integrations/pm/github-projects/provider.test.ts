@@ -93,9 +93,82 @@ describe('GitHubProjectsPMProvider', () => {
 			const items = await provider.listWorkItems();
 
 			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
+			expect(graphql).toHaveBeenCalledTimes(1);
 			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('ProjectV2'), {
 				projectId: PROJECT.githubProjects.projectId,
+				cursor: undefined,
 			});
+		});
+
+		it('walks every page, following the cursor until hasNextPage is false', async () => {
+			graphql
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [ITEM_NODE],
+							pageInfo: { hasNextPage: true, endCursor: 'CURSOR_1' },
+						},
+					},
+				})
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [TODO_NODE],
+							pageInfo: { hasNextPage: false, endCursor: null },
+						},
+					},
+				});
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
+			expect(graphql).toHaveBeenCalledTimes(2);
+			expect(graphql).toHaveBeenNthCalledWith(1, expect.any(String), {
+				projectId: PROJECT.githubProjects.projectId,
+				cursor: undefined,
+			});
+			expect(graphql).toHaveBeenNthCalledWith(2, expect.any(String), {
+				projectId: PROJECT.githubProjects.projectId,
+				cursor: 'CURSOR_1',
+			});
+		});
+
+		it('stops paging when hasNextPage is true but no cursor is returned', async () => {
+			graphql.mockResolvedValue({
+				node: { items: { nodes: [ITEM_NODE], pageInfo: { hasNextPage: true, endCursor: null } } },
+			});
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x']);
+			expect(graphql).toHaveBeenCalledTimes(1);
+		});
+
+		it('stops paging when a page repeats the cursor it was fetched with', async () => {
+			// A misbehaving server that keeps claiming another page while handing back
+			// the same cursor must not loop forever.
+			graphql
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [ITEM_NODE],
+							pageInfo: { hasNextPage: true, endCursor: 'CURSOR_1' },
+						},
+					},
+				})
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [TODO_NODE],
+							pageInfo: { hasNextPage: true, endCursor: 'CURSOR_1' },
+						},
+					},
+				});
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
+			expect(graphql).toHaveBeenCalledTimes(2);
 		});
 
 		it('filters client-side by the option ID resolved from the status key', async () => {

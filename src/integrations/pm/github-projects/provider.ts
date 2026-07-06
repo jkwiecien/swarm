@@ -51,7 +51,10 @@ interface GetItemResponse {
 /** One page of the board's items, for {@link GitHubProjectsPMProvider.listWorkItems}. */
 interface ListItemsResponse {
 	node?: {
-		items?: { nodes?: ItemNode[] | null } | null;
+		items?: {
+			nodes?: ItemNode[] | null;
+			pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+		} | null;
 	} | null;
 }
 
@@ -97,10 +100,11 @@ const GET_ITEM_QUERY = /* GraphQL */ `
 `;
 
 const LIST_ITEMS_QUERY = /* GraphQL */ `
-	query($projectId: ID!) {
+	query($projectId: ID!, $cursor: String) {
 		node(id: $projectId) {
 			... on ProjectV2 {
-				items(first: 100) {
+				items(first: 100, after: $cursor) {
+					pageInfo { hasNextPage endCursor }
 					nodes {
 						id
 						createdAt
@@ -212,18 +216,34 @@ export class GitHubProjectsPMProvider implements PMProvider {
 	}
 
 	async listWorkItems(filter?: { status?: string }): Promise<WorkItem[]> {
-		// One page (100 items) is enough for SWARM's single, small board
-		// (ai/ARCHITECTURE.md "Single-user scope"); paging is added the day a board
-		// outgrows it. Status filtering is client-side against the canonical key
-		// the caller passes, resolved to this board's option ID.
+		// The board's small today (ai/ARCHITECTURE.md "Single-user scope"), but
+		// `items` is a paginated connection — walk every page so a board that
+		// outgrows one page (100 items) isn't silently truncated. Status filtering
+		// is client-side against the canonical key the caller passes, resolved to
+		// this board's option ID.
 		const wantedOptionId = filter?.status
 			? this.project.githubProjects.statusOptions[filter.status]
 			: undefined;
 		return this.run(async () => {
-			const data = await getScopedClient().graphql<ListItemsResponse>(LIST_ITEMS_QUERY, {
-				projectId: this.project.githubProjects.projectId,
-			});
-			const nodes = data.node?.items?.nodes ?? [];
+			const nodes: ItemNode[] = [];
+			let cursor: string | undefined;
+			for (;;) {
+				const data = await getScopedClient().graphql<ListItemsResponse>(LIST_ITEMS_QUERY, {
+					projectId: this.project.githubProjects.projectId,
+					cursor,
+				});
+				const page = data.node?.items;
+				nodes.push(...(page?.nodes ?? []));
+				const pageInfo = page?.pageInfo;
+				// Guard against a malformed response that claims another page but hands
+				// back no cursor — advancing on `undefined` would refetch page one forever.
+				if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
+				// And against a server that claims another page while handing back the
+				// same cursor we just used — advancing to it would loop forever too. This
+				// keeps the loop provably terminating regardless of server behavior.
+				if (pageInfo.endCursor === cursor) break;
+				cursor = pageInfo.endCursor;
+			}
 			return nodes
 				.filter((n): n is ItemNode => !!n?.id)
 				.map((n) => toResolvedItem(n).workItem)
