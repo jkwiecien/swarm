@@ -27,6 +27,10 @@ import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
 import type { SwarmJob } from '../queue/jobs.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
+import {
+	buildReviewDispatchKey,
+	releaseReviewDispatch,
+} from '../triggers/review-dispatch-dedup.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
@@ -163,6 +167,17 @@ export async function processJob(
 			taskId: trigger.taskId,
 			error,
 		});
+		// A failed review never submitted a verdict, so release its dedup claim to
+		// let a sibling event for the same PR+SHA (e.g. a later check_suite success)
+		// retry rather than waiting out the TTL. A *successful* review keeps its
+		// claim, so the no-duplicate guarantee still holds. SWARM has no pre-run
+		// concurrency gate — Cascade's `onBlocked` release case — so a failed run is
+		// the closest analog to a dispatch that didn't consume its slot.
+		if (trigger.phase === 'review') {
+			await releaseReviewDispatch(
+				buildReviewDispatchKey(project.repo, trigger.prNumber, trigger.headSha),
+			);
+		}
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 }
