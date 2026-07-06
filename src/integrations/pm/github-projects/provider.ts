@@ -221,9 +221,19 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		// outgrows one page (100 items) isn't silently truncated. Status filtering
 		// is client-side against the canonical key the caller passes, resolved to
 		// this board's option ID.
-		const wantedOptionId = filter?.status
-			? this.project.githubProjects.statusOptions[filter.status]
-			: undefined;
+		let wantedOptionId: string | undefined;
+		if (filter?.status !== undefined) {
+			wantedOptionId = this.project.githubProjects.statusOptions[filter.status];
+			// A status key with no mapping is a config/logic error, not "match
+			// everything": leaving it undefined would fall through to the no-filter
+			// path below and return all items. Fail loudly, matching moveWorkItem
+			// (ai/CODING_STANDARDS.md "Error handling").
+			if (!wantedOptionId) {
+				throw new Error(
+					`Cannot list items: status '${filter.status}' has no option ID in the project's statusOptions map`,
+				);
+			}
+		}
 		return this.run(async () => {
 			const nodes: ItemNode[] = [];
 			let cursor: string | undefined;
