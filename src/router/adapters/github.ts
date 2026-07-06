@@ -54,6 +54,59 @@ export const GitHubParsedEventSchema = z.object({
 	actorLogin: z.string().optional(),
 	/** Comment-carrying events (`issue_comment`) — the ones a persona can author in reply. */
 	isCommentEvent: z.boolean(),
+
+	// --- Fields the pipeline-phase trigger handlers (SWARM-53) read. All
+	// optional and populated per event type: the Review handler needs the head
+	// SHA and the fork gate; the Respond-to-review handler needs the PR branch,
+	// the submitted review's state, and its ID. They ride in the parsed event
+	// (rather than a re-fetch in the handler) because the raw webhook already
+	// carries them and the event is the queue job's payload — a re-fetch would
+	// be a second GitHub round-trip for data we just discarded.
+
+	/**
+	 * The PR head commit SHA — `pull_request.head.sha` on a `pull_request` event,
+	 * `check_suite.head_sha` on a `check_suite` event. What the Review phase pins
+	 * its detached checkout to (`src/pipeline/review.ts`).
+	 */
+	headSha: z.string().optional(),
+	/**
+	 * The PR head branch (`pull_request.head.ref`) — the existing task branch the
+	 * Respond-to-review phase checks out and pushes fixes to
+	 * (`src/pipeline/respond-to-review.ts`).
+	 */
+	prBranch: z.string().optional(),
+	/**
+	 * True when the PR's head repo differs from its base repo — a fork PR. The
+	 * Review handler drops these: `provision`'s `git fetch origin` only fetches
+	 * the base repo's refs, so a fork's head SHA is unreachable and the detached
+	 * checkout would fail the job (see `src/pipeline/review.ts`'s header). Only
+	 * populated for `pull_request` events, where both repos are in the payload.
+	 */
+	isCrossRepo: z.boolean().optional(),
+	/**
+	 * A submitted review's state (`approved` | `changes_requested` | `commented`
+	 * | `dismissed`) on a `pull_request_review` event. The Respond-to-review
+	 * handler acts on everything except `approved`.
+	 */
+	reviewState: z.string().optional(),
+	/**
+	 * A submitted review's numeric ID as a string (`review.id`) — pins the
+	 * Respond-to-review phase to the one batched review it must answer.
+	 */
+	reviewId: z.string().optional(),
+	/**
+	 * A `check_suite` event's aggregate conclusion (`success` | `failure` | …).
+	 * The Review handler fires only on `success`. SWARM keys off the suite's own
+	 * conclusion rather than re-aggregating every check run on the SHA (Cascade's
+	 * richer defer/recheck/respond-to-ci machinery) — a documented MVP
+	 * simplification, see `src/triggers/handlers/review.ts`.
+	 */
+	checkConclusion: z.string().optional(),
+	/**
+	 * Whether a `pull_request` is a draft (`pull_request.draft`). The Review
+	 * handler skips drafts — they aren't ready for review yet.
+	 */
+	isDraft: z.boolean().optional(),
 });
 
 export type GitHubParsedEvent = z.infer<typeof GitHubParsedEventSchema>;
@@ -89,6 +142,73 @@ function extractWorkItemId(
 	return undefined;
 }
 
+/** The phase-relevant lifecycle fields a handler may read off a parsed event. */
+interface LifecycleFields {
+	headSha?: string;
+	prBranch?: string;
+	isCrossRepo?: boolean;
+	reviewState?: string;
+	reviewId?: string;
+	checkConclusion?: string;
+	isDraft?: boolean;
+}
+
+function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
+	const pr = asRecord(p.pull_request);
+	const head = asRecord(pr?.head);
+	const headRepo = asRecord(head?.repo)?.full_name as string | undefined;
+	const baseRepo = asRecord(asRecord(pr?.base)?.repo)?.full_name as string | undefined;
+	return {
+		headSha: (head?.sha as string) ?? undefined,
+		prBranch: (head?.ref as string) ?? undefined,
+		// A fork PR: head and base live in different repos. Undefined (rather than a
+		// guessed `false`) when either repo is missing from the payload.
+		isCrossRepo: headRepo != null && baseRepo != null ? headRepo !== baseRepo : undefined,
+		isDraft: typeof pr?.draft === 'boolean' ? pr.draft : undefined,
+	};
+}
+
+function reviewFields(p: Record<string, unknown>): LifecycleFields {
+	const review = asRecord(p.review);
+	const head = asRecord(asRecord(p.pull_request)?.head);
+	return {
+		prBranch: (head?.ref as string) ?? undefined,
+		reviewState: (review?.state as string) ?? undefined,
+		reviewId: review?.id != null ? String(review.id) : undefined,
+	};
+}
+
+function checkSuiteFields(p: Record<string, unknown>): LifecycleFields {
+	const suite = asRecord(p.check_suite);
+	return {
+		headSha: (suite?.head_sha as string) ?? undefined,
+		checkConclusion: (suite?.conclusion as string) ?? undefined,
+	};
+}
+
+/**
+ * Pull the phase-relevant lifecycle fields out of a raw webhook body. Each is
+ * present only on the event type that carries it (see the schema field docs);
+ * everything else stays `undefined`. Kept separate from {@link extractWorkItemId}
+ * so the "which fields does which event carry" mapping lives in one readable
+ * place rather than being smeared across `parseWebhook`.
+ */
+function extractLifecycleFields(
+	eventType: ProcessableEvent,
+	p: Record<string, unknown>,
+): LifecycleFields {
+	switch (eventType) {
+		case 'pull_request':
+			return pullRequestFields(p);
+		case 'pull_request_review':
+			return reviewFields(p);
+		case 'check_suite':
+			return checkSuiteFields(p);
+		default:
+			return {};
+	}
+}
+
 export class GitHubRouterAdapter {
 	readonly type = 'github' as const;
 
@@ -114,6 +234,7 @@ export class GitHubRouterAdapter {
 			workItemId: extractWorkItemId(eventType, p),
 			actorLogin,
 			isCommentEvent: eventType === 'issue_comment',
+			...extractLifecycleFields(eventType, p),
 		};
 	}
 
