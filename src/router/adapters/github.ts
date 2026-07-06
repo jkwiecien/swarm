@@ -109,6 +109,15 @@ export const GitHubParsedEventSchema = z.object({
 	 * handler skips drafts — they aren't ready for review yet.
 	 */
 	isDraft: z.boolean().optional(),
+	/**
+	 * The login that opened the PR (`pull_request.user.login`). The Review
+	 * handler's author-persona gate reviews only PRs a SWARM persona authored, so
+	 * a human- or third-party-bot-authored PR doesn't burn a review. Populated
+	 * only for `pull_request` events, where the payload carries the author; the
+	 * `check_suite` path has no author in its payload and fetches it instead
+	 * (`getPullRequestAuthorLogin`).
+	 */
+	prAuthorLogin: z.string().optional(),
 });
 
 export type GitHubParsedEvent = z.infer<typeof GitHubParsedEventSchema>;
@@ -153,6 +162,7 @@ interface LifecycleFields {
 	reviewId?: string;
 	checkConclusion?: string;
 	isDraft?: boolean;
+	prAuthorLogin?: string;
 }
 
 function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
@@ -167,6 +177,7 @@ function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
 		// guessed `false`) when either repo is missing from the payload.
 		isCrossRepo: headRepo != null && baseRepo != null ? headRepo !== baseRepo : undefined,
 		isDraft: typeof pr?.draft === 'boolean' ? pr.draft : undefined,
+		prAuthorLogin: (asRecord(pr?.user)?.login as string) ?? undefined,
 	};
 }
 

@@ -11,6 +11,7 @@ const getAuthenticated = vi.fn();
 // each endpoint reference to `paginate`, so paginate switches on identity.
 const listWorkflowRunsForRepo = vi.fn();
 const listJobsForWorkflowRun = vi.fn();
+const pullsGet = vi.fn();
 const paginate = vi.fn();
 
 vi.mock('@octokit/rest', () => ({
@@ -18,6 +19,7 @@ vi.mock('@octokit/rest', () => ({
 		auth: unknown;
 		users = { getAuthenticated };
 		actions = { listWorkflowRunsForRepo, listJobsForWorkflowRun };
+		pulls = { get: pullsGet };
 		paginate = paginate;
 		constructor(opts: { auth: unknown }) {
 			this.auth = opts.auth;
@@ -29,6 +31,7 @@ vi.mock('@octokit/rest', () => ({
 import {
 	getCheckSuiteStatus,
 	getGitHubUserForToken,
+	getPullRequestAuthorLogin,
 	getScopedClient,
 	withGitHubToken,
 } from '@/integrations/scm/github/client.js';
@@ -39,6 +42,7 @@ describe('github client', () => {
 		getAuthenticated.mockReset();
 		listWorkflowRunsForRepo.mockReset();
 		listJobsForWorkflowRun.mockReset();
+		pullsGet.mockReset();
 		paginate.mockReset();
 	});
 
@@ -137,6 +141,32 @@ describe('github client', () => {
 				getCheckSuiteStatus('jkwiecien', 'swarm', 'deadbeef'),
 			);
 			expect(result).toEqual({ totalCount: 0, checkRuns: [] });
+		});
+	});
+
+	describe('getPullRequestAuthorLogin', () => {
+		it('returns the login that opened the PR', async () => {
+			pullsGet.mockResolvedValue({ data: { user: { login: 'swarm-impl' } } });
+			const login = await withGitHubToken('tok', () =>
+				getPullRequestAuthorLogin('jkwiecien', 'swarm', 42),
+			);
+			expect(login).toBe('swarm-impl');
+			expect(pullsGet).toHaveBeenCalledWith({ owner: 'jkwiecien', repo: 'swarm', pull_number: 42 });
+		});
+
+		it('returns null when the PR carries no author (e.g. deleted account)', async () => {
+			pullsGet.mockResolvedValue({ data: { user: null } });
+			const login = await withGitHubToken('tok', () =>
+				getPullRequestAuthorLogin('jkwiecien', 'swarm', 7),
+			);
+			expect(login).toBeNull();
+		});
+
+		it('propagates an API failure so the caller can degrade', async () => {
+			pullsGet.mockRejectedValue(new Error('502 Bad Gateway'));
+			await expect(
+				withGitHubToken('tok', () => getPullRequestAuthorLogin('jkwiecien', 'swarm', 9)),
+			).rejects.toThrow(/502/);
 		});
 	});
 });

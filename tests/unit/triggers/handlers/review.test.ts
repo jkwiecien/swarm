@@ -27,18 +27,38 @@ vi.mock('@/triggers/respond-to-ci-attempts.js', () => ({
 }));
 
 // A `check_suite` event re-queries aggregate CI state and may schedule a
-// coalesced recheck — mock both so the tests need neither GitHub nor Redis.
-const { getCheckSuiteStatus, scheduleCoalescedJob, withPersonaCredentials } = vi.hoisted(() => ({
+// coalesced recheck — mock both so the tests need neither GitHub nor Redis. The
+// author-persona gate also fetches the PR author on that path (`pulls.get`), so
+// mock that too.
+const {
+	getCheckSuiteStatus,
+	getPullRequestAuthorLogin,
+	scheduleCoalescedJob,
+	withPersonaCredentials,
+} = vi.hoisted(() => ({
 	getCheckSuiteStatus: vi.fn(),
+	getPullRequestAuthorLogin: vi.fn(),
 	scheduleCoalescedJob: vi.fn(),
 	withPersonaCredentials: vi.fn(),
 }));
-vi.mock('@/integrations/scm/github/client.js', () => ({ getCheckSuiteStatus }));
+vi.mock('@/integrations/scm/github/client.js', () => ({
+	getCheckSuiteStatus,
+	getPullRequestAuthorLogin,
+}));
 vi.mock('@/queue/producer.js', () => ({ scheduleCoalescedJob }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		withPersonaCredentials = withPersonaCredentials;
 	},
+}));
+
+// The author-persona gate resolves the project's persona identities; mock just
+// that (keeping the real `isSwarmBot`) so the gate is exercised end-to-end. The
+// default identities make `swarm-impl` the implementer persona.
+const { resolvePersonaIdentities } = vi.hoisted(() => ({ resolvePersonaIdentities: vi.fn() }));
+vi.mock('@/integrations/scm/github/personas.js', async (importActual) => ({
+	...(await importActual<typeof import('@/integrations/scm/github/personas.js')>()),
+	resolvePersonaIdentities,
 }));
 
 /** Build a `CheckSuiteStatus` from `[name, status, conclusion]` triples. */
@@ -61,6 +81,13 @@ beforeEach(() => {
 	withPersonaCredentials.mockImplementation(
 		(_project: unknown, _persona: unknown, fn: () => Promise<unknown>) => fn(),
 	);
+	// Author gate defaults: identities resolve, and the PR is authored by the
+	// SWARM implementer persona (the common case). Tests flip these to exercise a
+	// human-authored PR or an identity-resolution failure.
+	resolvePersonaIdentities.mockReset();
+	resolvePersonaIdentities.mockResolvedValue({ implementer: 'swarm-impl', reviewer: 'swarm-rev' });
+	getPullRequestAuthorLogin.mockReset();
+	getPullRequestAuthorLogin.mockResolvedValue('swarm-impl');
 });
 
 const PROJECT = createMockProjectConfig();
@@ -103,9 +130,14 @@ describe('review trigger', () => {
 	});
 
 	describe('handle — pull_request opened', () => {
-		const base = { eventType: 'pull_request', action: 'opened', workItemId: '42' } as const;
+		const base = {
+			eventType: 'pull_request',
+			action: 'opened',
+			workItemId: '42',
+			prAuthorLogin: 'swarm-impl',
+		} as const;
 
-		it('dispatches Review for a non-draft same-repo PR', async () => {
+		it('dispatches Review for a non-draft same-repo PR authored by a persona', async () => {
 			const result = await handler.handle(
 				ctx({ ...base, headSha: 'abc123', isDraft: false, isCrossRepo: false }),
 			);
@@ -123,6 +155,30 @@ describe('review trigger', () => {
 
 		it('skips a fork PR', async () => {
 			expect(await handler.handle(ctx({ ...base, headSha: 'abc', isCrossRepo: true }))).toBeNull();
+		});
+
+		it('skips a PR not authored by a SWARM persona', async () => {
+			const result = await handler.handle(
+				ctx({ ...base, headSha: 'abc', isCrossRepo: false, prAuthorLogin: 'a-human' }),
+			);
+			expect(result).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+		});
+
+		it('skips a PR whose author login is missing from the payload', async () => {
+			const result = await handler.handle(
+				ctx({ ...base, headSha: 'abc', isCrossRepo: false, prAuthorLogin: undefined }),
+			);
+			expect(result).toBeNull();
+		});
+
+		it('fails closed (skips) when persona identities cannot be resolved', async () => {
+			// A completing check_suite re-runs the same gate with its own recheck, so
+			// failing closed here can't permanently drop a legit review.
+			resolvePersonaIdentities.mockRejectedValue(new Error('token lookup failed'));
+			const result = await handler.handle(ctx({ ...base, headSha: 'abc', isCrossRepo: false }));
+			expect(result).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
 		});
 
 		it('skips when no head SHA is present', async () => {
@@ -147,8 +203,49 @@ describe('review trigger', () => {
 			);
 			const result = await handler.handle(ctx({ ...base, headSha: 'cafe' }));
 			expect(result).toEqual({ phase: 'review', taskId: '9', prNumber: '9', headSha: 'cafe' });
+			// The author gate fetches the PR author (number, not string) before the query.
+			expect(getPullRequestAuthorLogin).toHaveBeenCalledWith('jkwiecien', 'swarm', 9);
 			expect(getCheckSuiteStatus).toHaveBeenCalledWith('jkwiecien', 'swarm', 'cafe');
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('skips a PR not authored by a SWARM persona — before the aggregate query', async () => {
+			getPullRequestAuthorLogin.mockResolvedValue('a-human');
+			const result = await handler.handle(ctx({ ...base, headSha: 'cafe' }));
+			expect(result).toBeNull();
+			// Gated before the (heavier) Actions-API call, and no dispatch claimed.
+			expect(getCheckSuiteStatus).not.toHaveBeenCalled();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('skips a check-suite PR with no resolvable author (no query)', async () => {
+			getPullRequestAuthorLogin.mockResolvedValue(null);
+			expect(await handler.handle(ctx({ ...base, headSha: 'cafe' }))).toBeNull();
+			expect(getCheckSuiteStatus).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('degrades to a bounded recheck when the author lookup throws', async () => {
+			// A transient error determining authorship must not drop a legit review;
+			// it defers, like a failed aggregate query.
+			getPullRequestAuthorLogin.mockRejectedValue(new Error('502 Bad Gateway'));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe' }, { deliveryId: 'd-2' })),
+			).toBeNull();
+			expect(getCheckSuiteStatus).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
+			expect(scheduleCoalescedJob.mock.calls[0][0]).toMatchObject({
+				recheckAttempt: 1,
+				deliveryId: 'd-2',
+			});
+		});
+
+		it('degrades to a bounded recheck when persona identities cannot be resolved', async () => {
+			resolvePersonaIdentities.mockRejectedValue(new Error('token lookup failed'));
+			expect(await handler.handle(ctx({ ...base, headSha: 'cafe' }))).toBeNull();
+			expect(getCheckSuiteStatus).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
 		});
 
 		it('dispatches Respond-to-CI when a check failed', async () => {
@@ -300,6 +397,7 @@ describe('review trigger', () => {
 			headSha: 'abc123',
 			isDraft: false,
 			isCrossRepo: false,
+			prAuthorLogin: 'swarm-impl',
 		} as const;
 
 		it('claims the PR+SHA slot before dispatching', async () => {
