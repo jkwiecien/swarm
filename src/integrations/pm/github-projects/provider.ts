@@ -238,6 +238,10 @@ export class GitHubProjectsPMProvider implements PMProvider {
 				// Guard against a malformed response that claims another page but hands
 				// back no cursor — advancing on `undefined` would refetch page one forever.
 				if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
+				// And against a server that claims another page while handing back the
+				// same cursor we just used — advancing to it would loop forever too. This
+				// keeps the loop provably terminating regardless of server behavior.
+				if (pageInfo.endCursor === cursor) break;
 				cursor = pageInfo.endCursor;
 			}
 			return nodes

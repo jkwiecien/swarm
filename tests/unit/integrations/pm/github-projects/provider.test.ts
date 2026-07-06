@@ -144,6 +144,33 @@ describe('GitHubProjectsPMProvider', () => {
 			expect(graphql).toHaveBeenCalledTimes(1);
 		});
 
+		it('stops paging when a page repeats the cursor it was fetched with', async () => {
+			// A misbehaving server that keeps claiming another page while handing back
+			// the same cursor must not loop forever.
+			graphql
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [ITEM_NODE],
+							pageInfo: { hasNextPage: true, endCursor: 'CURSOR_1' },
+						},
+					},
+				})
+				.mockResolvedValueOnce({
+					node: {
+						items: {
+							nodes: [TODO_NODE],
+							pageInfo: { hasNextPage: true, endCursor: 'CURSOR_1' },
+						},
+					},
+				});
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
+			expect(graphql).toHaveBeenCalledTimes(2);
+		});
+
 		it('filters client-side by the option ID resolved from the status key', async () => {
 			graphql.mockResolvedValue({ node: { items: { nodes: [ITEM_NODE, TODO_NODE] } } });
 
