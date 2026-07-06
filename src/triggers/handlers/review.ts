@@ -274,7 +274,6 @@ async function resolveCheckSuiteReview(
 	// any *error* determining authorship degrades to the same bounded recheck as a
 	// failed aggregate query (a transient blip must not silently drop a legit
 	// review, and the cap winds a persistent failure down to one warn+drop).
-	let authoredBySwarm: boolean;
 	try {
 		const authorLogin = await scm.withPersonaCredentials(project, 'reviewer', () =>
 			getPullRequestAuthorLogin(owner, repo, Number(prNumber)),
@@ -286,8 +285,7 @@ async function resolveCheckSuiteReview(
 			});
 			return { kind: 'none' };
 		}
-		authoredBySwarm = await isSwarmAuthoredPr(project, authorLogin);
-		if (!authoredBySwarm) {
+		if (!(await isSwarmAuthoredPr(project, authorLogin))) {
 			logger.info('review: check-suite PR not authored by a SWARM persona — skipping', {
 				prNumber,
 				headSha,
