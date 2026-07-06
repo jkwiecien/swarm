@@ -97,10 +97,26 @@ export async function claimRespondToCiAttempt(
 ): Promise<RespondToCiAttemptClaim> {
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
-		const attempt = await getRedis().incr(namespacedKey);
-		// Refresh the TTL on every bump so an actively-looping PR's counter stays
-		// alive for the whole cycle, then ages out once the PR goes quiet.
-		await getRedis().expire(namespacedKey, ATTEMPTS_TTL_SEC);
+		// INCR the counter and refresh its TTL in one round-trip via MULTI/EXEC, so
+		// the two can't be split by a crash: a bare `incr` followed by a separate
+		// `expire` would, if the process died between them, leave a TTL-less key
+		// that permanently caps the PR. Refreshing the TTL on every bump keeps an
+		// actively-looping PR's counter alive for the whole cycle, then lets it age
+		// out once the PR goes quiet. `exec()` resolves to per-command `[err, res]`
+		// tuples in issue order; the INCR result is the first tuple's value.
+		const results = await getRedis()
+			.multi()
+			.incr(namespacedKey)
+			.expire(namespacedKey, ATTEMPTS_TTL_SEC)
+			.exec();
+		// A null `results` means the MULTI was discarded (e.g. connection loss); a
+		// per-command error surfaces in the tuple's first slot. Treat either as a
+		// failed call so the catch's fail-open path handles it uniformly.
+		const incrResult = results?.[0];
+		if (!incrResult || incrResult[0]) {
+			throw incrResult?.[0] ?? new Error('respond-to-ci attempts: MULTI/EXEC returned no result');
+		}
+		const attempt = Number(incrResult[1]);
 		const allowed = attempt <= MAX_FIX_ATTEMPTS;
 		if (!allowed) {
 			logger.warn('respond-to-ci attempts: fix-attempt cap reached — not dispatching', {

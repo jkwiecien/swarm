@@ -1,14 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mock ioredis so nothing touches a real Redis — capture the constructor and the
-// incr()/expire() calls the helper makes. Hoisted so the vi.mock factory (itself
-// hoisted above imports) can reference them.
-const { RedisMock, incr, expire, on } = vi.hoisted(() => {
-	const incr = vi.fn();
-	const expire = vi.fn();
+// Mock ioredis so nothing touches a real Redis. The helper claims via a
+// MULTI/EXEC pipeline — `multi()` returns a chainable that records incr()/expire()
+// and resolves on exec() — so the mock mirrors that fluent shape. `incr`/`expire`
+// are spies on the chain; `execResult` is what exec() resolves to (the per-command
+// `[err, res]` tuples). Hoisted so the vi.mock factory (itself hoisted above
+// imports) can reference them.
+const { RedisMock, incr, expire, exec, on, setExecResult } = vi.hoisted(() => {
+	let execResult: unknown = [
+		[null, 1],
+		[null, 1],
+	];
+	const setExecResult = (r: unknown) => {
+		execResult = r;
+	};
+	const exec = vi.fn(() => Promise.resolve(execResult));
+	const chain = { incr: vi.fn(), expire: vi.fn(), exec };
+	chain.incr.mockReturnValue(chain);
+	chain.expire.mockReturnValue(chain);
+	const multi = vi.fn(() => chain);
 	const on = vi.fn();
-	const RedisMock = vi.fn(() => ({ incr, expire, on }));
-	return { RedisMock, incr, expire, on };
+	const RedisMock = vi.fn(() => ({ multi, on }));
+	return { RedisMock, incr: chain.incr, expire: chain.expire, exec, on, setExecResult };
 });
 
 vi.mock('ioredis', () => ({ Redis: RedisMock }));
@@ -18,13 +31,25 @@ vi.mock('ioredis', () => ({ Redis: RedisMock }));
 beforeEach(() => {
 	vi.resetModules();
 	RedisMock.mockClear();
-	incr.mockReset();
-	incr.mockResolvedValue(1);
-	expire.mockReset();
-	expire.mockResolvedValue(1);
+	// Clear call history but keep the chain-returning behaviour so `.incr().expire()`
+	// stays fluent; exec() defaults to a successful INCR→1, EXPIRE→1 pair.
+	incr.mockClear();
+	expire.mockClear();
+	exec.mockClear();
+	setExecResult([
+		[null, 1],
+		[null, 1],
+	]);
 	on.mockReset();
 	process.env.REDIS_URL = 'redis://localhost:6379';
 });
+
+// Mirror the exec() result an ioredis MULTI produces: `[err, value]` tuples, the
+// first being the INCR result. Only the INCR count varies across these cases.
+const execOk = (incrValue: number) => [
+	[null, incrValue],
+	[null, 1],
+];
 
 const NS = 'swarm:respond-to-ci-attempts:';
 const CTX = { prNumber: '42', headSha: 'abc' };
@@ -37,18 +62,20 @@ describe('buildRespondToCiAttemptKey', () => {
 });
 
 describe('claimRespondToCiAttempt', () => {
-	it('increments the namespaced key, refreshes its TTL, and allows an attempt under the cap', async () => {
+	it('increments the namespaced key and refreshes its TTL atomically, and allows an attempt under the cap', async () => {
 		const { claimRespondToCiAttempt } = await import('@/triggers/respond-to-ci-attempts.js');
 
 		const claim = await claimRespondToCiAttempt('acme/widgets:42', CTX);
 
 		expect(claim).toEqual({ allowed: true, attempt: 1 });
+		// INCR and EXPIRE are queued on one MULTI so a crash can't split them.
 		expect(incr).toHaveBeenCalledWith(`${NS}acme/widgets:42`);
 		expect(expire).toHaveBeenCalledWith(`${NS}acme/widgets:42`, 3600);
+		expect(exec).toHaveBeenCalledOnce();
 	});
 
 	it('allows the attempt exactly at the cap', async () => {
-		incr.mockResolvedValue(3);
+		setExecResult(execOk(3));
 		const { claimRespondToCiAttempt, MAX_FIX_ATTEMPTS } = await import(
 			'@/triggers/respond-to-ci-attempts.js'
 		);
@@ -60,7 +87,7 @@ describe('claimRespondToCiAttempt', () => {
 	});
 
 	it('denies the attempt once the counter exceeds the cap', async () => {
-		incr.mockResolvedValue(4);
+		setExecResult(execOk(4));
 		const { claimRespondToCiAttempt } = await import('@/triggers/respond-to-ci-attempts.js');
 		expect(await claimRespondToCiAttempt('acme/widgets:42', CTX)).toEqual({
 			allowed: false,
@@ -68,8 +95,29 @@ describe('claimRespondToCiAttempt', () => {
 		});
 	});
 
-	it('fails OPEN (allows) when the Redis call throws — a blip must not disable CI-fix', async () => {
-		incr.mockRejectedValue(new Error('ECONNREFUSED'));
+	it('fails OPEN (allows) when the MULTI/EXEC rejects — a blip must not disable CI-fix', async () => {
+		exec.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+		const { claimRespondToCiAttempt } = await import('@/triggers/respond-to-ci-attempts.js');
+		expect(await claimRespondToCiAttempt('acme/widgets:42', CTX)).toEqual({
+			allowed: true,
+			attempt: 0,
+		});
+	});
+
+	it('fails OPEN when the MULTI is discarded (exec resolves null)', async () => {
+		setExecResult(null);
+		const { claimRespondToCiAttempt } = await import('@/triggers/respond-to-ci-attempts.js');
+		expect(await claimRespondToCiAttempt('acme/widgets:42', CTX)).toEqual({
+			allowed: true,
+			attempt: 0,
+		});
+	});
+
+	it('fails OPEN when the INCR command itself errored inside the MULTI', async () => {
+		setExecResult([
+			[new Error('WRONGTYPE'), null],
+			[null, 1],
+		]);
 		const { claimRespondToCiAttempt } = await import('@/triggers/respond-to-ci-attempts.js');
 		expect(await claimRespondToCiAttempt('acme/widgets:42', CTX)).toEqual({
 			allowed: true,

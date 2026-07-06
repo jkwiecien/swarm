@@ -88,9 +88,14 @@ export interface RunRespondToCiPhaseOptions {
 	headSha: string;
 	/**
 	 * Task identifier for the worktree path (`task-<taskId>`). Passed explicitly
-	 * rather than derived from `prNumber`: the worker that dequeues the job owns
-	 * task naming, and a CI-fix worktree must not collide with a review worktree
-	 * for the same change.
+	 * rather than derived from `prNumber`: naming the task is the dequeuing
+	 * worker's job, not this phase's. Today the review handler dispatches both
+	 * Review and Respond-to-CI with `taskId: prNumber`, so both resolve to
+	 * `task-<prNumber>`; a CI-fix and a still-running review of an earlier SHA on
+	 * the same PR can therefore contend for one worktree path — the second
+	 * `provision` throws "already exists" and that job fails cleanly (no retry
+	 * storm) rather than the two clobbering each other. Distinct ids here would
+	 * separate them, but that's the caller's choice to make.
 	 */
 	taskId: string;
 	/** Worktree manager for the project — provisions and cleans up the checkout. */
