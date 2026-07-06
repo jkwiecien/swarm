@@ -126,6 +126,20 @@ describe('processJob', () => {
 		]);
 	});
 
+	it('threads a recheck job back through, exposing its incremented recheckAttempt to the trigger', async () => {
+		// A deferred recheck (scheduleCoalescedJob) re-enqueues the same event with
+		// recheckAttempt bumped; when the worker pulls it, processJob must surface
+		// that attempt in the ctx so the review handler re-matches and can enforce
+		// its recheck cap rather than looping forever.
+		const seen: TriggerContext[] = [];
+		const job = createMockGitHubWebhookJob({ recheckAttempt: 5 });
+
+		await processJob(job, registryReturning(REVIEW_TRIGGER, seen));
+
+		expect(seen[0].recheckAttempt).toBe(5);
+		expect(phaseCalls[0].phase).toBe('review');
+	});
+
 	it('discriminates the context source for a projects job', async () => {
 		const seen: TriggerContext[] = [];
 		const job = createMockGitHubProjectsWebhookJob();

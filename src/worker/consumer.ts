@@ -125,8 +125,20 @@ export async function processJob(
 
 	const ctx: TriggerContext =
 		job.type === 'github'
-			? { project, deliveryId: job.deliveryId, source: 'github', event: job.event }
-			: { project, deliveryId: job.deliveryId, source: 'github-projects', event: job.event };
+			? {
+					project,
+					deliveryId: job.deliveryId,
+					recheckAttempt: job.recheckAttempt,
+					source: 'github',
+					event: job.event,
+				}
+			: {
+					project,
+					deliveryId: job.deliveryId,
+					recheckAttempt: job.recheckAttempt,
+					source: 'github-projects',
+					event: job.event,
+				};
 
 	const trigger = await registry.dispatch(ctx);
 	if (!trigger) {

@@ -26,6 +26,13 @@ const jobBase = z.object({
 	projectId: z.string().min(1),
 	/** GitHub's `X-GitHub-Delivery` header — stable per webhook delivery. */
 	deliveryId: z.string().min(1).optional(),
+	/**
+	 * How many times this job has already been re-enqueued as a deferred
+	 * incomplete-check recheck (`src/triggers/handlers/review.ts`). Absent on a
+	 * fresh webhook; incremented each time the `pr-review` handler reschedules a
+	 * coalesced recheck, so it can cap the loop when the Actions API stays stale.
+	 */
+	recheckAttempt: z.number().int().nonnegative().optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

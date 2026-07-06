@@ -28,6 +28,16 @@ describe('SwarmJobSchema', () => {
 		expect(parsed.deliveryId).toBeUndefined();
 	});
 
+	it('parses a job carrying a recheckAttempt count', () => {
+		const job = { ...createMockGitHubWebhookJob(), recheckAttempt: 3 };
+		expect(SwarmJobSchema.parse(roundTrip(job))).toMatchObject({ recheckAttempt: 3 });
+	});
+
+	it('rejects a negative recheckAttempt', () => {
+		const job = { ...createMockGitHubWebhookJob(), recheckAttempt: -1 };
+		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
+	});
+
 	it('rejects an unknown job type', () => {
 		const job = { ...createMockGitHubWebhookJob(), type: 'gitlab' };
 		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
