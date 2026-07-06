@@ -198,6 +198,17 @@ describe('runPlanningPhase', () => {
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
+
+	it('does not let a cleanup failure mask a successful run', async () => {
+		const deps = makeDeps();
+		deps.worktrees.cleanup = vi.fn(async () => {
+			throw new Error('rm -rf worktree failed');
+		});
+		// The agent exited 0 and the plan was posted, so the run succeeded — a
+		// cleanup throw is swallowed-and-logged, not re-raised.
+		const result = await runPlanningPhase(deps);
+		expect(result).toMatchObject({ movedTo: 'todo' });
+	});
 });
 
 describe('buildPlanningPrompt', () => {

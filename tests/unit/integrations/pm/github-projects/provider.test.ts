@@ -77,6 +77,44 @@ describe('GitHubProjectsPMProvider', () => {
 		});
 	});
 
+	describe('listWorkItems', () => {
+		// A second item in a different Status, so the client-side filter has
+		// something to exclude.
+		const TODO_NODE = {
+			...ITEM_NODE,
+			id: 'PVTI_y',
+			content: { ...ITEM_NODE.content, number: 11, title: 'Later work' },
+			fieldValueByName: { name: 'ToDo', optionId: '3121a97d' },
+		};
+
+		it('maps every page node to a WorkItem when no filter is given', async () => {
+			graphql.mockResolvedValue({ node: { items: { nodes: [ITEM_NODE, TODO_NODE] } } });
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('ProjectV2'), {
+				projectId: PROJECT.githubProjects.projectId,
+			});
+		});
+
+		it('filters client-side by the option ID resolved from the status key', async () => {
+			graphql.mockResolvedValue({ node: { items: { nodes: [ITEM_NODE, TODO_NODE] } } });
+
+			const items = await provider.listWorkItems({ status: 'inProgress' });
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x']);
+		});
+
+		it('drops null/id-less nodes', async () => {
+			graphql.mockResolvedValue({ node: { items: { nodes: [null, ITEM_NODE, { id: '' }] } } });
+
+			const items = await provider.listWorkItems();
+
+			expect(items.map((i) => i.id)).toEqual(['PVTI_x']);
+		});
+	});
+
 	describe('moveWorkItem', () => {
 		it('writes the mapped option ID to the Status field', async () => {
 			graphql.mockResolvedValue({

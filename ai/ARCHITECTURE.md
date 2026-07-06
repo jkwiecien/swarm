@@ -67,7 +67,7 @@ Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the 
 1. **Planning** — item enters "Planning" status → worktree provisioned → Antigravity CLI writes `proposed_plan.md` → plan posted as a comment on the linked Issue → item moved to "Ready for Dev" (or equivalent status).
 2. **Implementation** — item enters "In Progress" → worktree on the task branch → Claude Code (implementer persona) implements the plan, runs tests, commits, pushes → PR opened, linked back to the Projects item.
 3. **Review** — PR opened / check suite completes → Claude Code (reviewer persona) reviews the diff, posts PR review comments — mirrors Cascade's review-agent trigger on `check_suite` success.
-4. **Respond to review** — reviewer persona submits a review with `changes_requested` → Claude Code (implementer persona) addresses the batched review comments, pushes a fix, or pushes back with a rationale — mirrors Cascade's `respond-to-review` trigger and its "wait for the final submitted review, not individual line comments" rule.
+4. **Respond to review** — reviewer persona submits any non-approving review (`changes_requested` or a plain `commented` review) → Claude Code (implementer persona) addresses the batched review comments, pushes a fix, or pushes back with a rationale — mirrors Cascade's `respond-to-review` trigger and its "wait for the final submitted review, not individual line comments" rule.
 
 ### Trigger wiring (SWARM-53)
 

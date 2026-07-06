@@ -238,6 +238,16 @@ export async function runPlanningPhase(
 
 		return { plan, commentId, movedTo: NEXT_STATUS, agent };
 	} finally {
-		await worktrees.cleanup(taskId);
+		// Swallow-and-log: a cleanup failure must not mask the run's outcome
+		// (a successful phase turning into a reported failure, or a genuine
+		// error being replaced by the cleanup error).
+		try {
+			await worktrees.cleanup(taskId);
+		} catch (error) {
+			logger.error('planning phase: worktree cleanup failed', {
+				taskId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 }

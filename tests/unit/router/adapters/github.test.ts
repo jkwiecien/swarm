@@ -157,6 +157,20 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.isCrossRepo).toBe(false);
 		});
 
+		it('leaves isCrossRepo undefined when a repo is missing from the payload', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'opened',
+				repository: repo(),
+				pull_request: {
+					number: 42,
+					// base carries no repo — can't tell fork from same-repo, so don't guess.
+					head: { sha: 'abc', ref: 'issue-42', repo: { full_name: 'jkwiecien/swarm' } },
+					base: { ref: 'main' },
+				},
+			});
+			expect(parsed?.isCrossRepo).toBeUndefined();
+		});
+
 		it('enriches a pull_request_review event with state, id and branch', () => {
 			const parsed = adapter.parseWebhook('pull_request_review', {
 				action: 'submitted',
