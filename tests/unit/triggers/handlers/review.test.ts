@@ -189,6 +189,39 @@ describe('review trigger', () => {
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
 		});
 
+		it('degrades to a bounded recheck when the aggregate query throws', async () => {
+			// A transient Actions-API error (or an unresolvable reviewer token) must
+			// not escape the handler — that would fail the job and burn its BullMQ
+			// retries. It defers a recheck instead.
+			getCheckSuiteStatus.mockRejectedValue(new Error('502 Bad Gateway'));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe' }, { deliveryId: 'd-9' })),
+			).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
+			const [job, coalesceKey] = scheduleCoalescedJob.mock.calls[0];
+			expect(coalesceKey).toBe(`check-suite:${PROJECT.repo}:9:cafe`);
+			expect(job).toMatchObject({ recheckAttempt: 1, deliveryId: 'd-9' });
+		});
+
+		it('degrades to a bounded recheck when the reviewer token cannot be resolved', async () => {
+			// `withPersonaCredentials` throws before the API call when the persona's
+			// token is unconfigured — same degrade path, no job failure.
+			withPersonaCredentials.mockRejectedValue(new Error('no reviewer token configured'));
+			expect(await handler.handle(ctx({ ...base, headSha: 'cafe' }))).toBeNull();
+			expect(getCheckSuiteStatus).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
+		});
+
+		it('gives up (no reschedule) when the query keeps failing past the cap', async () => {
+			getCheckSuiteStatus.mockRejectedValue(new Error('still 502'));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe' }, { recheckAttempt: 20 })),
+			).toBeNull();
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+		});
+
 		it('skips a suite with no associated PR (no query)', async () => {
 			expect(
 				await handler.handle(

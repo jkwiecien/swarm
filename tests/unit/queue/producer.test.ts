@@ -164,6 +164,30 @@ describe('scheduleCoalescedJob', () => {
 		expect(add).toHaveBeenCalledOnce();
 	});
 
+	it('supersedes a matching job found in the waiting set (delay elapsed, not yet picked up)', async () => {
+		// A prior recheck whose delay already elapsed sits in `waiting`, not
+		// `delayed` — the supersede must match it there too, else two rechecks
+		// for one key survive.
+		const remove = vi.fn().mockResolvedValue(undefined);
+		const staleRemove = vi.fn().mockResolvedValue(undefined);
+		getDelayed.mockResolvedValue([]);
+		getWaiting.mockResolvedValue([
+			{ name: 'check-suite:jkwiecien/swarm:9:cafe', remove },
+			{ name: 'some-other-key', remove: staleRemove },
+		]);
+		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
+
+		await scheduleCoalescedJob(
+			createMockGitHubWebhookJob(),
+			'check-suite:jkwiecien/swarm:9:cafe',
+			30_000,
+		);
+
+		expect(remove).toHaveBeenCalledOnce();
+		expect(staleRemove).not.toHaveBeenCalled();
+		expect(add).toHaveBeenCalledOnce();
+	});
+
 	it('schedules without removing anything when no pending job matches', async () => {
 		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
 

@@ -24,7 +24,10 @@
  * further webhook will arrive to wake us. The recheck re-queries fresh API
  * state; `recheckAttempt` caps the loop so a permanently-stale API can't
  * reschedule forever (a genuinely slow CI run is re-triggered by its own later
- * `check_suite` webhook, so the cap can't drop a legitimate review).
+ * `check_suite` webhook, so the cap can't drop a legitimate review). A *failed*
+ * aggregate query (transient Actions-API error, or an unresolvable reviewer
+ * token) degrades to the same bounded recheck rather than throwing out of the
+ * handler and burning the job's retries — see `resolveCheckSuiteReview`.
  *
  * **Same-repo gate.** Fork PRs are dropped (`pull_request` events, via
  * `isCrossRepo`): the Review phase's `provision` fetches only the base repo's
@@ -43,7 +46,10 @@
  */
 
 import type { ProjectConfig } from '../../config/schema.js';
-import { getCheckSuiteStatus } from '../../integrations/scm/github/client.js';
+import {
+	type CheckSuiteStatus,
+	getCheckSuiteStatus,
+} from '../../integrations/scm/github/client.js';
 import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integration.js';
 import { logger } from '../../lib/logger.js';
 import { scheduleCoalescedJob } from '../../queue/producer.js';
@@ -95,44 +101,28 @@ function isReviewablePullRequest(event: GitHubParsedEvent, prNumber: string): bo
 }
 
 /**
- * Decide a `check_suite` event's fate from the head SHA's *aggregate* check
- * state. Returns `true` to proceed to review; `false` when the event was
- * handled here (a failed suite skipped, or an incomplete suite's recheck
- * scheduled). The aggregate query runs as the reviewer persona — read-only, and
- * the persona whose review follows.
+ * Schedule a bounded, coalesced recheck of this `check_suite` event, or give up
+ * once {@link MAX_CHECK_SUITE_RECHECKS} is reached. Always returns `false` — the
+ * event is fully handled here whether a recheck was queued or the cap stopped
+ * the loop. Shared by the two defer paths in {@link resolveCheckSuiteReview}:
+ * some check still incomplete, and a failed aggregate query. `details` is merged
+ * into the log line so each caller records why it deferred.
  */
-async function resolveCheckSuiteReview(
+async function scheduleCheckSuiteRecheck(
 	project: ProjectConfig,
 	event: GitHubParsedEvent,
 	deliveryId: string | undefined,
 	recheckAttempt: number,
 	prNumber: string,
 	headSha: string,
-): Promise<boolean> {
-	const [owner, repo] = project.repo.split('/');
-	const scm = new GitHubSCMIntegration();
-	const checkStatus = await scm.withPersonaCredentials(project, 'reviewer', () =>
-		getCheckSuiteStatus(owner, repo, headSha),
-	);
-
-	const decision = decideCheckSuiteOutcome(checkStatus, prNumber);
-	if (decision.action === 'review') return true;
-
-	if (decision.action === 'skip') {
-		logger.info('review: check suite not reviewable — skipping', {
-			prNumber,
-			message: decision.message,
-		});
-		return false;
-	}
-
-	// defer — some check is still incomplete; re-query fresh API state shortly.
+	details: Record<string, unknown>,
+): Promise<false> {
 	if (recheckAttempt >= MAX_CHECK_SUITE_RECHECKS) {
-		logger.warn('review: giving up on incomplete-check recheck (Actions API still stale)', {
+		logger.warn('review: giving up on check-suite recheck (cap reached)', {
 			prNumber,
 			headSha,
 			recheckAttempt,
-			incompleteChecks: decision.incompleteChecks,
+			...details,
 		});
 		return false;
 	}
@@ -149,15 +139,77 @@ async function resolveCheckSuiteReview(
 		coalesceKey,
 		RECHECK_DELAY_MS,
 	);
-	logger.info('review: checks incomplete — scheduled deferred recheck', {
+	logger.info('review: scheduled deferred check-suite recheck', {
 		prNumber,
 		headSha,
 		recheckAttempt: recheckAttempt + 1,
 		delayMs: RECHECK_DELAY_MS,
-		incompleteChecks: decision.incompleteChecks,
 		coalesceKey,
+		...details,
 	});
 	return false;
+}
+
+/**
+ * Decide a `check_suite` event's fate from the head SHA's *aggregate* check
+ * state. Returns `true` to proceed to review; `false` when the event was
+ * handled here (a failed suite skipped, or an incomplete suite's recheck
+ * scheduled). The aggregate query runs as the reviewer persona — read-only, and
+ * the persona whose review follows.
+ *
+ * The query resolves the reviewer token and hits the Actions API, so it can
+ * throw — a transient 5xx/rate-limit/network blip, or a project with no
+ * resolvable reviewer token. That throw must not escape `handle`: it would land
+ * outside `processJob`'s `runPhase`-only try/catch, failing the job and burning
+ * its BullMQ retries re-running this same query (an implementer-token-only
+ * project would fail+retry on *every* `check_suite` event). We degrade to a
+ * bounded recheck instead — Cascade skips on error; we defer so a transient blip
+ * can't silently drop a legitimate review, and the cap winds a persistent
+ * failure down to one warn+drop rather than a retry storm.
+ */
+async function resolveCheckSuiteReview(
+	project: ProjectConfig,
+	event: GitHubParsedEvent,
+	deliveryId: string | undefined,
+	recheckAttempt: number,
+	prNumber: string,
+	headSha: string,
+): Promise<boolean> {
+	const [owner, repo] = project.repo.split('/');
+	const scm = new GitHubSCMIntegration();
+
+	let checkStatus: CheckSuiteStatus;
+	try {
+		checkStatus = await scm.withPersonaCredentials(project, 'reviewer', () =>
+			getCheckSuiteStatus(owner, repo, headSha),
+		);
+	} catch (err) {
+		return scheduleCheckSuiteRecheck(
+			project,
+			event,
+			deliveryId,
+			recheckAttempt,
+			prNumber,
+			headSha,
+			{ reason: 'aggregate query failed', error: err instanceof Error ? err.message : String(err) },
+		);
+	}
+
+	const decision = decideCheckSuiteOutcome(checkStatus, prNumber);
+	if (decision.action === 'review') return true;
+
+	if (decision.action === 'skip') {
+		logger.info('review: check suite not reviewable — skipping', {
+			prNumber,
+			message: decision.message,
+		});
+		return false;
+	}
+
+	// defer — some check is still incomplete; re-query fresh API state shortly.
+	return scheduleCheckSuiteRecheck(project, event, deliveryId, recheckAttempt, prNumber, headSha, {
+		incompleteChecks: decision.incompleteChecks,
+	});
 }
 
 /**
