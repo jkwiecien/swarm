@@ -67,6 +67,48 @@ export async function enqueueJob(job: SwarmJob): Promise<string | undefined> {
 }
 
 /**
+ * Schedule `job` to run after `delayMs`, coalesced on `coalesceKey`: any
+ * pending (delayed or waiting) job already scheduled under the same key is
+ * removed first, so N events for the same key collapse into a single deferred
+ * run rather than a pile-up. The primitive behind the `pr-review` handler's
+ * incomplete-check recheck (`src/triggers/handlers/review.ts`), ported from
+ * Cascade's `scheduleCoalescedJob` (`src/router/queue.ts`).
+ *
+ * `coalesceKey` is used as the BullMQ *job name* (not its id): `getDelayed()` /
+ * `getWaiting()` are matched on name to find the prior pending job. The name is
+ * cosmetic to the worker, which processes every job on the queue regardless of
+ * name (`src/worker/index.ts`). The new job gets a unique id so it never
+ * collides with the superseded one or with a `deliveryId`-keyed job.
+ *
+ * Only *pending* jobs are superseded — active/completed/failed jobs are left
+ * alone (an active one is already doing the work; a finished one is real past
+ * intent). The getDelayed→remove→add sequence isn't atomic, so two concurrent
+ * schedules for one key can both fire; that's equivalent to two webhooks
+ * landing back to back and is absorbed downstream by the review-dispatch dedup
+ * claim (`src/triggers/review-dispatch-dedup.ts`).
+ */
+export async function scheduleCoalescedJob(
+	job: SwarmJob,
+	coalesceKey: string,
+	delayMs: number,
+): Promise<void> {
+	const q = getQueue();
+
+	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
+	const pending = [...delayed, ...waiting].filter((j) => j.name === coalesceKey);
+	await Promise.all(pending.map((j) => j.remove()));
+
+	// Colon-free unique id: BullMQ rejects custom ids containing `:` (reserved
+	// for its own key namespacing), and the id must not collide with a
+	// superseded job or a delivery-id-keyed one. `Date.now()` + a random suffix
+	// gives per-schedule uniqueness without a shared counter.
+	const jobId = `coalesce_${coalesceKey.replace(/:/g, '_')}_${Date.now()}_${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+	await q.add(coalesceKey, job, { jobId, delay: delayMs });
+}
+
+/**
  * Close the producer connection — called from the router's shutdown handler so
  * the process exits cleanly instead of hanging on an open Redis socket. A no-op
  * if nothing was ever enqueued (the queue is created lazily).

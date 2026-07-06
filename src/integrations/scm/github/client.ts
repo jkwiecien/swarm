@@ -39,6 +39,79 @@ export function withGitHubToken<T>(token: string, fn: () => Promise<T>): Promise
 	return clientStorage.run(scopedClient, fn);
 }
 
+/** One check on a commit — a workflow-run job, flattened. */
+export interface CheckRunStatus {
+	name: string;
+	/** `queued` | `in_progress` | `completed` — anything but `completed` is still pending. */
+	status: string;
+	/** `success` | `failure` | `timed_out` | … — `null` while the check hasn't finished. */
+	conclusion: string | null;
+}
+
+/** Aggregate CI state across *every* check on a commit — the basis for the review-vs-defer decision. */
+export interface CheckSuiteStatus {
+	totalCount: number;
+	checkRuns: CheckRunStatus[];
+}
+
+/**
+ * Aggregate the state of every check on `ref` (a commit SHA), so a caller can
+ * decide whether CI is done rather than trusting a single `check_suite`
+ * webhook's own `conclusion` — GitHub fires one `check_suite.completed` per
+ * workflow, so any individual event sees only its own suite while siblings may
+ * still be running.
+ *
+ * Ported from Cascade's `getCheckSuiteStatus`. Uses the **Actions API**
+ * (workflow runs → jobs), not the Checks API: fine-grained PATs — which SWARM's
+ * personas use — cannot read the Checks API, but can read Actions. Runs must be
+ * deduped by `workflow_id` (keeping the most recent, since
+ * `listWorkflowRunsForRepo` returns newest-first): a failed-then-rerun workflow
+ * would otherwise leak its stale failing run into the aggregate and make a green
+ * PR look failed.
+ */
+export async function getCheckSuiteStatus(
+	owner: string,
+	repo: string,
+	ref: string,
+): Promise<CheckSuiteStatus> {
+	const client = getScopedClient();
+
+	const workflowRuns = await client.paginate(client.actions.listWorkflowRunsForRepo, {
+		owner,
+		repo,
+		head_sha: ref,
+		per_page: 100,
+	});
+
+	const latestRunByWorkflow = new Map<number, (typeof workflowRuns)[number]>();
+	for (const run of workflowRuns) {
+		if (!latestRunByWorkflow.has(run.workflow_id)) {
+			latestRunByWorkflow.set(run.workflow_id, run);
+		}
+	}
+
+	const jobResults = await Promise.all(
+		[...latestRunByWorkflow.values()].map((run) =>
+			client.paginate(client.actions.listJobsForWorkflowRun, {
+				owner,
+				repo,
+				run_id: run.id,
+				per_page: 100,
+			}),
+		),
+	);
+
+	const checkRuns: CheckRunStatus[] = jobResults.flatMap((jobs) =>
+		jobs.map((job) => ({
+			name: job.name,
+			status: job.status,
+			conclusion: job.conclusion,
+		})),
+	);
+
+	return { totalCount: checkRuns.length, checkRuns };
+}
+
 /**
  * Resolve the GitHub login a token authenticates as, or `null` if the token is
  * absent or the lookup fails. Used to map a persona's token to its bot identity

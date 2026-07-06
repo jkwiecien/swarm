@@ -30,6 +30,12 @@ export type TriggerContext = {
 	project: ProjectConfig;
 	/** GitHub's `X-GitHub-Delivery`, when the job carried one. */
 	deliveryId?: string;
+	/**
+	 * How many times this job has already been re-enqueued as a deferred
+	 * incomplete-check recheck (`SwarmJob.recheckAttempt`). 0/absent on a fresh
+	 * webhook; the `pr-review` handler reads it to cap the recheck loop.
+	 */
+	recheckAttempt?: number;
 } & (
 	| { source: 'github'; event: GitHubParsedEvent }
 	| { source: 'github-projects'; event: GitHubProjectsParsedEvent }

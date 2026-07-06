@@ -8,16 +8,31 @@ import {
 // Mock BullMQ's Queue so nothing touches Redis — capture constructor args and
 // the add()/close() calls the producer makes. Hoisted so the vi.mock factory
 // (itself hoisted above imports) can reference them.
-const { QueueMock, add, close } = vi.hoisted(() => {
-	const add = vi.fn();
+const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
+	// Typed with add()'s (name, data, opts) signature so `mock.calls[0]` is a
+	// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
+	const add =
+		vi.fn<
+			(name: string, data: unknown, opts?: { jobId?: string; delay?: number }) => Promise<unknown>
+		>();
 	const close = vi.fn();
+	const getDelayed = vi.fn<() => Promise<Array<{ name: string; remove: () => Promise<void> }>>>();
+	const getWaiting = vi.fn<() => Promise<Array<{ name: string; remove: () => Promise<void> }>>>();
 	// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
 	// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
 	// `calls[0]` fails to typecheck.
 	const QueueMock = vi.fn<
-		(name: string, opts?: QueueOptions) => { add: typeof add; close: typeof close }
-	>(() => ({ add, close }));
-	return { QueueMock, add, close };
+		(
+			name: string,
+			opts?: QueueOptions,
+		) => {
+			add: typeof add;
+			close: typeof close;
+			getDelayed: typeof getDelayed;
+			getWaiting: typeof getWaiting;
+		}
+	>(() => ({ add, close, getDelayed, getWaiting }));
+	return { QueueMock, add, close, getDelayed, getWaiting };
 });
 
 vi.mock('bullmq', () => ({ Queue: QueueMock }));
@@ -31,6 +46,10 @@ beforeEach(() => {
 	add.mockResolvedValue({ id: 'bull-assigned-id' });
 	close.mockReset();
 	close.mockResolvedValue(undefined);
+	getDelayed.mockReset();
+	getDelayed.mockResolvedValue([]);
+	getWaiting.mockReset();
+	getWaiting.mockResolvedValue([]);
 	process.env.REDIS_URL = 'redis://localhost:6379';
 });
 
@@ -105,6 +124,56 @@ describe('enqueueJob', () => {
 
 		await expect(enqueueJob(createMockGitHubWebhookJob())).rejects.toThrow(/REDIS_URL/);
 		expect(QueueMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('scheduleCoalescedJob', () => {
+	it('adds a delayed job named by the coalesce key, with a unique colon-free id', async () => {
+		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob();
+
+		await scheduleCoalescedJob(job, 'check-suite:jkwiecien/swarm:9:cafe', 30_000);
+
+		expect(add).toHaveBeenCalledOnce();
+		const [name, addedJob, opts] = add.mock.calls[0];
+		expect(name).toBe('check-suite:jkwiecien/swarm:9:cafe');
+		expect(addedJob).toBe(job);
+		expect(opts).toMatchObject({ delay: 30_000 });
+		expect(opts?.jobId).toMatch(/^coalesce_/);
+		expect(opts?.jobId).not.toContain(':');
+	});
+
+	it('supersedes pending jobs sharing the coalesce key before scheduling', async () => {
+		const remove = vi.fn().mockResolvedValue(undefined);
+		const staleRemove = vi.fn().mockResolvedValue(undefined);
+		getDelayed.mockResolvedValue([
+			{ name: 'check-suite:jkwiecien/swarm:9:cafe', remove },
+			{ name: 'some-other-key', remove: staleRemove },
+		]);
+		getWaiting.mockResolvedValue([]);
+		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
+
+		await scheduleCoalescedJob(
+			createMockGitHubWebhookJob(),
+			'check-suite:jkwiecien/swarm:9:cafe',
+			30_000,
+		);
+
+		expect(remove).toHaveBeenCalledOnce();
+		expect(staleRemove).not.toHaveBeenCalled();
+		expect(add).toHaveBeenCalledOnce();
+	});
+
+	it('schedules without removing anything when no pending job matches', async () => {
+		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
+
+		await scheduleCoalescedJob(
+			createMockGitHubWebhookJob(),
+			'check-suite:jkwiecien/swarm:9:cafe',
+			30_000,
+		);
+
+		expect(add).toHaveBeenCalledOnce();
 	});
 });
 

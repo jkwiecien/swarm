@@ -95,11 +95,11 @@ export const GitHubParsedEventSchema = z.object({
 	 */
 	reviewId: z.string().optional(),
 	/**
-	 * A `check_suite` event's aggregate conclusion (`success` | `failure` | …).
-	 * The Review handler fires only on `success`. SWARM keys off the suite's own
-	 * conclusion rather than re-aggregating every check run on the SHA (Cascade's
-	 * richer defer/recheck/respond-to-ci machinery) — a documented MVP
-	 * simplification, see `src/triggers/handlers/review.ts`.
+	 * A `check_suite` event's own aggregate conclusion (`success` | `failure` |
+	 * …) — carried for tracing. The Review handler does *not* gate on it: because
+	 * GitHub fires one event per workflow, a single suite's conclusion isn't the
+	 * whole picture, so the handler re-queries every check on the head SHA
+	 * instead (`getCheckSuiteStatus` + `check-suite-decision.ts`).
 	 */
 	checkConclusion: z.string().optional(),
 	/**
