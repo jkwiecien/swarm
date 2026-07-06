@@ -17,6 +17,7 @@
 		"start:worker": "node --env-file=.env dist/worker/index.js",
 		"db:generate": "drizzle-kit generate",
 		"db:migrate": "node --env-file=.env ./node_modules/.bin/drizzle-kit migrate",
+		"db:seed": "node --env-file=.env --import tsx/esm src/cli/index.ts config apply",
 		"db:push": "node --env-file=.env ./node_modules/.bin/drizzle-kit push",
 		"db:studio": "node --env-file=.env ./node_modules/.bin/drizzle-kit studio",
 		"test": "vitest run --project unit",

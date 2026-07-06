@@ -13,9 +13,9 @@
  * `swarm.config.json` already exists it's validated instead, so a re-run is a
  * cheap "is my config still well-formed?" check.
  *
- * Note: no seeder consumes `swarm.config.json` into Postgres yet (Cascade has
- * `db:seed`; SWARM doesn't) — for now `init` only scaffolds and validates the
- * file. That loader is tracked as follow-up work.
+ * `init` only scaffolds and validates the file — it doesn't touch the DB. Once
+ * the file is filled in, `swarm config apply` (a.k.a. `npm run db:seed`) loads
+ * its projects and referenced credentials into Postgres (`src/cli/commands/config.ts`).
  */
 
 import { access, copyFile, readFile, writeFile } from 'node:fs/promises';
@@ -110,6 +110,8 @@ export async function run(_argv: string[]): Promise<number> {
 	if (!configOk) {
 		return 1;
 	}
-	out.info('done. Next: edit the two files above, then `swarm start`.');
+	out.info(
+		'done. Next: edit the two files above, then `swarm start` and `swarm config apply` (npm run db:seed).',
+	);
 	return 0;
 }
