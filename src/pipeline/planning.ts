@@ -2,8 +2,10 @@
  * Planning phase (PROJECT.md §5.1, ai/ARCHITECTURE.md "Pipeline phases" #1).
  *
  * An item moves to "Planning" on the board → the worker runs this: provision a
- * read-only worktree, spin up Antigravity to explore the code graph and write a
- * step-by-step `proposed_plan.md`, post that plan as a comment on the linked
+ * read-only worktree, spin up the planning agent (Antigravity per §5.1, though
+ * `DEFAULT_PLANNING_CLI` below currently runs Claude Code instead — see that
+ * constant's comment) to explore the code graph and write a step-by-step
+ * `proposed_plan.md`, post that plan as a comment on the linked
  * Issue (GitHub Projects items have no long-form body of their own), and move the
  * item forward to "ToDo" (PROJECT.md's "Ready for Dev"). The plan is a review
  * artefact, not code — it's delivered as a comment and the worktree is thrown
@@ -33,8 +35,16 @@ import { graftEnvironment } from '@/worktree/graft.js';
 /** The file the planning agent is instructed to write its plan to, at the worktree root. */
 export const PROPOSED_PLAN_FILENAME = 'proposed_plan.md';
 
-/** Antigravity is SWARM's planning agent (PROJECT.md §5.1). */
-const DEFAULT_PLANNING_CLI: AgentCli = 'antigravity';
+/**
+ * PROJECT.md §5.1 designs Antigravity as SWARM's planning agent, splitting the
+ * planning and implementation roles across two different CLIs. Defaulting to
+ * it here breaks Planning on any host that doesn't have `antigravity`
+ * installed and authenticated — confirmed against a live run: `spawn
+ * antigravity ENOENT`. Until Antigravity's setup path exists, Claude Code
+ * covers Planning too (`RunPlanningPhaseOptions.cli` still overrides this per
+ * call, for a project that does have Antigravity set up).
+ */
+const DEFAULT_PLANNING_CLI: AgentCli = 'claude';
 
 /**
  * Status the item moves to once the plan is posted — the board's "ToDo", which is

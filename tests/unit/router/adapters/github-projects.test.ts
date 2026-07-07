@@ -107,6 +107,16 @@ describe('GitHubProjectsRouterAdapter', () => {
 			expect(adapter.isStatusChange(event, project)).toBe(true);
 		});
 
+		it('is true for a reordered event (Board-view drag between columns), even though its changes block carries no field_value', () => {
+			const event = parse(
+				createMockProjectsV2ItemPayload({
+					action: 'reordered',
+					changes: { previous_projects_v2_item_node_id: { from: null, to: null } },
+				}),
+			);
+			expect(adapter.isStatusChange(event, project)).toBe(true);
+		});
+
 		it('is false for an edit to a different field', () => {
 			const event = parse(
 				createMockProjectsV2ItemPayload({
@@ -119,7 +129,6 @@ describe('GitHubProjectsRouterAdapter', () => {
 		it.each([
 			'deleted',
 			'archived',
-			'reordered',
 			'restored',
 			'converted',
 		])('is false for the %s action', (action) => {

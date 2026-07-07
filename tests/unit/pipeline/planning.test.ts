@@ -22,7 +22,7 @@ const WORKTREE_PATH = '/Users/dev/swarm/swarm/.swarm-workspaces/task-18';
 
 function agentResult(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 	return {
-		cli: 'antigravity',
+		cli: 'claude',
 		exitCode: 0,
 		signal: null,
 		stdout: '',
@@ -71,17 +71,19 @@ describe('runPlanningPhase', () => {
 		planContents = '# Plan\n\n1. Do the thing.';
 	});
 
-	it('provisions a detached worktree, runs Antigravity, posts the plan, and moves the item to todo', async () => {
+	it('provisions a detached worktree, runs the planning agent, posts the plan, and moves the item to todo', async () => {
 		const deps = makeDeps();
 		const result = await runPlanningPhase(deps);
 
 		// Read-only checkout: detached, so no task branch is created/held.
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
 
-		// Antigravity is run with the worktree as CWD and the planning prompt.
+		// The planning agent is run with the worktree as CWD and the planning
+		// prompt. Defaults to Claude Code (see DEFAULT_PLANNING_CLI's comment) —
+		// not Antigravity per PROJECT.md §5.1 — until Antigravity's setup path exists.
 		expect(deps.runAgent).toHaveBeenCalledTimes(1);
 		const runArgs = deps.runAgent.mock.calls[0][0];
-		expect(runArgs.cli).toBe('antigravity');
+		expect(runArgs.cli).toBe('claude');
 		expect(runArgs.cwd).toBe(WORKTREE_PATH);
 		expect(runArgs.args?.[0]).toContain('Add planning phase');
 

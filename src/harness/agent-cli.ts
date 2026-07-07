@@ -29,6 +29,26 @@ const DEFAULT_COMMAND: Record<AgentCli, string> = {
 };
 
 /**
+ * Flags prepended ahead of every caller's own `args` (the prompt), so no phase
+ * has to remember them. Every run through this harness happens inside a
+ * disposable git worktree with stdin closed (`stdio: ['ignore', ...]` below)
+ * — there is no terminal to approve a tool call, so without
+ * `--dangerously-skip-permissions` a run that needs to write a file or run a
+ * command sits blocked on a permission prompt it can never receive. Confirmed
+ * live: a Planning run produced a complete plan, then reported the write to
+ * `proposed_plan.md` as "blocked pending your permission approval" in its
+ * final response and exited 0 having written nothing. `-p`/`--print` pairs
+ * with that for the same one-shot, non-interactive contract (`claude --help`:
+ * "starts an interactive session by default, use -p/--print for
+ * non-interactive output"). Antigravity has no equivalent flags researched
+ * yet — empty until it does.
+ */
+const DEFAULT_ARGS: Record<AgentCli, string[]> = {
+	claude: ['-p', '--dangerously-skip-permissions'],
+	antigravity: [],
+};
+
+/**
  * How long to wait after SIGTERM before escalating to SIGKILL when a run is
  * killed by `timeoutMs` or an aborted `signal`. Agent CLIs may need a moment to
  * flush/clean up; SIGKILL is the backstop if they ignore SIGTERM.
@@ -165,7 +185,7 @@ function lineForwarder(onLine: (line: string) => void) {
 export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCliResult> {
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
-	const args = options.args ?? [];
+	const args = [...DEFAULT_ARGS[cli], ...(options.args ?? [])];
 	const start = Date.now();
 
 	return new Promise<AgentCliResult>((resolve, reject) => {

@@ -59,11 +59,33 @@ describe('runAgentCli', () => {
 			outputTruncated: false,
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith('claude', [], {
+		expect(spawnMock).toHaveBeenCalledWith('claude', ['-p', '--dangerously-skip-permissions'], {
 			cwd: '/wt',
 			env: process.env,
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
+	});
+
+	it('prepends the non-interactive/permission-bypass flags ahead of the caller-supplied prompt for claude', async () => {
+		const promise = runAgentCli(createMockRunAgentCliOptions({ args: ['implement the thing'] }));
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			'claude',
+			['-p', '--dangerously-skip-permissions', 'implement the thing'],
+			expect.anything(),
+		);
+	});
+
+	it('prepends no default flags for antigravity (none researched yet)', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({ cli: 'antigravity', args: ['do the thing'] }),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock).toHaveBeenCalledWith('antigravity', ['do the thing'], expect.anything());
 	});
 
 	it('forwards output line-by-line, including partial and CRLF lines', async () => {
@@ -127,7 +149,7 @@ describe('runAgentCli', () => {
 			{ env: Record<string, string> },
 		];
 		expect(command).toBe('/usr/bin/fake-claude');
-		expect(args).toEqual(['--print', 'do the thing']);
+		expect(args).toEqual(['-p', '--dangerously-skip-permissions', '--print', 'do the thing']);
 		expect(opts.env.SWARM_TASK).toBe('42');
 		expect(opts.env.PATH).toBe(process.env.PATH);
 	});

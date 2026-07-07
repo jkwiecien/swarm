@@ -27,10 +27,17 @@ export const PROJECTS_V2_ITEM_EVENT = 'projects_v2_item';
 
 /**
  * The `projects_v2_item` actions the pipeline reacts to: a field value changed
- * (Status among them) or a card was added to the board
- * (docs/github-projects-v2-api.md §5 → Actions).
+ * (Status among them), a card was added to the board
+ * (docs/github-projects-v2-api.md §5 → Actions), or a card was dragged to a
+ * different column in the Board view. That last one is `reordered`, not
+ * `edited`: confirmed against a real delivery that a cross-column Board-view
+ * drag carries no `changes.field_value` at all (only
+ * `previous_projects_v2_item_node_id`), so `edited` alone misses the exact
+ * interaction a Kanban board's drag-and-drop is built around. `docs/github-
+ * projects-v2-api.md`'s "cares almost entirely about edited" note predates
+ * this finding.
  */
-const TRIGGERING_ACTIONS = new Set(['edited', 'created']);
+const TRIGGERING_ACTIONS = new Set(['edited', 'created', 'reordered']);
 
 /**
  * A raw `projects_v2_item` webhook parsed into the fields the router needs. A
@@ -107,19 +114,25 @@ export class GitHubProjectsRouterAdapter {
 
 	/**
 	 * Whether this event is a transition the pipeline reacts to: a card added to
-	 * the board (`created`), or an edit to the project's **Status** field
-	 * specifically (`edited` + the changed field is `statusFieldId`). Any other
-	 * field edit (Priority, Size, assignees, …) is dropped here — matching the
-	 * `pm:status-changed` filter in docs/github-projects-v2-api.md §5 step 2.
+	 * the board (`created`), a card dragged to a different Board-view column
+	 * (`reordered` — see the `TRIGGERING_ACTIONS` comment above for why this
+	 * can't be filtered by field like `edited` can), or an edit to the project's
+	 * **Status** field specifically (`edited` + the changed field is
+	 * `statusFieldId`). Any other field edit (Priority, Size, assignees, …) is
+	 * dropped here — matching the `pm:status-changed` filter in
+	 * docs/github-projects-v2-api.md §5 step 2.
 	 *
 	 * It deliberately does **not** assert *which* Status option the card moved to:
 	 * the webhook body doesn't carry a reliable new value, so that comes from the
 	 * authoritative re-read downstream. This gate answers "is this worth waking
-	 * the pipeline for?", not "which phase?".
+	 * the pipeline for?", not "which phase?". Because `reordered` also fires on a
+	 * pure within-column reorder with no Status change at all, this gate alone
+	 * can't rule that case out — `pm-status-dedup.ts` is the second line of
+	 * defense that stops a harmless reorder from re-dispatching a phase.
 	 */
 	isStatusChange(event: GitHubProjectsParsedEvent, project: ProjectConfig): boolean {
 		if (!event.action || !TRIGGERING_ACTIONS.has(event.action)) return false;
-		if (event.action === 'created') return true;
+		if (event.action === 'created' || event.action === 'reordered') return true;
 		return event.changedFieldNodeId === project.githubProjects.statusFieldId;
 	}
 

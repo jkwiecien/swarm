@@ -240,8 +240,19 @@ board event" covers the click-path.
 ### Actions
 
 `archived`, `converted`, `created`, `deleted`, `edited`, `reordered`, `restored`.
-The pipeline cares almost entirely about **`edited`** (a field value — including Status —
-changed) and secondarily **`created`** (a card added to the board).
+The pipeline cares about **`edited`** (a field value — including Status — changed),
+**`created`** (a card added to the board), and **`reordered`**.
+
+**`reordered` matters more than its name suggests.** Dragging a card to a *different
+column* in the Board view — the actual drag-and-drop a Kanban board is for — fires
+`reordered`, not `edited`. Confirmed against a real delivery: its `changes` block is
+`{ "previous_projects_v2_item_node_id": { "from": null, "to": null } }` — no
+`field_value` at all, so there's no field to filter on the way `edited` allows. The
+router (`src/router/adapters/github-projects.ts`) treats `reordered` like `created`
+for that reason: accept it unconditionally and let the authoritative re-read (below)
+decide. The cost is that `reordered` *also* fires on a pure within-column reorder with
+no Status change — `src/triggers/pm-status-dedup.ts` is what stops that from
+re-dispatching the same phase repeatedly.
 
 ### Payload — the parts SWARM relies on
 

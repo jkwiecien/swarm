@@ -24,11 +24,20 @@ import { createGitHubProjectsProvider } from '../../integrations/pm/github-proje
 import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { logger } from '../../lib/logger.js';
 import type { PMProvider } from '../../pm/types.js';
+import { shouldDispatchForStatus } from '../pm-status-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 import { issueNumberFromUrl } from './shared.js';
 
-/** The `projects_v2_item` actions worth waking the pipeline for (mirrors the router adapter). */
-const TRIGGERING_ACTIONS = new Set(['edited', 'created']);
+/**
+ * The `projects_v2_item` actions worth waking the pipeline for (mirrors the
+ * router adapter's `TRIGGERING_ACTIONS`, `src/router/adapters/github-projects.ts`
+ * — that file's comment explains why `reordered` is included alongside
+ * `edited`/`created`). Accepting `reordered` here means this handler can also
+ * fire on a pure within-column reorder with no real Status change — `handle`
+ * below calls `shouldDispatchForStatus` as the second line of defense against
+ * that.
+ */
+const TRIGGERING_ACTIONS = new Set(['edited', 'created', 'reordered']);
 
 export interface PmStatusTriggerDeps {
 	/** Injectable PM-provider factory — defaults to the GitHub Projects provider; overridden in tests. */
@@ -55,10 +64,11 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 			if (ctx.source !== 'github-projects') return false;
 			const { event, project } = ctx;
 			if (!event.action || !TRIGGERING_ACTIONS.has(event.action)) return false;
-			// A card added to the board is worth a look; a field edit only if it's the
-			// Status field (any other field — Priority, Size — is noise here). This
-			// mirrors `GitHubProjectsRouterAdapter.isStatusChange`.
-			if (event.action === 'created') return true;
+			// A card added to the board, or dragged to a different Board-view column,
+			// is worth a look; a field edit only if it's the Status field (any other
+			// field — Priority, Size — is noise here). This mirrors
+			// `GitHubProjectsRouterAdapter.isStatusChange`.
+			if (event.action === 'created' || event.action === 'reordered') return true;
 			return event.changedFieldNodeId === project.githubProjects.statusFieldId;
 		},
 
@@ -86,6 +96,14 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 					itemNodeId: event.itemNodeId,
 					statusId: workItem.statusId,
 				});
+				return null;
+			}
+
+			// Second line of defense against the `reordered` action's blind spot (see
+			// the `TRIGGERING_ACTIONS` comment above): a pure within-column reorder
+			// re-reads the same status every time, so this is the check that actually
+			// stops it from re-dispatching the same phase over and over.
+			if (!(await shouldDispatchForStatus(event.itemNodeId, workItem.statusId))) {
 				return null;
 			}
 
