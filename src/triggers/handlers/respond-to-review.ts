@@ -97,7 +97,19 @@ export function createRespondToReviewTrigger(
 				prBranch,
 				reviewId,
 			});
-			return { phase: 'respond-to-review', taskId: prNumber, prNumber, prBranch, reviewId };
+			// Suffixed, not bare `prNumber`: the Review phase's own worktree
+			// (`task-<prNumber>`) can still be open when this dispatches — a review
+			// verdict fires this trigger the moment it's submitted, well before the
+			// review agent's process (and its worktree cleanup) actually exits. A
+			// shared taskId would make the two `provision` calls race for one
+			// worktree path (see git history for the incident this fixed).
+			return {
+				phase: 'respond-to-review',
+				taskId: `${prNumber}-respond`,
+				prNumber,
+				prBranch,
+				reviewId,
+			};
 		},
 	};
 }

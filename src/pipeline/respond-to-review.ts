@@ -112,7 +112,9 @@ export interface RunRespondToReviewPhaseOptions {
 	 * Task identifier for the worktree path (`task-<taskId>`). Passed explicitly
 	 * rather than derived from `prNumber`: the worker that dequeues the job owns
 	 * task naming, and a respond worktree must not collide with a review
-	 * worktree for the same change.
+	 * worktree for the same change — the trigger handler dispatches this as
+	 * `` `${prNumber}-respond` ``, not the bare PR number Review's own `taskId`
+	 * uses, for exactly that reason (see git history for the incident this fixed).
 	 */
 	taskId: string;
 	/** Worktree manager for the project — provisions and cleans up the checkout. */

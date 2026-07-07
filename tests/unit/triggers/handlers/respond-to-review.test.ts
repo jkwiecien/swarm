@@ -61,7 +61,7 @@ describe('respond-to-review trigger', () => {
 			const result = await handler.handle(ctx());
 			expect(result).toEqual({
 				phase: 'respond-to-review',
-				taskId: '17',
+				taskId: '17-respond',
 				prNumber: '17',
 				prBranch: 'issue-17',
 				reviewId: '555',

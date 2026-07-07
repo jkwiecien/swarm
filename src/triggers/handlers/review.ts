@@ -394,9 +394,13 @@ async function dispatchRespondToCi(
 		attempt,
 		failedChecks,
 	});
+	// Suffixed, not bare `prNumber` — see the matching comment in
+	// `handlers/respond-to-review.ts`: a shared taskId with the Review phase's
+	// own `task-<prNumber>` worktree would let a still-running review of an
+	// earlier SHA on this PR collide with this CI fix's `provision` call.
 	return {
 		phase: 'respond-to-ci',
-		taskId: prNumber,
+		taskId: `${prNumber}-ci`,
 		prNumber,
 		prBranch: event.prBranch,
 		headSha,
