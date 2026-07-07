@@ -29,9 +29,13 @@ Worker  (host process — NOT containerized, one job at a time or a small pool)
    — provisions a Git worktree (see "Worktree lifecycle" below)
    — spawns `claude` or `antigravity` CLI with the worktree as CWD
    — commits/pushes, opens/updates a PR, posts back to GitHub Projects
+
+Dashboard (Hono + tRPC API, host process)
+   — serves /health and /trpc (scaffold)
+   — self-hosted single-process model for local-first scope
 ```
 
-Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker is the exception**: it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs, which need the developer's own PATH, auth, and config, so it runs directly on the host (`npm run dev:worker`) rather than in a container — reaching Redis/Postgres over their published host ports. There is no separate "cloud" process for the MVP; router, worker, Redis, and Postgres are all local.
+Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker** and the **dashboard** are the exceptions: they run directly on the host (the worker to provision Git worktrees and spawn the `claude` / `antigravity` CLIs which need local PATH/auth, and the dashboard for local-first host run), reaching Redis/Postgres over their published host ports. There is no separate "cloud" process for the MVP; router, worker, dashboard, Redis, and Postgres are all local.
 
 ### Observability
 
