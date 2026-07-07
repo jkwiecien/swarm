@@ -59,26 +59,30 @@ describe('runAgentCli', () => {
 			outputTruncated: false,
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith('claude', ['-p', '--dangerously-skip-permissions'], {
+		expect(spawnMock).toHaveBeenCalledWith('claude', ['--dangerously-skip-permissions', '-p'], {
 			cwd: '/wt',
 			env: process.env,
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 	});
 
-	it('prepends the non-interactive/permission-bypass flags ahead of the caller-supplied prompt for claude', async () => {
+	it('puts -p immediately before the caller-supplied prompt for claude', async () => {
 		const promise = runAgentCli(createMockRunAgentCliOptions({ args: ['implement the thing'] }));
 		lastChild().emit('close', 0, null);
 		await promise;
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['-p', '--dangerously-skip-permissions', 'implement the thing'],
+			['--dangerously-skip-permissions', '-p', 'implement the thing'],
 			expect.anything(),
 		);
 	});
 
-	it('spawns the agy binary for antigravity, with the same non-interactive/permission-bypass flags as claude', async () => {
+	it('spawns the agy binary for antigravity, with -p immediately before the prompt too', async () => {
+		// Load-bearing order: agy's -p/--print is a *value* flag whose value is the
+		// prompt itself (unlike claude's boolean -p), confirmed live — see the
+		// DEFAULT_ARGS/PRINT_FLAG comment in agent-cli.ts. Any flag landing between
+		// -p and the prompt gets swallowed as the prompt instead of the real task.
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({ cli: 'antigravity', args: ['do the thing'] }),
 		);
@@ -87,12 +91,12 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'agy',
-			['-p', '--dangerously-skip-permissions', 'do the thing'],
+			['--dangerously-skip-permissions', '-p', 'do the thing'],
 			expect.anything(),
 		);
 	});
 
-	it('inserts --model between the default flags and the caller-supplied prompt', async () => {
+	it('inserts --model between the default flags and -p, never between -p and the prompt', async () => {
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({ model: 'sonnet', args: ['implement the thing'] }),
 		);
@@ -101,7 +105,7 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['-p', '--dangerously-skip-permissions', '--model', 'sonnet', 'implement the thing'],
+			['--dangerously-skip-permissions', '--model', 'sonnet', '-p', 'implement the thing'],
 			expect.anything(),
 		);
 	});
@@ -176,7 +180,7 @@ describe('runAgentCli', () => {
 			{ env: Record<string, string> },
 		];
 		expect(command).toBe('/usr/bin/fake-claude');
-		expect(args).toEqual(['-p', '--dangerously-skip-permissions', '--print', 'do the thing']);
+		expect(args).toEqual(['--dangerously-skip-permissions', '-p', '--print', 'do the thing']);
 		expect(opts.env.SWARM_TASK).toBe('42');
 		expect(opts.env.PATH).toBe(process.env.PATH);
 	});

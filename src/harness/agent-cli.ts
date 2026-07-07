@@ -41,16 +41,36 @@ const DEFAULT_COMMAND: Record<AgentCli, string> = {
  * command sits blocked on a permission prompt it can never receive. Confirmed
  * live: a Planning run produced a complete plan, then reported the write to
  * `proposed_plan.md` as "blocked pending your permission approval" in its
- * final response and exited 0 having written nothing. `-p`/`--print` pairs
- * with that for the same one-shot, non-interactive contract (`claude --help`:
- * "starts an interactive session by default, use -p/--print for
- * non-interactive output"). `agy --help` (Antigravity's actual CLI) exposes
- * the identical shape — `-p`/`--print` and `--dangerously-skip-permissions` —
- * so it gets the same treatment.
+ * final response and exited 0 having written nothing.
+ *
+ * Both CLIs also expose a `-p`/`--print` flag for one-shot, non-interactive
+ * output (`claude --help`: "starts an interactive session by default, use
+ * -p/--print for non-interactive output"; `agy --help` has the identical flag
+ * name). But the two parsers treat it differently: claude's `-p` is a bare
+ * boolean — the prompt is a separate positional argument, so `-p`'s position
+ * relative to other flags doesn't matter. agy's `-p`/`--print`/`--prompt` is a
+ * *value* flag whose value is the prompt itself — confirmed live: an
+ * Implementation run on `agy -p --dangerously-skip-permissions --model <m>
+ * "<the real prompt>"` had `-p` swallow the literal string
+ * `--dangerously-skip-permissions` as its prompt, ran a one-off Q&A about
+ * that flag, and exited 0 having done none of the actual task. So `-p` must
+ * be the *last* flag, immediately before the prompt, for every CLI — safe for
+ * claude (position-independent) and required for agy. See PRINT_FLAG below;
+ * don't add a third CLI's flags to this map without checking its own
+ * `--help`, not assuming it matches claude's (ai/RULES.md).
  */
 const DEFAULT_ARGS: Record<AgentCli, string[]> = {
-	claude: ['-p', '--dangerously-skip-permissions'],
-	antigravity: ['-p', '--dangerously-skip-permissions'],
+	claude: ['--dangerously-skip-permissions'],
+	antigravity: ['--dangerously-skip-permissions'],
+};
+
+/**
+ * The non-interactive-mode flag, inserted immediately before the prompt (see
+ * DEFAULT_ARGS above for why the position is load-bearing for agy).
+ */
+const PRINT_FLAG: Record<AgentCli, string> = {
+	claude: '-p',
+	antigravity: '-p',
 };
 
 /**
@@ -198,7 +218,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
 	const modelArgs = options.model ? ['--model', options.model] : [];
-	const args = [...DEFAULT_ARGS[cli], ...modelArgs, ...(options.args ?? [])];
+	const args = [...DEFAULT_ARGS[cli], ...modelArgs, PRINT_FLAG[cli], ...(options.args ?? [])];
 	const start = Date.now();
 
 	return new Promise<AgentCliResult>((resolve, reject) => {
