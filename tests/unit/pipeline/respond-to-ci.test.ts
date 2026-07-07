@@ -58,6 +58,7 @@ function makeDeps() {
 			agentResult(),
 		),
 		graft: vi.fn(() => []),
+		getToken: vi.fn(async () => 'implementer-token'),
 	};
 }
 
@@ -71,6 +72,9 @@ describe('runRespondToCiPhase', () => {
 		const deps = makeDeps();
 		const result = await runRespondToCiPhase(deps);
 
+		// Implementer credentials, same reason as Implementation/Review.
+		expect(deps.getToken).toHaveBeenCalledWith(deps.project, 'implementer');
+
 		// The existing task branch, not a fresh cut and not detached — the agent
 		// commits and pushes the build fix from here.
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('respond-ci-64', {
@@ -78,15 +82,15 @@ describe('runRespondToCiPhase', () => {
 			branch: PR_BRANCH,
 		});
 
-		// Claude Code runs with the worktree as CWD and the CI-fix prompt. No
-		// GH_TOKEN override: the implementer is the PR's author, which is what the
-		// ambient credentials already are (unlike the review phase).
+		// Claude Code runs with the worktree as CWD, the CI-fix prompt, and the
+		// implementer token in GH_TOKEN so gh (incl. the PR comment) acts as that
+		// persona rather than the worker host's own gh auth login.
 		expect(deps.runAgent).toHaveBeenCalledTimes(1);
 		const runArgs = deps.runAgent.mock.calls[0][0];
 		expect(runArgs.cli).toBe('claude');
 		expect(runArgs.cwd).toBe(WORKTREE_PATH);
 		expect(runArgs.args?.[0]).toContain(HEAD_SHA);
-		expect(runArgs.env).toBeUndefined();
+		expect(runArgs.env).toEqual({ GH_TOKEN: 'implementer-token' });
 
 		// Env is grafted into the worktree before the agent runs.
 		expect(deps.graft).toHaveBeenCalledWith(deps.project.repoRoot, WORKTREE_PATH);
@@ -139,6 +143,17 @@ describe('runRespondToCiPhase', () => {
 			throw new Error("git worktree add failed: invalid reference: 'issue-64'");
 		});
 		await expect(runRespondToCiPhase(deps)).rejects.toThrow(/invalid reference/);
+		expect(deps.runAgent).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
+	});
+
+	it('fails before provisioning any worktree when the implementer token is missing', async () => {
+		const deps = makeDeps();
+		deps.getToken = vi.fn(async () => {
+			throw new Error("No GitHub implementer token configured for project 'swarm'");
+		});
+		await expect(runRespondToCiPhase(deps)).rejects.toThrow(/No GitHub implementer token/);
+		expect(deps.worktrees.provision).not.toHaveBeenCalled();
 		expect(deps.runAgent).not.toHaveBeenCalled();
 		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
 	});

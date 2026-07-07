@@ -24,11 +24,15 @@
  * fast-forwards it; a diverged branch fails that sync (and the job) rather than
  * letting the agent respond against code the reviewer never saw.
  *
- * No token plumbing, unlike Review: the implementer *is* the PR's author, which
- * is exactly what the worker's ambient `gh`/git credentials already are (the
- * Review phase's GH_TOKEN override exists only because GitHub refuses
- * self-review — see `runReviewPhase`'s header). No PM interaction either: the
- * item already sits at "In review" and a response doesn't change board status —
+ * Same token plumbing as Implementation, for the same reason: the implementer
+ * persona's token is resolved and handed to the agent as `GH_TOKEN` (mirroring
+ * `runReviewPhase`'s reviewer-token plumbing) so every `gh` call — the PR
+ * comment reply included — acts as that persona, not whatever `gh auth`
+ * session happens to be ambient on the worker's host. (An earlier version of
+ * this comment claimed the ambient credentials already *were* the implementer
+ * persona; confirmed live on the Implementation phase that assumption was
+ * false — see `runImplementationPhase`'s header.) No PM interaction: the item
+ * already sits at "In review" and a response doesn't change board status —
  * the reviewer's next round (or a human merge) is what moves things next.
  *
  * This is the phase's orchestration only, same as the other three. It composes
@@ -40,6 +44,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
@@ -109,6 +114,8 @@ export interface RunRespondToReviewPhaseOptions {
 	runAgent?: (opts: Parameters<typeof runAgentCli>[0]) => Promise<AgentCliResult>;
 	/** Injectable env-grafting step — defaults to {@link graftEnvironment}; overridden in tests. */
 	graft?: typeof graftEnvironment;
+	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
+	getToken?: typeof getPersonaToken;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -204,10 +211,16 @@ export async function runRespondToReviewPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
+		getToken = getPersonaToken,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info('respond-to-review phase: start', { taskId, prNumber, prBranch, reviewId, cli });
+
+	// Resolved first: a missing implementer credential fails the job before any
+	// worktree exists to clean up. Never returned or passed on — it goes straight
+	// into the subprocess env below.
+	const implementerToken = await getToken(project, 'implementer');
 
 	// The existing task branch, not a fresh one — the agent commits and pushes to
 	// the PR here (see the module header for the local-branch precondition).
@@ -220,6 +233,10 @@ export async function runRespondToReviewPhase(
 			model,
 			cwd: handle.path,
 			args: [buildRespondToReviewPrompt({ repo: project.repo, prNumber, prBranch, reviewId })],
+			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+			// call the agent makes (incl. the PR comment reply) acts as the
+			// implementer persona, not the worker host's own logged-in account.
+			env: { GH_TOKEN: implementerToken },
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			timeoutMs,
 			signal,

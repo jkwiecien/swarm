@@ -23,11 +23,15 @@
  * so the prompt's first step fast-forwards it; a diverged branch fails that sync
  * (and the job) rather than fixing code the failing CI never ran against.
  *
- * No token plumbing, unlike Review: the implementer *is* the PR's author, which
- * is exactly what the worker's ambient `gh`/git credentials already are (the
- * Review phase's GH_TOKEN override exists only because GitHub refuses
- * self-review — see `runReviewPhase`'s header). No PM interaction either: the
- * item already sits at "In review", and pushing a fix doesn't change board
+ * Same token plumbing as Implementation, for the same reason: the implementer
+ * persona's token is resolved and handed to the agent as `GH_TOKEN` (mirroring
+ * `runReviewPhase`'s reviewer-token plumbing) so every `gh` call — the PR
+ * comment included — acts as that persona, not whatever `gh auth` session
+ * happens to be ambient on the worker's host. (An earlier version of this
+ * comment claimed the ambient credentials already *were* the implementer
+ * persona; confirmed live on the Implementation phase that assumption was
+ * false — see `runImplementationPhase`'s header.) No PM interaction: the item
+ * already sits at "In review", and pushing a fix doesn't change board
  * status — the fresh check suite the fix triggers (→ Review on green, or another
  * CI-fix round on red) is what moves things next.
  *
@@ -40,6 +44,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
@@ -112,6 +117,8 @@ export interface RunRespondToCiPhaseOptions {
 	runAgent?: (opts: Parameters<typeof runAgentCli>[0]) => Promise<AgentCliResult>;
 	/** Injectable env-grafting step — defaults to {@link graftEnvironment}; overridden in tests. */
 	graft?: typeof graftEnvironment;
+	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
+	getToken?: typeof getPersonaToken;
 }
 
 export interface RespondToCiPhaseResult {
@@ -203,10 +210,16 @@ export async function runRespondToCiPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
+		getToken = getPersonaToken,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info('respond-to-ci phase: start', { taskId, prNumber, prBranch, headSha, cli });
+
+	// Resolved first: a missing implementer credential fails the job before any
+	// worktree exists to clean up. Never returned or passed on — it goes straight
+	// into the subprocess env below.
+	const implementerToken = await getToken(project, 'implementer');
 
 	// The existing task branch, not a fresh one — the agent commits and pushes to
 	// the PR here (see the module header for the local-branch precondition).
@@ -219,6 +232,10 @@ export async function runRespondToCiPhase(
 			model,
 			cwd: handle.path,
 			args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
+			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+			// call the agent makes (incl. the PR comment) acts as the implementer
+			// persona, not the worker host's own logged-in account.
+			env: { GH_TOKEN: implementerToken },
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			timeoutMs,
 			signal,
