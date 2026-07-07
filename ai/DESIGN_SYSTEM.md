@@ -1,0 +1,121 @@
+# Design system — web dashboard
+
+Visual and component conventions for SWARM's web dashboard (`web/`, ai/RULES.md §5 issues #75–87). Read this before building any dashboard screen, the same way `ai/CODING_STANDARDS.md` governs backend code.
+
+## Origin
+
+This system was extracted from a Google AI Studio–generated UI-only prototype (local sibling checkout `../swarm-ui`, not part of this repo) built specifically to explore the dashboard's look and navigation shape with no real logic behind it (see `GOOGLE_AI_PROMPT` for the prompt that produced it). That prototype is disposable scaffolding, not a dependency — do not symlink or import from it. Everything worth keeping from it is captured below; §7 lists what was deliberately *not* carried over.
+
+Stack it assumes: React + TypeScript + Vite + **Tailwind CSS v4** (CSS-first config, `@import "tailwindcss"` — no `tailwind.config.js`) + `lucide-react` for icons. Issue #81 (frontend scaffold) needs to add Tailwind and `lucide-react` to the stack described there — the original issue text predates this design system and doesn't mention either.
+
+## 1. Color tokens
+
+Dark-mode only (no light theme) — this is a local admin tool for one developer, not a public product.
+
+| Role | Token | Value | Usage |
+|---|---|---|---|
+| Canvas | custom | `#0A0A0B` | Page/app background |
+| Panel | custom | `#0F0F11` | Sidebar, cards, modals — usually blended with alpha (`/20`–`/40`) over the canvas rather than opaque |
+| Border (strong) | `zinc-800` | `#27272a` | Default dividers, input borders, card borders |
+| Border (soft) | `zinc-850` (custom, see below) | `#1f1f23` | Header/section dividers, secondary borders — one step darker than `zinc-800` |
+| Text — primary | `zinc-100` | `#f4f4f5` | Headings, primary values |
+| Text — secondary | `zinc-300`/`zinc-200` | | Body emphasis, table cells |
+| Text — tertiary | `zinc-400` | | Field labels, helper text |
+| Text — muted | `zinc-500` | | Meta text, table headers, placeholders |
+| Text — faint | `zinc-600` | | Input placeholder text |
+| Accent (primary action) | `violet-600` / `violet-500` | | Primary buttons, active tab underline, focus rings |
+| Success | `emerald-500`/`emerald-400` | | Connected/verified status |
+| Warning | `amber-500`/`amber-200`/`amber-900` | | Loop-prevention and similar caution banners |
+| Danger | `red-400`/`red-500`/`red-900` | | Validation errors, destructive-action affordances |
+
+**Fix required, don't copy verbatim**: `zinc-850` is not a real Tailwind shade (the prototype uses it ~10 times but ships zero-config Tailwind v4, so those classes are silently dead). Define it for real in `web/src/index.css` via Tailwind v4's `@theme`:
+
+```css
+@import "tailwindcss";
+
+@theme {
+  --color-zinc-850: #1f1f23;
+}
+```
+
+## 2. Typography
+
+- Sans (default) for all human-authored UI text — labels, headings, descriptions, button text.
+- **`font-mono` for every machine/technical value**: project/branch IDs, repo paths, filesystem paths, GitHub node IDs, tokens/secrets. This distinction is load-bearing — it's how a user visually tells "a thing I typed" from "a thing the system generated" at a glance. Apply it consistently to any new field that holds an identifier.
+- Scale:
+  - Page title: `text-2xl font-semibold tracking-tight text-zinc-100`
+  - Section heading (inside a card/tab): `text-sm font-semibold text-zinc-200`, with `border-b border-zinc-800 pb-2`
+  - Field label: `text-xs font-medium text-zinc-400`
+  - Helper/description text: `text-xs text-zinc-400` (or `text-zinc-500` when more muted)
+  - Table header cell: `text-xs font-semibold uppercase tracking-wider text-zinc-400`
+  - Body/table cell: `text-sm`
+
+## 3. Spacing, radius, elevation
+
+- Radius: `rounded` for inputs/small chips, `rounded-md` for buttons and table wrappers, `rounded-lg` for cards/modals/empty states. Nothing fully rounded except status dots.
+- Section rhythm: `space-y-6` between major sections of a screen, `space-y-4` inside a form, `gap-4` in grids.
+- Standard form grid: `grid grid-cols-1 md:grid-cols-2 gap-4` (2 columns on desktop); use `md:grid-cols-3` for groups of short fields (e.g. status-option IDs).
+- Elevation stays flat — `shadow-sm` on cards, `shadow-2xl` on modals. The one deliberate exception: primary buttons get a colored glow, `shadow-lg shadow-violet-650/10` — reserve this for the single primary action on a given screen, not every button.
+
+## 4. Component patterns
+
+Each entry is the Tailwind "recipe" to reuse — treat these as the contract, not a suggestion, so screens stay visually consistent without a component library existing yet.
+
+**Button — primary**
+`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10`
+
+**Button — secondary**
+`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors`
+
+**Button — icon/ghost** (e.g. table row delete)
+`text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors`
+
+**Input**
+`block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500` — add `font-mono` for identifier/technical fields.
+
+**Select** — same as Input, plus a disabled state for dependent dropdowns (e.g. "Model" disabled until "CLI" is chosen):
+`disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500`
+
+**Label** — `block text-xs font-medium text-zinc-400`, required marker as `<span class="text-red-500">*</span>`.
+
+**Card/panel** — `border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm` (drop the alpha fraction to `/20`–`/30` for a nested sub-panel inside another panel, so depth reads without a heavier border).
+
+**Table** — bordered wrapper `border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm`; header row `bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400`; body rows `divide-y divide-zinc-800/60`, `hover:bg-zinc-800/40 transition-colors`. Whole-row-clickable-to-navigate is fine (`cursor-pointer` on `<tr>`) as long as any trailing per-row action button calls `stopPropagation`.
+
+**Tabs** (underline style) — active: `border-b-2 border-violet-500 text-white bg-zinc-800/20`; inactive: `border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800`. Shared button base: `flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all`.
+
+**Modal/dialog** — full-screen centered overlay, backdrop `fixed inset-0 bg-black/80`; panel `bg-[#0F0F11] border border-zinc-800 rounded-lg shadow-2xl`; footer actions `flex flex-row-reverse gap-2` so the primary action reads first visually while staying last in DOM/tab order... actually keep the primary action first in tab order too — see §7, this is one of the prototype's few accessibility misses worth fixing rather than copying.
+
+**Banner — neutral/info** — `p-3 bg-zinc-900/50 border border-zinc-800 text-sm text-zinc-300 rounded`.
+
+**Banner — warning** — `p-4 bg-amber-950/20 border border-amber-900/30 rounded`, icon `text-amber-500`, heading `text-xs font-semibold text-amber-200`, body `text-xs text-amber-200/70`. Dismissible via a small uppercase text button (`text-zinc-500 hover:text-zinc-300 text-xs uppercase tracking-wider`).
+
+**Banner — error** — `p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded`.
+
+**Status dot** (e.g. daemon connection) — `h-2 w-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/10`.
+
+**Meta pill/badge** (e.g. version tag) — `px-2 py-0.5 text-[10px] uppercase font-mono font-bold tracking-wider bg-zinc-850 text-zinc-400 rounded border border-zinc-800`.
+
+**Masked-secret field + verify** (credentials screen) — collapsed state shows a read-only preview box (`px-3 py-2 border border-zinc-800/85 bg-zinc-900/40 rounded text-sm font-mono text-zinc-400`) rendering `•••• <last 4 chars>`, with an "Edit" secondary button that swaps it for a real `Input`. A paired "Verify" button toggles between the default secondary-button look and a success look (`bg-emerald-500/10 border-emerald-500/20 text-emerald-400`) plus an inline `✓ Verified as @<login>` label in `text-emerald-400`.
+
+**Icons** — `lucide-react`, `w-4 h-4` standard size (`w-3.5`/`w-3` for compact contexts like inline badges, `w-5` for banner icons); empty-state icons are larger and fainter: `w-12 h-12 stroke-1 text-zinc-700`.
+
+## 5. Layout shell
+
+- Left sidebar (`w-64` on desktop, full-width stacked on mobile), `bg-[#0F0F11]`, bordered `border-r border-zinc-800`. Top: wordmark + version pill. Middle: nav grouped under a small uppercase section label (`text-[10px] font-semibold uppercase tracking-widest text-zinc-500`). Bottom: connection status dot pinned via `justify-between` on the sidebar's flex column.
+- Main content: centered column, `max-w-5xl mx-auto`, `p-4 md:p-8`.
+- Detail screens get a breadcrumb (`text-xs font-mono text-zinc-500`, current segment `text-zinc-300 font-semibold`) above the page title, then a horizontal tab bar, then the active tab's content in its own card.
+
+## 6. Voice
+
+Technical and precise, aimed at the engineer running SWARM — not marketing copy. E.g. "Point SWARM to your local working copies, configure git branching prefixes, and target stable base integration points." rather than "Manage your workspace settings here!" Helper text under a section heading should say *why* the setting exists, not just restate the field names.
+
+## 7. Deliberate deviations from the prototype
+
+The prototype is a disposable, logic-free stub (per `GOOGLE_AI_PROMPT`) and took some shortcuts that must NOT carry over into the real dashboard:
+
+- **No `localStorage` persistence.** The prototype fakes state durability with `localStorage` because it has no backend. The real dashboard persists everything through the `projects`/`credentials` tRPC routers (#78, #79) — don't add a client-side persistence layer that could drift from server state.
+- **No native `window.confirm()`.** The prototype uses it for delete confirmation. Build a real confirm dialog using the Modal pattern (§4) instead — `confirm()` can't be styled, isn't tested, and blocks the JS thread.
+- **No fixed-timeout inline "saved" banners as the only save feedback.** The prototype's `setTimeout(() => setSavedMessage(''), 3000)` pattern is fine as a stopgap but a real save should surface tRPC mutation state (pending/error/success) properly — reuse the neutral banner's visual style for a real toast/status component instead of re-deriving the timeout dance on every form.
+- **No demo-only UI.** The prototype's "Demo State Triggers" checkbox (a fake toggle for the loop-prevention warning) exists only to preview a state that should instead be driven by real data (the implementer/reviewer login comparison, once #80's `verifyGithubToken` result is available on both fields).
+- **Primary-action tab order.** The prototype's modal footer uses `flex-row-reverse` purely for visual placement (primary button on the right), which also reverses tab order. Keep the visual placement but fix the DOM order (or `tabIndex`) so keyboard users reach the primary action first, not last.

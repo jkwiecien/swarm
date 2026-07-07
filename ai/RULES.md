@@ -27,8 +27,9 @@ Read before writing code in the relevant area — these encode Cascade's actual 
 - **`ai/CODING_STANDARDS.md`** — language/tooling (TypeScript strict/ESM, Biome), Zod-as-source-of-truth, error handling, naming, the provider/integration module shape, comment density, GitHub loop-prevention.
 - **`ai/ARCHITECTURE.md`** — the MVP architecture (local router/queue/worker, no GCP layer yet — a deliberate deviation from `PROJECT.md`'s cloud design), the GitHub SCM and GitHub Projects PM provider shapes, the pipeline phases, worktree lifecycle.
 - **`ai/TESTING.md`** — Vitest conventions, test data factories, git hooks (Lefthook), what "done" means for a change.
+- **`ai/DESIGN_SYSTEM.md`** — color/typography/spacing tokens and component patterns (buttons, forms, tables, tabs, modals, banners) for the web dashboard (`web/`, the phase-6 issues in §5). Read before building any dashboard screen.
 
-Keep these three current the same way `README.md` must stay current (§1): if a change makes one of them inaccurate, update it in the same change.
+Keep these current the same way `README.md` must stay current (§1): if a change makes one of them inaccurate, update it in the same change.
 
 ---
 
