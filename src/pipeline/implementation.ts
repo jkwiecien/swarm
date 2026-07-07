@@ -44,7 +44,12 @@ import { join } from 'node:path';
 
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
+import {
+	type AgentCli,
+	type AgentCliResult,
+	describeAgent,
+	runAgentCli,
+} from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
@@ -261,7 +266,12 @@ export async function runImplementationPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info('implementation phase: start', { taskId, workItemId: workItem.id, cli });
+	logger.info(`implementation phase: start — running ${describeAgent(cli, model)}`, {
+		taskId,
+		workItemId: workItem.id,
+		cli,
+		model,
+	});
 
 	// Resolved first: a missing implementer credential fails the job before any
 	// worktree exists to clean up. Never returned or passed on — it goes straight

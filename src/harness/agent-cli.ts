@@ -23,6 +23,17 @@ export const AgentCliSchema = z.enum(['claude', 'antigravity']);
 export type AgentCli = z.infer<typeof AgentCliSchema>;
 
 /**
+ * Human-readable "cli (model)" label for a phase's start-of-run log line, e.g.
+ * `antigravity (Gemini 3.5 Flash (High))`. Omits the parens entirely when no
+ * model override is set, rather than naming the CLI's own default — the
+ * harness never queries what that default resolves to (see `model` on
+ * {@link RunAgentCliOptions}), so there's nothing accurate to print.
+ */
+export function describeAgent(cli: AgentCli, model?: string): string {
+	return model ? `${cli} (${model})` : cli;
+}
+
+/**
  * Default binary name per agent CLI; override per call via `command`.
  * Antigravity's actual CLI binary is `agy`, not `antigravity` — the enum value
  * above is SWARM's internal identifier for the harness, not the binary name.

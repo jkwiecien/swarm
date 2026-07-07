@@ -9,7 +9,7 @@ vi.mock('node:child_process', () => ({
 	spawn: (...args: unknown[]) => spawnMock(...args),
 }));
 
-import { type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
+import { type AgentCliResult, describeAgent, runAgentCli } from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
 import { createMockRunAgentCliOptions } from '../../helpers/factories.js';
 
@@ -273,5 +273,18 @@ describe('runAgentCli', () => {
 			child.emit('close', null, 'SIGTERM');
 			await promise;
 		});
+	});
+});
+
+describe('describeAgent', () => {
+	it('names just the CLI when no model override is set', () => {
+		expect(describeAgent('claude')).toBe('claude');
+	});
+
+	it('appends the model in parens when one is set', () => {
+		expect(describeAgent('claude', 'sonnet')).toBe('claude (sonnet)');
+		expect(describeAgent('antigravity', 'Gemini 3.5 Flash (High)')).toBe(
+			'antigravity (Gemini 3.5 Flash (High))',
+		);
 	});
 });

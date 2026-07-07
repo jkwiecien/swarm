@@ -28,7 +28,12 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ProjectConfig } from '@/config/schema.js';
-import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
+import {
+	type AgentCli,
+	type AgentCliResult,
+	describeAgent,
+	runAgentCli,
+} from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
@@ -210,7 +215,12 @@ export async function runPlanningPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info('planning phase: start', { taskId, workItemId: workItem.id, cli });
+	logger.info(`planning phase: start — running ${describeAgent(cli, model)}`, {
+		taskId,
+		workItemId: workItem.id,
+		cli,
+		model,
+	});
 
 	// Read-only checkout: detached HEAD, no task branch (see ProvisionOptions.detach).
 	const handle = await worktrees.provision(taskId, { detach: true });

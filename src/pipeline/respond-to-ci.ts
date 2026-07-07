@@ -46,7 +46,12 @@ import { join } from 'node:path';
 
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
+import {
+	type AgentCli,
+	type AgentCliResult,
+	describeAgent,
+	runAgentCli,
+} from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
@@ -214,7 +219,14 @@ export async function runRespondToCiPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info('respond-to-ci phase: start', { taskId, prNumber, prBranch, headSha, cli });
+	logger.info(`respond-to-ci phase: start — running ${describeAgent(cli, model)}`, {
+		taskId,
+		prNumber,
+		prBranch,
+		headSha,
+		cli,
+		model,
+	});
 
 	// Resolved first: a missing implementer credential fails the job before any
 	// worktree exists to clean up. Never returned or passed on — it goes straight
