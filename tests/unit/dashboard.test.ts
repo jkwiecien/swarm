@@ -1,8 +1,24 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/db/repositories/projectsRepository.js', () => ({
+	findProjectByRepoFromDb: vi.fn(),
+	findProjectByBoardFromDb: vi.fn(),
+	findProjectByIdFromDb: vi.fn(),
+	upsertProjectToDb: vi.fn(),
+	createProjectInDb: vi.fn(),
+	deleteProjectFromDb: vi.fn(),
+	listAllProjectsFromDb: vi.fn(),
+	getProjectByIdFromDb: vi.fn(),
+}));
 
 import { createDashboardApp } from '@/dashboard.js';
+import { listAllProjectsFromDb } from '@/db/repositories/projectsRepository.js';
 
 describe('swarm-dashboard API', () => {
+	beforeEach(() => {
+		vi.mocked(listAllProjectsFromDb).mockReset();
+	});
+
 	afterEach(() => {
 		vi.unstubAllEnvs();
 	});
@@ -134,5 +150,25 @@ describe('swarm-dashboard API', () => {
 		vi.stubEnv('DASHBOARD_TOKEN', '');
 		expect(() => createDashboardApp()).toThrow(/DASHBOARD_TOKEN is not configured/);
 		expect(() => createDashboardApp({ token: '' })).toThrow(/DASHBOARD_TOKEN is not configured/);
+	});
+
+	it('serves tRPC projects.list query correctly over HTTP with valid authentication', async () => {
+		vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
+
+		const app = createDashboardApp({ token: 'test-token' });
+		const res = await app.request('/trpc/projects.list', {
+			headers: {
+				Authorization: 'Bearer test-token',
+			},
+		});
+
+		expect(res.status).toBe(200);
+		const data = await res.json();
+		expect(data).toEqual({
+			result: {
+				data: [],
+			},
+		});
+		expect(listAllProjectsFromDb).toHaveBeenCalledTimes(1);
 	});
 });

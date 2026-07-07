@@ -4,11 +4,16 @@ vi.mock('@/db/client.js', () => ({ getDb: vi.fn() }));
 
 import { getDb } from '@/db/client.js';
 import {
+	createProjectInDb,
+	deleteProjectFromDb,
 	findProjectByBoardFromDb,
 	findProjectByIdFromDb,
 	findProjectByRepoFromDb,
+	getProjectByIdFromDb,
+	listAllProjectsFromDb,
 	upsertProjectToDb,
 } from '@/db/repositories/projectsRepository.js';
+import { projects } from '@/db/schema/projects.js';
 import { createMockProjectConfig } from '../../../helpers/factories.js';
 
 function stubDb(rows: unknown[]): void {
@@ -119,6 +124,14 @@ describe('projectsRepository', () => {
 		});
 	});
 
+	describe('getProjectByIdFromDb', () => {
+		it('maps a row back to a ProjectConfig and functions identically to findProjectByIdFromDb', async () => {
+			stubDb([row]);
+			const project = await getProjectByIdFromDb('proj-1');
+			expect(project).toMatchObject({ id: 'proj-1', pm: { type: 'github-projects' } });
+		});
+	});
+
 	describe('upsertProjectToDb', () => {
 		it('flattens pm.type into a column and upserts on the id', async () => {
 			const { values, onConflictDoUpdate } = stubInsert();
@@ -150,6 +163,88 @@ describe('projectsRepository', () => {
 			};
 			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1', agents }));
 			expect(values.mock.calls[0][0]).toMatchObject({ agents });
+		});
+	});
+
+	describe('listAllProjectsFromDb', () => {
+		it('returns all mapped projects ordered by name', async () => {
+			let orderedBy: unknown;
+			const builder = {
+				select: () => builder,
+				from: () => builder,
+				orderBy: (col: unknown) => {
+					orderedBy = col;
+					return Promise.resolve([row, { ...row, id: 'proj-2', name: 'another' }]);
+				},
+			};
+			vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+
+			const list = await listAllProjectsFromDb();
+			expect(list).toHaveLength(2);
+			expect(list[0]).toMatchObject({ id: 'proj-1', name: 'swarm' });
+			expect(list[1]).toMatchObject({ id: 'proj-2', name: 'another' });
+			expect(orderedBy).toBeDefined();
+		});
+
+		it('returns an empty array when no projects exist', async () => {
+			const builder = {
+				select: () => builder,
+				from: () => builder,
+				orderBy: () => Promise.resolve([]),
+			};
+			vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+
+			const list = await listAllProjectsFromDb();
+			expect(list).toEqual([]);
+		});
+	});
+
+	describe('createProjectInDb', () => {
+		it('inserts a project without an onConflict clause', async () => {
+			let insertedValues: unknown;
+			let isThenCalled = false;
+			const builder = {
+				insert: () => builder,
+				values: (v: unknown) => {
+					insertedValues = v;
+					return builder;
+				},
+				// biome-ignore lint/suspicious/noThenProperty: must be awaitable
+				then: (resolve: () => unknown) => {
+					isThenCalled = true;
+					return Promise.resolve().then(resolve);
+				},
+			};
+			vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+
+			const project = createMockProjectConfig({ id: 'proj-new' });
+			await createProjectInDb(project);
+
+			expect(insertedValues).toMatchObject({ id: 'proj-new', pmType: 'github-projects' });
+			expect(isThenCalled).toBe(true);
+			expect(builder).not.toHaveProperty('onConflictDoUpdate');
+		});
+	});
+
+	describe('deleteProjectFromDb', () => {
+		it('issues a filtered delete against projects table', async () => {
+			let deletedTable: unknown;
+			let whereCall: unknown;
+			const builder = {
+				delete: (t: unknown) => {
+					deletedTable = t;
+					return builder;
+				},
+				where: (w: unknown) => {
+					whereCall = w;
+					return Promise.resolve();
+				},
+			};
+			vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
+
+			await deleteProjectFromDb('proj-delete');
+			expect(deletedTable).toBe(projects);
+			expect(whereCall).toBeDefined();
 		});
 	});
 });

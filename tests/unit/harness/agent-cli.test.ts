@@ -56,6 +56,7 @@ describe('runAgentCli', () => {
 			stdout: 'hello\nworld\n',
 			stderr: 'a warning\n',
 			timedOut: false,
+			aborted: false,
 			outputTruncated: false,
 		});
 
@@ -247,11 +248,12 @@ describe('runAgentCli', () => {
 			child.emit('close', null, 'SIGKILL');
 			const result = await promise;
 			expect(result.timedOut).toBe(true);
+			expect(result.aborted).toBe(false);
 			expect(result.exitCode).toBeNull();
 			expect(result.signal).toBe('SIGKILL');
 		});
 
-		it('kills when the abort signal fires, without marking it as a timeout', async () => {
+		it('kills when the abort signal fires, reporting aborted without marking it as a timeout', async () => {
 			const controller = new AbortController();
 			const promise = runAgentCli(createMockRunAgentCliOptions({ signal: controller.signal }));
 			const child = lastChild();
@@ -262,7 +264,24 @@ describe('runAgentCli', () => {
 			child.emit('close', null, 'SIGTERM');
 			const result = await promise;
 			expect(result.timedOut).toBe(false);
+			expect(result.aborted).toBe(true);
 			expect(result.signal).toBe('SIGTERM');
+		});
+
+		it('reports aborted even when the CLI traps SIGTERM and exits cleanly with no signal', async () => {
+			// Confirmed live (issue: worker --watch restart mid-review): claude
+			// exited 143 with signal=null instead of being torn down by the OS —
+			// classification must not depend on `signal` being non-null.
+			const controller = new AbortController();
+			const promise = runAgentCli(createMockRunAgentCliOptions({ signal: controller.signal }));
+			const child = lastChild();
+
+			controller.abort();
+			child.emit('close', 143, null);
+			const result = await promise;
+			expect(result.aborted).toBe(true);
+			expect(result.signal).toBeNull();
+			expect(result.exitCode).toBe(143);
 		});
 
 		it('kills immediately when given an already-aborted signal', async () => {
@@ -271,7 +290,8 @@ describe('runAgentCli', () => {
 			expect(child.kill).toHaveBeenCalledWith('SIGTERM');
 
 			child.emit('close', null, 'SIGTERM');
-			await promise;
+			const result = await promise;
+			expect(result.aborted).toBe(true);
 		});
 	});
 });

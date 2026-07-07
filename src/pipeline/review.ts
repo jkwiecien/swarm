@@ -29,8 +29,9 @@
  * the review to exactly the commit CI validated.
  *
  * No PM interaction: the item already sits at "In review" (the Implementation
- * phase moved it), and a submitted review doesn't change board status —
- * `changes_requested` drives SWARM-21, approval leaves merging to a human.
+ * phase moved it), and a submitted review doesn't change board status — any
+ * verdict drives SWARM-21 (the implementer always responds, even to an
+ * approval), and merging is still left to a human.
  *
  * This is the phase's orchestration only, same as Planning/Implementation. It
  * composes `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15) and

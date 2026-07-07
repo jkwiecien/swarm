@@ -25,6 +25,7 @@ function agentResult(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 		stderr: '',
 		durationMs: 42,
 		timedOut: false,
+		aborted: false,
 		outputTruncated: false,
 		...overrides,
 	};

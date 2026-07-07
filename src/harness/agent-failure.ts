@@ -20,7 +20,7 @@
 import type { AgentCliResult } from './agent-cli.js';
 
 /** Why an agent run failed, from the worker's point of view. */
-export type AgentFailureKind = 'rate-limit' | 'timeout' | 'error';
+export type AgentFailureKind = 'rate-limit' | 'timeout' | 'aborted' | 'error';
 
 export interface AgentFailure {
 	kind: AgentFailureKind;
@@ -157,12 +157,22 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
 /**
  * Classify a failed agent run. `now` is injectable so the reset-time parse is
  * deterministic under test. A timed-out run is a `timeout` regardless of what it
- * printed (the harness killing it is the authoritative cause); otherwise a
- * recognisable limit banner makes it a `rate-limit`, and everything else is a
- * plain `error`.
+ * printed (the harness killing it is the authoritative cause); next, a run the
+ * harness's `signal` cancelled is `aborted` — this is the worker's own
+ * shutdown (e.g. a dev `--watch` restart, or a graceful SIGTERM/SIGINT)
+ * deliberately killing an in-flight run, not the agent failing on its own, and
+ * it must be checked before scanning output: an aborted run's stdout/stderr is
+ * typically empty or cut off mid-line, so there is nothing meaningful to scan
+ * anyway (confirmed live: a `claude` run killed this way exited 143 with empty
+ * output and `signal: null`, since it trapped SIGTERM and called `process.exit`
+ * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
+ * exists precisely because `result.signal` can't be trusted to reflect this).
+ * Otherwise a recognisable limit banner makes it a `rate-limit`, and everything
+ * else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
 	if (result.timedOut) return { kind: 'timeout' };
+	if (result.aborted) return { kind: 'aborted' };
 
 	const output = `${result.stdout}\n${result.stderr}`;
 	const resetMatch = RESET_RE.exec(output);
@@ -199,6 +209,8 @@ export function agentRunError(
 			? ' (timed out)'
 			: failure.kind === 'rate-limit'
 				? ' (rate limited)'
-				: '';
+				: failure.kind === 'aborted'
+					? ' (aborted)'
+					: '';
 	return new AgentRunError(`${prefix}${reason}${tail}`, failure);
 }

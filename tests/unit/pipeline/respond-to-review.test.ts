@@ -29,6 +29,7 @@ function agentResult(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 		stderr: '',
 		durationMs: 42,
 		timedOut: false,
+		aborted: false,
 		outputTruncated: false,
 		...overrides,
 	};
@@ -243,5 +244,13 @@ describe('buildRespondToReviewPrompt', () => {
 		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
 		expect(prompt).toContain('Do not merge the PR');
 		expect(prompt).toContain('do not submit a review of your own');
+	});
+
+	it('instructs fixing valid nits and always replying, even on an approval with nothing to fix', () => {
+		const prompt = buildRespondToReviewPrompt(context);
+		expect(prompt).toMatch(/minor\/nit suggestions/);
+		expect(prompt).toMatch(/ALWAYS reply on the PR/);
+		expect(prompt).toMatch(/post a short comment thanking the reviewer/);
+		expect(prompt).toMatch(/never skip this step, even when there is nothing to fix/);
 	});
 });

@@ -62,9 +62,12 @@ export type JobOutcome =
 	  };
 
 /**
- * A persistent usage/session limit shouldn't retry forever — cap the loop so a
- * genuinely exhausted quota (or a misclassified failure) eventually surfaces as
- * a real `phase-failed` instead of re-enqueuing indefinitely.
+ * A persistent usage/session limit — or a run that keeps getting aborted —
+ * shouldn't retry forever. Cap the loop so a genuinely exhausted quota (or a
+ * misclassified failure, or a job that reliably crashes the worker) eventually
+ * surfaces as a real `phase-failed` instead of re-enqueuing indefinitely. Shared
+ * across both deferral reasons below — one job doesn't get two independent
+ * budgets.
  */
 const MAX_RATE_LIMIT_RETRIES = 6;
 /**
@@ -72,7 +75,10 @@ const MAX_RATE_LIMIT_RETRIES = 6;
  * (5 min, `src/triggers/review-dispatch-dedup.ts`): a review retry that fires
  * only after the claim has expired re-acquires it cleanly, so we never have to
  * release/refresh a claim that a *generic* failed run might have posted under.
- * A rate-limited run never posted anything anyway.
+ * A rate-limited or aborted run never posted anything anyway, but the retry
+ * still has to land after the claim it (may have) left behind expires — this
+ * is also the flat delay used for an `aborted` retry (see
+ * {@link retryDelayForFailure}), which has no reset time to compute from.
  */
 const MIN_RETRY_DELAY_MS = 6 * 60 * 1000;
 /** Ceiling, so a mis-parsed reset time can't defer a job for an absurd span. */
@@ -82,12 +88,72 @@ const DEFAULT_RETRY_DELAY_MS = 30 * 60 * 1000;
 /** Fire slightly *after* the reported reset so quota is actually back. */
 const RETRY_BUFFER_MS = 60 * 1000;
 
-/** Turn a rate-limit failure's reset time (if any) into a clamped retry delay. */
+/**
+ * Turn a deferrable failure into a clamped retry delay. An `aborted` run (the
+ * worker's own shutdown killed it — a dev `--watch` restart, a deploy, a
+ * graceful SIGTERM/SIGINT) has no "resets at…" hint to parse and needs none:
+ * by the time a re-enqueued job is dequeued, the worker that killed it has
+ * already finished restarting, so the only reason to wait at all is the same
+ * dedup-claim floor a rate-limit retry respects.
+ */
 function retryDelayForFailure(failure: AgentFailure, now: number): number {
+	if (failure.kind === 'aborted') return MIN_RETRY_DELAY_MS;
 	const raw = failure.retryAfter
 		? failure.retryAfter.getTime() - now + RETRY_BUFFER_MS
 		: DEFAULT_RETRY_DELAY_MS;
 	return Math.min(MAX_RETRY_DELAY_MS, Math.max(MIN_RETRY_DELAY_MS, raw));
+}
+
+/**
+ * Handle a deferrable {@link AgentRunError} (`rate-limit` or `aborted`) —
+ * `processJob`'s one non-terminal failure path, split out to keep that
+ * function's branching within the complexity budget. Returns the
+ * `phase-deferred` outcome to return from `processJob`, or `undefined` when
+ * the retry budget is exhausted (the caller falls through to its own
+ * `phase-failed` logging/return).
+ */
+function deferAgentRunError(
+	failure: AgentFailure,
+	job: SwarmJob,
+	trigger: TriggerResult,
+	projectId: string,
+	error: string,
+): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
+	const attempt = job.rateLimitRetryAttempt ?? 0;
+	if (attempt >= MAX_RATE_LIMIT_RETRIES) {
+		logger.error('Pipeline phase deferred failure — retry budget exhausted, failing', {
+			projectId,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			attempt,
+			error,
+		});
+		return undefined;
+	}
+
+	const retryDelayMs = retryDelayForFailure(failure, Date.now());
+	logger.warn(
+		failure.kind === 'aborted'
+			? 'Pipeline phase aborted by worker shutdown — deferring retry'
+			: 'Pipeline phase rate-limited — deferring retry',
+		{
+			projectId,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			attempt,
+			retryDelayMs,
+			resetHint: failure.resetHint,
+			error,
+		},
+	);
+	return {
+		status: 'phase-deferred',
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		retryDelayMs,
+		reason: error,
+		attempt,
+	};
 }
 
 /**
@@ -171,12 +237,19 @@ function runPhase(
  * reporting to the PM board is the phase's job). The one thing that still
  * throws is an unknown project — infrastructure the job can't proceed without.
  *
- * The exception to "failed phases don't retry" is a usage/session-limit hit
- * (an {@link AgentRunError} classified `rate-limit`): the agent never got to do
- * any work, so instead of `phase-failed` this returns `phase-deferred` with a
- * delay, and the worker entrypoint re-enqueues the job once quota is back
- * (issue #91). Capped at {@link MAX_RATE_LIMIT_RETRIES} so a persistent limit
- * eventually surfaces as a real failure.
+ * The exception to "failed phases don't retry" is a deferrable
+ * {@link AgentRunError}: a usage/session-limit hit (classified `rate-limit`,
+ * issue #91) or a run the worker itself cancelled (classified `aborted` — the
+ * *worker* shutting down while a phase was mid-run, e.g. a dev `--watch`
+ * restart, a deploy, or a graceful SIGTERM/SIGINT; confirmed live when
+ * unrelated code edits during active development kept restarting the worker
+ * mid-review and permanently failing it, since a SIGTERM-killed run doesn't
+ * look like a rate limit and there was no other path back to `phase-deferred`).
+ * Either way the agent never did any *lasting* work of its own accord, so
+ * instead of `phase-failed` this returns `phase-deferred` with a delay, and the
+ * worker entrypoint re-enqueues the job once it's safe to retry. Capped at
+ * {@link MAX_RATE_LIMIT_RETRIES} so a persistent limit — or a job that reliably
+ * crashes the worker — eventually surfaces as a real failure.
  *
  * `signal` is the worker's shutdown signal: aborting kills a running agent CLI
  * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run.
@@ -240,39 +313,18 @@ export async function processJob(
 	} catch (err) {
 		const error = err instanceof Error ? err.message : String(err);
 
-		// A usage/session-limit hit is transient: the agent never did any work, so
-		// rather than failing the job we defer it and let the worker re-enqueue it
-		// once quota is back (issue #91). Capped so a persistent limit — or a
-		// misclassified failure — can't loop forever.
-		if (err instanceof AgentRunError && err.failure.kind === 'rate-limit') {
-			const attempt = job.rateLimitRetryAttempt ?? 0;
-			if (attempt < MAX_RATE_LIMIT_RETRIES) {
-				const retryDelayMs = retryDelayForFailure(err.failure, Date.now());
-				logger.warn('Pipeline phase rate-limited — deferring retry', {
-					projectId: project.id,
-					phase: trigger.phase,
-					taskId: trigger.taskId,
-					attempt,
-					retryDelayMs,
-					resetHint: err.failure.resetHint,
-					error,
-				});
-				return {
-					status: 'phase-deferred',
-					phase: trigger.phase,
-					taskId: trigger.taskId,
-					retryDelayMs,
-					reason: error,
-					attempt,
-				};
-			}
-			logger.error('Pipeline phase rate-limited — retry budget exhausted, failing', {
-				projectId: project.id,
-				phase: trigger.phase,
-				taskId: trigger.taskId,
-				attempt,
-				error,
-			});
+		// A usage/session-limit hit or a worker-shutdown abort is transient: the
+		// agent never did any lasting work, so rather than failing the job we defer
+		// it and let the worker re-enqueue it once it's safe to retry (rate-limit:
+		// issue #91; aborted: the run was killed by the worker's own shutdown, not
+		// by anything the agent did). Capped so a persistent limit — or a job that
+		// keeps getting aborted, or a misclassified failure — can't loop forever.
+		const isDeferrable =
+			err instanceof AgentRunError &&
+			(err.failure.kind === 'rate-limit' || err.failure.kind === 'aborted');
+		if (isDeferrable) {
+			const deferred = deferAgentRunError(err.failure, job, trigger, project.id, error);
+			if (deferred) return deferred;
 		}
 
 		logger.error('Pipeline phase failed', {

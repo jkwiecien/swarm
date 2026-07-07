@@ -1,12 +1,18 @@
 /**
  * Respond-to-review phase (PROJECT.md §5.4, ai/ARCHITECTURE.md "Pipeline phases" #4).
  *
- * The reviewer persona submits a review with `changes_requested` → the worker
- * runs this: provision a worktree on the PR's existing task branch, spin up
- * Claude Code as the implementer to read the batched review, and for each point
- * either fix the code (Path A) or push back with a rationale (Path B) —
- * mirroring Cascade's `respond-to-review` agent and its "wait for the final
- * submitted review, not individual line comments" rule. Matching the event
+ * The reviewer persona submits *any* review — approve, comment, or
+ * changes-requested — and the worker runs this: provision a worktree on the
+ * PR's existing task branch, spin up Claude Code as the implementer to read
+ * the batched review, and for each point either fix the code (Path A) or push
+ * back with a rationale (Path B). Unlike Cascade's `respond-to-review` agent
+ * (which only wakes on a non-approving review), this always runs — mirroring
+ * the `solve-issue` skill's respond step, which unconditionally follows
+ * review regardless of verdict — so the implementer fixes any valid nits the
+ * reviewer left even on an approval, and always leaves a reply (a short
+ * thank-you when there's nothing to fix or push back on) so a human can see
+ * the response ran. "wait for the final submitted review, not individual line
+ * comments" is still Cascade's rule and still applies here. Matching the event
  * (`pull_request_review` `submitted`, authored by the *reviewer* persona — the
  * `getPersonaForLogin` routing in `src/router/adapters/github.ts`) is the
  * trigger handler's job (SWARM-53), not this phase's: it receives a review to
@@ -61,10 +67,13 @@ import { graftEnvironment } from '@/worktree/graft.js';
 export const RESPOND_OUTCOME_FILENAME = 'respond_outcome.txt';
 
 /**
- * The outcomes the agent may report — PROJECT.md §5.4's two paths. `fixed`
+ * The outcomes the agent may report — PROJECT.md §5.4's two paths, now also
+ * covering an approval/comment review with nothing actionable in it. `fixed`
  * means at least one fix commit was pushed (even if some points were pushed
- * back); `pushed-back` means no code changed and every point got a rationale
- * reply instead. The agent hands back which one applied via
+ * back); `pushed-back` means no code changed — either every point got a
+ * rationale reply, or (when the review raised nothing to fix or push back on)
+ * a short thank-you acknowledgment was posted instead, so a human can still
+ * see the phase ran. The agent hands back which one applied via
  * {@link RESPOND_OUTCOME_FILENAME}; anything else is a failed run, not a third
  * outcome.
  */
@@ -135,10 +144,12 @@ export interface RespondToReviewPhaseResult {
  * Build the prompt handed to the respond agent. It's told it authored the PR
  * and is answering its reviewer: sync the branch first, read the pinned review
  * (summary body plus its batched line comments — the review API, not the issue
- * comment stream), address every point as either a fix or a reasoned
- * push-back, verify fixes before pushing, reply on the PR point by point, and
- * record which outcome applied to {@link RESPOND_OUTCOME_FILENAME} so this
- * phase can validate the hand-off.
+ * comment stream), address every point — including minor/nit suggestions, not
+ * just blocking ones — as either a fix or a reasoned push-back, verify fixes
+ * before pushing, ALWAYS reply on the PR (a point-by-point answer if the
+ * review raised anything, otherwise a short thank-you so a human can see the
+ * response ran), and record which outcome applied to
+ * {@link RESPOND_OUTCOME_FILENAME} so this phase can validate the hand-off.
  */
 export function buildRespondToReviewPrompt(context: {
 	repo: string;
@@ -152,18 +163,23 @@ export function buildRespondToReviewPrompt(context: {
 		'you authored.',
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
-		`#${prNumber} in ${repo} on GitHub. A reviewer has submitted a review requesting`,
-		'changes.',
+		`#${prNumber} in ${repo} on GitHub. A reviewer has submitted a review — it may`,
+		'request changes, just comment, or approve with suggestions attached. Respond to it',
+		'regardless of verdict: an approval is not a reason to stay silent.',
 		'',
 		'Do all of the following, in order:',
 		`1. Sync the branch with what the reviewer saw: \`git pull --ff-only origin ${prBranch}\`. If this fails for any reason (diverged branch, deleted remote branch, network error), stop and exit non-zero rather than responding against stale code.`,
 		`2. Read the submitted review you are responding to: \`gh api repos/${repo}/pulls/${prNumber}/reviews/${reviewId}\` for its summary body, and \`gh api repos/${repo}/pulls/${prNumber}/reviews/${reviewId}/comments\` for its line comments. Read the PR discussion for context too: \`gh pr view ${prNumber} --repo ${repo} --comments\`.`,
-		'3. Address EVERY point the review raises. For each one, either:',
+		'3. Address EVERY point the review raises — including minor/nit suggestions, not',
+		'   just blocking "changes requested" items; a valid nit is worth fixing even on an',
+		'   approval. For each point, either:',
 		'   - fix the code (keep the fix surgical — only go broader when the reviewer clearly asks for it), or',
 		'   - if the point is mistaken, push back: no code change, but a clear rationale in your reply below.',
+		'   If the review raised no specific points at all (e.g. a plain approval with',
+		'   nothing to fix or question), skip straight to step 5.',
 		`4. If you changed code: run the project lint, type-check, and the relevant tests; fix whatever they surface. Then commit with a conventional-commit message and push: \`git push origin ${prBranch}\` (explicit remote/branch — the checkout may have no upstream configured, e.g. on a human-created PR branch).`,
-		`5. Reply on the PR with exactly ONE comment answering the review point by point, non-interactively: write the reply to a scratch file (e.g. respond_body.md), then run \`gh pr comment ${prNumber} --repo ${repo} --body-file <file>\`. For each point say whether you fixed it (name the commit) or are pushing back (give the rationale).`,
-		`6. Write the outcome — exactly \`fixed\` if you pushed at least one fix commit, or exactly \`pushed-back\` if you changed no code, and nothing else — to a file named "${RESPOND_OUTCOME_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file (or the reply scratch file) — they are scratch hand-offs read by SWARM, not part of the PR.`,
+		`5. ALWAYS reply on the PR with exactly ONE comment, non-interactively: write the reply to a scratch file (e.g. respond_body.md), then run \`gh pr comment ${prNumber} --repo ${repo} --body-file <file>\`. If the review raised specific points, answer them point by point — for each, say whether you fixed it (name the commit) or are pushing back (give the rationale). If it raised nothing actionable, post a short comment thanking the reviewer instead — never skip this step, even when there is nothing to fix, so a human can see the response ran.`,
+		`6. Write the outcome — exactly \`fixed\` if you pushed at least one fix commit, or exactly \`pushed-back\` if you changed no code (this covers both "pushed back with a rationale" and "nothing actionable, just acknowledged"), and nothing else — to a file named "${RESPOND_OUTCOME_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file (or the reply scratch file) — they are scratch hand-offs read by SWARM, not part of the PR.`,
 		'',
 		'Do not merge the PR, and do not submit a review of your own — you are the author.',
 	].join('\n');

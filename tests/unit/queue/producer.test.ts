@@ -13,7 +13,11 @@ const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
 	// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
 	const add =
 		vi.fn<
-			(name: string, data: unknown, opts?: { jobId?: string; delay?: number }) => Promise<unknown>
+			(
+				name: string,
+				data: unknown,
+				opts?: { jobId?: string; delay?: number; priority?: number },
+			) => Promise<unknown>
 		>();
 	const close = vi.fn();
 	const getDelayed = vi.fn<() => Promise<Array<{ name: string; remove: () => Promise<void> }>>>();
@@ -91,13 +95,28 @@ describe('enqueueJob', () => {
 		expect(id).toBe('bull-assigned-id');
 	});
 
-	it('adds a github-projects job named by its type', async () => {
+	it('adds a github-projects job named by its type, demoted below the default priority', async () => {
 		const { enqueueJob } = await import('@/queue/producer.js');
 		const job = createMockGitHubProjectsWebhookJob();
 
 		await enqueueJob(job);
 
-		expect(add).toHaveBeenCalledWith('github-projects', job, { jobId: job.deliveryId });
+		// PM-board jobs (planning/implementation) must not queue ahead of a
+		// review-lifecycle (`github`) job — see priorityFor's rationale.
+		expect(add).toHaveBeenCalledWith('github-projects', job, {
+			jobId: job.deliveryId,
+			priority: 10,
+		});
+	});
+
+	it('leaves a github job at the default (unset) priority', async () => {
+		const { enqueueJob } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob();
+
+		await enqueueJob(job);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts).not.toHaveProperty('priority');
 	});
 
 	it('omits the job id when the event carries no deliveryId', async () => {
@@ -199,6 +218,15 @@ describe('scheduleCoalescedJob', () => {
 
 		expect(add).toHaveBeenCalledOnce();
 	});
+
+	it('demotes a coalesced github-projects job below the default priority', async () => {
+		const { scheduleCoalescedJob } = await import('@/queue/producer.js');
+
+		await scheduleCoalescedJob(createMockGitHubProjectsWebhookJob(), 'pm-status:some-item', 30_000);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts).toMatchObject({ priority: 10 });
+	});
 });
 
 describe('enqueueDelayedRetry', () => {
@@ -245,6 +273,16 @@ describe('enqueueDelayedRetry', () => {
 		const [, , opts] = add.mock.calls[0];
 		expect(opts?.jobId).toMatch(/^retry_github_\d+_/);
 		expect(opts?.jobId).not.toContain(':');
+	});
+
+	it('demotes a retried github-projects job below the default priority', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 1 });
+
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts).toMatchObject({ priority: 10 });
 	});
 });
 
