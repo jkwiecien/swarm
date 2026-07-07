@@ -19,6 +19,20 @@
  * moved away and intentionally moved back to Planning, say — still dispatches;
  * only a same-status no-op (reorder, or a duplicate webhook delivery) is
  * skipped.
+ *
+ * The stored value carries a TTL (mirroring `review-dispatch-dedup.ts`'s `EX`),
+ * not just for Redis hygiene: confirmed live, a failed Implementation run
+ * (agy's `-p` argument-order bug — see `src/harness/agent-cli.ts`) left an item
+ * sitting back in "ToDo" with its dispatched status already recorded as
+ * "ToDo", so moving it to "ToDo" again to retry — the *intended* recovery
+ * path, per the module doc above — looked identical to a same-status no-op
+ * and got silently skipped forever. The intermediate pickup move to "In
+ * progress" doesn't re-arm this key either, since "In progress" isn't a
+ * phase-start status this trigger dispatches on (`src/pm/pipeline.ts`) — so
+ * without a TTL, one failed run permanently blocks every future retry for
+ * that item. The TTL only needs to be longer than a burst of
+ * near-simultaneous `reordered` events from one drag gesture (milliseconds),
+ * so it's generous on purpose.
  */
 
 import { Redis } from 'ioredis';
@@ -27,6 +41,9 @@ import { logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 
 const KEY_NS = 'swarm:pm-status-dedup:';
+
+/** Same window as `review-dispatch-dedup.ts`'s `DEDUP_TTL_SEC` — see the module doc above for why this needs a TTL at all. */
+const DEDUP_TTL_SEC = 5 * 60;
 
 let redisInstance: Redis | null = null;
 
@@ -76,7 +93,7 @@ export async function shouldDispatchForStatus(
 			});
 			return false;
 		}
-		await getRedis().set(key, statusId);
+		await getRedis().set(key, statusId, 'EX', DEDUP_TTL_SEC);
 		return true;
 	} catch (err) {
 		logger.error('pm-status dedup: Redis call failed — failing closed', {

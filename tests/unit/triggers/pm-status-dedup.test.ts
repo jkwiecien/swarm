@@ -36,7 +36,7 @@ describe('shouldDispatchForStatus', () => {
 
 		expect(result).toBe(true);
 		expect(get).toHaveBeenCalledWith(`${NS}PVTI_1`);
-		expect(set).toHaveBeenCalledWith(`${NS}PVTI_1`, '61e4505c');
+		expect(set).toHaveBeenCalledWith(`${NS}PVTI_1`, '61e4505c', 'EX', 5 * 60);
 	});
 
 	it('skips (returns false, does not overwrite) when the re-read status matches the last dispatched one', async () => {
@@ -56,7 +56,7 @@ describe('shouldDispatchForStatus', () => {
 		const result = await shouldDispatchForStatus('PVTI_1', '47fc9ee4'); // now: In progress
 
 		expect(result).toBe(true);
-		expect(set).toHaveBeenCalledWith(`${NS}PVTI_1`, '47fc9ee4');
+		expect(set).toHaveBeenCalledWith(`${NS}PVTI_1`, '47fc9ee4', 'EX', 5 * 60);
 	});
 
 	it('dispatches again on a return to a status the item already passed through', async () => {
