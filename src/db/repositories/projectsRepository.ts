@@ -11,7 +11,7 @@
  * "Zod is the source of truth").
  */
 
-import { eq, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 
 import type { ProjectConfig } from '../../config/schema.js';
 import { getDb } from '../client.js';
@@ -34,6 +34,24 @@ function rowToProjectConfig(row: ProjectRow): ProjectConfig {
 		credentials: row.credentials,
 		agents: row.agents ?? undefined,
 		pipeline: row.pipeline ?? undefined,
+	};
+}
+
+/** Flatten a `ProjectConfig` into the columns needed for insertion/upsertion. */
+function projectConfigToRow(config: ProjectConfig) {
+	return {
+		id: config.id,
+		name: config.name,
+		repo: config.repo,
+		repoRoot: config.repoRoot,
+		worktreeRoot: config.worktreeRoot,
+		baseBranch: config.baseBranch,
+		branchPrefix: config.branchPrefix,
+		pmType: config.pm.type,
+		githubProjects: config.githubProjects,
+		credentials: config.credentials,
+		agents: config.agents ?? null,
+		pipeline: config.pipeline ?? null,
 	};
 }
 
@@ -87,20 +105,7 @@ export async function findProjectByIdFromDb(id: string): Promise<ProjectConfig |
  * separately into `project_credentials` (see `credentialsRepository`).
  */
 export async function upsertProjectToDb(config: ProjectConfig): Promise<void> {
-	const values = {
-		id: config.id,
-		name: config.name,
-		repo: config.repo,
-		repoRoot: config.repoRoot,
-		worktreeRoot: config.worktreeRoot,
-		baseBranch: config.baseBranch,
-		branchPrefix: config.branchPrefix,
-		pmType: config.pm.type,
-		githubProjects: config.githubProjects,
-		credentials: config.credentials,
-		agents: config.agents ?? null,
-		pipeline: config.pipeline ?? null,
-	};
+	const values = projectConfigToRow(config);
 	const { id: _id, ...updateValues } = values;
 	await getDb()
 		.insert(projects)
@@ -110,3 +115,31 @@ export async function upsertProjectToDb(config: ProjectConfig): Promise<void> {
 			set: { ...updateValues, updatedAt: new Date() },
 		});
 }
+
+/**
+ * Create a new project row in the DB.
+ * Unlike `upsertProjectToDb`, this rejects with a unique constraint violation if the ID already exists.
+ */
+export async function createProjectInDb(config: ProjectConfig): Promise<void> {
+	const values = projectConfigToRow(config);
+	await getDb().insert(projects).values(values);
+}
+
+/**
+ * Delete a project from the DB by its ID.
+ * Because of the `ON DELETE CASCADE` foreign key on `project_credentials.project_id`,
+ * this will also automatically delete all related credentials.
+ */
+export async function deleteProjectFromDb(id: string): Promise<void> {
+	await getDb().delete(projects).where(eq(projects.id, id));
+}
+
+/**
+ * List all projects in the DB, ordered by name.
+ */
+export async function listAllProjectsFromDb(): Promise<ProjectConfig[]> {
+	const rows = await getDb().select().from(projects).orderBy(asc(projects.name));
+	return rows.map(rowToProjectConfig);
+}
+
+export { findProjectByIdFromDb as getProjectByIdFromDb };
