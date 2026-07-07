@@ -220,6 +220,46 @@ describe('processJob', () => {
 		expect(phaseCalls[0].args.model).toBeUndefined();
 	});
 
+	it("threads the project's per-phase autoAdvance setting into planning and implementation calls", async () => {
+		const projectWithPipeline = createMockProjectConfig({
+			pipeline: { planning: { autoAdvance: true }, implementation: { autoAdvance: false } },
+		});
+		projectLookup = () => projectWithPipeline;
+
+		await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({
+				phase: 'planning',
+				taskId: '10',
+				workItem: createMockWorkItem({ statusId: '61e4505c' }),
+			}),
+		);
+		expect(phaseCalls[0].args.autoAdvance).toBe(true);
+
+		phaseCalls.length = 0;
+		await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({
+				phase: 'implementation',
+				taskId: '10',
+				workItem: createMockWorkItem({ statusId: '3121a97d' }),
+			}),
+		);
+		expect(phaseCalls[0].args.autoAdvance).toBe(false);
+	});
+
+	it('passes undefined autoAdvance when the project has no pipeline override, leaving each phase on its coded default', async () => {
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.autoAdvance).toBeUndefined();
+	});
+
 	it('threads the shutdown signal through to the phase', async () => {
 		const controller = new AbortController();
 

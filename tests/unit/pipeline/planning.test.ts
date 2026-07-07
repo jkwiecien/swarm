@@ -71,7 +71,7 @@ describe('runPlanningPhase', () => {
 		planContents = '# Plan\n\n1. Do the thing.';
 	});
 
-	it('provisions a detached worktree, runs the planning agent, posts the plan, and moves the item to todo', async () => {
+	it('provisions a detached worktree, runs the planning agent, posts the plan, and leaves the item in Planning by default (autoAdvance off)', async () => {
 		const deps = makeDeps();
 		const result = await runPlanningPhase(deps);
 
@@ -91,7 +91,8 @@ describe('runPlanningPhase', () => {
 		expect(deps.graft).toHaveBeenCalledWith(deps.project.repoRoot, WORKTREE_PATH);
 
 		// The plan is posted on the linked item; the item itself stays in Planning —
-		// this phase never moves it (a human moves it to ToDo after reviewing).
+		// `autoAdvance` is unset, which defaults to false, so a human moves it
+		// to ToDo themselves after reviewing.
 		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
 		expect(deps.pm.addComment.mock.calls[0][0]).toBe('PVTI_item18');
 		expect(deps.pm.addComment.mock.calls[0][1]).toContain('Do the thing.');
@@ -103,7 +104,16 @@ describe('runPlanningPhase', () => {
 		expect(result).toMatchObject({
 			commentId: 'comment-1',
 			plan: '# Plan\n\n1. Do the thing.',
+			movedTo: undefined,
 		});
+	});
+
+	it('moves the item to todo when autoAdvance is on', async () => {
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, autoAdvance: true });
+
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
+		expect(result).toMatchObject({ movedTo: 'todo' });
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
@@ -217,10 +227,16 @@ describe('buildPlanningPrompt', () => {
 });
 
 describe('planCommentBody', () => {
-	it('wraps the plan with a header and an advance-the-pipeline hint', () => {
+	it('wraps the plan with a header and, by default, a move-it-yourself hint', () => {
 		const body = planCommentBody('step one');
 		expect(body).toContain('Proposed implementation plan');
 		expect(body).toContain('step one');
 		expect(body).toContain('ToDo');
+		expect(body).toMatch(/Move this item/);
+	});
+
+	it('says the item is moving automatically when autoAdvance is on', () => {
+		const body = planCommentBody('step one', true);
+		expect(body).toMatch(/moving to \*\*ToDo\*\* automatically/);
 	});
 });

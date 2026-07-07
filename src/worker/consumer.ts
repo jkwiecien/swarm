@@ -70,6 +70,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.planning?.cli,
 				model: project.agents?.planning?.model,
+				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				signal,
 			});
 		case 'implementation':
@@ -80,6 +81,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.implementation?.cli,
 				model: project.agents?.implementation?.model,
+				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				signal,
 			});
 		case 'review':

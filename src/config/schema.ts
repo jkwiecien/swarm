@@ -93,6 +93,37 @@ export const AgentsConfigSchema = z
 	})
 	.describe('Per-phase agent CLI/model overrides — omit any phase to keep its coded default');
 
+/**
+ * Per-phase control over whether Planning/Implementation move the board item
+ * on completion by themselves, or leave that to a human. Only these two
+ * phases are configurable here — they're the only ones that touch the board
+ * at all; Review, Respond-to-review, and Respond-to-CI are SCM-event-driven
+ * and never move a card (`src/pm/pipeline.ts`). `autoAdvance` governs only the
+ * *end-of-phase* move (Planning → "ToDo", Implementation → "In review") —
+ * Implementation's separate pickup report (→ "In progress" as soon as it
+ * starts) is unconditional either way, since it's a status report, not a
+ * transition a human would want to gate.
+ */
+export const PipelineConfigSchema = z
+	.object({
+		/**
+		 * Whether Planning moves the item to "ToDo" once it posts the plan.
+		 * Unset (or the whole `pipeline.planning` block omitted) defaults to
+		 * `false`: a human reviews the plan and moves the item themselves to
+		 * greenlight Implementation.
+		 */
+		planning: z.object({ autoAdvance: z.boolean().optional() }).optional(),
+		/**
+		 * Whether Implementation moves the item to "In review" once it opens the
+		 * PR. Unset (or the whole `pipeline.implementation` block omitted)
+		 * defaults to `true`: unlike Planning's plan — a judgment call worth a
+		 * human look before committing to code — the opened PR *is* the request
+		 * for that look, so there's nothing to gate on first.
+		 */
+		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
+	})
+	.describe('Per-phase autonomous board-move control for Planning and Implementation');
+
 export const ProjectConfigSchema = z.object({
 	/** Stable internal identifier for this SWARM project (one Postgres row per project). */
 	id: z.string().min(1),
@@ -142,6 +173,9 @@ export const ProjectConfigSchema = z.object({
 
 	/** Per-phase agent CLI/model overrides. Omit entirely to keep every phase's coded default. */
 	agents: AgentsConfigSchema.optional(),
+
+	/** Per-phase autonomous board-move control. Omit entirely to keep the coded defaults. */
+	pipeline: PipelineConfigSchema.optional(),
 });
 
 export const SwarmConfigSchema = z.object({
@@ -151,6 +185,7 @@ export const SwarmConfigSchema = z.object({
 export type Credentials = z.infer<typeof CredentialsSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
+export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type SwarmConfig = z.infer<typeof SwarmConfigSchema>;
 

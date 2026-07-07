@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	AgentsConfigSchema,
+	PipelineConfigSchema,
 	PROJECT_DEFAULTS,
 	ProjectConfigSchema,
 	SwarmConfigSchema,
@@ -118,6 +119,21 @@ describe('ProjectConfigSchema', () => {
 			createMockProjectConfig({ agents: { planning: { model: 'nonsense' } } }),
 		).toThrow();
 	});
+
+	it('omits pipeline entirely by default (planning/implementation keep their coded defaults)', () => {
+		const project = createMockProjectConfig();
+		expect(project.pipeline).toBeUndefined();
+	});
+
+	it('accepts a per-phase autoAdvance override', () => {
+		const project = createMockProjectConfig({
+			pipeline: { planning: { autoAdvance: true }, implementation: { autoAdvance: false } },
+		});
+		expect(project.pipeline).toEqual({
+			planning: { autoAdvance: true },
+			implementation: { autoAdvance: false },
+		});
+	});
 });
 
 describe('AgentsConfigSchema', () => {
@@ -128,6 +144,25 @@ describe('AgentsConfigSchema', () => {
 	it('allows cli and model to each be specified independently', () => {
 		expect(AgentsConfigSchema.safeParse({ review: { cli: 'claude' } }).success).toBe(true);
 		expect(AgentsConfigSchema.safeParse({ review: { model: 'opus' } }).success).toBe(true);
+	});
+});
+
+describe('PipelineConfigSchema', () => {
+	it('allows both phases to be omitted', () => {
+		expect(PipelineConfigSchema.safeParse({}).success).toBe(true);
+	});
+
+	it('allows planning and implementation to be set independently', () => {
+		expect(PipelineConfigSchema.safeParse({ planning: { autoAdvance: true } }).success).toBe(true);
+		expect(PipelineConfigSchema.safeParse({ implementation: { autoAdvance: false } }).success).toBe(
+			true,
+		);
+	});
+
+	it('rejects a non-boolean autoAdvance', () => {
+		expect(PipelineConfigSchema.safeParse({ planning: { autoAdvance: 'yes' } }).success).toBe(
+			false,
+		);
 	});
 });
 

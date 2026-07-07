@@ -71,7 +71,7 @@ describe('runImplementationPhase', () => {
 		prFileContents = 'https://github.com/jkwiecien/swarm/pull/99\n';
 	});
 
-	it('provisions the task-branch worktree, runs Claude Code, links the PR, and moves the item to inReview', async () => {
+	it('provisions the task-branch worktree, runs Claude Code, links the PR, and moves the item to inReview by default (autoAdvance on)', async () => {
 		const deps = makeDeps();
 		const result = await runImplementationPhase(deps);
 
@@ -109,6 +109,15 @@ describe('runImplementationPhase', () => {
 			commentId: 'comment-1',
 			movedTo: 'inReview',
 		});
+	});
+
+	it('still reports the pickup move but skips the final move when autoAdvance is off', async () => {
+		const deps = makeDeps();
+		const result = await runImplementationPhase({ ...deps, autoAdvance: false });
+
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledTimes(1);
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item19', 'inProgress');
+		expect(result).toMatchObject({ movedTo: undefined });
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
@@ -255,10 +264,16 @@ describe('buildImplementationPrompt', () => {
 });
 
 describe('implementationCommentBody', () => {
-	it('wraps the PR URL with a header and an in-review hint', () => {
+	it('wraps the PR URL with a header and, by default, an already-moved note', () => {
 		const body = implementationCommentBody('https://github.com/jkwiecien/swarm/pull/99');
 		expect(body).toContain('Implementation complete');
 		expect(body).toContain('https://github.com/jkwiecien/swarm/pull/99');
 		expect(body).toContain('In review');
+		expect(body).toMatch(/has moved to/);
+	});
+
+	it('says to move it yourself when autoAdvance is off', () => {
+		const body = implementationCommentBody('https://github.com/jkwiecien/swarm/pull/99', false);
+		expect(body).toMatch(/Move this item.*yourself/);
 	});
 });

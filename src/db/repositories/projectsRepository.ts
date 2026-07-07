@@ -33,6 +33,7 @@ function rowToProjectConfig(row: ProjectRow): ProjectConfig {
 		githubProjects: row.githubProjects,
 		credentials: row.credentials,
 		agents: row.agents ?? undefined,
+		pipeline: row.pipeline ?? undefined,
 	};
 }
 
@@ -98,6 +99,7 @@ export async function upsertProjectToDb(config: ProjectConfig): Promise<void> {
 		githubProjects: config.githubProjects,
 		credentials: config.credentials,
 		agents: config.agents ?? null,
+		pipeline: config.pipeline ?? null,
 	};
 	const { id: _id, ...updateValues } = values;
 	await getDb()
