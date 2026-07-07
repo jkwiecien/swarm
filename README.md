@@ -48,6 +48,7 @@ Each phase's agent CLI and model are configurable per project, per phase, via `s
 
 ## Security model
 
+- **Minimal localhost-bound auth guard** (MVP): The dashboard binds to `127.0.0.1` rather than `0.0.0.0` and requires a shared-secret token (`DASHBOARD_TOKEN`) for every request except `/health`. This local-first security replaces Cascade's full session/bcrypt/multi-org login system, and is only revisited if SWARM ever needs remote access or multi-user support.
 - **Dual-persona GitHub credentials** (MVP): separate implementer/reviewer tokens, borrowed from Cascade's loop-prevention model — a persona never reacts to its own output. Stored in Postgres, not a cloud secret manager (see `PROJECT.md` §6.1).
 - **Zero-knowledge codebase, still**: everything above is local — router, worker, Postgres, Redis. Nothing leaves the machine except webhook payloads and PR/comment metadata.
 - *(Future, once `PROJECT.md` §2.2's cloud engine exists)*: board/SCM API keys move into Google Cloud Secret Manager; the daemon authenticates to the cloud via a bearer token + device hardware ID (`PROJECT.md` §6.2).
@@ -61,12 +62,23 @@ PM boards plug in via an agnostic `PMProvider` interface (verify webhook, get/li
 Postgres, Redis, and the router run in Docker Compose; the **worker runs on the host**:
 
 ```bash
-cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
+cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports / DASHBOARD_TOKEN if needed
 docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 npm run db:seed               # load swarm.config.json into Postgres (projects + credentials)
-npm run dev:dashboard         # start the dashboard API on the host (default port 3101)
+npm run dev:dashboard         # start the dashboard API on the host (default port 3101) — requires DASHBOARD_TOKEN in .env
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker)
+```
+
+The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. Future frontends read the token from local configuration rather than displaying a login screen.
+
+You can verify the dashboard API is running and authenticated using `curl`:
+```bash
+# /health check requires no authentication
+curl http://localhost:3101/health
+
+# Authenticated tRPC request
+curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:3101/trpc/ping.ping
 ```
 
 The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps above: `swarm init` scaffolds `.env` (from `.env.docker.example`) and a `swarm.config.json` project-config template — validating it if it already exists; `swarm config apply` (a.k.a. `npm run db:seed`, SWARM-56) loads that file's projects and their referenced credentials into Postgres, which is where the router and worker actually resolve config from (`swarm.config.json` is otherwise scaffold/documentation only) — note that `npm run db:seed` runs with `--env-file=.env`, so it sees your `DATABASE_URL` and credential secrets automatically, whereas standalone `swarm config apply` reads only the ambient environment (export those vars first, or just use `npm run db:seed`, or a reference whose env var is unset is silently skipped); `swarm start [--build]` / `swarm stop [-v]` bring the Compose stack up/down; `swarm status` shows the container states and probes the router's `/health`; `swarm logs [service] [-f]` tails the logs. It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.

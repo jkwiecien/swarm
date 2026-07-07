@@ -1,10 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDashboardApp } from '@/dashboard.js';
 
 describe('swarm-dashboard API', () => {
-	it('serves /health check correctly', async () => {
-		const app = createDashboardApp();
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	it('serves /health check correctly without authentication', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
 		const res = await app.request('/health');
 
 		expect(res.status).toBe(200);
@@ -16,10 +20,14 @@ describe('swarm-dashboard API', () => {
 		});
 	});
 
-	it('serves tRPC ping query correctly over HTTP', async () => {
-		const app = createDashboardApp();
+	it('serves tRPC ping query correctly over HTTP with valid authentication', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
 		// GET is the standard tRPC HTTP protocol shape for query procedures
-		const res = await app.request('/trpc/ping.ping');
+		const res = await app.request('/trpc/ping.ping', {
+			headers: {
+				Authorization: 'Bearer test-token',
+			},
+		});
 
 		expect(res.status).toBe(200);
 		const data = await res.json();
@@ -33,10 +41,48 @@ describe('swarm-dashboard API', () => {
 		});
 	});
 
-	it('returns 404 for unknown routes', async () => {
-		const app = createDashboardApp();
-		const res = await app.request('/nope');
+	it('returns 401 for tRPC request with no Authorization header', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
+		const res = await app.request('/trpc/ping.ping');
+
+		expect(res.status).toBe(401);
+		const data = await res.json();
+		expect(data).toEqual({
+			error: 'Unauthorized',
+			reason: 'Missing authorization header',
+		});
+	});
+
+	it('returns 401 for tRPC request with incorrect token', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
+		const res = await app.request('/trpc/ping.ping', {
+			headers: {
+				Authorization: 'Bearer wrong-token',
+			},
+		});
+
+		expect(res.status).toBe(401);
+		const data = await res.json();
+		expect(data).toEqual({
+			error: 'Unauthorized',
+			reason: 'Invalid token',
+		});
+	});
+
+	it('returns 404 for unknown routes when authenticated', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
+		const res = await app.request('/nope', {
+			headers: {
+				Authorization: 'Bearer test-token',
+			},
+		});
 
 		expect(res.status).toBe(404);
+	});
+
+	it('throws synchronously when initialized without a token', () => {
+		vi.stubEnv('DASHBOARD_TOKEN', '');
+		expect(() => createDashboardApp()).toThrow(/DASHBOARD_TOKEN is not configured/);
+		expect(() => createDashboardApp({ token: '' })).toThrow(/DASHBOARD_TOKEN is not configured/);
 	});
 });
