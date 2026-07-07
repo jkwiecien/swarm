@@ -1,15 +1,55 @@
+import { useQuery } from '@tanstack/react-query';
 import { createRoute } from '@tanstack/react-router';
-import { FolderGit2 } from 'lucide-react';
+import { FolderGit2, Plus } from 'lucide-react';
+import { useState } from 'react';
+import { ProjectCreateDialog } from '@/components/projects/project-create-dialog.js';
+import { ProjectsTable } from '@/components/projects/projects-table.js';
+import { trpc } from '@/lib/trpc.js';
 import { rootRoute } from '../__root.js';
 
-function ProjectsPlaceholder() {
+function ProjectsRouteComponent() {
+	const [createOpen, setCreateOpen] = useState(false);
+	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
+
 	return (
 		<div className="space-y-6">
-			<h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Projects</h1>
-			<div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-800 bg-[#0F0F11]/40 p-12 text-center shadow-sm">
-				<FolderGit2 className="h-12 w-12 stroke-1 text-zinc-700" />
-				<p className="text-sm text-zinc-400">Project management is coming in a future update.</p>
+			<div className="flex items-center justify-between">
+				<h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Projects</h1>
+				<button
+					type="button"
+					onClick={() => setCreateOpen(true)}
+					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10"
+				>
+					<Plus className="h-4 w-4" />
+					New Project
+				</button>
 			</div>
+
+			{projectsQuery.isLoading ? (
+				<div className="text-sm text-zinc-400">Loading projects…</div>
+			) : projectsQuery.isError ? (
+				<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+					{projectsQuery.error.message}
+				</div>
+			) : projectsQuery.data && projectsQuery.data.length > 0 ? (
+				<ProjectsTable projects={projectsQuery.data} />
+			) : (
+				<div className="flex flex-col items-center justify-center gap-3 rounded-lg border border-zinc-800 bg-[#0F0F11]/40 p-12 text-center shadow-sm">
+					<FolderGit2 className="h-12 w-12 stroke-1 text-zinc-700" />
+					<p className="text-sm text-zinc-400">
+						No projects found. Get started by creating your first project.
+					</p>
+					<button
+						type="button"
+						onClick={() => setCreateOpen(true)}
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors mt-2"
+					>
+						New Project
+					</button>
+				</div>
+			)}
+
+			<ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
 		</div>
 	);
 }
@@ -17,5 +57,5 @@ function ProjectsPlaceholder() {
 export const projectsIndexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/projects',
-	component: ProjectsPlaceholder,
+	component: ProjectsRouteComponent,
 });
