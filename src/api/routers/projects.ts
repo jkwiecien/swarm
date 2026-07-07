@@ -19,8 +19,25 @@ const DEFAULT_CREDENTIAL_REFERENCES = {
 
 const ProjectWriteInputSchema = ProjectConfigSchema.omit({ credentials: true });
 
+function hasUniqueViolationCode(error: unknown): boolean {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		'code' in error &&
+		(error as { code: unknown }).code === '23505'
+	);
+}
+
+/**
+ * drizzle-orm wraps every node-postgres query error in a `DrizzleQueryError`,
+ * which has no top-level `code` — the original pg error (the one carrying
+ * `code: '23505'` for a unique violation) is on `.cause`. Check both so this
+ * still matches once drizzle's wrapping is in the way.
+ */
 function isUniqueViolation(error: unknown): boolean {
-	return error instanceof Error && 'code' in error && (error as { code: string }).code === '23505';
+	return (
+		hasUniqueViolationCode(error) || (error instanceof Error && hasUniqueViolationCode(error.cause))
+	);
 }
 
 export const projectsRouter = router({
@@ -28,7 +45,7 @@ export const projectsRouter = router({
 		return await listAllProjectsFromDb();
 	}),
 
-	getById: publicProcedure.input(z.object({ id: z.string() })).query(async ({ input }) => {
+	getById: publicProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
 		const project = await getProjectByIdFromDb(input.id);
 		if (!project) {
 			throw new TRPCError({
@@ -59,7 +76,7 @@ export const projectsRouter = router({
 	}),
 
 	update: publicProcedure
-		.input(ProjectWriteInputSchema.partial().extend({ id: z.string() }))
+		.input(ProjectWriteInputSchema.partial().extend({ id: z.string().min(1) }))
 		.mutation(async ({ input }) => {
 			const existing = await getProjectByIdFromDb(input.id);
 			if (!existing) {
@@ -87,7 +104,7 @@ export const projectsRouter = router({
 			}
 		}),
 
-	delete: publicProcedure.input(z.object({ id: z.string() })).mutation(async ({ input }) => {
+	delete: publicProcedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ input }) => {
 		const existing = await getProjectByIdFromDb(input.id);
 		if (!existing) {
 			throw new TRPCError({

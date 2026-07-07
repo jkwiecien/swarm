@@ -1,3 +1,4 @@
+import { DrizzleQueryError } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
@@ -153,6 +154,25 @@ describe('projectsRouter', () => {
 			);
 		});
 
+		it('translates a drizzle-wrapped unique violation (code on .cause, not top-level) to CONFLICT', async () => {
+			// This is the shape drizzle-orm actually throws in production: every
+			// node-postgres query error is wrapped in a `DrizzleQueryError`, which
+			// has no top-level `code` — the real pg error (carrying `code: '23505'`)
+			// is on `.cause`.
+			const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), {
+				code: '23505',
+			});
+			const wrapped = new DrizzleQueryError('insert into "projects" ...', [], pgError);
+			vi.mocked(createProjectInDb).mockRejectedValue(wrapped);
+
+			await expect(caller.create(validProjectInput)).rejects.toThrowError(
+				expect.objectContaining({
+					code: 'CONFLICT',
+					message: 'Project ID or repository already exists',
+				}),
+			);
+		});
+
 		it('propagates unrelated rejections without translating them', async () => {
 			const error = new Error('Some DB connection error');
 			vi.mocked(createProjectInDb).mockRejectedValue(error);
@@ -223,6 +243,22 @@ describe('projectsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
 			const error = Object.assign(new Error('Unique violation'), { code: '23505' });
 			vi.mocked(upsertProjectToDb).mockRejectedValue(error);
+
+			await expect(caller.update({ id: 'p1', name: 'Collision Name' })).rejects.toThrowError(
+				expect.objectContaining({
+					code: 'CONFLICT',
+					message: 'Project ID or repository already exists',
+				}),
+			);
+		});
+
+		it('translates a drizzle-wrapped uniqueness conflict (code on .cause, not top-level) to CONFLICT', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
+			const pgError = Object.assign(new Error('duplicate key value violates unique constraint'), {
+				code: '23505',
+			});
+			const wrapped = new DrizzleQueryError('insert into "projects" ...', [], pgError);
+			vi.mocked(upsertProjectToDb).mockRejectedValue(wrapped);
 
 			await expect(caller.update({ id: 'p1', name: 'Collision Name' })).rejects.toThrowError(
 				expect.objectContaining({
