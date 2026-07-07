@@ -43,8 +43,8 @@ describe('respond-to-review trigger', () => {
 			expect(handler.matches(ctx({ reviewState: 'commented' }))).toBe(true);
 		});
 
-		it('ignores an approved review', () => {
-			expect(handler.matches(ctx({ reviewState: 'approved' }))).toBe(false);
+		it('matches an approved review too — the implementer always responds', () => {
+			expect(handler.matches(ctx({ reviewState: 'approved' }))).toBe(true);
 		});
 
 		it('ignores a non-submitted action (edit/dismiss)', () => {
@@ -66,6 +66,11 @@ describe('respond-to-review trigger', () => {
 				prBranch: 'issue-17',
 				reviewId: '555',
 			});
+		});
+
+		it('also dispatches for an approved reviewer-persona review', async () => {
+			const result = await handler.handle(ctx({ reviewState: 'approved' }));
+			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
 		});
 
 		it('skips a review authored by a human', async () => {

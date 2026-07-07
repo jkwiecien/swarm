@@ -1,15 +1,23 @@
 /**
  * Respond-to-review trigger — starts the Respond-to-review phase
- * (`src/pipeline/respond-to-review.ts`) when the reviewer persona submits a
- * review requesting changes (or commenting), mirroring Cascade's
- * `pr-review-submitted` trigger (ai/ARCHITECTURE.md "Pipeline phases" #4).
+ * (`src/pipeline/respond-to-review.ts`) whenever the reviewer persona submits
+ * *any* review — approve, comment, or changes-requested.
+ *
+ * This deliberately deviates from Cascade's `pr-review-submitted` trigger
+ * (which only fires on a non-approving review): the implementer should always
+ * acknowledge the reviewer, not just when changes are requested — mirroring
+ * the `solve-issue` skill's respond step, which unconditionally runs after
+ * review regardless of verdict. Fixing valid nits and posting a reply (even a
+ * plain thank-you when there's nothing to fix or push back on) is the
+ * phase's job (`src/pipeline/respond-to-review.ts`'s prompt); this handler's
+ * job is just recognizing that any submitted reviewer-persona review should
+ * dispatch it.
  *
  * Two gates make this fire on exactly the right event:
  *  - **The final submitted review, not line comments.** Only `pull_request_review`
  *    `submitted` matches; individual line comments arrive as a different event
  *    (`pull_request_review_comment`, which SWARM doesn't process) and edits /
- *    dismissals carry a non-`submitted` action. An `approved` review is nothing
- *    to respond to, so it's excluded.
+ *    dismissals carry a non-`submitted` action.
  *  - **Authored by the reviewer persona.** GitHub self-review is impossible, so
  *    a human's review or the implementer's own event must not start a response.
  *    `getPersonaForLogin` confirms the review's author is the *reviewer* persona
@@ -38,16 +46,17 @@ export function createRespondToReviewTrigger(
 
 	return {
 		name: 'pr-review-submitted',
-		description: 'Starts Respond-to-review on a reviewer-persona changes-requested review',
+		description:
+			'Starts Respond-to-review on any reviewer-persona-submitted review (approve/comment/changes-requested)',
 
 		matches(ctx: TriggerContext): boolean {
 			if (ctx.source !== 'github') return false;
 			const { event } = ctx;
 			if (event.eventType !== 'pull_request_review') return false;
-			// Only a submitted review — not an edit or a dismissal.
+			// Only a submitted review — not an edit or a dismissal. Every verdict
+			// (approve/comment/changes-requested) dispatches — see the module header
+			// for why an approval isn't excluded.
 			if (event.action !== 'submitted') return false;
-			// Respond to changes_requested / commented, never to an approval.
-			if (event.reviewState === 'approved') return false;
 			return true;
 		},
 
