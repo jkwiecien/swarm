@@ -75,6 +75,9 @@ describe('runImplementationPhase', () => {
 		const deps = makeDeps();
 		const result = await runImplementationPhase(deps);
 
+		// Reports pickup by moving to In progress before doing any other work.
+		expect(deps.pm.moveWorkItem).toHaveBeenNthCalledWith(1, 'PVTI_item19', 'inProgress');
+
 		// Task-branch checkout: provisioned with defaults (createBranch), NOT detached.
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('19');
 
@@ -94,7 +97,8 @@ describe('runImplementationPhase', () => {
 		expect(deps.pm.addComment.mock.calls[0][1]).toContain(
 			'https://github.com/jkwiecien/swarm/pull/99',
 		);
-		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item19', 'inReview');
+		expect(deps.pm.moveWorkItem).toHaveBeenNthCalledWith(2, 'PVTI_item19', 'inReview');
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledTimes(2);
 
 		// Worktree is always cleaned up.
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('19');
@@ -149,7 +153,7 @@ describe('runImplementationPhase', () => {
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('antigravity');
 	});
 
-	it('posts and moves in order: comment before the status move', async () => {
+	it('posts and moves in order: pickup move, then comment, then the final status move', async () => {
 		const deps = makeDeps();
 		const order: string[] = [];
 		deps.pm.addComment.mockImplementation(async () => {
@@ -160,7 +164,7 @@ describe('runImplementationPhase', () => {
 			order.push('move');
 		});
 		await runImplementationPhase(deps);
-		expect(order).toEqual(['comment', 'move']);
+		expect(order).toEqual(['move', 'comment', 'move']);
 	});
 
 	it('throws and still cleans up when the agent exits non-zero', async () => {
@@ -168,7 +172,10 @@ describe('runImplementationPhase', () => {
 		deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
 		await expect(runImplementationPhase(deps)).rejects.toThrow(/exited with code 1/);
 		expect(deps.pm.addComment).not.toHaveBeenCalled();
-		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+		// The pickup move already happened before the agent ran; only the final
+		// (In review) move never fires.
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledTimes(1);
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item19', 'inProgress');
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('19');
 	});
 
@@ -200,7 +207,9 @@ describe('runImplementationPhase', () => {
 		const deps = makeDeps();
 		deps.pm.addComment.mockRejectedValue(new Error('GraphQL 502'));
 		await expect(runImplementationPhase(deps)).rejects.toThrow(/GraphQL 502/);
-		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+		// The pickup move already happened; only the final (In review) move never fires.
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledTimes(1);
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item19', 'inProgress');
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('19');
 	});
 });

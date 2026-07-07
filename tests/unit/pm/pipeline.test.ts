@@ -11,16 +11,16 @@ describe('pipeline phase mapping', () => {
 		expect(resolvePipelinePhaseForStatusKey('planning')).toBe('planning');
 	});
 
-	it('maps the inProgress status to the implementation phase', () => {
-		expect(resolvePipelinePhaseForStatusKey('inProgress')).toBe('implementation');
+	it('maps the todo status to the implementation phase', () => {
+		expect(resolvePipelinePhaseForStatusKey('todo')).toBe('implementation');
 	});
 
 	it.each([
 		'backlog',
-		'todo',
+		'inProgress',
 		'inReview',
 		'done',
-	])('does not trigger a phase for the %s status (SCM-driven or terminal)', (statusKey) => {
+	])('does not trigger a phase for the %s status (SCM-driven, a status report, or terminal)', (statusKey) => {
 		expect(resolvePipelinePhaseForStatusKey(statusKey)).toBeUndefined();
 	});
 
@@ -29,7 +29,7 @@ describe('pipeline phase mapping', () => {
 	});
 
 	it('only the two PM-driven phases are in the map', () => {
-		expect(Object.keys(PM_STATUS_TO_PHASE).sort()).toEqual(['inProgress', 'planning']);
+		expect(Object.keys(PM_STATUS_TO_PHASE).sort()).toEqual(['planning', 'todo']);
 	});
 
 	it('keys the map only on canonical status keys (no drift from PM_STATUS_KEYS)', () => {

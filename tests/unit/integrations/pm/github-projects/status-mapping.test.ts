@@ -29,13 +29,13 @@ describe('resolvePipelinePhaseForOptionId', () => {
 		expect(resolvePipelinePhaseForOptionId(config, '61e4505c')).toBe('planning');
 	});
 
-	it('resolves the In-progress option to the implementation phase', () => {
-		expect(resolvePipelinePhaseForOptionId(config, '47fc9ee4')).toBe('implementation');
+	it('resolves the ToDo option to the implementation phase', () => {
+		expect(resolvePipelinePhaseForOptionId(config, '3121a97d')).toBe('implementation');
 	});
 
 	it.each([
 		['Backlog', 'f75ad846'],
-		['ToDo', '3121a97d'],
+		['In progress', '47fc9ee4'],
 		['In review', 'df73e18b'],
 		['Done', '98236657'],
 	])('does not trigger a phase for the %s option', (_name, optionId) => {

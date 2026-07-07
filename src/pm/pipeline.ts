@@ -5,7 +5,10 @@
  *
  * Only two of the pipeline phases (ai/ARCHITECTURE.md "Pipeline phases") are
  * entered by a *board status change*: Planning (item → "Planning") and
- * Implementation (item → "In Progress"). The rest — Review, Respond-to-review,
+ * Implementation (item → "ToDo" — a human reviews the plan Planning posted,
+ * then moves the item here to greenlight it; the phase itself reports back to
+ * "In progress" once it picks the task up, but that move is a status report,
+ * not a trigger). The rest — Review, Respond-to-review,
  * and Respond-to-CI — are driven by SCM events (a PR opening / a check suite
  * completing / a review being submitted), not by the PM board, so they have no
  * entry in this map. That asymmetry is intentional: this map is exactly the set
@@ -49,14 +52,16 @@ export type PmStatusKey = (typeof PM_STATUS_KEYS)[number];
 
 /**
  * Canonical pipeline status key → the phase entering that status triggers.
- * A status key absent here (`backlog`, `todo`, `inReview`, `done`) is a valid
- * board status that simply doesn't start a PM-driven phase. Typed against
- * {@link PmStatusKey} so a mis-spelled key (e.g. the old `ready`) fails to
- * compile rather than silently never matching.
+ * A status key absent here (`backlog`, `inProgress`, `inReview`, `done`) is a
+ * valid board status that simply doesn't start a PM-driven phase — notably
+ * `inProgress`, which the Implementation phase itself moves an item *to* as a
+ * status report, not a trigger; entering it manually doesn't (re-)start
+ * anything. Typed against {@link PmStatusKey} so a mis-spelled key (e.g. the
+ * old `ready`) fails to compile rather than silently never matching.
  */
 export const PM_STATUS_TO_PHASE: Readonly<Partial<Record<PmStatusKey, PipelinePhase>>> = {
 	planning: 'planning',
-	inProgress: 'implementation',
+	todo: 'implementation',
 };
 
 /**

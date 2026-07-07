@@ -1,9 +1,11 @@
 /**
  * Implementation phase (PROJECT.md §5.2, ai/ARCHITECTURE.md "Pipeline phases" #2).
  *
- * An item moves to "In progress" on the board → the worker runs this: provision a
- * worktree on the task branch (not detached — unlike Planning, this phase commits
- * and pushes), graft the environment, spin up Claude Code as the implementer to
+ * An item moves to "ToDo" on the board → the worker runs this: move the item to
+ * "In progress" to report that the agent has picked up the task (a status
+ * report, not a trigger — see `src/pm/pipeline.ts`), provision a worktree on
+ * the task branch (not detached — unlike Planning, this phase commits and
+ * pushes), graft the environment, spin up Claude Code as the implementer to
  * implement the plan / run tests / commit / push / open a PR, then post the PR
  * link back on the item and move it to "In review".
  *
@@ -44,6 +46,14 @@ export const OPENED_PR_FILENAME = 'opened_pr.txt';
 const DEFAULT_IMPLEMENTATION_CLI: AgentCli = 'claude';
 
 /**
+ * Status the item moves to as soon as this phase starts, before the agent even
+ * runs — reports to a human watching the board that the task has been picked
+ * up. Not a trigger: entering "In progress" doesn't itself start anything
+ * (`src/pm/pipeline.ts`), only the item entering "ToDo" does.
+ */
+const START_STATUS: PmStatusKey = 'inProgress';
+
+/**
  * Status the item moves to once the PR is opened — the board's "In review".
  * Typed to {@link PmStatusKey} so a typo fails to compile rather than silently
  * sending the item to a status the adapter can't resolve. This status isn't a
@@ -63,7 +73,7 @@ export interface RunImplementationPhaseOptions {
 	/** The SWARM project whose board the item lives on. */
 	project: ProjectConfig;
 	/**
-	 * The Projects item that entered "In progress". Its `id` addresses the item
+	 * The Projects item that entered "ToDo". Its `id` addresses the item
 	 * for the PM provider; its `url`/`title`/`description` describe the work.
 	 */
 	workItem: WorkItem;
@@ -178,7 +188,8 @@ function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResu
 }
 
 /**
- * Run the Implementation phase for one work item. Provisions a worktree on the
+ * Run the Implementation phase for one work item. Moves the item to "In
+ * progress" to report that work has started, provisions a worktree on the
  * task branch, runs the implementer agent to build the change and open a PR,
  * posts the PR link as a comment on the linked Issue, and moves the item to
  * "In review".
@@ -213,6 +224,11 @@ export async function runImplementationPhase(
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info('implementation phase: start', { taskId, workItemId: workItem.id, cli });
+
+	// Report the pickup before doing any work — including before provisioning —
+	// so a human watching the board sees "In progress" as soon as the worker
+	// commits to this task, not only once the (possibly long) agent run finishes.
+	await pm.moveWorkItem(workItem.id, START_STATUS);
 
 	// Task-branch checkout (createBranch defaults to true): the agent commits and
 	// pushes here, so — unlike Planning — this is not a detached, throwaway HEAD.

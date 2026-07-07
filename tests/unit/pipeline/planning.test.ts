@@ -90,18 +90,18 @@ describe('runPlanningPhase', () => {
 		// Env is grafted into the worktree before the agent runs.
 		expect(deps.graft).toHaveBeenCalledWith(deps.project.repoRoot, WORKTREE_PATH);
 
-		// The plan is posted on the linked item, then the item advances to todo.
+		// The plan is posted on the linked item; the item itself stays in Planning —
+		// this phase never moves it (a human moves it to ToDo after reviewing).
 		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
 		expect(deps.pm.addComment.mock.calls[0][0]).toBe('PVTI_item18');
 		expect(deps.pm.addComment.mock.calls[0][1]).toContain('Do the thing.');
-		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
+		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 
 		// Worktree is always cleaned up.
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 
 		expect(result).toMatchObject({
 			commentId: 'comment-1',
-			movedTo: 'todo',
 			plan: '# Plan\n\n1. Do the thing.',
 		});
 	});
@@ -146,20 +146,6 @@ describe('runPlanningPhase', () => {
 		deps.runAgent = vi.fn(async () => agentResult({ cli: 'claude' }));
 		await runPlanningPhase({ ...deps, cli: 'claude' });
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('claude');
-	});
-
-	it('posts and moves in order: comment before the status move', async () => {
-		const deps = makeDeps();
-		const order: string[] = [];
-		deps.pm.addComment.mockImplementation(async () => {
-			order.push('comment');
-			return 'comment-1';
-		});
-		deps.pm.moveWorkItem.mockImplementation(async () => {
-			order.push('move');
-		});
-		await runPlanningPhase(deps);
-		expect(order).toEqual(['comment', 'move']);
 	});
 
 	it('throws and still cleans up when the agent exits non-zero', async () => {
@@ -211,7 +197,7 @@ describe('runPlanningPhase', () => {
 		// The agent exited 0 and the plan was posted, so the run succeeded — a
 		// cleanup throw is swallowed-and-logged, not re-raised.
 		const result = await runPlanningPhase(deps);
-		expect(result).toMatchObject({ movedTo: 'todo' });
+		expect(result).toMatchObject({ commentId: 'comment-1' });
 	});
 });
 
@@ -235,6 +221,6 @@ describe('planCommentBody', () => {
 		const body = planCommentBody('step one');
 		expect(body).toContain('Proposed implementation plan');
 		expect(body).toContain('step one');
-		expect(body).toContain('In progress');
+		expect(body).toContain('ToDo');
 	});
 });

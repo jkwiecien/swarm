@@ -96,9 +96,9 @@ describe('pm-status trigger', () => {
 			expect(result).toEqual({ phase: 'planning', taskId: '10', workItem });
 		});
 
-		it('dispatches Implementation when the card sits in In progress', async () => {
+		it('dispatches Implementation when the card sits in ToDo', async () => {
 			const workItem = createMockWorkItem({
-				statusId: '47fc9ee4', // In progress
+				statusId: '3121a97d', // ToDo
 				url: 'https://github.com/jkwiecien/swarm/issues/12',
 			});
 			const result = await trigger(workItem).handle(ctx());
