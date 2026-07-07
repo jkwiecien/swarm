@@ -81,20 +81,89 @@ describe('level filtering', () => {
 });
 
 describe('pretty format', () => {
-	it('renders the readable [level] msg {context} form', () => {
+	beforeEach(() => {
 		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty');
-
-		logger.info('listening', { port: 3000 });
-
-		expect(infoSpy.mock.calls[0][0]).toBe('[info] listening {"port":3000}');
+		// Isolate format from color: these tests assert on plain text regardless
+		// of whether the test runner's own stdout happens to be a TTY.
+		vi.stubEnv('NO_COLOR', '1');
 	});
 
-	it('omits the context suffix when there is nothing to show', () => {
-		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty');
+	it('renders a clock, level tag, message, and key=value context', () => {
+		logger.info('listening', { port: 3000 });
 
+		expect(infoSpy.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} INFO {2}listening port=3000$/);
+	});
+
+	it('omits the context tail when there is nothing to show', () => {
 		logger.info('ready');
 
-		expect(infoSpy.mock.calls[0][0]).toBe('[info] ready');
+		expect(infoSpy.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} INFO {2}ready$/);
+	});
+
+	it('renders the bound component as a [component] prefix, not a trailing key=value', () => {
+		configureLogger({ component: 'worker' });
+
+		logger.info('job done', { jobId: 'j-9' });
+
+		expect(infoSpy.mock.calls[0][0]).toMatch(
+			/^\d{2}:\d{2}:\d{2} INFO {2}\[worker\] job done jobId=j-9$/,
+		);
+	});
+
+	it('quotes a context value that contains whitespace', () => {
+		logger.info('msg', { note: 'two words' });
+
+		expect(infoSpy.mock.calls[0][0]).toContain('note="two words"');
+	});
+
+	it('drops an undefined context value instead of printing key=undefined', () => {
+		logger.info('msg', { movedTo: undefined, taskId: '5' });
+
+		const line = infoSpy.mock.calls[0][0] as string;
+		expect(line).toContain('taskId=5');
+		expect(line).not.toContain('movedTo');
+	});
+
+	it('inlines a nested object value as compact JSON', () => {
+		logger.info('msg', { outcome: { status: 'ok', code: 0 } });
+
+		expect(infoSpy.mock.calls[0][0]).toContain('outcome={"status":"ok","code":0}');
+	});
+});
+
+describe('pretty format color', () => {
+	let originalIsTTY: boolean | undefined;
+
+	beforeEach(() => {
+		originalIsTTY = process.stdout.isTTY;
+		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty');
+		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+	});
+
+	afterEach(() => {
+		Object.defineProperty(process.stdout, 'isTTY', { value: originalIsTTY, configurable: true });
+	});
+
+	it('colors the level tag on a real TTY', () => {
+		logger.error('boom');
+
+		expect(errorSpy.mock.calls[0][0]).toContain('\x1b[31m');
+	});
+
+	it('suppresses color entirely when NO_COLOR is set', () => {
+		vi.stubEnv('NO_COLOR', '1');
+
+		logger.error('boom');
+
+		expect(errorSpy.mock.calls[0][0]).not.toContain('\x1b[');
+	});
+
+	it('suppresses color when stdout is not a TTY, even with SWARM_LOG_FORMAT=pretty', () => {
+		Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+
+		logger.error('boom');
+
+		expect(errorSpy.mock.calls[0][0]).not.toContain('\x1b[');
 	});
 });
 
@@ -149,11 +218,12 @@ describe('format auto-detection when SWARM_LOG_FORMAT is unset', () => {
 	});
 
 	it('renders pretty on an interactive terminal', () => {
+		vi.stubEnv('NO_COLOR', '1'); // isolate format-detection from color
 		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
 
 		logger.info('hi', { port: 3000 });
 
-		expect(infoSpy.mock.calls[0][0]).toBe('[info] hi {"port":3000}');
+		expect(infoSpy.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} INFO {2}hi port=3000$/);
 	});
 
 	it('renders json when stdout is piped/containerized', () => {
@@ -170,11 +240,12 @@ describe('format auto-detection when SWARM_LOG_FORMAT is unset', () => {
 
 	it('falls through to auto-detect for an unrecognized format value', () => {
 		vi.stubEnv('SWARM_LOG_FORMAT', 'yaml');
+		vi.stubEnv('NO_COLOR', '1'); // isolate format-detection from color
 		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
 
 		logger.info('hi');
 
-		expect(infoSpy.mock.calls[0][0]).toBe('[info] hi');
+		expect(infoSpy.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} INFO {2}hi$/);
 	});
 });
 

@@ -6,12 +6,16 @@
  * this stays a wrapper rather than pulling in a logging framework (pino/winston).
  *
  * Two output formats: `json` emits one JSON object per line (`{level,time,msg,
- * ...context}`) for machine parsing/aggregation; `pretty` keeps the readable
- * `[level] msg {json}` form for local dev. Format and minimum level are read
- * from the environment per call, so the router and worker can be tuned
- * independently (see docker-compose.yml / README). `configureLogger` binds a
- * process-wide context (e.g. `{component: 'router'}`) onto every line so a
- * shared log stream stays attributable to the process that produced it.
+ * ...context}`) for machine parsing/aggregation; `pretty` is for a human
+ * watching a terminal — a wall-clock time, a colored level tag, the message,
+ * then any remaining context as `key=value` pairs (colors only on a real TTY,
+ * and never when `NO_COLOR` is set — https://no-color.org). Format and minimum
+ * level are read from the environment per call, so the router and worker can
+ * be tuned independently (see docker-compose.yml / README). `configureLogger`
+ * binds a process-wide context (e.g. `{component: 'router'}`) onto every line;
+ * pretty rendering pulls `component` out into a `[component]` prefix so a
+ * shared log stream stays attributable to the process that produced it without
+ * repeating `component=...` on every single line.
  */
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -69,6 +73,56 @@ function safeStringify(value: unknown): string {
 	return JSON.stringify(value, (_key, val) => (typeof val === 'bigint' ? val.toString() : val));
 }
 
+// Colors are opt-out, not opt-in: a real terminal gets them unless NO_COLOR is
+// set (https://no-color.org); anything else (piped, redirected, CI) stays plain
+// even if SWARM_LOG_FORMAT=pretty was forced, since ANSI codes would just be
+// noise in a file or log aggregator.
+function useColor(): boolean {
+	return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+}
+
+const RESET = '\x1b[0m';
+const DIM = '\x1b[2m';
+const LEVEL_COLOR: Record<LogLevel, string> = {
+	debug: '\x1b[90m', // gray
+	info: '\x1b[36m', // cyan
+	warn: '\x1b[33m', // yellow
+	error: '\x1b[31m', // red
+};
+
+function paint(text: string, code: string): string {
+	return useColor() ? `${code}${text}${RESET}` : text;
+}
+
+// HH:MM:SS in the local clock — a human tailing dev output cares what time it
+// is on their wall, not the UTC-offset ISO timestamp the json format needs for
+// aggregator sorting.
+function formatClock(time: string): string {
+	return new Date(time).toLocaleTimeString('en-GB');
+}
+
+function formatContextValue(value: unknown): string {
+	if (typeof value === 'string') {
+		return /\s/.test(value) ? JSON.stringify(value) : value;
+	}
+	if (value === null || typeof value !== 'object') {
+		return String(value);
+	}
+	return safeStringify(value);
+}
+
+// `key=value key2=value2`, skipping undefined (most context fields — e.g. an
+// optional movedTo — are conditionally undefined, and printing "movedTo=undefined"
+// on every other line is noise, not information).
+function formatContextTail(context: LogContext): string {
+	const entries = Object.entries(context).filter(([, value]) => value !== undefined);
+	if (entries.length === 0) {
+		return '';
+	}
+	const rendered = entries.map(([key, value]) => `${key}=${formatContextValue(value)}`).join(' ');
+	return ` ${paint(rendered, DIM)}`;
+}
+
 function format(level: LogLevel, message: string, context: LogContext, time: string): string {
 	if (resolveFormat() === 'json') {
 		try {
@@ -82,15 +136,15 @@ function format(level: LogLevel, message: string, context: LogContext, time: str
 			});
 		}
 	}
-	let suffix = '';
-	if (Object.keys(context).length > 0) {
-		try {
-			suffix = ` ${safeStringify(context)}`;
-		} catch (err) {
-			suffix = ` {"_logError":${JSON.stringify(err instanceof Error ? err.message : String(err))}}`;
-		}
+	try {
+		const { component, ...rest } = context;
+		const prefix = component ? ` ${paint(`[${component}]`, DIM)}` : '';
+		const clock = paint(formatClock(time), DIM);
+		const levelTag = paint(level.toUpperCase().padEnd(5), LEVEL_COLOR[level]);
+		return `${clock} ${levelTag}${prefix} ${message}${formatContextTail(rest)}`;
+	} catch (err) {
+		return `[${level}] ${message} {"_logError":${JSON.stringify(err instanceof Error ? err.message : String(err))}}`;
 	}
-	return `[${level}] ${message}${suffix}`;
 }
 
 function emit(level: LogLevel, message: string, context?: LogContext): void {
