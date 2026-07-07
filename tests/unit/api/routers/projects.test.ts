@@ -9,7 +9,7 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	deleteProjectFromDb: vi.fn(),
 }));
 
-import { projectsRouter } from '@/api/routers/projects.js';
+import { DEFAULT_GITHUB_PROJECTS_CONFIG, projectsRouter } from '@/api/routers/projects.js';
 import {
 	createProjectInDb,
 	deleteProjectFromDb,
@@ -84,18 +84,6 @@ describe('projectsRouter', () => {
 			baseBranch: 'main',
 			branchPrefix: 'issue-',
 			pm: { type: 'github-projects' as const },
-			githubProjects: {
-				projectId: 'PVT_1',
-				statusFieldId: 'PVTSSF_1',
-				statusOptions: {
-					backlog: 'b1',
-					planning: 'p1',
-					todo: 't1',
-					inProgress: 'ip1',
-					inReview: 'ir1',
-					done: 'd1',
-				},
-			},
 		};
 
 		const defaultCredentials = {
@@ -111,6 +99,33 @@ describe('projectsRouter', () => {
 
 			const expectedConfig = {
 				...validProjectInput,
+				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
+				credentials: defaultCredentials,
+			};
+
+			expect(result).toEqual(expectedConfig);
+			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+		});
+
+		it('create succeeds with only id/name/repo/repoRoot', async () => {
+			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+
+			const minimalInput = {
+				id: 'minimal-proj',
+				name: 'Minimal Project',
+				repo: 'jkwiecien/minimal-proj',
+				repoRoot: '/Users/dev/minimal-proj',
+			};
+
+			const result = await caller.create(minimalInput);
+
+			const expectedConfig = {
+				...minimalInput,
+				worktreeRoot: '.swarm-workspaces',
+				baseBranch: 'main',
+				branchPrefix: 'issue-',
+				pm: { type: 'github-projects' as const },
+				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
 
@@ -135,6 +150,32 @@ describe('projectsRouter', () => {
 
 			const expectedConfig = {
 				...validProjectInput,
+				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
+				credentials: defaultCredentials,
+			};
+
+			expect(result).toEqual(expectedConfig);
+			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+		});
+
+		it('strips client-supplied githubProjects and uses the placeholder default', async () => {
+			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+
+			// Cast as any to simulate client sending custom githubProjects
+			const inputWithGithubProjects = {
+				...validProjectInput,
+				githubProjects: {
+					projectId: 'CLIENT_ID',
+					statusFieldId: 'CLIENT_FIELD_ID',
+					statusOptions: { backlog: 'client-backlog' },
+				},
+			} as unknown as Parameters<typeof caller.create>[0];
+
+			const result = await caller.create(inputWithGithubProjects);
+
+			const expectedConfig = {
+				...validProjectInput,
+				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
 

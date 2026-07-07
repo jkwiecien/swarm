@@ -9,7 +9,14 @@ import {
 	listAllProjectsFromDb,
 	upsertProjectToDb,
 } from '../../db/repositories/projectsRepository.js';
+import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
 import { publicProcedure, router } from '../trpc.js';
+
+export const DEFAULT_GITHUB_PROJECTS_CONFIG: GitHubProjectsIntegrationConfig = {
+	projectId: '',
+	statusFieldId: '',
+	statusOptions: {},
+};
 
 const DEFAULT_CREDENTIAL_REFERENCES = {
 	implementer: 'GITHUB_TOKEN_IMPLEMENTER',
@@ -18,6 +25,7 @@ const DEFAULT_CREDENTIAL_REFERENCES = {
 };
 
 const ProjectWriteInputSchema = ProjectConfigSchema.omit({ credentials: true });
+const ProjectCreateInputSchema = ProjectWriteInputSchema.omit({ githubProjects: true });
 
 function hasUniqueViolationCode(error: unknown): boolean {
 	return (
@@ -56,9 +64,10 @@ export const projectsRouter = router({
 		return project;
 	}),
 
-	create: publicProcedure.input(ProjectWriteInputSchema).mutation(async ({ input }) => {
+	create: publicProcedure.input(ProjectCreateInputSchema).mutation(async ({ input }) => {
 		const config = {
 			...input,
+			githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 			credentials: DEFAULT_CREDENTIAL_REFERENCES,
 		};
 		try {
