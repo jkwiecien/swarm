@@ -55,9 +55,15 @@ export class AgentRunError extends Error {
 // The distinctive shapes of an agent CLI's own usage/session-limit banner. Kept
 // deliberately tight: an ordinary failed run whose output merely *discusses*
 // rate limiting (say, a review of code about it) must not be misread as the CLI
-// itself being limited. The banner co-occurring with a "resets …" line, or the
-// literal "you've hit your … limit" phrasing, is the tell. Classification only
-// runs on a non-zero exit (see runAgentCli), which already filters successes.
+// itself being limited. Only the literal "you've hit your … limit" phrasing
+// stands on its own; the softer signals — a bare "usage limit" mention, or an
+// HTTP `429`/"too many requests" — fire only when a "resets …" line co-occurs.
+// This matters because classification scans the agent's *full output* on any
+// non-zero exit (see runAgentCli, which already filters successes): the
+// respond-to-ci phase feeds the agent CI logs that routinely contain e.g. Docker
+// Hub's `429 Too Many Requests` / pull-rate-limit text, and reviewing code that
+// handles HTTP 429 is similar. A standalone 429 in that borrowed text must not
+// be misread as the CLI itself being rate-limited (and retried up to 6×).
 const LIMIT_BANNER_RE = /(?:you've|you have)\s+hit\s+your\s+(?:session|usage|rate)\s+limit/i;
 const USAGE_LIMIT_RE = /\b(?:session|usage|rate)[\s-]?limit\b/i;
 const RATE_HTTP_RE = /\b(?:429|too many requests)\b/i;
@@ -136,6 +142,9 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
 		const get = (type: string): number => Number(dateParts.find((p) => p.type === type)?.value);
 		let target = zonedWallTimeToUtc(get('year'), get('month'), get('day'), hour, minute, timeZone);
 		// A reset that already passed today means the next occurrence is tomorrow.
+		// Adding a fixed 24h (rather than re-deriving tomorrow's wall time) can skew
+		// the instant by an hour across a DST boundary — harmless here: the reset is
+		// only a hint, and the consumer buffers + clamps the delay to [6min, 6h].
 		if (target.getTime() <= now.getTime()) {
 			target = new Date(target.getTime() + 24 * 60 * 60 * 1000);
 		}
@@ -159,8 +168,7 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	const resetMatch = RESET_RE.exec(output);
 	const isRateLimited =
 		LIMIT_BANNER_RE.test(output) ||
-		RATE_HTTP_RE.test(output) ||
-		(USAGE_LIMIT_RE.test(output) && resetMatch !== null);
+		((USAGE_LIMIT_RE.test(output) || RATE_HTTP_RE.test(output)) && resetMatch !== null);
 
 	if (!isRateLimited) return { kind: 'error' };
 

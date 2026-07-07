@@ -49,10 +49,41 @@ describe('classifyAgentFailure', () => {
 		expect(failure.retryAfter?.toISOString()).toBe('2026-07-08T07:00:00.000Z');
 	});
 
-	it('detects a rate-limit from stderr too', () => {
-		expect(classifyAgentFailure(result({ stderr: 'HTTP 429 Too Many Requests' }), NOW).kind).toBe(
-			'rate-limit',
+	it('detects a rate-limit from stderr too (429 co-occurring with a reset line)', () => {
+		// An HTTP 429 is only a limit signal when a "resets …" line co-occurs — that
+		// pairing is the CLI's own banner, not borrowed text. The scan reads stdout
+		// and stderr as one blob, so the reset can arrive on either stream.
+		const failure = classifyAgentFailure(
+			result({ stderr: 'HTTP 429 Too Many Requests\nresets 1:40pm (Europe/Warsaw)' }),
+			NOW,
 		);
+		expect(failure.kind).toBe('rate-limit');
+		expect(failure.resetHint).toBe('1:40pm (Europe/Warsaw)');
+	});
+
+	it('does not treat a bare HTTP 429 (no reset line) as a rate-limit', () => {
+		// A standalone 429 with no reset hint is a plain error — it may well be the
+		// CLI's own transport hiccup, but without the reset banner it's
+		// indistinguishable from borrowed text and must fail fast, not defer.
+		expect(classifyAgentFailure(result({ stderr: 'HTTP 429 Too Many Requests' }), NOW).kind).toBe(
+			'error',
+		);
+	});
+
+	it('does not treat a Docker Hub 429 in CI logs as the CLI being rate-limited', () => {
+		// The respond-to-ci phase feeds the agent CI logs; a Docker Hub pull-rate
+		// 429 in that borrowed output must not defer + retry the phase 6× — the
+		// exact false positive the co-occurrence gate guards against.
+		const failure = classifyAgentFailure(
+			result({
+				stdout:
+					'toomanyrequests: You have reached your pull rate limit.\n' +
+					'  See https://www.docker.com/increase-rate-limit\n' +
+					'Error: process completed with exit code 1.',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
 	});
 
 	it('leaves retryAfter undefined when the hint carries no timezone', () => {

@@ -202,7 +202,7 @@ describe('scheduleCoalescedJob', () => {
 });
 
 describe('enqueueDelayedRetry', () => {
-	it('adds a delayed job with a fresh colon-free id, not the deliveryId', async () => {
+	it('adds a delayed job with a colon-free id keyed on (deliveryId, attempt), not the bare deliveryId', async () => {
 		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
 		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 1 });
 
@@ -213,12 +213,38 @@ describe('enqueueDelayedRetry', () => {
 		expect(name).toBe('github');
 		expect(addedJob).toBe(job);
 		expect(opts).toMatchObject({ delay: 6 * 60 * 1000 });
-		// A fresh id: the original delivery-id-keyed job is still in Redis, so
-		// reusing its id would make BullMQ drop the retry.
-		expect(opts?.jobId).toMatch(/^retry_github_/);
+		// Keyed on delivery id + attempt (not the bare delivery id, whose completed
+		// job is still in Redis) so a double-fired completed event dedups instead of
+		// stacking a duplicate retry.
+		expect(opts?.jobId).toBe(`retry_github_${job.deliveryId}_attempt1`);
 		expect(opts?.jobId).not.toBe(job.deliveryId);
 		expect(opts?.jobId).not.toContain(':');
 		expect(id).toBe('bull-assigned-id');
+	});
+
+	it('is deterministic per attempt — the same (deliveryId, attempt) yields the same id', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 2 });
+
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		const [, , first] = add.mock.calls[0];
+		const [, , second] = add.mock.calls[1];
+		expect(first?.jobId).toBe(second?.jobId);
+	});
+
+	it('falls back to a fresh unique id when the job carries no deliveryId', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const { deliveryId: _dropped, ...job } = createMockGitHubWebhookJob({
+			rateLimitRetryAttempt: 1,
+		});
+
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts?.jobId).toMatch(/^retry_github_\d+_/);
+		expect(opts?.jobId).not.toContain(':');
 	});
 });
 
