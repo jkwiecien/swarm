@@ -30,14 +30,16 @@ GitHub ──webhook──▶ https://<your-tunnel>.trycloudflare.com  (Cloudfla
   `curl http://localhost:3000/health` → `{"status":"ok","service":"router"}`.
   (Adjust the port if you set `ROUTER_PORT` in `.env`.)
 - A Cloudflare account (free tier is enough).
-- `cloudflared` installed:
+- **For Paths A/B** (running `cloudflared` yourself): the CLI installed locally:
   ```bash
   # macOS
   brew install cloudflared
   # Debian/Ubuntu
   # see https://pkg.cloudflare.com/ — or download the .deb from the cloudflared releases page
   ```
-- **For a named tunnel only** (Path B): a domain managed by Cloudflare DNS (i.e. its
+  **For Path C** (Compose runs it in a container): no local install needed — just the
+  Tunnel Token from the Zero Trust dashboard.
+- **For a named tunnel** (Path B or C): a domain managed by Cloudflare DNS (i.e. its
   nameservers point at Cloudflare). A quick tunnel (Path A) needs no domain.
 
 ---
@@ -107,6 +109,53 @@ GitHub webhook once and forget it.
    `sudo cloudflared service install` (see the Cloudflare docs for your OS).
 
 Your stable base URL is now `https://swarm.example.com`.
+
+---
+
+## Path C — Dashboard-created tunnel, run via Docker Compose (recommended if you want it to start with the stack)
+
+Paths A/B use the `cloudflared` CLI directly (`tunnel login` / `tunnel create`, a local
+credentials file). Cloudflare's Zero Trust dashboard offers a different flow that's
+easier to run unattended: **Networks → Tunnels → Create a tunnel → Cloudflared
+connector**. Instead of a credentials file, it gives you a **Tunnel Token** (a long
+opaque string) and lets you configure the hostname→service mapping (the ingress) right
+there in the dashboard rather than in a local `config.yml`.
+
+SWARM's `docker-compose.yml` has an opt-in `cloudflared` service for exactly this case,
+so the tunnel starts and stops with the rest of the stack instead of needing its own
+terminal window:
+
+1. **Create the tunnel** in the Zero Trust dashboard (Networks → Tunnels → Create a
+   tunnel → choose **Cloudflared** as the connector). Copy the **Tunnel Token** shown on
+   the "Install and run a connector" step — you won't run that install command; Compose
+   runs the container for you instead.
+
+2. **Add a Public Hostname** on the same tunnel (in the dashboard): hostname
+   `swarm.example.com` (your domain, managed by Cloudflare DNS), service
+   `http://router:3000`.
+
+   > **This is the detail that trips people up.** The `cloudflared` container joins
+   > SWARM's own Compose network, so it resolves other containers by **service name**,
+   > not `localhost`. `router:3000` is the router's *container* port (always `3000`
+   > inside the network) — not `${ROUTER_PORT}`, which is only the *host*-published
+   > port Paths A/B use because they run `cloudflared` on the host itself.
+
+3. **Set the token** in `.env` (copy from `.env.docker.example` if you haven't already)
+   and activate the service's Compose profile:
+   ```bash
+   CLOUDFLARE_TUNNEL_TOKEN=<paste the token>
+   COMPOSE_PROFILES=tunnel
+   ```
+
+4. **Bring the stack up** as usual — `swarm start` / `docker compose up -d`. Compose
+   reads `COMPOSE_PROFILES` itself, so the `cloudflared` container starts alongside
+   postgres/redis/router with no extra flag. Leaving `CLOUDFLARE_TUNNEL_TOKEN` and
+   `COMPOSE_PROFILES` unset (the default) skips this service entirely — everyone who
+   doesn't use a tunnel this way is unaffected.
+
+Your stable base URL is `https://swarm.example.com`, same as Path B, but there's no
+`cloudflared` process to keep alive yourself and no `~/.cloudflared/config.yml` to
+maintain — restarting the stack restarts the tunnel with it.
 
 ---
 
@@ -183,16 +232,23 @@ detail on this event's delivery scope.)
 | --- | --- |
 | `curl https://<tunnel>/health` times out | `cloudflared` not running, or pointed at the wrong port — confirm it forwards to the same port the router publishes (`ROUTER_PORT`). |
 | Health check works locally but not via tunnel | Router is bound inside Docker but the host port isn't published, or `cloudflared` targets `localhost` on a machine where the port isn't mapped. Check `docker compose ps` and the `ROUTER_PORT` mapping. |
-| GitHub delivery shows `couldn't connect` | Quick-tunnel URL changed after a restart (Path A) — grab the new URL and update the Payload URL, or switch to a named tunnel (Path B). |
+| GitHub delivery shows `couldn't connect` | Quick-tunnel URL changed after a restart (Path A) — grab the new URL and update the Payload URL, or switch to a named tunnel (Path B/C). |
 | Deliveries arrive but signature checks fail (post-SWARM-9) | Webhook **Secret** in GitHub doesn't match the secret the router is configured with. |
 | No `projects_v2_item` deliveries when moving cards | That event never rides the repo webhook — it comes via a **GitHub App** (user-owned board) or an **org** webhook, not a user-account webhook (which GitHub doesn't offer) — see above. |
+| Path C: `cloudflared` container exits immediately / restarts in a loop | `CLOUDFLARE_TUNNEL_TOKEN` is unset or wrong — check `docker compose logs cloudflared`. Also confirm `COMPOSE_PROFILES=tunnel` is set in `.env`, otherwise the service never starts at all (`docker compose ps` won't list it). |
+| Path C: tunnel is up but `/health` 502s through the hostname | The dashboard's Public Hostname service is set to `localhost:...` instead of `http://router:3000` — `cloudflared` runs in the compose network, not on the host, so it can't resolve `localhost` to the router container. |
 
 ---
 
 ## Teardown
 
 - **Quick tunnel**: `Ctrl-C` the `cloudflared` process. The URL is gone immediately.
-- **Named tunnel**: stop `cloudflared tunnel run` (or `sudo cloudflared service uninstall`),
-  then optionally `cloudflared tunnel delete swarm-router` and remove the DNS record.
+- **Named tunnel (Path B)**: stop `cloudflared tunnel run` (or `sudo cloudflared service
+  uninstall`), then optionally `cloudflared tunnel delete swarm-router` and remove the
+  DNS record.
+- **Dashboard tunnel via Compose (Path C)**: `docker compose stop cloudflared`, or unset
+  `COMPOSE_PROFILES`/`CLOUDFLARE_TUNNEL_TOKEN` in `.env` and re-run `docker compose up -d`
+  so it isn't recreated on the next start. Delete the tunnel from the Zero Trust
+  dashboard if you're done with it for good.
 - Remove or disable the webhook(s) in GitHub if you no longer want deliveries queuing up
   failed attempts.

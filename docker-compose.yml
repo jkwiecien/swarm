@@ -69,6 +69,20 @@ services:
   # containers below over their published host ports. See README "Running the
   # stack" and ai/ARCHITECTURE.md.
 
+  # Opt-in — only starts when the "tunnel" profile is active (set
+  # COMPOSE_PROFILES=tunnel in .env). Runs a dashboard-created Cloudflare Tunnel
+  # (docs/cloudflare-tunnel.md, Path C) so it starts/stops with the rest of the
+  # stack instead of a standalone terminal process. Talks to the router over the
+  # compose network by service name — the tunnel's Public Hostname route in the
+  # Cloudflare dashboard must point at http://router:3000, NOT localhost.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      router: { condition: service_healthy }
+
 volumes:
   postgres-data:
   redis-data:
