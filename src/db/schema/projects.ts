@@ -1,6 +1,6 @@
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
-import type { Credentials } from '../../config/schema.js';
+import type { AgentsConfig, Credentials } from '../../config/schema.js';
 import { PROJECT_DEFAULTS } from '../../config/schema.js';
 import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
 
@@ -32,6 +32,8 @@ export const projects = pgTable('projects', {
 	pmType: text('pm_type').notNull().default('github-projects'),
 	githubProjects: jsonb('github_projects').$type<GitHubProjectsIntegrationConfig>().notNull(),
 	credentials: jsonb('credentials').$type<Credentials>().notNull(),
+	/** Per-phase agent CLI/model overrides (`AgentsConfig`) — nullable: most projects omit it entirely. */
+	agents: jsonb('agents').$type<AgentsConfig>(),
 
 	createdAt: timestamp('created_at').defaultNow(),
 	updatedAt: timestamp('updated_at')

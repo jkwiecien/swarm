@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	AgentsConfigSchema,
 	PROJECT_DEFAULTS,
 	ProjectConfigSchema,
 	SwarmConfigSchema,
@@ -61,6 +62,41 @@ describe('ProjectConfigSchema', () => {
 				credentials: { implementer: 'A', reviewer: 'B', webhookSecret: '' },
 			}),
 		).toThrow();
+	});
+
+	it('omits agents entirely by default (every phase keeps its coded default)', () => {
+		const project = createMockProjectConfig();
+		expect(project.agents).toBeUndefined();
+	});
+
+	it('accepts a per-phase agent CLI/model override', () => {
+		const project = createMockProjectConfig({
+			agents: {
+				planning: { cli: 'claude', model: 'sonnet' },
+				implementation: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' },
+			},
+		});
+		expect(project.agents).toEqual({
+			planning: { cli: 'claude', model: 'sonnet' },
+			implementation: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' },
+		});
+	});
+
+	it('rejects an unknown cli value in an agent override', () => {
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { cli: 'gpt' as never } } }),
+		).toThrow();
+	});
+});
+
+describe('AgentsConfigSchema', () => {
+	it('allows every phase to be omitted', () => {
+		expect(AgentsConfigSchema.safeParse({}).success).toBe(true);
+	});
+
+	it('allows cli and model to each be specified independently', () => {
+		expect(AgentsConfigSchema.safeParse({ review: { cli: 'claude' } }).success).toBe(true);
+		expect(AgentsConfigSchema.safeParse({ review: { model: 'opus' } }).success).toBe(true);
 	});
 });
 

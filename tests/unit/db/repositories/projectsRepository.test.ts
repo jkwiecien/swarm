@@ -75,6 +75,19 @@ describe('projectsRepository', () => {
 			stubDb([]);
 			expect(await findProjectByRepoFromDb('someone/else')).toBeUndefined();
 		});
+
+		it('maps a null agents column to undefined (the common case: no override configured)', async () => {
+			stubDb([{ ...row, agents: null }]);
+			const project = await findProjectByRepoFromDb('jkwiecien/swarm');
+			expect(project?.agents).toBeUndefined();
+		});
+
+		it('round-trips a populated agents column', async () => {
+			const agents = { review: { cli: 'claude' as const, model: 'opus' } };
+			stubDb([{ ...row, agents }]);
+			const project = await findProjectByRepoFromDb('jkwiecien/swarm');
+			expect(project?.agents).toEqual(agents);
+		});
 	});
 
 	describe('findProjectByBoardFromDb', () => {
@@ -122,6 +135,21 @@ describe('projectsRepository', () => {
 			// Keyed on the id, which is itself excluded from the update set.
 			expect(conflict.set).not.toHaveProperty('id');
 			expect(conflict.set).toMatchObject({ pmType: 'github-projects' });
+		});
+
+		it('writes agents as null when the config omits it', async () => {
+			const { values } = stubInsert();
+			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1' }));
+			expect(values.mock.calls[0][0]).toMatchObject({ agents: null });
+		});
+
+		it('writes the agents block as-is when the config sets one', async () => {
+			const { values } = stubInsert();
+			const agents = {
+				planning: { cli: 'antigravity' as const, model: 'Gemini 3.5 Flash (High)' },
+			};
+			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1', agents }));
+			expect(values.mock.calls[0][0]).toMatchObject({ agents });
 		});
 	});
 });

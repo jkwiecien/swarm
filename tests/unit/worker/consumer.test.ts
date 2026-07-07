@@ -191,6 +191,35 @@ describe('processJob', () => {
 		});
 	});
 
+	it("threads the project's per-phase agent override (cli/model) into the phase call", async () => {
+		const projectWithAgents = createMockProjectConfig({
+			agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
+		});
+		projectLookup = () => projectWithAgents;
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		const trigger: TriggerResult = { phase: 'planning', taskId: '10', workItem };
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args).toMatchObject({
+			cli: 'antigravity',
+			model: 'Gemini 3.5 Flash (High)',
+		});
+	});
+
+	it('passes undefined cli/model when the project has no agents override, leaving each phase on its coded default', async () => {
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.cli).toBeUndefined();
+		expect(phaseCalls[0].args.model).toBeUndefined();
+	});
+
 	it('threads the shutdown signal through to the phase', async () => {
 		const controller = new AbortController();
 

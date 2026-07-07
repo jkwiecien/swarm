@@ -68,6 +68,8 @@ function runPhase(
 				workItem: trigger.workItem,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
+				cli: project.agents?.planning?.cli,
+				model: project.agents?.planning?.model,
 				signal,
 			});
 		case 'implementation':
@@ -76,6 +78,8 @@ function runPhase(
 				workItem: trigger.workItem,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
+				cli: project.agents?.implementation?.cli,
+				model: project.agents?.implementation?.model,
 				signal,
 			});
 		case 'review':
@@ -84,6 +88,8 @@ function runPhase(
 				prNumber: trigger.prNumber,
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
+				cli: project.agents?.review?.cli,
+				model: project.agents?.review?.model,
 				signal,
 			});
 		case 'respond-to-review':
@@ -93,6 +99,8 @@ function runPhase(
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
 				taskId: trigger.taskId,
+				cli: project.agents?.respondToReview?.cli,
+				model: project.agents?.respondToReview?.model,
 				signal,
 			});
 		case 'respond-to-ci':
@@ -102,6 +110,8 @@ function runPhase(
 				prBranch: trigger.prBranch,
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
+				cli: project.agents?.respondToCi?.cli,
+				model: project.agents?.respondToCi?.model,
 				signal,
 			});
 	}

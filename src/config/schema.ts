@@ -11,6 +11,7 @@
  */
 
 import { z } from 'zod';
+import { AgentCliSchema } from '../harness/agent-cli.js';
 import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/config-schema.js';
 
 export const PROJECT_DEFAULTS = {
@@ -45,6 +46,40 @@ export const CredentialsSchema = z
 		webhookSecret: z.string().min(1),
 	})
 	.describe('References to a project GitHub credentials (never the secrets themselves)');
+
+/**
+ * Per-phase agent CLI/model override. Both fields are optional — omit `cli` to
+ * keep the phase's own coded default (`DEFAULT_PLANNING_CLI` and friends,
+ * `src/pipeline/*.ts`), omit `model` to run on that CLI's own default model.
+ * `model` isn't validated against a fixed list: `claude` and `agy` (the
+ * Antigravity binary — see `src/harness/agent-cli.ts`) each accept their own
+ * aliases/full names, and the harness passes the value straight through.
+ */
+export const AgentConfigSchema = z
+	.object({
+		cli: AgentCliSchema.optional(),
+		model: z.string().min(1).optional(),
+	})
+	.describe('Per-phase agent CLI/model override');
+
+/**
+ * Per-phase agent overrides, keyed by the same phase names the trigger/worker
+ * layer already uses (`TriggerResult['phase']`, `src/triggers/types.ts`) —
+ * camelCased to match this config's other multi-word keys (`statusOptions`'s
+ * `inProgress`/`inReview`) rather than the kebab-case wire form. Every key is
+ * optional; an entirely absent `agents` block (or an absent phase within it)
+ * means every phase keeps running on its coded default, unchanged from before
+ * this existed.
+ */
+export const AgentsConfigSchema = z
+	.object({
+		planning: AgentConfigSchema.optional(),
+		implementation: AgentConfigSchema.optional(),
+		review: AgentConfigSchema.optional(),
+		respondToReview: AgentConfigSchema.optional(),
+		respondToCi: AgentConfigSchema.optional(),
+	})
+	.describe('Per-phase agent CLI/model overrides — omit any phase to keep its coded default');
 
 export const ProjectConfigSchema = z.object({
 	/** Stable internal identifier for this SWARM project (one Postgres row per project). */
@@ -92,6 +127,9 @@ export const ProjectConfigSchema = z.object({
 
 	/** References to the project's GitHub credentials (see `CredentialsSchema`). */
 	credentials: CredentialsSchema,
+
+	/** Per-phase agent CLI/model overrides. Omit entirely to keep every phase's coded default. */
+	agents: AgentsConfigSchema.optional(),
 });
 
 export const SwarmConfigSchema = z.object({
@@ -99,6 +137,8 @@ export const SwarmConfigSchema = z.object({
 });
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
+export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type SwarmConfig = z.infer<typeof SwarmConfigSchema>;
 
