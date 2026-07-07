@@ -33,6 +33,7 @@ Worker  (host process — NOT containerized, one job at a time or a small pool)
 Dashboard (Hono HTTP server + tRPC, host process)
    — exposes a `/health` check and mounts a tRPC API under `/trpc`
    — self-hosted, single-process model running locally on the host
+   — binds to `127.0.0.1` and requires `DASHBOARD_TOKEN`
 ```
 
 Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker and the dashboard are the exceptions**: they run directly on the host rather than in containers — the worker because it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs (which need the developer's own PATH, auth, and config), and the dashboard (scaffolded via Hono and tRPC) for local-first, single-process execution. They connect to Redis/Postgres over their published host ports (`REDIS_URL` / `DATABASE_URL` in `.env`). There is no separate "cloud" process for the MVP; router, worker, dashboard, Redis, and Postgres are all local.
@@ -102,4 +103,4 @@ A phase whose agent exits non-zero throws, and `processJob` turns that into a `p
 
 ## Single-user scope
 
-No user-to-device mapping, no per-org config, no multi-tenant Firestore layer. One Postgres row per SWARM project, one set of GitHub credentials (per persona) per project. Revisit if SWARM is ever shared with another user.
+No user-to-device mapping, no per-org config, no multi-tenant Firestore layer. One Postgres row per SWARM project, one set of GitHub credentials (per persona) per project. The dashboard's access control is loopback-only binding (`127.0.0.1`) plus a static shared secret (`DASHBOARD_TOKEN`), with no login screen or multi-org session layer. Revisit if SWARM is ever shared with another user or needs remote access.
