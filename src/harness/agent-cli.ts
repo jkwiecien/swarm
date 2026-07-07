@@ -22,10 +22,14 @@ import { logger } from '@/lib/logger.js';
 export const AgentCliSchema = z.enum(['claude', 'antigravity']);
 export type AgentCli = z.infer<typeof AgentCliSchema>;
 
-/** Default binary name per agent CLI; override per call via `command`. */
+/**
+ * Default binary name per agent CLI; override per call via `command`.
+ * Antigravity's actual CLI binary is `agy`, not `antigravity` — the enum value
+ * above is SWARM's internal identifier for the harness, not the binary name.
+ */
 const DEFAULT_COMMAND: Record<AgentCli, string> = {
 	claude: 'claude',
-	antigravity: 'antigravity',
+	antigravity: 'agy',
 };
 
 /**
@@ -40,12 +44,13 @@ const DEFAULT_COMMAND: Record<AgentCli, string> = {
  * final response and exited 0 having written nothing. `-p`/`--print` pairs
  * with that for the same one-shot, non-interactive contract (`claude --help`:
  * "starts an interactive session by default, use -p/--print for
- * non-interactive output"). Antigravity has no equivalent flags researched
- * yet — empty until it does.
+ * non-interactive output"). `agy --help` (Antigravity's actual CLI) exposes
+ * the identical shape — `-p`/`--print` and `--dangerously-skip-permissions` —
+ * so it gets the same treatment.
  */
 const DEFAULT_ARGS: Record<AgentCli, string[]> = {
 	claude: ['-p', '--dangerously-skip-permissions'],
-	antigravity: [],
+	antigravity: ['-p', '--dangerously-skip-permissions'],
 };
 
 /**
@@ -62,6 +67,13 @@ export interface RunAgentCliOptions {
 	cwd: string;
 	/** Arguments passed to the CLI (prompt, flags, …). */
 	args?: string[];
+	/**
+	 * Model for this session, passed as `--model <value>` — both `claude` and
+	 * `agy` accept an alias (`sonnet`, `opus`) or a full model name. Omit to run
+	 * on the CLI's own default; the harness doesn't validate the value against a
+	 * fixed list, since the two CLIs' model names don't overlap.
+	 */
+	model?: string;
 	/** Extra env vars, merged over (and overriding) the parent process env. */
 	env?: Record<string, string>;
 	/** Override the binary to launch — mainly for tests/deployment. Defaults per `cli`. */
@@ -185,7 +197,8 @@ function lineForwarder(onLine: (line: string) => void) {
 export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCliResult> {
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
-	const args = [...DEFAULT_ARGS[cli], ...(options.args ?? [])];
+	const modelArgs = options.model ? ['--model', options.model] : [];
+	const args = [...DEFAULT_ARGS[cli], ...modelArgs, ...(options.args ?? [])];
 	const start = Date.now();
 
 	return new Promise<AgentCliResult>((resolve, reject) => {

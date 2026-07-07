@@ -78,14 +78,41 @@ describe('runAgentCli', () => {
 		);
 	});
 
-	it('prepends no default flags for antigravity (none researched yet)', async () => {
+	it('spawns the agy binary for antigravity, with the same non-interactive/permission-bypass flags as claude', async () => {
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({ cli: 'antigravity', args: ['do the thing'] }),
 		);
 		lastChild().emit('close', 0, null);
 		await promise;
 
-		expect(spawnMock).toHaveBeenCalledWith('antigravity', ['do the thing'], expect.anything());
+		expect(spawnMock).toHaveBeenCalledWith(
+			'agy',
+			['-p', '--dangerously-skip-permissions', 'do the thing'],
+			expect.anything(),
+		);
+	});
+
+	it('inserts --model between the default flags and the caller-supplied prompt', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({ model: 'sonnet', args: ['implement the thing'] }),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			'claude',
+			['-p', '--dangerously-skip-permissions', '--model', 'sonnet', 'implement the thing'],
+			expect.anything(),
+		);
+	});
+
+	it('omits --model entirely when no model is specified', async () => {
+		const promise = runAgentCli(createMockRunAgentCliOptions({ args: ['implement the thing'] }));
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		const args = spawnMock.mock.calls[0][1] as string[];
+		expect(args).not.toContain('--model');
 	});
 
 	it('forwards output line-by-line, including partial and CRLF lines', async () => {

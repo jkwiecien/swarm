@@ -101,6 +101,8 @@ export interface RunReviewPhaseOptions {
 	worktrees?: GitWorktreeManager;
 	/** Which agent CLI to run. Defaults to Claude Code. */
 	cli?: AgentCli;
+	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
+	model?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -197,6 +199,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		headSha,
 		taskId,
 		cli = DEFAULT_REVIEW_CLI,
+		model,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -220,6 +223,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 
 		const agent = await runAgent({
 			cli,
+			model,
 			cwd: handle.path,
 			args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
 			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

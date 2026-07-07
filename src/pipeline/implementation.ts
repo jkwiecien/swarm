@@ -91,6 +91,8 @@ export interface RunImplementationPhaseOptions {
 	worktrees?: GitWorktreeManager;
 	/** Which agent CLI to run. Defaults to Claude Code. */
 	cli?: AgentCli;
+	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
+	model?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -216,6 +218,7 @@ export async function runImplementationPhase(
 		taskId,
 		pm,
 		cli = DEFAULT_IMPLEMENTATION_CLI,
+		model,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -238,6 +241,7 @@ export async function runImplementationPhase(
 
 		const agent = await runAgent({
 			cli,
+			model,
 			cwd: handle.path,
 			args: [
 				buildImplementationPrompt(workItem, {

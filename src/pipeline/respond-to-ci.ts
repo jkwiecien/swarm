@@ -102,6 +102,8 @@ export interface RunRespondToCiPhaseOptions {
 	worktrees?: GitWorktreeManager;
 	/** Which agent CLI to run. Defaults to Claude Code. */
 	cli?: AgentCli;
+	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
+	model?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -196,6 +198,7 @@ export async function runRespondToCiPhase(
 		headSha,
 		taskId,
 		cli = DEFAULT_RESPOND_CI_CLI,
+		model,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -213,6 +216,7 @@ export async function runRespondToCiPhase(
 
 		const agent = await runAgent({
 			cli,
+			model,
 			cwd: handle.path,
 			args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,

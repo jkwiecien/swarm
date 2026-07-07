@@ -99,6 +99,8 @@ export interface RunRespondToReviewPhaseOptions {
 	worktrees?: GitWorktreeManager;
 	/** Which agent CLI to run. Defaults to Claude Code. */
 	cli?: AgentCli;
+	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
+	model?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -197,6 +199,7 @@ export async function runRespondToReviewPhase(
 		reviewId,
 		taskId,
 		cli = DEFAULT_RESPOND_CLI,
+		model,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -214,6 +217,7 @@ export async function runRespondToReviewPhase(
 
 		const agent = await runAgent({
 			cli,
+			model,
 			cwd: handle.path,
 			args: [buildRespondToReviewPrompt({ repo: project.repo, prNumber, prBranch, reviewId })],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
