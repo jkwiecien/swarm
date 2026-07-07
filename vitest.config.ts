@@ -42,6 +42,7 @@ export default defineConfig({
 				test: {
 					name: 'unit',
 					include: ['tests/unit/**/*.test.ts'],
+					pool: 'threads',
 					...sharedTest,
 				},
 				resolve,
