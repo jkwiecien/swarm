@@ -17,6 +17,23 @@ import { QUEUE_NAME, type SwarmJob } from './jobs.js';
 let queue: Queue<SwarmJob> | null = null;
 
 /**
+ * PM-board events (`github-projects`: card status changes that dispatch
+ * planning/implementation, which can run for minutes) are demoted below
+ * BullMQ's implicit default priority so PR review-lifecycle events (`github`:
+ * opened / checks / reviews) never sit queued behind one. BullMQ ranks 0
+ * (unset) as highest, so `github` jobs need no override — only
+ * `github-projects` jobs get pushed down. Without this, a card dragged into
+ * Planning/In progress right as a PR opens can leave that PR's review waiting
+ * out the whole implementation run under `SWARM_WORKER_CONCURRENCY=1`, and
+ * even at 2 it still competes for the same limited slots.
+ */
+const PM_BOARD_JOB_PRIORITY = 10;
+
+function priorityFor(job: SwarmJob): number | undefined {
+	return job.type === 'github-projects' ? PM_BOARD_JOB_PRIORITY : undefined;
+}
+
+/**
  * Lazily construct the shared producer queue. `REDIS_URL` is read here, not at
  * module load, so a process that imports this module without ever enqueuing
  * (e.g. a unit test) never needs Redis configured.
@@ -58,11 +75,15 @@ function getQueue(): Queue<SwarmJob> {
  * would re-run. Low risk in practice — GitHub's redelivery window is short.
  */
 export async function enqueueJob(job: SwarmJob): Promise<string | undefined> {
-	const added = await getQueue().add(
-		job.type,
-		job,
-		job.deliveryId ? { jobId: job.deliveryId } : undefined,
-	);
+	const priority = priorityFor(job);
+	const opts =
+		job.deliveryId || priority !== undefined
+			? {
+					...(job.deliveryId ? { jobId: job.deliveryId } : {}),
+					...(priority !== undefined ? { priority } : {}),
+				}
+			: undefined;
+	const added = await getQueue().add(job.type, job, opts);
 	return added.id;
 }
 
@@ -105,7 +126,12 @@ export async function scheduleCoalescedJob(
 	const jobId = `coalesce_${coalesceKey.replace(/:/g, '_')}_${Date.now()}_${Math.random()
 		.toString(36)
 		.slice(2, 8)}`;
-	await q.add(coalesceKey, job, { jobId, delay: delayMs });
+	const priority = priorityFor(job);
+	await q.add(coalesceKey, job, {
+		jobId,
+		delay: delayMs,
+		...(priority !== undefined ? { priority } : {}),
+	});
 }
 
 /**
@@ -133,7 +159,12 @@ export async function enqueueDelayedRetry(
 	const jobId = job.deliveryId
 		? `retry_${job.type}_${job.deliveryId.replace(/:/g, '_')}_attempt${attempt}`
 		: `retry_${job.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-	const added = await getQueue().add(job.type, job, { jobId, delay: delayMs });
+	const priority = priorityFor(job);
+	const added = await getQueue().add(job.type, job, {
+		jobId,
+		delay: delayMs,
+		...(priority !== undefined ? { priority } : {}),
+	});
 	return added.id;
 }
 

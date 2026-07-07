@@ -34,10 +34,12 @@ const jobBase = z.object({
 	 */
 	recheckAttempt: z.number().int().nonnegative().optional(),
 	/**
-	 * How many times this job has already been re-enqueued as a rate-limit retry
-	 * (`src/worker/index.ts`, on a `phase-deferred` outcome). Absent on a fresh
-	 * webhook; incremented on each deferral so the consumer can cap the retry loop
-	 * when a usage/session limit persists across resets.
+	 * How many times this job has already been re-enqueued as a deferred retry
+	 * (`src/worker/index.ts`, on a `phase-deferred` outcome) — either a rate-limit
+	 * hit or a run the worker itself aborted mid-flight (e.g. a `--watch`
+	 * restart). Absent on a fresh webhook; incremented on each deferral so the
+	 * consumer can cap the retry loop (one shared budget for both reasons —
+	 * `src/worker/consumer.ts`'s `MAX_RATE_LIMIT_RETRIES`) when either persists.
 	 */
 	rateLimitRetryAttempt: z.number().int().nonnegative().optional(),
 });

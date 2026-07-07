@@ -56,22 +56,24 @@ const worker = new Worker(
 
 worker.on('completed', (job, outcome: JobOutcome) => {
 	logger.info('Job completed', { jobId: job.id, name: job.name, outcome });
-	// A rate-limited phase completes (from BullMQ's view) as `phase-deferred`:
-	// re-enqueue it delayed so it retries once quota is back (issue #91). Done
-	// here, not in `processJob`, to keep the consumer BullMQ-agnostic — the
-	// entrypoint owns the queue. Fire-and-forget with its own error handling so a
-	// re-enqueue failure can't reject the completed-event handler; the (small)
-	// window where a worker crash between completion and re-enqueue loses the
-	// retry is an accepted MVP tradeoff.
+	// A rate-limited or worker-aborted phase completes (from BullMQ's view) as
+	// `phase-deferred`: re-enqueue it delayed so it retries once quota is back, or
+	// once whatever restarted the worker mid-run has settled (issue #91; aborted
+	// case added after a dev `--watch` restart permanently failed an in-flight
+	// review). Done here, not in `processJob`, to keep the consumer
+	// BullMQ-agnostic — the entrypoint owns the queue. Fire-and-forget with its
+	// own error handling so a re-enqueue failure can't reject the completed-event
+	// handler; the (small) window where a worker crash between completion and
+	// re-enqueue loses the retry is an accepted MVP tradeoff.
 	if (outcome?.status === 'phase-deferred') {
 		void reenqueueDeferred(job.id, job.data, outcome);
 	}
 });
 
 /**
- * Re-enqueue a rate-limit-deferred job with its retry counter bumped, so the
- * consumer can cap the loop. `data` is re-validated (it round-trips through
- * Redis) before the counter is incremented.
+ * Re-enqueue a deferred job (rate-limited or worker-aborted) with its retry
+ * counter bumped, so the consumer can cap the loop. `data` is re-validated (it
+ * round-trips through Redis) before the counter is incremented.
  */
 async function reenqueueDeferred(
 	jobId: string | undefined,

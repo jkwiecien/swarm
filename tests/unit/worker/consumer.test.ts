@@ -64,6 +64,7 @@ function agentResult(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 		stderr: '',
 		durationMs: 1234,
 		timedOut: false,
+		aborted: false,
 		outputTruncated: false,
 		...overrides,
 	};
@@ -378,5 +379,46 @@ describe('processJob', () => {
 		);
 
 		expect(outcome.status).toBe('phase-failed');
+	});
+
+	it('defers an aborted phase (worker shutdown mid-run) with the dedup-safe floor delay', async () => {
+		// A run the worker itself killed (e.g. a dev --watch restart) has no reset
+		// hint — it must still land above the review-dispatch-dedup TTL, same as a
+		// rate-limit retry, not the rate-limit path's 30-min no-hint default.
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
+		expect(outcome.attempt).toBe(0);
+		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000);
+	});
+
+	it('fails an aborted phase once the retry budget is exhausted', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toEqual({
+			status: 'phase-failed',
+			phase: 'review',
+			taskId: '17',
+			error: 'Review agent (claude) exited with code 143 (aborted)',
+		});
 	});
 });

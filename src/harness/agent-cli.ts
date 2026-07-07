@@ -156,6 +156,18 @@ export interface AgentCliResult {
 	 */
 	timedOut: boolean;
 	/**
+	 * True when the run was killed because the caller's `signal` fired (never set
+	 * by `timeoutMs` — see {@link timedOut} for that case). This is the harness's
+	 * only way to tell "the caller cancelled this deliberately" apart from "the
+	 * process exited on its own for some other reason": the two can look
+	 * identical downstream (an aborted `claude`/`agy` run has been observed to
+	 * exit 143 with `signal: null`, trapping SIGTERM and calling `process.exit`
+	 * itself rather than being torn down by the OS). Callers that classify
+	 * failures (`src/harness/agent-failure.ts`) need this to avoid treating a
+	 * worker-shutdown-induced abort as an unexplained agent error.
+	 */
+	aborted: boolean;
+	/**
 	 * True when `maxOutputBytes` was hit and `stdout`/`stderr` below were
 	 * truncated. The per-line callbacks still saw the full stream.
 	 */
@@ -242,6 +254,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		const stdout = cappedBuffer(options.maxOutputBytes);
 		const stderr = cappedBuffer(options.maxOutputBytes);
 		let timedOut = false;
+		let aborted = false;
 		let killRequested = false;
 		let settled = false;
 		let timeoutTimer: NodeJS.Timeout | undefined;
@@ -283,9 +296,12 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			}, options.timeoutMs);
 		}
 
-		const onAbort = (): void => killChild();
+		const onAbort = (): void => {
+			aborted = true;
+			killChild();
+		};
 		if (options.signal) {
-			if (options.signal.aborted) killChild();
+			if (options.signal.aborted) onAbort();
 			else options.signal.addEventListener('abort', onAbort, { once: true });
 		}
 
@@ -316,6 +332,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				stderr: stderr.text,
 				durationMs: Date.now() - start,
 				timedOut,
+				aborted,
 				outputTruncated: stdout.truncated || stderr.truncated,
 			};
 			logger.info('agent run finished', {
@@ -324,6 +341,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				signal: result.signal,
 				durationMs: result.durationMs,
 				timedOut,
+				aborted,
 				outputTruncated: result.outputTruncated,
 			});
 			resolve(result);

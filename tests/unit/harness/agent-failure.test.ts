@@ -11,6 +11,7 @@ function result(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 		stderr: '',
 		durationMs: 1000,
 		timedOut: false,
+		aborted: false,
 		outputTruncated: false,
 		...overrides,
 	};
@@ -126,6 +127,23 @@ describe('classifyAgentFailure', () => {
 	it('classifies an ordinary non-zero exit as a plain error', () => {
 		expect(classifyAgentFailure(result({ stderr: 'TypeError: boom' }), NOW).kind).toBe('error');
 	});
+
+	it('treats an aborted run as aborted regardless of its output', () => {
+		// A run the harness's `signal` cancelled (e.g. the worker's own shutdown)
+		// must not be read as a rate-limit even if leftover buffered text happens
+		// to contain limit-like phrasing.
+		const failure = classifyAgentFailure(
+			result({ aborted: true, stdout: "you've hit your session limit" }),
+			NOW,
+		);
+		expect(failure.kind).toBe('aborted');
+	});
+
+	it('prioritizes timeout over aborted when both are somehow set', () => {
+		expect(classifyAgentFailure(result({ timedOut: true, aborted: true }), NOW).kind).toBe(
+			'timeout',
+		);
+	});
 });
 
 describe('agentRunError', () => {
@@ -146,5 +164,11 @@ describe('agentRunError', () => {
 			'x exited (timed out) for y',
 		);
 		expect(agentRunError(result(), 'x exited', ' for y', NOW).message).toBe('x exited for y');
+	});
+
+	it('notes an abort', () => {
+		const err = agentRunError(result({ aborted: true }), 'x exited', ' for y', NOW);
+		expect(err.message).toBe('x exited (aborted) for y');
+		expect(err.failure.kind).toBe('aborted');
 	});
 });
