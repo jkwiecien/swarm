@@ -33,6 +33,21 @@
  * that item. The TTL only needs to be longer than a burst of
  * near-simultaneous `reordered` events from one drag gesture (milliseconds),
  * so it's generous on purpose.
+ *
+ * `SET key val EX ttl GET` (Redis 6.2+), not a `GET` followed by a separate
+ * conditional `SET`: confirmed live, one drag-to-Planning gesture fires both a
+ * `reordered` and an `edited` webhook event for the same item, landing as two
+ * concurrent trigger evaluations that both re-read the same fresh status. A
+ * plain `GET` then `SET` has a window between the two round trips where both
+ * callers read the same stale "previous" value before either writes, so both
+ * see a status change and both dispatch — two `provision()` calls racing for
+ * one worktree (confirmed live: taskId 83's `planning` phase double-dispatched
+ * this way and the second `git worktree add` failed with "already exists").
+ * The atomic `GET` form sets the new value and returns the prior one in a
+ * single round trip, so Redis itself serializes concurrent callers: whichever
+ * one Redis processes second sees the *other's* just-written value as
+ * "previous", not the stale one, so at most one of them ever sees a genuine
+ * change.
  */
 
 import { Redis } from 'ioredis';
@@ -85,7 +100,7 @@ export async function shouldDispatchForStatus(
 ): Promise<boolean> {
 	const key = `${KEY_NS}${itemNodeId}`;
 	try {
-		const previous = await getRedis().get(key);
+		const previous = await getRedis().set(key, statusId, 'EX', DEDUP_TTL_SEC, 'GET');
 		if (previous === statusId) {
 			logger.info('pm-status dedup: same status as last dispatch, skipping', {
 				itemNodeId,
@@ -93,7 +108,6 @@ export async function shouldDispatchForStatus(
 			});
 			return false;
 		}
-		await getRedis().set(key, statusId, 'EX', DEDUP_TTL_SEC);
 		return true;
 	} catch (err) {
 		logger.error('pm-status dedup: Redis call failed — failing closed', {
