@@ -12,6 +12,7 @@
 
 import { z } from 'zod';
 import { AgentCliSchema } from '../harness/agent-cli.js';
+import { AGENT_MODELS, ALL_AGENT_MODELS } from '../harness/models.js';
 import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/config-schema.js';
 
 export const PROJECT_DEFAULTS = {
@@ -51,15 +52,26 @@ export const CredentialsSchema = z
  * Per-phase agent CLI/model override. Both fields are optional — omit `cli` to
  * keep the phase's own coded default (`DEFAULT_PLANNING_CLI` and friends,
  * `src/pipeline/*.ts`), omit `model` to run on that CLI's own default model.
- * `model` isn't validated against a fixed list: `claude` and `agy` (the
- * Antigravity binary — see `src/harness/agent-cli.ts`) each accept their own
- * aliases/full names, and the harness passes the value straight through.
+ *
+ * `model`, when given, must be one of `AGENT_MODELS[cli]` (`src/harness/models.ts`)
+ * — `claude`'s short aliases (`sonnet`, `opus`, …) or `agy`'s exact `agy models`
+ * display strings (`"Gemini 3.5 Flash (High)"`, …). When `cli` itself is
+ * omitted, `model` is checked against the union of both lists, since the
+ * phase's actual coded-default `cli` isn't known at the config-schema layer.
  */
 export const AgentConfigSchema = z
 	.object({
 		cli: AgentCliSchema.optional(),
 		model: z.string().min(1).optional(),
 	})
+	.refine(
+		(agent) => {
+			if (!agent.model) return true;
+			const allowed = agent.cli ? AGENT_MODELS[agent.cli] : ALL_AGENT_MODELS;
+			return (allowed as readonly string[]).includes(agent.model);
+		},
+		{ message: 'model must be one of the known models for its cli (src/harness/models.ts)' },
+	)
 	.describe('Per-phase agent CLI/model override');
 
 /**

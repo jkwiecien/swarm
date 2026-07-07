@@ -87,6 +87,37 @@ describe('ProjectConfigSchema', () => {
 			createMockProjectConfig({ agents: { planning: { cli: 'gpt' as never } } }),
 		).toThrow();
 	});
+
+	it('rejects a model not in the known list for its cli', () => {
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { cli: 'claude', model: 'nonsense' } } }),
+		).toThrow(/known models/);
+	});
+
+	it("rejects a claude alias passed under cli: 'antigravity' (and vice versa)", () => {
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { cli: 'antigravity', model: 'sonnet' } } }),
+		).toThrow();
+		expect(() =>
+			createMockProjectConfig({
+				agents: { review: { cli: 'claude', model: 'Gemini 3.5 Flash (High)' } },
+			}),
+		).toThrow();
+	});
+
+	it('checks a model against the combined list when cli is omitted', () => {
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { model: 'sonnet' } } }),
+		).not.toThrow();
+		expect(() =>
+			createMockProjectConfig({
+				agents: { planning: { model: 'Gemini 3.5 Flash (High)' } },
+			}),
+		).not.toThrow();
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { model: 'nonsense' } } }),
+		).toThrow();
+	});
 });
 
 describe('AgentsConfigSchema', () => {
