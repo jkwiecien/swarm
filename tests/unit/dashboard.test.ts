@@ -69,6 +69,22 @@ describe('swarm-dashboard API', () => {
 		});
 	});
 
+	it('returns 400 for tRPC request with a malformed Authorization header', async () => {
+		const app = createDashboardApp({ token: 'test-token' });
+		const res = await app.request('/trpc/ping.ping', {
+			headers: {
+				Authorization: 'Basic test-token',
+			},
+		});
+
+		expect(res.status).toBe(400);
+		const data = await res.json();
+		expect(data).toEqual({
+			error: 'Bad Request',
+			reason: 'Invalid authorization header format',
+		});
+	});
+
 	it('returns 404 for unknown routes when authenticated', async () => {
 		const app = createDashboardApp({ token: 'test-token' });
 		const res = await app.request('/nope', {
