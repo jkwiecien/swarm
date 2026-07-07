@@ -19,6 +19,16 @@
  * to the Issue the Projects item wraps; the comment this phase posts is the
  * human-facing pointer.
  *
+ * The implementer persona's token is resolved and handed to the agent as
+ * `GH_TOKEN` (mirroring `runReviewPhase`'s reviewer-token plumbing) so `gh pr
+ * create` opens the PR as that persona, not whatever `gh auth` session happens
+ * to be ambient on the worker's host. Confirmed live: without this, the PR
+ * came back authored by the developer's own account, which the author-persona
+ * gate (`ai/ARCHITECTURE.md`, `src/triggers/handlers/review.ts`) correctly
+ * refuses to review — "not a SWARM persona" — silently stranding the item in
+ * "In review" forever with nothing to trigger Review, let alone
+ * Respond-to-review after it.
+ *
  * This is the phase's orchestration only. It composes the building blocks that
  * already exist — `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15),
  * `runAgentCli` (SWARM-16), the `PMProvider` contract (SWARM-11) — and takes them
@@ -32,6 +42,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '@/harness/agent-cli.js';
 import { logger } from '@/lib/logger.js';
@@ -111,6 +122,8 @@ export interface RunImplementationPhaseOptions {
 	runAgent?: (opts: Parameters<typeof runAgentCli>[0]) => Promise<AgentCliResult>;
 	/** Injectable env-grafting step — defaults to {@link graftEnvironment}; overridden in tests. */
 	graft?: typeof graftEnvironment;
+	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
+	getToken?: typeof getPersonaToken;
 }
 
 export interface ImplementationPhaseResult {
@@ -221,11 +234,13 @@ function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResu
  * branch survives cleanup so the PR is unaffected.
  *
  * Note that `GitWorktreeManager.cleanup` removes the worktree but not the local
- * `<branchPrefix><taskId>` branch it created, so a re-run after a mid-flight
- * failure (e.g. `moveWorkItem` rejecting after `addComment` succeeded) would hit
- * `git worktree add -b` "branch already exists". Retry/leftover-branch handling
- * belongs to the worker that dequeues and retries jobs (SWARM-17), which is
- * explicitly out of scope here — see the module header.
+ * `<branchPrefix><taskId>` branch it created — deliberately, so a *successful*
+ * run leaves the branch for Review/Respond-to-review/Respond-to-CI to check
+ * out again. A re-run after a mid-flight failure would otherwise hit
+ * `git worktree add -b` "branch already exists" on the leftover branch;
+ * `GitWorktreeManager.provision` now reaps that orphan itself when it's
+ * provably safe to (no matching ref on `origin`), so this phase doesn't need
+ * its own retry/leftover-branch handling.
  */
 export async function runImplementationPhase(
 	options: RunImplementationPhaseOptions,
@@ -242,10 +257,16 @@ export async function runImplementationPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
+		getToken = getPersonaToken,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info('implementation phase: start', { taskId, workItemId: workItem.id, cli });
+
+	// Resolved first: a missing implementer credential fails the job before any
+	// worktree exists to clean up. Never returned or passed on — it goes straight
+	// into the subprocess env below.
+	const implementerToken = await getToken(project, 'implementer');
 
 	// Report the pickup before doing any work — including before provisioning —
 	// so a human watching the board sees "In progress" as soon as the worker
@@ -270,6 +291,10 @@ export async function runImplementationPhase(
 					baseBranch: project.baseBranch,
 				}),
 			],
+			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+			// call the agent makes (including `gh pr create`) acts as the
+			// implementer persona, not the worker host's own logged-in account.
+			env: { GH_TOKEN: implementerToken },
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			timeoutMs,
 			signal,
