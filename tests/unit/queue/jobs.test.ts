@@ -38,6 +38,16 @@ describe('SwarmJobSchema', () => {
 		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
 	});
 
+	it('parses a job carrying a rateLimitRetryAttempt count', () => {
+		const job = { ...createMockGitHubWebhookJob(), rateLimitRetryAttempt: 4 };
+		expect(SwarmJobSchema.parse(roundTrip(job))).toMatchObject({ rateLimitRetryAttempt: 4 });
+	});
+
+	it('rejects a negative rateLimitRetryAttempt', () => {
+		const job = { ...createMockGitHubWebhookJob(), rateLimitRetryAttempt: -1 };
+		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
+	});
+
 	it('rejects an unknown job type', () => {
 		const job = { ...createMockGitHubWebhookJob(), type: 'gitlab' };
 		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();

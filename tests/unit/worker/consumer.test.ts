@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
+import { AgentRunError } from '@/harness/agent-failure.js';
 import type { PMProvider } from '@/pm/types.js';
 import {
 	createMockGitHubProjectsWebhookJob,
@@ -288,5 +289,94 @@ describe('processJob', () => {
 			taskId: '17',
 			error: 'review agent exited with code 3',
 		});
+	});
+
+	it('defers a rate-limited phase instead of failing it, delaying until after the reset', async () => {
+		const retryAfter = new Date(Date.now() + 90 * 60 * 1000); // 90 min out
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 1 (rate limited)', {
+				kind: 'rate-limit',
+				resetHint: '1:40pm (Europe/Warsaw)',
+				retryAfter,
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
+		expect(outcome.phase).toBe('review');
+		expect(outcome.taskId).toBe('17');
+		expect(outcome.attempt).toBe(0);
+		// ~90 min + a small buffer, comfortably inside the [6min, 6h] clamp.
+		expect(outcome.retryDelayMs).toBeGreaterThan(90 * 60 * 1000);
+		expect(outcome.retryDelayMs).toBeLessThan(92 * 60 * 1000);
+	});
+
+	it('floors the retry delay above the review-dispatch-dedup TTL even for an imminent reset', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('rate limited', {
+				kind: 'rate-limit',
+				retryAfter: new Date(Date.now() + 1000), // resets ~now
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
+		expect(outcome.retryDelayMs).toBeGreaterThanOrEqual(6 * 60 * 1000);
+	});
+
+	it('falls back to a default delay when the limit gave no parseable reset time', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('rate limited', { kind: 'rate-limit' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
+		expect(outcome.retryDelayMs).toBe(30 * 60 * 1000);
+	});
+
+	it('fails a rate-limited phase once the retry budget is exhausted', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 1 (rate limited)', {
+				kind: 'rate-limit',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toEqual({
+			status: 'phase-failed',
+			phase: 'review',
+			taskId: '17',
+			error: 'Review agent (claude) exited with code 1 (rate limited)',
+		});
+	});
+
+	it('does not defer a non-rate-limit AgentRunError', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 1', { kind: 'error' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
 	});
 });

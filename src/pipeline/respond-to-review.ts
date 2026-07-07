@@ -52,6 +52,7 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
+import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
@@ -256,10 +257,10 @@ export async function runRespondToReviewPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Respond-to-review agent (${cli}) exited with code ${agent.exitCode}${
-					agent.timedOut ? ' (timed out)' : ''
-				} for PR #${prNumber}`,
+			throw agentRunError(
+				agent,
+				`Respond-to-review agent (${cli}) exited with code ${agent.exitCode}`,
+				` for PR #${prNumber}`,
 			);
 		}
 

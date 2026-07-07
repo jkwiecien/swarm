@@ -201,6 +201,53 @@ describe('scheduleCoalescedJob', () => {
 	});
 });
 
+describe('enqueueDelayedRetry', () => {
+	it('adds a delayed job with a colon-free id keyed on (deliveryId, attempt), not the bare deliveryId', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 1 });
+
+		const id = await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		expect(add).toHaveBeenCalledOnce();
+		const [name, addedJob, opts] = add.mock.calls[0];
+		expect(name).toBe('github');
+		expect(addedJob).toBe(job);
+		expect(opts).toMatchObject({ delay: 6 * 60 * 1000 });
+		// Keyed on delivery id + attempt (not the bare delivery id, whose completed
+		// job is still in Redis) so a double-fired completed event dedups instead of
+		// stacking a duplicate retry.
+		expect(opts?.jobId).toBe(`retry_github_${job.deliveryId}_attempt1`);
+		expect(opts?.jobId).not.toBe(job.deliveryId);
+		expect(opts?.jobId).not.toContain(':');
+		expect(id).toBe('bull-assigned-id');
+	});
+
+	it('is deterministic per attempt — the same (deliveryId, attempt) yields the same id', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 2 });
+
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		const [, , first] = add.mock.calls[0];
+		const [, , second] = add.mock.calls[1];
+		expect(first?.jobId).toBe(second?.jobId);
+	});
+
+	it('falls back to a fresh unique id when the job carries no deliveryId', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const { deliveryId: _dropped, ...job } = createMockGitHubWebhookJob({
+			rateLimitRetryAttempt: 1,
+		});
+
+		await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts?.jobId).toMatch(/^retry_github_\d+_/);
+		expect(opts?.jobId).not.toContain(':');
+	});
+});
+
 describe('closeQueue', () => {
 	it('closes the queue once it has been created', async () => {
 		const { enqueueJob, closeQueue } = await import('@/queue/producer.js');

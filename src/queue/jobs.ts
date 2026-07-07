@@ -33,6 +33,13 @@ const jobBase = z.object({
 	 * coalesced recheck, so it can cap the loop when the Actions API stays stale.
 	 */
 	recheckAttempt: z.number().int().nonnegative().optional(),
+	/**
+	 * How many times this job has already been re-enqueued as a rate-limit retry
+	 * (`src/worker/index.ts`, on a `phase-deferred` outcome). Absent on a fresh
+	 * webhook; incremented on each deferral so the consumer can cap the retry loop
+	 * when a usage/session limit persists across resets.
+	 */
+	rateLimitRetryAttempt: z.number().int().nonnegative().optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

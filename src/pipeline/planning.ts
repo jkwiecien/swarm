@@ -34,6 +34,7 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
+import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
@@ -239,10 +240,10 @@ export async function runPlanningPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, workItem.id, agent);
-			throw new Error(
-				`Planning agent (${cli}) exited with code ${agent.exitCode}${
-					agent.timedOut ? ' (timed out)' : ''
-				} for task '${taskId}'`,
+			throw agentRunError(
+				agent,
+				`Planning agent (${cli}) exited with code ${agent.exitCode}`,
+				` for task '${taskId}'`,
 			);
 		}
 

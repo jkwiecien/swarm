@@ -19,6 +19,7 @@
 import type { ProjectConfig } from '../config/schema.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import type { AgentCliResult } from '../harness/agent-cli.js';
+import { type AgentFailure, AgentRunError } from '../harness/agent-failure.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
@@ -47,7 +48,47 @@ export type JobOutcome =
 			phase: TriggerPhase;
 			taskId: string;
 			error: string;
+	  }
+	| {
+			status: 'phase-deferred';
+			phase: TriggerPhase;
+			taskId: string;
+			/** How long the worker should wait before re-enqueuing this job. */
+			retryDelayMs: number;
+			/** The originating failure message, for the re-enqueue log line. */
+			reason: string;
+			/** The retry attempt count *before* this deferral (0 on the first). */
+			attempt: number;
 	  };
+
+/**
+ * A persistent usage/session limit shouldn't retry forever — cap the loop so a
+ * genuinely exhausted quota (or a misclassified failure) eventually surfaces as
+ * a real `phase-failed` instead of re-enqueuing indefinitely.
+ */
+const MAX_RATE_LIMIT_RETRIES = 6;
+/**
+ * Floor on the retry delay, deliberately above the review-dispatch-dedup TTL
+ * (5 min, `src/triggers/review-dispatch-dedup.ts`): a review retry that fires
+ * only after the claim has expired re-acquires it cleanly, so we never have to
+ * release/refresh a claim that a *generic* failed run might have posted under.
+ * A rate-limited run never posted anything anyway.
+ */
+const MIN_RETRY_DELAY_MS = 6 * 60 * 1000;
+/** Ceiling, so a mis-parsed reset time can't defer a job for an absurd span. */
+const MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1000;
+/** Backoff when the CLI gave no parseable reset time — likely lands past reset. */
+const DEFAULT_RETRY_DELAY_MS = 30 * 60 * 1000;
+/** Fire slightly *after* the reported reset so quota is actually back. */
+const RETRY_BUFFER_MS = 60 * 1000;
+
+/** Turn a rate-limit failure's reset time (if any) into a clamped retry delay. */
+function retryDelayForFailure(failure: AgentFailure, now: number): number {
+	const raw = failure.retryAfter
+		? failure.retryAfter.getTime() - now + RETRY_BUFFER_MS
+		: DEFAULT_RETRY_DELAY_MS;
+	return Math.min(MAX_RETRY_DELAY_MS, Math.max(MIN_RETRY_DELAY_MS, raw));
+}
 
 /**
  * Run the pipeline phase a matched trigger resolved to. The orchestrators
@@ -130,6 +171,13 @@ function runPhase(
  * reporting to the PM board is the phase's job). The one thing that still
  * throws is an unknown project — infrastructure the job can't proceed without.
  *
+ * The exception to "failed phases don't retry" is a usage/session-limit hit
+ * (an {@link AgentRunError} classified `rate-limit`): the agent never got to do
+ * any work, so instead of `phase-failed` this returns `phase-deferred` with a
+ * delay, and the worker entrypoint re-enqueues the job once quota is back
+ * (issue #91). Capped at {@link MAX_RATE_LIMIT_RETRIES} so a persistent limit
+ * eventually surfaces as a real failure.
+ *
  * `signal` is the worker's shutdown signal: aborting kills a running agent CLI
  * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run.
  */
@@ -191,6 +239,42 @@ export async function processJob(
 		};
 	} catch (err) {
 		const error = err instanceof Error ? err.message : String(err);
+
+		// A usage/session-limit hit is transient: the agent never did any work, so
+		// rather than failing the job we defer it and let the worker re-enqueue it
+		// once quota is back (issue #91). Capped so a persistent limit — or a
+		// misclassified failure — can't loop forever.
+		if (err instanceof AgentRunError && err.failure.kind === 'rate-limit') {
+			const attempt = job.rateLimitRetryAttempt ?? 0;
+			if (attempt < MAX_RATE_LIMIT_RETRIES) {
+				const retryDelayMs = retryDelayForFailure(err.failure, Date.now());
+				logger.warn('Pipeline phase rate-limited — deferring retry', {
+					projectId: project.id,
+					phase: trigger.phase,
+					taskId: trigger.taskId,
+					attempt,
+					retryDelayMs,
+					resetHint: err.failure.resetHint,
+					error,
+				});
+				return {
+					status: 'phase-deferred',
+					phase: trigger.phase,
+					taskId: trigger.taskId,
+					retryDelayMs,
+					reason: error,
+					attempt,
+				};
+			}
+			logger.error('Pipeline phase rate-limited — retry budget exhausted, failing', {
+				projectId: project.id,
+				phase: trigger.phase,
+				taskId: trigger.taskId,
+				attempt,
+				error,
+			});
+		}
+
 		logger.error('Pipeline phase failed', {
 			projectId: project.id,
 			phase: trigger.phase,
