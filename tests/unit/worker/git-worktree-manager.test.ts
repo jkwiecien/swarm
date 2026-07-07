@@ -70,6 +70,7 @@ describe('GitWorktreeManager', () => {
 			expect(gitCalls).toEqual([
 				['rev-parse', '--is-inside-work-tree'],
 				['fetch', 'origin'],
+				['branch', '--list', 'issue-14'],
 				['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main'],
 			]);
 			expect(handle).toEqual({
@@ -160,6 +161,62 @@ describe('GitWorktreeManager', () => {
 				return { stdout: '' };
 			};
 			await expect(makeManager().provision('14')).rejects.toThrow(/git worktree add.*boom/);
+		});
+
+		it('deletes an orphaned local branch (no matching ref on origin) before retrying worktree add', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'branch' && args[1] === '--list') return { stdout: '  issue-14\n' };
+				if (args[0] === 'ls-remote') return { stdout: '' };
+				return { stdout: '' };
+			};
+			const handle = await makeManager().provision('14');
+
+			expect(gitCalls).toContainEqual(['branch', '--list', 'issue-14']);
+			expect(gitCalls).toContainEqual(['ls-remote', '--heads', 'origin', 'issue-14']);
+			expect(gitCalls).toContainEqual(['branch', '-D', 'issue-14']);
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main']);
+			expect(handle.branch).toBe('issue-14');
+		});
+
+		it('leaves a local branch alone (and lets worktree add fail) when origin already has a matching ref', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'branch' && args[1] === '--list') return { stdout: '  issue-14\n' };
+				if (args[0] === 'ls-remote') return { stdout: 'abc123\trefs/heads/issue-14\n' };
+				if (args[0] === 'worktree' && args[1] === 'add') {
+					return Object.assign(new Error('exit 128'), {
+						stderr: "fatal: a branch named 'issue-14' already exists",
+					});
+				}
+				return { stdout: '' };
+			};
+
+			await expect(makeManager().provision('14')).rejects.toThrow(/already exists/);
+			expect(gitCalls.some((c) => c[0] === 'branch' && c[1] === '-D')).toBe(false);
+		});
+
+		it('leaves a local branch alone when the remote check itself fails (cannot verify)', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'branch' && args[1] === '--list') return { stdout: '  issue-14\n' };
+				if (args[0] === 'ls-remote') return new Error('could not resolve host');
+				if (args[0] === 'worktree' && args[1] === 'add') {
+					return Object.assign(new Error('exit 128'), {
+						stderr: "fatal: a branch named 'issue-14' already exists",
+					});
+				}
+				return { stdout: '' };
+			};
+
+			await expect(makeManager().provision('14')).rejects.toThrow(/already exists/);
+			expect(gitCalls.some((c) => c[0] === 'branch' && c[1] === '-D')).toBe(false);
+		});
+
+		it('skips the orphaned-branch check entirely for detached or existing-branch checkouts', async () => {
+			await makeManager().provision('14', { detach: true });
+			expect(gitCalls.some((c) => c[0] === 'branch')).toBe(false);
+
+			gitCalls.length = 0;
+			await makeManager().provision('14', { createBranch: false, branch: 'issue-14-x' });
+			expect(gitCalls.some((c) => c[0] === 'branch')).toBe(false);
 		});
 	});
 

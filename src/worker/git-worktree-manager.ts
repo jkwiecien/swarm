@@ -132,6 +132,11 @@ export class GitWorktreeManager {
 		const branch = detached
 			? baseBranch
 			: (options.branch ?? `${this.project.branchPrefix}${taskId}`);
+
+		if (createBranch && !detached) {
+			await this.reapOrphanedBranch(branch);
+		}
+
 		const args = ['worktree', 'add'];
 		if (detached) {
 			args.push('--detach', path, baseBranch);
@@ -168,6 +173,35 @@ export class GitWorktreeManager {
 		}
 		logger.info('Removing worktree', { taskId, path });
 		await this.git(['worktree', 'remove', '--force', path]);
+	}
+
+	/**
+	 * `cleanup()` only removes the worktree checkout, never the branch `provision`
+	 * cut for it (§4.2 step 5 is silent on branches on purpose — a *successful*
+	 * Implementation run needs `issue-<id>` to still exist locally so Review /
+	 * Respond-to-review / Respond-to-CI can check it out again later). But that
+	 * means a run that fails *before* pushing leaves a dangling local branch that
+	 * blocks every retry with `fatal: a branch named '<x>' already exists`
+	 * (confirmed live on #75). Delete that orphan, but only when it's provably
+	 * safe to: if `origin` already has a matching ref, a PR may depend on it, so
+	 * this leaves it alone and lets the `worktree add` failure below surface
+	 * instead of risking real pushed work. Same caution on an `ls-remote` failure
+	 * (network/config issue, can't verify either way) — assume the worst and skip.
+	 */
+	private async reapOrphanedBranch(branch: string): Promise<void> {
+		const localExists = (await this.git(['branch', '--list', branch])).trim().length > 0;
+		if (!localExists) return;
+
+		let remoteHasIt: boolean;
+		try {
+			remoteHasIt = (await this.git(['ls-remote', '--heads', 'origin', branch])).trim().length > 0;
+		} catch {
+			remoteHasIt = true;
+		}
+		if (remoteHasIt) return;
+
+		logger.warn('Deleting orphaned local branch left over from a previous failed run', { branch });
+		await this.git(['branch', '-D', branch]);
 	}
 
 	/**
