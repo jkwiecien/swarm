@@ -101,13 +101,47 @@ describe('swarm-dashboard API', () => {
 		});
 	});
 
-	it('returns 404 for unknown routes when authenticated', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
+	it('returns 404 for unknown routes when authenticated and no static assets exist', async () => {
+		const app = createDashboardApp({ token: 'test-token', staticRoot: './non-existent-dist' });
 		const res = await app.request('/nope', {
 			headers: {
 				Authorization: 'Bearer test-token',
 			},
 		});
+
+		expect(res.status).toBe(404);
+	});
+
+	it('serves static assets without authentication', async () => {
+		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
+		const res = await app.request('/assets/app.js');
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('javascript');
+		const text = await res.text();
+		expect(text).toContain('Hello from web-dist app.js fixture!');
+	});
+
+	it('falls back to index.html for client-side routing paths without authentication', async () => {
+		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
+		const res = await app.request('/projects');
+
+		expect(res.status).toBe(200);
+		expect(res.headers.get('Content-Type')).toContain('html');
+		const text = await res.text();
+		expect(text).toContain('Hello from web-dist fixture!');
+	});
+
+	it('still requires authorization for tRPC requests even when staticRoot exists', async () => {
+		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
+		const res = await app.request('/trpc/ping.ping');
+
+		expect(res.status).toBe(401);
+	});
+
+	it('returns 404 for unregistered non-API paths without authentication when staticRoot does not exist', async () => {
+		const app = createDashboardApp({ token: 'test-token', staticRoot: './non-existent-dist' });
+		const res = await app.request('/nope');
 
 		expect(res.status).toBe(404);
 	});

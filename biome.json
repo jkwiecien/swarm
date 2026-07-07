@@ -32,6 +32,14 @@
 		}
 	},
 	"files": {
-		"includes": ["**", "!**/node_modules", "!**/dist", "!**/coverage", "!**/*.json", "!cascade"]
+		"includes": [
+			"**",
+			"!**/node_modules",
+			"!**/dist",
+			"!**/coverage",
+			"!**/*.json",
+			"!cascade",
+			"!web/src/index.css"
+		]
 	}
 }

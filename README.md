@@ -72,11 +72,13 @@ cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports / DASHBOARD_TOK
 docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 npm run db:seed               # load swarm.config.json into Postgres (projects + credentials)
+cd web && npm install && cd .. # install web dashboard dependencies
 npm run dev:dashboard         # start the dashboard API on the host (default port 3101) — requires DASHBOARD_TOKEN in .env
+npm run dev:web               # start the Vite dev server (default port 5173)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker); SWARM_WORKER_CONCURRENCY in .env sets how many jobs run at once (default 1)
 ```
 
-The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. Future frontends read the token from local configuration rather than displaying a login screen.
+The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. When present, the dashboard API also serves the built `web/dist` SPA statically as a fallback (self-hosted mode) for any non-API/non-health routes. Future frontends read the token from local configuration rather than displaying a login screen.
 
 You can verify the dashboard API is running and authenticated using `curl`:
 ```bash

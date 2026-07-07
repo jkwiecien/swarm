@@ -4,7 +4,9 @@
  * Cascade's split cloud deployment (separate API + Cloudflare Pages frontend), SWARM runs
  * one process for its local-first, single-user scope.
  */
+import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
+import { serveStatic } from '@hono/node-server/serve-static';
 import { trpcServer } from '@hono/trpc-server';
 import { Hono } from 'hono';
 import { bearerAuth } from 'hono/bearer-auth';
@@ -12,7 +14,7 @@ import { bearerAuth } from 'hono/bearer-auth';
 import { appRouter } from './api/router.js';
 import { configureLogger, logger } from './lib/logger.js';
 
-export function createDashboardApp(options: { token?: string } = {}): Hono {
+export function createDashboardApp(options: { token?: string; staticRoot?: string } = {}): Hono {
 	const app = new Hono();
 
 	const token = options.token ?? process.env.DASHBOARD_TOKEN;
@@ -32,7 +34,7 @@ export function createDashboardApp(options: { token?: string } = {}): Hono {
 	);
 
 	app.use(
-		'*',
+		'/trpc/*',
 		bearerAuth({
 			token,
 			noAuthenticationHeader: {
@@ -48,6 +50,12 @@ export function createDashboardApp(options: { token?: string } = {}): Hono {
 	);
 
 	app.use('/trpc/*', trpcServer({ endpoint: '/trpc', router: appRouter }));
+
+	const staticRoot = options.staticRoot ?? './web/dist';
+	if (existsSync(`${staticRoot}/index.html`)) {
+		app.use('/assets/*', serveStatic({ root: staticRoot }));
+		app.get('*', serveStatic({ root: staticRoot, rewriteRequestPath: () => '/index.html' }));
+	}
 
 	return app;
 }

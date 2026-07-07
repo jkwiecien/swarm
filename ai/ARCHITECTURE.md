@@ -36,6 +36,7 @@ Dashboard (Hono HTTP server + tRPC, host process)
    — exposes a `/health` check and mounts a tRPC API under `/trpc`
    — self-hosted, single-process model running locally on the host
    — binds to `127.0.0.1` and requires `DASHBOARD_TOKEN`
+   — serves the built `web/dist` SPA statically as a fallback when present (self-hosted mode)
 ```
 
 Redis (for BullMQ) and Postgres (for project config, credentials at rest, and run history — same role it plays in Cascade) run in the same Docker Compose stack as the router. The **worker and the dashboard are the exceptions**: they run directly on the host rather than in containers — the worker because it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs (which need the developer's own PATH, auth, and config), and the dashboard (scaffolded via Hono and tRPC) for local-first, single-process execution. They connect to Redis/Postgres over their published host ports (`REDIS_URL` / `DATABASE_URL` in `.env`). There is no separate "cloud" process for the MVP; router, worker, dashboard, Redis, and Postgres are all local.
