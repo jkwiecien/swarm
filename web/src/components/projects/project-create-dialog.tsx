@@ -36,8 +36,13 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 		mutation.mutate({ id, name, repo, repoRoot });
 	};
 
+	const handleClose = () => {
+		mutation.reset();
+		onOpenChange(false);
+	};
+
 	return (
-		<Modal open={open} onClose={() => onOpenChange(false)} title="New Project">
+		<Modal open={open} onClose={handleClose} title="New Project">
 			<form onSubmit={handleSubmit} className="space-y-4">
 				<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 					<div>
@@ -122,7 +127,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 					secondary={
 						<button
 							type="button"
-							onClick={() => onOpenChange(false)}
+							onClick={handleClose}
 							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
 						>
 							Cancel

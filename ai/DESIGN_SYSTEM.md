@@ -28,13 +28,14 @@ Dark-mode only (no light theme) — this is a local admin tool for one developer
 | Warning | `amber-500`/`amber-200`/`amber-900` | | Loop-prevention and similar caution banners |
 | Danger | `red-400`/`red-500`/`red-900` | | Validation errors, destructive-action affordances |
 
-**Fix required, don't copy verbatim**: `zinc-850` is not a real Tailwind shade (the prototype uses it ~10 times but ships zero-config Tailwind v4, so those classes are silently dead). Define it for real in `web/src/index.css` via Tailwind v4's `@theme`:
+**Fix required, don't copy verbatim**: `zinc-850` and `violet-650` are not real Tailwind shades (the prototype uses `zinc-850` ~10 times and the primary-button glow recipe below uses `violet-650`, but it ships zero-config Tailwind v4, so those classes are silently dead). Define both for real in `web/src/index.css` via Tailwind v4's `@theme`:
 
 ```css
 @import "tailwindcss";
 
 @theme {
   --color-zinc-850: #1f1f23;
+  --color-violet-650: #7531e3;
 }
 ```
 

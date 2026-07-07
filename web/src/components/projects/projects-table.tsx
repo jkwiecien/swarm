@@ -77,7 +77,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 
 			<Modal open={!!deleteTarget} onClose={() => setDeleteTarget(null)} title="Delete project">
 				<div className="space-y-4">
-					<p className="text-sm text-zinc-350 leading-relaxed">
+					<p className="text-sm text-zinc-400 leading-relaxed">
 						This will permanently delete{' '}
 						<span className="font-semibold text-zinc-200">“{deleteTarget?.name}”</span> (
 						<span className="font-mono text-zinc-300">{deleteTarget?.id}</span>). This action cannot
