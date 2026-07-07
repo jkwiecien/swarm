@@ -109,6 +109,24 @@ export async function scheduleCoalescedJob(
 }
 
 /**
+ * Re-enqueue a job to run after `delayMs` — the worker's rate-limit retry path
+ * (`src/worker/index.ts`, on a `phase-deferred` outcome; issue #91). Unlike
+ * {@link enqueueJob} this always assigns a fresh unique job id rather than
+ * reusing the delivery id: the original delivery-id-keyed job is still sitting
+ * completed in Redis, and BullMQ would silently drop an `add()` that reused its
+ * id. The id is colon-free (BullMQ reserves `:` for its own namespacing), same
+ * constraint as {@link scheduleCoalescedJob}.
+ */
+export async function enqueueDelayedRetry(
+	job: SwarmJob,
+	delayMs: number,
+): Promise<string | undefined> {
+	const jobId = `retry_${job.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+	const added = await getQueue().add(job.type, job, { jobId, delay: delayMs });
+	return added.id;
+}
+
+/**
  * Close the producer connection — called from the router's shutdown handler so
  * the process exits cleanly instead of hanging on an open Redis socket. A no-op
  * if nothing was ever enqueued (the queue is created lazily).

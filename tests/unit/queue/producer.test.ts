@@ -201,6 +201,27 @@ describe('scheduleCoalescedJob', () => {
 	});
 });
 
+describe('enqueueDelayedRetry', () => {
+	it('adds a delayed job with a fresh colon-free id, not the deliveryId', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 1 });
+
+		const id = await enqueueDelayedRetry(job, 6 * 60 * 1000);
+
+		expect(add).toHaveBeenCalledOnce();
+		const [name, addedJob, opts] = add.mock.calls[0];
+		expect(name).toBe('github');
+		expect(addedJob).toBe(job);
+		expect(opts).toMatchObject({ delay: 6 * 60 * 1000 });
+		// A fresh id: the original delivery-id-keyed job is still in Redis, so
+		// reusing its id would make BullMQ drop the retry.
+		expect(opts?.jobId).toMatch(/^retry_github_/);
+		expect(opts?.jobId).not.toBe(job.deliveryId);
+		expect(opts?.jobId).not.toContain(':');
+		expect(id).toBe('bull-assigned-id');
+	});
+});
+
 describe('closeQueue', () => {
 	it('closes the queue once it has been created', async () => {
 		const { enqueueJob, closeQueue } = await import('@/queue/producer.js');

@@ -14,9 +14,10 @@ import { Worker } from 'bullmq';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
-import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
+import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
+import { enqueueDelayedRetry } from '../queue/producer.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
-import { processJob } from './consumer.js';
+import { type JobOutcome, processJob } from './consumer.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -53,9 +54,52 @@ const worker = new Worker(
 	},
 );
 
-worker.on('completed', (job, outcome) => {
+worker.on('completed', (job, outcome: JobOutcome) => {
 	logger.info('Job completed', { jobId: job.id, name: job.name, outcome });
+	// A rate-limited phase completes (from BullMQ's view) as `phase-deferred`:
+	// re-enqueue it delayed so it retries once quota is back (issue #91). Done
+	// here, not in `processJob`, to keep the consumer BullMQ-agnostic — the
+	// entrypoint owns the queue. Fire-and-forget with its own error handling so a
+	// re-enqueue failure can't reject the completed-event handler; the (small)
+	// window where a worker crash between completion and re-enqueue loses the
+	// retry is an accepted MVP tradeoff.
+	if (outcome?.status === 'phase-deferred') {
+		void reenqueueDeferred(job.id, job.data, outcome);
+	}
 });
+
+/**
+ * Re-enqueue a rate-limit-deferred job with its retry counter bumped, so the
+ * consumer can cap the loop. `data` is re-validated (it round-trips through
+ * Redis) before the counter is incremented.
+ */
+async function reenqueueDeferred(
+	jobId: string | undefined,
+	data: unknown,
+	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
+): Promise<void> {
+	try {
+		const parsed = SwarmJobSchema.parse(data);
+		const next: SwarmJob = {
+			...parsed,
+			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
+		};
+		await enqueueDelayedRetry(next, outcome.retryDelayMs);
+		logger.info('Rate-limited phase re-enqueued for retry', {
+			jobId,
+			phase: outcome.phase,
+			taskId: outcome.taskId,
+			retryDelayMs: outcome.retryDelayMs,
+			attempt: next.rateLimitRetryAttempt,
+		});
+	} catch (err) {
+		logger.error('Failed to re-enqueue rate-limited phase', {
+			jobId,
+			taskId: outcome.taskId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
 worker.on('failed', (job, err) => {
 	logger.error('Job failed', { jobId: job?.id, name: job?.name, error: err.message });
 });
