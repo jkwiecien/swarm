@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest';
 import { configureLogger, logger } from '@/lib/logger.js';
 
@@ -246,6 +249,79 @@ describe('format auto-detection when SWARM_LOG_FORMAT is unset', () => {
 		logger.info('hi');
 
 		expect(infoSpy.mock.calls[0][0]).toMatch(/^\d{2}:\d{2}:\d{2} INFO {2}hi$/);
+	});
+});
+
+describe('file sink', () => {
+	// The sink is module-level state (one stream per process), so each test
+	// re-imports the logger fresh via resetModules to get a clean, unopened sink.
+	beforeEach(() => {
+		vi.resetModules();
+		vi.stubEnv('SWARM_LOG_FORMAT', 'json');
+		vi.stubEnv('SWARM_LOG_LEVEL', 'debug');
+	});
+
+	// Poll the file until the expected number of lines have flushed — a
+	// WriteStream write is buffered and lands on a later tick, so a bare read
+	// right after the log call races the flush.
+	async function readLines(path: string, expected: number): Promise<string[]> {
+		for (let attempt = 0; attempt < 50; attempt++) {
+			try {
+				const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean);
+				if (lines.length >= expected) return lines;
+			} catch {
+				// file not created yet
+			}
+			await new Promise((r) => setTimeout(r, 5));
+		}
+		throw new Error(`file ${path} did not reach ${expected} line(s) in time`);
+	}
+
+	it('appends each emitted line to the file as JSON, regardless of console format', async () => {
+		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty'); // console pretty, but the file must stay JSON
+		const path = join(mkdtempSync(join(tmpdir(), 'swarm-log-')), 'worker.log');
+		const { addFileSink, configureLogger: cfg, logger: log } = await import('@/lib/logger.js');
+		cfg({ component: 'worker' });
+
+		addFileSink(path);
+		log.info('to file', { taskId: 't-1' });
+
+		const [line] = await readLines(path, 1);
+		expect(JSON.parse(line)).toMatchObject({
+			level: 'info',
+			msg: 'to file',
+			taskId: 't-1',
+			component: 'worker',
+		});
+	});
+
+	it('respects the level filter — a dropped console line is not written to the file', async () => {
+		vi.stubEnv('SWARM_LOG_LEVEL', 'warn');
+		const path = join(mkdtempSync(join(tmpdir(), 'swarm-log-')), 'worker.log');
+		const { addFileSink, logger: log } = await import('@/lib/logger.js');
+
+		addFileSink(path);
+		log.info('suppressed');
+		log.warn('kept');
+
+		const lines = await readLines(path, 1);
+		expect(lines).toHaveLength(1);
+		expect(JSON.parse(lines[0]).msg).toBe('kept');
+	});
+
+	it('is idempotent — a second addFileSink call does not redirect the sink', async () => {
+		const dir = mkdtempSync(join(tmpdir(), 'swarm-log-'));
+		const first = join(dir, 'first.log');
+		const second = join(dir, 'second.log');
+		const { addFileSink, logger: log } = await import('@/lib/logger.js');
+
+		addFileSink(first);
+		addFileSink(second); // ignored — first sink wins
+		log.info('once');
+
+		const [line] = await readLines(first, 1);
+		expect(JSON.parse(line).msg).toBe('once');
+		expect(() => readFileSync(second, 'utf8')).toThrow(); // never created
 	});
 });
 

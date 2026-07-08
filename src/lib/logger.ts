@@ -16,7 +16,17 @@
  * pretty rendering pulls `component` out into a `[component]` prefix so a
  * shared log stream stays attributable to the process that produced it without
  * repeating `component=...` on every single line.
+ *
+ * An optional **file sink** (`addFileSink`) tees every emitted line to a file in
+ * addition to the console — the worker enables it so a long unattended run
+ * leaves a durable, greppable log behind rather than only scrolling past in a
+ * terminal. The file always gets the `json` form regardless of the console
+ * format, since a file is read back by tools/aggregators (and by an agent
+ * grepping it later), not watched live.
  */
+
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 type LogContext = Record<string, unknown>;
@@ -43,6 +53,37 @@ let baseContext: LogContext = {};
  */
 export function configureLogger(context: LogContext): void {
 	baseContext = { ...context };
+}
+
+// The file sink, lazily opened by addFileSink. A single append stream per
+// process; once it errors (disk full, bad path) it's marked failed and quietly
+// skipped so a logging problem never becomes a caller crash.
+let fileStream: WriteStream | null = null;
+let fileSinkFailed = false;
+
+/**
+ * Tee every subsequent log line to `filePath` (append), in addition to the
+ * console. Idempotent — the first call wins, later calls are no-ops, so a
+ * process has exactly one file sink. Relative paths resolve against the current
+ * working directory (the repo root for `npm run …` entry points). Failures to
+ * open or write are swallowed (marked `fileSinkFailed`): logging is
+ * best-effort and must never take down its caller.
+ */
+export function addFileSink(filePath: string): void {
+	if (fileStream || fileSinkFailed) {
+		return;
+	}
+	try {
+		const abs = isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath);
+		mkdirSync(dirname(abs), { recursive: true });
+		const stream = createWriteStream(abs, { flags: 'a' });
+		stream.on('error', () => {
+			fileSinkFailed = true;
+		});
+		fileStream = stream;
+	} catch {
+		fileSinkFailed = true;
+	}
 }
 
 function resolveMinLevel(): number {
@@ -123,18 +164,24 @@ function formatContextTail(context: LogContext): string {
 	return ` ${paint(rendered, DIM)}`;
 }
 
+// One JSON object per line — used by the `json` console format and always by
+// the file sink. Extracted so both share identical, guarded serialization.
+function formatJson(level: LogLevel, message: string, context: LogContext, time: string): string {
+	try {
+		return safeStringify({ level, time, msg: message, ...context });
+	} catch (err) {
+		return safeStringify({
+			level,
+			time,
+			msg: message,
+			_logError: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
 function format(level: LogLevel, message: string, context: LogContext, time: string): string {
 	if (resolveFormat() === 'json') {
-		try {
-			return safeStringify({ level, time, msg: message, ...context });
-		} catch (err) {
-			return safeStringify({
-				level,
-				time,
-				msg: message,
-				_logError: err instanceof Error ? err.message : String(err),
-			});
-		}
+		return formatJson(level, message, context, time);
 	}
 	try {
 		const { component, ...rest } = context;
@@ -153,8 +200,17 @@ function emit(level: LogLevel, message: string, context?: LogContext): void {
 	}
 	const merged = { ...baseContext, ...context };
 	// ISO 8601 timestamp sorts lexicographically, which log aggregators rely on.
-	const line = format(level, message, merged, new Date().toISOString());
-	console[level === 'debug' ? 'log' : level](line);
+	const time = new Date().toISOString();
+	console[level === 'debug' ? 'log' : level](format(level, message, merged, time));
+	if (fileStream && !fileSinkFailed) {
+		// Always JSON to the file, independent of the console format; guard the
+		// write so a sink problem can't propagate into the caller.
+		try {
+			fileStream.write(`${formatJson(level, message, merged, time)}\n`);
+		} catch {
+			fileSinkFailed = true;
+		}
+	}
 }
 
 export const logger = {

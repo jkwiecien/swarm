@@ -12,7 +12,7 @@ import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
 import { optionalEnv, requireEnv } from '../lib/env.js';
-import { configureLogger, logger } from '../lib/logger.js';
+import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry } from '../queue/producer.js';
@@ -25,6 +25,13 @@ import { type JobOutcome, processJob } from './consumer.js';
 // entrypoint), so any module that logs at import time would emit an untagged
 // line before this call — nothing does today; keep it that way.
 configureLogger({ component: 'worker' });
+
+// Tee the worker's logs to a durable file (in addition to stdout) so an
+// unattended run leaves a greppable record behind — a terminal scrollback is
+// easy to lose, and the worker's runs are long. Defaults to `logs/worker.log`
+// under the repo root; override the path (or point it elsewhere) with
+// SWARM_LOG_FILE. The file always receives the JSON form (see logger.ts).
+addFileSink(optionalEnv('SWARM_LOG_FILE', 'logs/worker.log'));
 
 const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
 const concurrency = Number(rawConcurrency);
