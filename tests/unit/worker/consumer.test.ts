@@ -421,4 +421,98 @@ describe('processJob', () => {
 			error: 'Review agent (claude) exited with code 143 (aborted)',
 		});
 	});
+
+	describe('in-flight guard (duplicate-dispatch collision)', () => {
+		// The bug: a duplicate `reordered`/`edited` webhook for the same card can be
+		// dequeued after the pm-status dedup's TTL expired (having waited in the
+		// queue behind long runs), re-dispatching the same phase for the same task
+		// while the first run still holds the `task-<id>` worktree — the second
+		// `provision()` then failed with "worktree already exists". The guard skips
+		// the duplicate instead.
+
+		it('skips a duplicate dispatch for a task already running here, without running the phase twice', async () => {
+			// Park the first run's phase on a gate so it stays "in flight" while the
+			// second job is processed.
+			let release: (() => void) | undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			phaseImpl = async () => {
+				await gate;
+				return { agent: agentResult() };
+			};
+
+			const first = processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+			// Let the first call get past its awaits (project lookup, dispatch) and into
+			// runPhase, so it has registered taskId 17 as in-flight.
+			await new Promise((r) => setTimeout(r, 0));
+
+			const second = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(second).toEqual({ status: 'skipped-in-flight', phase: 'review', taskId: '17' });
+			expect(phaseCalls).toHaveLength(1); // the phase ran once, not twice
+
+			release?.();
+			await first; // let the first run settle so it releases the slot before the next test
+		});
+
+		it('releases the slot after the phase settles, so a later dispatch for the same task runs', async () => {
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+			expect(phaseCalls).toHaveLength(1);
+
+			// Same taskId again, now that the first has finished — must not be skipped.
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(2);
+		});
+
+		it('releases the slot even when the phase fails, so a retry for the same task can run', async () => {
+			phaseImpl = async () => {
+				throw new Error('boom');
+			};
+			const failed = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+			expect(failed.status).toBe('phase-failed');
+
+			phaseImpl = async () => ({ agent: agentResult() });
+			const retried = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(retried.status).toBe('phase-succeeded');
+		});
+
+		it('does not block a different task from running concurrently', async () => {
+			let release: (() => void) | undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			phaseImpl = async (_phase, args) => {
+				if (args.taskId === '17') await gate; // only task 17 parks
+				return { agent: agentResult() };
+			};
+
+			const first = processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+			await new Promise((r) => setTimeout(r, 0));
+
+			// A different taskId must run, not be skipped by task 17's in-flight slot.
+			const other: TriggerResult = { ...REVIEW_TRIGGER, taskId: '18', prNumber: '18' };
+			const second = await processJob(createMockGitHubWebhookJob(), registryReturning(other));
+
+			expect(second.status).toBe('phase-succeeded');
+
+			release?.();
+			await first;
+		});
+	});
 });

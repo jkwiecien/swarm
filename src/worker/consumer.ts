@@ -34,6 +34,7 @@ import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/ty
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
 	| { status: 'no-trigger' }
+	| { status: 'skipped-in-flight'; phase: TriggerPhase; taskId: string }
 	| {
 			status: 'phase-succeeded';
 			phase: TriggerPhase;
@@ -155,6 +156,32 @@ function deferAgentRunError(
 		attempt,
 	};
 }
+
+/**
+ * Task IDs whose phase is currently running in *this* worker process, keyed by
+ * the worktree task id a phase provisions (`task-<id>`, `src/worker/git-worktree-manager.ts`).
+ *
+ * A single drag of a board card fires two `projects_v2_item` webhooks
+ * (`reordered` + `edited`), which arrive as two jobs. The Redis dedup
+ * (`src/triggers/pm-status-dedup.ts`) collapses them only while its short TTL is
+ * live; a duplicate that waits in the queue longer than that TTL — stuck behind
+ * other multi-minute phase runs — re-passes the dedup once its key has expired
+ * and re-dispatches the *same* phase for the *same* task while the first run is
+ * still in flight. That second run's `provision()` then collides on the
+ * existing `task-<id>` worktree and fails the (redundant) job with a hard
+ * "worktree already exists" error, even though the original run completes fine.
+ *
+ * This in-process guard closes that window at the worktree's own granularity:
+ * if a phase's worktree task id is already running here, the duplicate is
+ * skipped as a no-op instead of dispatched into a collision. The check-and-add
+ * is synchronous — no `await` between {@link Set.has} and {@link Set.add} — so
+ * BullMQ concurrency can't interleave two callers past it. It intentionally does
+ * *not* touch a stale worktree left by a previous crashed process (that's not in
+ * this set); reclaiming those is issue #99's job, and surfacing the collision
+ * they still cause is issue #98's. Single-worker MVP, so in-memory suffices; a
+ * multi-worker deployment would need a Redis lease keyed the same way.
+ */
+const inFlightTaskIds = new Set<string>();
 
 /**
  * Run the pipeline phase a matched trigger resolved to. The orchestrators
@@ -294,6 +321,19 @@ export async function processJob(
 		return { status: 'no-trigger' };
 	}
 
+	// A duplicate webhook (or a delayed retry) that resolved to a phase whose
+	// worktree task is already running here would collide on `task-<id>`; skip it
+	// rather than dispatch into that collision. See `inFlightTaskIds`.
+	if (inFlightTaskIds.has(trigger.taskId)) {
+		logger.info('Skipping phase — its worktree task is already running in this worker', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+		});
+		return { status: 'skipped-in-flight', phase: trigger.phase, taskId: trigger.taskId };
+	}
+	inFlightTaskIds.add(trigger.taskId);
+
 	try {
 		const result = await runPhase(trigger, project, signal);
 		logger.info('Pipeline phase completed', {
@@ -340,5 +380,11 @@ export async function processJob(
 		// exact incident the dedup guards against. The 5-minute TTL reaps a claim
 		// whose run genuinely failed before submitting. See review-dispatch-dedup.ts.
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
+	} finally {
+		// Release the slot once the run settles (success, failure, or deferral) so
+		// a later legitimate dispatch for the same task — a genuine retry, or a
+		// re-run after this one finished — isn't blocked. A deferred job is
+		// re-enqueued and re-enters `processJob` fresh, past this release.
+		inFlightTaskIds.delete(trigger.taskId);
 	}
 }
