@@ -89,3 +89,12 @@ Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-
 - Small, reviewable changes over sweeping rewrites.
 - When the SWARM protocol, architecture, or lifecycle is unclear, check `PROJECT.md` first — do not guess message shapes, task types, or pipeline phases.
 - **Don't assume a new agent-CLI harness has identical flag semantics to `claude`'s, even when a flag name matches.** Two CLIs can expose the same-named flag with different parsing behavior: `claude`'s `-p`/`--print` is a bare boolean (its position among other flags doesn't matter — the prompt is a separate positional argument), while Antigravity's `agy -p`/`--print`/`--prompt` is a *value* flag whose value is the prompt itself — a flag landing between `-p` and the prompt gets swallowed as the prompt instead of the real task, and the CLI still exits 0 having done nothing (confirmed live on a failed Implementation run; see the `DEFAULT_ARGS`/`PRINT_FLAG` comment in `src/harness/agent-cli.ts`). Verify a new harness's actual argument-parsing behavior against its own `--help` and a real invocation — never infer it from Claude's shape.
+
+---
+
+## 7. Configuration
+
+Every configuration option — general/host settings (environment variables) and per-project config (`swarm.config.json`) — is catalogued in **[`README.md` § Configuration](../README.md#configuration)**. That section is the canonical human-facing reference: exact keys, defaults, required-ness, and the file each lives in.
+
+- **When the user asks you to change a setting** (rather than doing it in the dashboard UI), use that catalogue: find the option there, then edit the right place — `.env` for a general setting, `swarm.config.json` for project config (and remind them to run `swarm config apply` / `npm run db:seed` to load it into Postgres, since the running services read config from the DB, not the file). Don't hunt through source to rediscover an option the catalogue already lists.
+- **Keep the catalogue current** — same rule as `README.md`/the `ai/*.md` docs (§1, §2): whenever a change adds, removes, renames, or re-defaults a config option (an env var, a `ProjectConfig` field, a provider-schema field), update the matching row in `README.md`'s Configuration section **in the same change**. The Zod schema in `src/config/schema.ts` stays the source of truth for validation; the README section is its human-readable mirror and must not drift from it.

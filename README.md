@@ -6,7 +6,7 @@
 
 > **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue in Docker Compose plus a host-run worker, reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and the [GitHub Projects board](https://github.com/orgs/SmartTechBrewery/projects/6/views/1) for the current backlog.
 
-**Contents**: [Core idea](#core-idea) · [Architecture at a glance](#architecture-at-a-glance-mvp) · [Pipeline phases](#pipeline-phases) · [Security model](#security-model) · [Extensibility](#extensibility) · [Running the stack](#running-the-stack-local) · [Status](#status) · [Contributing](#contributing)
+**Contents**: [Core idea](#core-idea) · [Architecture at a glance](#architecture-at-a-glance-mvp) · [Pipeline phases](#pipeline-phases) · [Security model](#security-model) · [Extensibility](#extensibility) · [Running the stack](#running-the-stack-local) · [Configuration](#configuration) · [Status](#status) · [Contributing](#contributing)
 
 ## Core idea
 
@@ -108,6 +108,129 @@ SWARM's host ports are offset from Cascade's defaults (router `3100` vs `3000`, 
 The router exposes a health check at `http://localhost:${ROUTER_PORT:-3100}/health`; the dashboard exposes one at `http://localhost:${DASHBOARD_PORT:-3101}/health` plus a tRPC endpoint at `/trpc`. The router's webhook receiver (`POST /github/webhook`) verifies HMAC signatures, resolves the project, and applies a loop-prevention drop gate (SWARM-9) for both repo-scoped SCM events and the GitHub Projects board event, then hands off to the job queue. From there, a trigger registry dispatches each event to the pipeline phase it names — see [Pipeline phases](#pipeline-phases) above for what each phase does, and [Status](#status) below for the implementation detail behind the queue, trigger registry, and dedup/retry logic.
 
 To let GitHub reach this local router with webhooks, expose it over a public HTTPS URL with a Cloudflare Tunnel — see **[`docs/cloudflare-tunnel.md`](./docs/cloudflare-tunnel.md)** for the setup (a quick ephemeral tunnel for dev, a CLI-managed named tunnel for a stable URL, or a dashboard-created tunnel run as an opt-in `cloudflared` service in `docker-compose.yml` so it starts with the rest of the stack) and the GitHub webhook configuration.
+
+## Configuration
+
+SWARM's configuration splits into two layers:
+
+- **General settings** — process/host-level knobs, set as **environment variables** (usually in `.env`, sourced from `.env.docker.example`). No schema; read directly where needed. These configure the router, worker, dashboard, database, Redis, credential encryption, and logging.
+- **Project config** — the **per-project** shape (`swarm.config.json`, one entry per project), validated by a Zod schema (`src/config/schema.ts` — the single source of truth) and loaded into Postgres via `swarm config apply` / `npm run db:seed`. This is where a project's repo, worktree layout, board mapping, credential references, and per-phase agent/pipeline behaviour live.
+
+> **This section is the canonical, human-editable catalogue of every configuration option.** It is meant to be kept in lock-step with the code (see [`ai/RULES.md` §7](./ai/RULES.md)): when an option is added, removed, renamed, or its default changes, update the matching row here in the same change. When you'd rather not click through the dashboard UI, point an agent at this section and ask it to change a setting — everything editable is listed here with the exact key, default, and file it lives in.
+
+### General settings (environment variables)
+
+Grouped by concern. "Required" means startup throws if it's unset; everything else has a default or a safe fallback. Docker-side ports (`POSTGRES_PORT`, `REDIS_PORT`, `ROUTER_PORT`, …) are the **host-published** ports; inside the Compose network the services use their own fixed container ports.
+
+**Database (Postgres)** — `src/db/client.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | _(unset)_ | Full Postgres connection string. If set, used verbatim and the `SWARM_POSTGRES_*` fallbacks are ignored. If neither this nor `SWARM_POSTGRES_HOST` is set, startup throws. |
+| `SWARM_POSTGRES_HOST` | _(unset)_ | Host used to assemble a connection string when `DATABASE_URL` is absent. |
+| `SWARM_POSTGRES_PORT` | `5432` | Port for the assembled connection string (container-internal; the host port is `POSTGRES_PORT`). |
+| `SWARM_POSTGRES_USER` | `swarm` | DB user for the assembled connection string. |
+| `SWARM_POSTGRES_PASSWORD` | `` (empty) | DB password for the assembled connection string. |
+| `SWARM_POSTGRES_DB` | `swarm` | Database name for the assembled connection string. |
+| `DATABASE_SSL` | SSL on | The literal `false` disables TLS; any other value keeps TLS on with `rejectUnauthorized: true`. |
+| `DATABASE_CA_CERT` | _(unset)_ | Path to a CA cert file for the DB TLS connection; startup throws if the path doesn't exist. |
+
+**Queue & worker (Redis / BullMQ)**
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
+| `SWARM_WORKER_CONCURRENCY` | `1` | How many jobs the worker runs at once (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+
+**Credential encryption at rest** — `src/db/crypto.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CREDENTIAL_MASTER_KEY` | _(unset → plaintext)_ | 64-char (32-byte) hex AES-256-GCM key for encrypting `project_credentials`. If unset, secrets are stored **plaintext** (dev only). Validated for length and hex format. |
+
+**Dashboard API** — `src/dashboard.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DASHBOARD_TOKEN` | **required** | Shared-secret bearer token required on every `/trpc/*` request (`/health` is exempt). Startup throws if unset. |
+| `DASHBOARD_PORT` | `3101` | Port the dashboard listens on (bound to `127.0.0.1` only). |
+
+**Router** — `src/router/index.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Webhook-receiver port **inside the router container**; the host-published port is `ROUTER_PORT`. |
+
+**Logging** — `src/lib/logger.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SWARM_LOG_LEVEL` | `info` | Minimum level emitted: `debug` \| `info` \| `warn` \| `error`. |
+| `SWARM_LOG_FORMAT` | auto | `json` or `pretty`. Auto-selects `pretty` on a TTY, `json` when piped. |
+| `SWARM_LOG_FILE` | `logs/worker.log` (worker) | The worker tees its log lines (always JSON) to this file, in addition to stdout, so an unattended run leaves a greppable record. Set to override the path; relative paths resolve against the repo root (`logs/` is git-ignored). Other processes don't write a log file unless wired to. |
+| `NO_COLOR` | _(unset)_ | Any value disables ANSI colour in `pretty` mode. |
+
+**Host / Docker Compose ports** — `docker-compose.yml`, `.env.docker.example`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTGRES_PORT` | `5433` | Host port the Compose Postgres is published on. |
+| `REDIS_PORT` | `6380` | Host port the Compose Redis is published on. |
+| `ROUTER_PORT` | `3100` | Host port the Compose router is published on; also where `swarm status` probes `/health`. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | _(unset)_ | Token for the opt-in `cloudflared` Compose service (see `docs/cloudflare-tunnel.md`). |
+| `COMPOSE_PROFILES` | _(unset)_ | Compose profiles to activate, e.g. `tunnel` to bring up `cloudflared`. |
+
+**Credential secret values** (referenced by project config, not config themselves): the env vars a project's `credentials` block *points at* — by default `GITHUB_TOKEN_IMPLEMENTER`, `GITHUB_TOKEN_REVIEWER`, `GITHUB_WEBHOOK_SECRET`. `swarm config apply` reads these from the environment and stores them (encrypted) in Postgres. An unset reference is warned-and-skipped, not fatal.
+
+**Web frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`web/.env`)
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_DASHBOARD_TOKEN` | _(unset)_ | Must equal the backend `DASHBOARD_TOKEN`; sent as the `Authorization: Bearer` header. |
+| `VITE_API_URL` | `` (same-origin) | Base URL for the dashboard API. |
+
+### Project config (`swarm.config.json`)
+
+The file is `{ "projects": [ … ] }` — a non-empty array of project objects. Source of truth: `src/config/schema.ts` (+ `src/integrations/pm/github-projects/config-schema.ts`). Edit the file, then run `swarm config apply` (or `npm run db:seed`) to load it into Postgres — the running router/worker resolve config from the DB, not the file.
+
+**Top-level project fields** — `ProjectConfigSchema`
+| Field | Required / Default | Purpose |
+| --- | --- | --- |
+| `id` | **required** | Stable internal project id; one Postgres row per project. |
+| `name` | **required** | Human-facing name; also `{project-name}` in worktree paths. |
+| `repo` | **required** | GitHub repo as `owner/repo`. |
+| `repoRoot` | **required** | Absolute path to the main repo checkout on the dev machine. |
+| `worktreeRoot` | `.swarm-workspaces` | Directory under `repoRoot` for per-task git worktrees. |
+| `baseBranch` | `main` | Branch worktrees are cut from and PRs target. |
+| `branchPrefix` | `issue-` | Prefix for task branch names (`issue-<n>-<slug>`). |
+| `pm` | `{ type: "github-projects" }` | PM provider discriminator (only `github-projects` exists today). |
+| `githubProjects` | **required** | GitHub Projects board mapping (below). |
+| `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
+| `agents` | optional | Per-phase agent CLI/model overrides (below). |
+| `pipeline` | optional | Per-phase autonomous board-move control (below). |
+
+**`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
+| Field | Purpose |
+| --- | --- |
+| `implementer` | Reference to the implementer-persona GitHub token. |
+| `reviewer` | Reference to the reviewer-persona GitHub token. |
+| `webhookSecret` | Reference to the GitHub webhook HMAC secret. |
+
+**`githubProjects`** — `githubProjectsConfigSchema`
+| Field | Required / Default | Purpose |
+| --- | --- | --- |
+| `projectId` | **required** | Projects v2 board node id (e.g. `PVT_…`). |
+| `statusFieldId` | **required** | Node id of the single-select "Status" field. |
+| `statusOptions` | **required** | Map of SWARM pipeline status keys (`backlog`, `planning`, `todo`, `inProgress`, `inReview`, `done`) → the Status field's single-select option ids. |
+| `phaseLabels` | optional | Map of SWARM phase keys (`phase-0`…) → repo label names. |
+
+**`agents`** — per-phase overrides; every phase key is optional, omit to keep the phase's coded default. Phases: `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
+| Field | Purpose |
+| --- | --- |
+| `cli` | `claude` or `antigravity`. Omit to keep the phase's coded-default CLI. |
+| `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`; Antigravity: the exact `agy models` display strings). Omit for the CLI's default model. |
+
+**`pipeline`** — controls whether a phase moves the board item itself on completion. Only `planning` and `implementation` are configurable (the other phases are SCM-event-driven and never move a card). Each is `{ autoAdvance?: boolean }`:
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. |
+| `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
+
+### Editable via the dashboard UI
+
+Today the web dashboard exposes only a **subset**: creating a project (`id`, `name`, `repo`, `repoRoot`) and deleting one. The board mapping (`githubProjects`), `credentials`, `agents`, `pipeline`, and all general/env settings are **not** yet editable in the UI — change those in `swarm.config.json` / `.env` and re-apply. Broader per-project settings screens and credentials management are on the phase-6 backlog (see [Status](#status)).
 
 ## Status
 
