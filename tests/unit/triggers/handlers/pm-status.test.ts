@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 
-vi.mock('@/triggers/pm-status-dedup.js', () => ({ shouldDispatchForStatus: vi.fn() }));
+vi.mock('@/triggers/pm-status-dedup.js', () => ({ recordStatusAndDetectChange: vi.fn() }));
 
 import { createPmStatusTrigger } from '@/triggers/handlers/pm-status.js';
-import { shouldDispatchForStatus } from '@/triggers/pm-status-dedup.js';
+import { recordStatusAndDetectChange } from '@/triggers/pm-status-dedup.js';
 import type { TriggerContext } from '@/triggers/types.js';
 import {
 	createMockGitHubProjectsParsedEvent,
@@ -16,8 +16,8 @@ import {
 const PROJECT = createMockProjectConfig();
 
 beforeEach(() => {
-	vi.mocked(shouldDispatchForStatus).mockReset();
-	vi.mocked(shouldDispatchForStatus).mockResolvedValue(true);
+	vi.mocked(recordStatusAndDetectChange).mockReset();
+	vi.mocked(recordStatusAndDetectChange).mockResolvedValue(true);
 });
 
 function ctx(
@@ -108,20 +108,28 @@ describe('pm-status trigger', () => {
 		it('returns null for a status that starts no phase', async () => {
 			const workItem = createMockWorkItem({ statusId: 'f75ad846' }); // Backlog
 			expect(await trigger(workItem).handle(ctx())).toBeNull();
-			expect(shouldDispatchForStatus).not.toHaveBeenCalled();
 		});
 
-		it('checks dedup with the item node ID and re-read status before dispatching', async () => {
+		it('records a status that starts no phase (so a later return to a phase reads as a change)', async () => {
+			// Backlog starts no phase, but it must still be recorded — that is what lets
+			// a subsequent move back to ToDo/Planning register as a genuine change
+			// rather than a same-status no-op.
+			const workItem = createMockWorkItem({ statusId: 'f75ad846' }); // Backlog
+			await trigger(workItem).handle(ctx({ itemNodeId: 'PVTI_backlog' }));
+			expect(recordStatusAndDetectChange).toHaveBeenCalledWith('PVTI_backlog', 'f75ad846');
+		});
+
+		it('records the item node ID and re-read status before dispatching', async () => {
 			const workItem = createMockWorkItem({
 				statusId: '61e4505c', // Planning
 				url: 'https://github.com/jkwiecien/swarm/issues/10',
 			});
 			await trigger(workItem).handle(ctx({ itemNodeId: 'PVTI_dedup' }));
-			expect(shouldDispatchForStatus).toHaveBeenCalledWith('PVTI_dedup', '61e4505c');
+			expect(recordStatusAndDetectChange).toHaveBeenCalledWith('PVTI_dedup', '61e4505c');
 		});
 
-		it('returns null (skips dispatch) when dedup says this status was already dispatched', async () => {
-			vi.mocked(shouldDispatchForStatus).mockResolvedValue(false);
+		it('returns null (skips dispatch) when the status is unchanged since last observation', async () => {
+			vi.mocked(recordStatusAndDetectChange).mockResolvedValue(false);
 			const workItem = createMockWorkItem({
 				statusId: '61e4505c', // Planning
 				url: 'https://github.com/jkwiecien/swarm/issues/10',

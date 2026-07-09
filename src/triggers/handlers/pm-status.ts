@@ -24,7 +24,7 @@ import { createGitHubProjectsProvider } from '../../integrations/pm/github-proje
 import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { logger } from '../../lib/logger.js';
 import type { PMProvider } from '../../pm/types.js';
-import { shouldDispatchForStatus } from '../pm-status-dedup.js';
+import { recordStatusAndDetectChange } from '../pm-status-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 import { issueNumberFromUrl } from './shared.js';
 
@@ -88,6 +88,14 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 				return null;
 			}
 
+			// Record the freshly re-read status as this item's latest observed status
+			// and learn whether it *changed*. Done for every status — including ones
+			// that start no phase (backlog, inProgress, …), before the phase gate below
+			// — so that a departure to such a status is remembered: leaving "ToDo" and
+			// dragging back later then reads as a genuine change rather than a
+			// same-status no-op that gets silently skipped (`pm-status-dedup.ts`).
+			const statusChanged = await recordStatusAndDetectChange(event.itemNodeId, workItem.statusId);
+
 			const phase = resolvePipelinePhaseForOptionId(project.githubProjects, workItem.statusId);
 			if (!phase) {
 				// A valid board status that simply doesn't start a phase (backlog, todo,
@@ -103,7 +111,7 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 			// the `TRIGGERING_ACTIONS` comment above): a pure within-column reorder
 			// re-reads the same status every time, so this is the check that actually
 			// stops it from re-dispatching the same phase over and over.
-			if (!(await shouldDispatchForStatus(event.itemNodeId, workItem.statusId))) {
+			if (!statusChanged) {
 				return null;
 			}
 

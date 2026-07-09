@@ -1,5 +1,5 @@
 /**
- * PM status-dispatch deduplication, Redis-backed — mirrors
+ * PM status-change deduplication, Redis-backed — mirrors
  * `review-dispatch-dedup.ts`'s pattern, for a gap that dedup opened up rather
  * than closed.
  *
@@ -14,25 +14,39 @@
  * Claude Code run for an in-progress task, or a duplicate plan comment.
  *
  * Unlike `review-dispatch-dedup.ts`'s "claim once, ever" semantics (a PR+SHA is
- * immutable), this tracks the *last dispatched status* per item and skips only
- * when the freshly re-read status matches it. A genuine return to a status —
- * moved away and intentionally moved back to Planning, say — still dispatches;
- * only a same-status no-op (reorder, or a duplicate webhook delivery) is
- * skipped.
+ * immutable), this tracks the *last observed status* per item and reports a
+ * change only when the freshly re-read status differs from it. The caller
+ * records **every** status it observes — including ones that start no phase
+ * (Backlog, In progress, In review, Done) — not just the phase-start ones it
+ * dispatches on. That total record is what makes a genuine return to a status
+ * dispatch again: leaving "ToDo" for "Backlog" and dragging back to "ToDo"
+ * records `Backlog` in between, so the return reads as a real change. Only a
+ * same-status no-op (a within-column reorder, or a duplicate webhook delivery)
+ * reports "unchanged".
  *
- * The stored value carries a TTL (mirroring `review-dispatch-dedup.ts`'s `EX`),
- * not just for Redis hygiene: confirmed live, a failed Implementation run
- * (agy's `-p` argument-order bug — see `src/harness/agent-cli.ts`) left an item
- * sitting back in "ToDo" with its dispatched status already recorded as
- * "ToDo", so moving it to "ToDo" again to retry — the *intended* recovery
- * path, per the module doc above — looked identical to a same-status no-op
- * and got silently skipped forever. The intermediate pickup move to "In
- * progress" doesn't re-arm this key either, since "In progress" isn't a
- * phase-start status this trigger dispatches on (`src/pm/pipeline.ts`) — so
- * without a TTL, one failed run permanently blocks every future retry for
- * that item. The TTL only needs to be longer than a burst of
- * near-simultaneous `reordered` events from one drag gesture (milliseconds),
- * so it's generous on purpose.
+ * Recording *every* observed status — rather than only the phase-start statuses
+ * actually dispatched — is deliberate, and fixes a class of silently-stuck
+ * retries. Earlier this tracked only the last *dispatched* status, so any move
+ * to a non-phase status was invisible here: an item dispatched to "ToDo", then
+ * dragged to "Backlog" (or auto-moved to "In progress" as a pickup report) and
+ * back to "ToDo", read as the *same* last-dispatched "ToDo" and got skipped —
+ * the intended "move it out and back to retry" recovery never fired. Observing
+ * the intermediate status closes that gap.
+ *
+ * The stored value still carries a TTL (mirroring `review-dispatch-dedup.ts`'s
+ * `EX`) as a backstop for the one case the observed-status record can't cover:
+ * an item that *never leaves* a phase-start status. Confirmed live, a failed
+ * Implementation run (agy's `-p` argument-order bug — see
+ * `src/harness/agent-cli.ts`) left an item sitting in "ToDo" with "ToDo"
+ * already recorded, so re-dropping it on "ToDo" *without* moving it out first
+ * looks identical to a within-column reorder. Without a TTL that would block
+ * every retry of an in-place item forever; with it, the record lapses after a
+ * quiet window and the next drop dispatches. It's generous on purpose — only
+ * needs to outlast a burst of near-simultaneous `reordered` events from one
+ * drag gesture (milliseconds) — but note it is refreshed on every observation,
+ * so an item repeatedly re-dropped on the same status inside the window stays
+ * deduped; move it out and back (the primary recovery path above) to retry
+ * immediately.
  *
  * `SET key val EX ttl GET` (Redis 6.2+), not a `GET` followed by a separate
  * conditional `SET`: confirmed live, one drag-to-Planning gesture fires both a
@@ -57,7 +71,7 @@ import { parseRedisUrl } from '../lib/redis.js';
 
 const KEY_NS = 'swarm:pm-status-dedup:';
 
-/** Same window as `review-dispatch-dedup.ts`'s `DEDUP_TTL_SEC` — see the module doc above for why this needs a TTL at all. */
+/** Backstop window for an item that never leaves a phase-start status — see the module doc above for why this needs a TTL at all. */
 const DEDUP_TTL_SEC = 5 * 60;
 
 let redisInstance: Redis | null = null;
@@ -82,19 +96,27 @@ function getRedis(): Redis {
 }
 
 /**
- * Whether the pm-status trigger should dispatch a phase for `itemNodeId` given
- * its freshly re-read `statusId`. Returns `false` when the last status
- * dispatched for this exact item was already `statusId` — updates the stored
- * value and returns `true` for any different status, including the item's
- * very first dispatch (no stored value yet).
+ * Record `statusId` as the latest status observed for `itemNodeId` and report
+ * whether it is a *change* from the last one observed. Returns `true` when the
+ * status differs from the stored value — including the item's very first
+ * observation (no stored value yet) — and `false` when it matches (a
+ * within-column reorder, or a duplicate webhook delivery).
+ *
+ * Call this for **every** observed status, not only the phase-start ones the
+ * caller dispatches on: recording the statuses in between (Backlog, In
+ * progress, …) is exactly what lets a return to a phase-start status read as a
+ * real change rather than a same-status no-op (see the module doc above). The
+ * "does this status start a phase?" decision stays with the caller; this
+ * function only answers "did the status change?".
  *
  * Fails closed on Redis errors, matching `review-dispatch-dedup.ts`'s posture:
- * skipping a legitimate dispatch is cheaper than risking a duplicate one, and
- * the board keeps generating webhook events as the user keeps interacting
- * with it, so a transient failure isn't a permanently stuck item — the next
- * event gets another chance once Redis recovers.
+ * reporting "no change" (so the caller skips a legitimate dispatch) is cheaper
+ * than risking a duplicate one, and the board keeps generating webhook events
+ * as the user keeps interacting with it, so a transient failure isn't a
+ * permanently stuck item — the next event gets another chance once Redis
+ * recovers.
  */
-export async function shouldDispatchForStatus(
+export async function recordStatusAndDetectChange(
 	itemNodeId: string,
 	statusId: string,
 ): Promise<boolean> {
@@ -102,7 +124,7 @@ export async function shouldDispatchForStatus(
 	try {
 		const previous = await getRedis().set(key, statusId, 'EX', DEDUP_TTL_SEC, 'GET');
 		if (previous === statusId) {
-			logger.debug('pm-status dedup: same status as last dispatch, skipping', {
+			logger.debug('pm-status dedup: status unchanged since last observation, skipping', {
 				itemNodeId,
 				statusId,
 			});
