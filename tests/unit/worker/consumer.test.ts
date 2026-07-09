@@ -21,7 +21,8 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	findProjectByIdFromDb: async (id: string) => projectLookup(id),
 }));
 
-const provider = { type: 'github-projects' } as unknown as PMProvider;
+const addComment = vi.fn(async (_id: string, _text: string) => 'comment-1');
+const provider = { type: 'github-projects', addComment } as unknown as PMProvider;
 const providerBuiltWith: ProjectConfig[] = [];
 vi.mock('@/integrations/pm/github-projects/provider.js', () => ({
 	createGitHubProjectsProvider: (project: ProjectConfig) => {
@@ -97,6 +98,8 @@ describe('processJob', () => {
 		providerBuiltWith.length = 0;
 		projectLookup = () => PROJECT;
 		phaseImpl = async () => ({ agent: agentResult() });
+		addComment.mockClear();
+		addComment.mockResolvedValue('comment-1');
 	});
 
 	it('throws for a job referencing an unknown project', async () => {
@@ -290,6 +293,71 @@ describe('processJob', () => {
 			taskId: '17',
 			error: 'review agent exited with code 3',
 		});
+	});
+
+	it('posts a failure comment on the backing issue when a work-item phase fails terminally', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new Error("implementation agent (antigravity) exited with code 1 for task '100'");
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
+		const [itemId, body] = addComment.mock.calls[0];
+		expect(itemId).toBe(workItem.id);
+		expect(body).toContain('SWARM run failed');
+		expect(body).toContain('**implementation**');
+		expect(body).toContain("exited with code 1 for task '100'");
+	});
+
+	it('does not comment on a deferred (rate-limited) failure — the run will retry', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('rate limited', { kind: 'rate-limit' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('does not comment for a PR-driven phase failure (no backing work item)', async () => {
+		phaseImpl = async () => {
+			throw new Error('review agent exited with code 3');
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('still reports phase-failed when the failure comment itself fails to post', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		addComment.mockRejectedValue(new Error('github 502'));
+		phaseImpl = async () => {
+			throw new Error('implementation agent exited with code 1');
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
 	});
 
 	it('defers a rate-limited phase instead of failing it, delaying until after the reset', async () => {
