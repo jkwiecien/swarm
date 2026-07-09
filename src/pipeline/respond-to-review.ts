@@ -194,7 +194,7 @@ export function buildRespondToReviewPrompt(context: {
  * bounded by {@link MAX_AGENT_OUTPUT_BYTES}.
  */
 function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult): void {
-	logger.error('respond-to-review phase: agent failed', {
+	logger.error('Phase failed - Respond-to-review — agent output', {
 		taskId,
 		prNumber,
 		cli: agent.cli,
@@ -239,7 +239,7 @@ export async function runRespondToReviewPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info(`respond-to-review phase: start — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Respond-to-review — running ${describeAgent(cli, model)}`, {
 		taskId,
 		prNumber,
 		prBranch,
@@ -307,7 +307,7 @@ export async function runRespondToReviewPhase(
 			);
 		}
 
-		logger.info('respond-to-review phase: done', { taskId, prNumber, prBranch, outcome });
+		logger.info('Phase finished - Respond-to-review', { taskId, prNumber, prBranch, outcome });
 
 		return { outcome, agent };
 	} finally {

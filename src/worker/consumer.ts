@@ -23,6 +23,7 @@ import { type AgentFailure, AgentRunError } from '../harness/agent-failure.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
+import { phaseLabel } from '../pipeline/phase-label.js';
 import { runPlanningPhase } from '../pipeline/planning.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
@@ -122,7 +123,7 @@ function deferAgentRunError(
 ): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
 	const attempt = job.rateLimitRetryAttempt ?? 0;
 	if (attempt >= MAX_RATE_LIMIT_RETRIES) {
-		logger.error('Pipeline phase deferred failure — retry budget exhausted, failing', {
+		logger.error(`Phase failed - ${phaseLabel(trigger.phase)} — retry budget exhausted`, {
 			projectId,
 			phase: trigger.phase,
 			taskId: trigger.taskId,
@@ -135,8 +136,8 @@ function deferAgentRunError(
 	const retryDelayMs = retryDelayForFailure(failure, Date.now());
 	logger.warn(
 		failure.kind === 'aborted'
-			? 'Pipeline phase aborted by worker shutdown — deferring retry'
-			: 'Pipeline phase rate-limited — deferring retry',
+			? `Phase stopped - ${phaseLabel(trigger.phase)} — worker shutdown, deferring retry`
+			: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
 		{
 			projectId,
 			phase: trigger.phase,
@@ -403,7 +404,10 @@ export async function processJob(
 
 	try {
 		const result = await runPhase(trigger, project, signal);
-		logger.info('Pipeline phase completed', {
+		// The phase itself logs the scannable `Phase finished - <label>` line (it
+		// carries the run's result — PR URL, verdict, …); this is just the
+		// orchestration-level echo, kept at debug so success shows one finish line.
+		logger.debug('Job phase completed', {
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,
@@ -434,7 +438,7 @@ export async function processJob(
 			if (deferred) return deferred;
 		}
 
-		logger.error('Pipeline phase failed', {
+		logger.error(`Phase failed - ${phaseLabel(trigger.phase)}`, {
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,

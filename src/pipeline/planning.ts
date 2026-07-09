@@ -173,7 +173,7 @@ export function planCommentBody(plan: string, autoAdvance = DEFAULT_AUTO_ADVANCE
  * bounded by {@link MAX_AGENT_OUTPUT_BYTES}, so this can't blow up the log.
  */
 function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResult): void {
-	logger.error('planning phase: agent failed', {
+	logger.error('Phase failed - Planning — agent output', {
 		taskId,
 		workItemId,
 		cli: agent.cli,
@@ -216,7 +216,7 @@ export async function runPlanningPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info(`planning phase: start — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Planning — running ${describeAgent(cli, model)}`, {
 		taskId,
 		workItemId: workItem.id,
 		cli,
@@ -268,7 +268,7 @@ export async function runPlanningPhase(
 			await pm.moveWorkItem(workItem.id, NEXT_STATUS);
 		}
 
-		logger.info('planning phase: done', {
+		logger.info('Phase finished - Planning', {
 			taskId,
 			workItemId: workItem.id,
 			commentId,

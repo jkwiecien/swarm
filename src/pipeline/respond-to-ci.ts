@@ -173,7 +173,7 @@ export function buildRespondToCiPrompt(context: {
  * bounded by {@link MAX_AGENT_OUTPUT_BYTES}.
  */
 function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult): void {
-	logger.error('respond-to-ci phase: agent failed', {
+	logger.error('Phase failed - Respond-to-CI — agent output', {
 		taskId,
 		prNumber,
 		cli: agent.cli,
@@ -218,7 +218,7 @@ export async function runRespondToCiPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info(`respond-to-ci phase: start — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Respond-to-CI — running ${describeAgent(cli, model)}`, {
 		taskId,
 		prNumber,
 		prBranch,
@@ -286,7 +286,7 @@ export async function runRespondToCiPhase(
 			);
 		}
 
-		logger.info('respond-to-ci phase: done', { taskId, prNumber, prBranch, outcome });
+		logger.info('Phase finished - Respond-to-CI', { taskId, prNumber, prBranch, outcome });
 
 		return { outcome, agent };
 	} finally {

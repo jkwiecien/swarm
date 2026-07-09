@@ -213,7 +213,7 @@ export function implementationCommentBody(
  * Output is already bounded by {@link MAX_AGENT_OUTPUT_BYTES}.
  */
 function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResult): void {
-	logger.error('implementation phase: agent failed', {
+	logger.error('Phase failed - Implementation — agent output', {
 		taskId,
 		workItemId,
 		cli: agent.cli,
@@ -267,7 +267,7 @@ export async function runImplementationPhase(
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info(`implementation phase: start — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Implementation — running ${describeAgent(cli, model)}`, {
 		taskId,
 		workItemId: workItem.id,
 		cli,
@@ -343,7 +343,7 @@ export async function runImplementationPhase(
 			await pm.moveWorkItem(workItem.id, NEXT_STATUS);
 		}
 
-		logger.info('implementation phase: done', {
+		logger.info('Phase finished - Implementation', {
 			taskId,
 			workItemId: workItem.id,
 			branch: handle.branch,

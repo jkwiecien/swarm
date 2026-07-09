@@ -172,7 +172,7 @@ export function buildReviewPrompt(context: {
  * bounded by {@link MAX_AGENT_OUTPUT_BYTES}.
  */
 function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult): void {
-	logger.error('review phase: agent failed', {
+	logger.error('Phase failed - Review — agent output', {
 		taskId,
 		prNumber,
 		cli: agent.cli,
@@ -215,7 +215,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
-	logger.info(`review phase: start — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Review — running ${describeAgent(cli, model)}`, {
 		taskId,
 		prNumber,
 		headSha,
@@ -281,7 +281,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			);
 		}
 
-		logger.info('review phase: done', { taskId, prNumber, headSha, verdict });
+		logger.info('Phase finished - Review', { taskId, prNumber, headSha, verdict });
 
 		return { verdict, agent };
 	} finally {
