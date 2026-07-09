@@ -36,7 +36,7 @@ export async function claimWorktreeLease(projectId: string, taskId: string): Pro
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
 		await getRedis().set(namespacedKey, '1', 'EX', LEASE_TTL_SEC);
-		logger.info('worktree lease: claimed lease for task', { projectId, taskId });
+		logger.debug('worktree lease: claimed lease for task', { projectId, taskId });
 	} catch (err) {
 		logger.error('worktree lease: claim failed', { projectId, taskId, error: String(err) });
 	}
@@ -48,7 +48,7 @@ export async function releaseWorktreeLease(projectId: string, taskId: string): P
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
 		await getRedis().del(namespacedKey);
-		logger.info('worktree lease: released lease for task', { projectId, taskId });
+		logger.debug('worktree lease: released lease for task', { projectId, taskId });
 	} catch (err) {
 		logger.warn('worktree lease: release failed (TTL will reap)', {
 			projectId,

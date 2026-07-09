@@ -304,7 +304,7 @@ async function reportPhaseFailureToBoard(
 			trigger.workItem.id,
 			phaseFailureCommentBody(trigger.phase, error),
 		);
-		logger.info('Posted phase-failure comment to the board item', {
+		logger.debug('Posted phase-failure comment to the board item', {
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,
@@ -380,7 +380,7 @@ export async function processJob(
 
 	const trigger = await registry.dispatch(ctx);
 	if (!trigger) {
-		logger.info('Job matched no trigger — completing as a no-op', {
+		logger.debug('Job matched no trigger — completing as a no-op', {
 			projectId: project.id,
 			source: ctx.source,
 			eventType: job.event.eventType,
@@ -393,7 +393,7 @@ export async function processJob(
 	// worktree task is already running here would collide on `task-<id>`; skip it
 	// rather than dispatch into that collision. See `inFlightTaskIds`.
 	if (inFlightTaskIds.has(trigger.taskId)) {
-		logger.info('Skipping phase — its worktree task is already running in this worker', {
+		logger.debug('Skipping phase — its worktree task is already running in this worker', {
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,

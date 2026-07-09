@@ -142,7 +142,7 @@ export async function pruneStaleWorktrees(
 		skippedDirty,
 	);
 
-	logger.info('worktree retention sweep complete', {
+	logger.debug('worktree retention sweep complete', {
 		projectId: project.id,
 		kept: kept.length,
 		pruned: pruned.length,

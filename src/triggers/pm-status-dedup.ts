@@ -102,7 +102,7 @@ export async function shouldDispatchForStatus(
 	try {
 		const previous = await getRedis().set(key, statusId, 'EX', DEDUP_TTL_SEC, 'GET');
 		if (previous === statusId) {
-			logger.info('pm-status dedup: same status as last dispatch, skipping', {
+			logger.debug('pm-status dedup: same status as last dispatch, skipping', {
 				itemNodeId,
 				statusId,
 			});

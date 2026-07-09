@@ -72,7 +72,7 @@ const worker = new Worker(
 );
 
 worker.on('completed', (job, outcome: JobOutcome) => {
-	logger.info('Job completed', { jobId: job.id, name: job.name, outcome });
+	logger.debug('Job completed', { jobId: job.id, name: job.name, outcome });
 	// A rate-limited or worker-aborted phase completes (from BullMQ's view) as
 	// `phase-deferred`: re-enqueue it delayed so it retries once quota is back, or
 	// once whatever restarted the worker mid-run has settled (issue #91; aborted
@@ -104,7 +104,7 @@ async function reenqueueDeferred(
 			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
 		};
 		await enqueueDelayedRetry(next, outcome.retryDelayMs);
-		logger.info('Rate-limited phase re-enqueued for retry', {
+		logger.debug('Rate-limited phase re-enqueued for retry', {
 			jobId,
 			phase: outcome.phase,
 			taskId: outcome.taskId,
@@ -128,11 +128,11 @@ worker.on('error', (err) => {
 	logger.error('Worker queue error', { error: err.message });
 });
 
-logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
+logger.debug('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 
 async function runWorktreeSweep(): Promise<void> {
 	try {
-		logger.info('Starting background worktree retention sweep');
+		logger.debug('Starting background worktree retention sweep');
 		const projects = await listAllProjectsFromDb();
 		for (const project of projects) {
 			try {
@@ -165,7 +165,7 @@ sweepInterval.unref();
 // job to finish before exiting.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
-		logger.info(`Received ${signal} — aborting in-flight agent run and closing worker`);
+		logger.debug(`Received ${signal} — aborting in-flight agent run and closing worker`);
 		clearInterval(sweepInterval);
 		shutdown.abort();
 		void worker.close().then(

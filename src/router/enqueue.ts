@@ -34,7 +34,7 @@ export async function enqueueWebhookEvent(
 		deliveryId,
 		event,
 	});
-	logger.info('Webhook event enqueued', {
+	logger.debug('Webhook event enqueued', {
 		jobId,
 		projectId: project.id,
 		repo: event.repoFullName,
@@ -64,7 +64,7 @@ export async function enqueueProjectsEvent(
 		deliveryId,
 		event,
 	});
-	logger.info('Projects webhook event enqueued', {
+	logger.debug('Projects webhook event enqueued', {
 		jobId,
 		projectId: project.id,
 		projectNodeId: event.projectNodeId,

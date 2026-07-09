@@ -335,7 +335,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				aborted,
 				outputTruncated: stdout.truncated || stderr.truncated,
 			};
-			logger.info('agent run finished', {
+			logger.debug('agent run finished', {
 				cli,
 				exitCode: result.exitCode,
 				signal: result.signal,

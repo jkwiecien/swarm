@@ -217,7 +217,10 @@ describe('runAgentCli', () => {
 			quietChild.stdout.emit('data', 'quiet line\n');
 			quietChild.emit('close', 0, null);
 			await quiet;
-			expect(debugSpy).not.toHaveBeenCalled();
+			// The per-line echo must be silent by default. (The run-summary debug line,
+			// "agent run finished", is a separate concern and may fire either way.)
+			expect(debugSpy).not.toHaveBeenCalledWith('agent stdout', expect.anything());
+			expect(debugSpy).not.toHaveBeenCalledWith('agent stderr', expect.anything());
 
 			const loud = runAgentCli(createMockRunAgentCliOptions({ logLines: true }));
 			const loudChild = lastChild();

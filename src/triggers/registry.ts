@@ -34,7 +34,7 @@ export class TriggerRegistry {
 	async dispatch(ctx: TriggerContext): Promise<TriggerResult | null> {
 		for (const handler of this.handlers) {
 			if (!handler.matches(ctx)) continue;
-			logger.info('Trigger matched', { handler: handler.name, source: ctx.source });
+			logger.debug('Trigger matched', { handler: handler.name, source: ctx.source });
 			const result = await handler.handle(ctx);
 			if (result !== null) return result;
 			logger.debug('Trigger handler returned null, continuing', { handler: handler.name });

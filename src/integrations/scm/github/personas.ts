@@ -101,7 +101,7 @@ export async function resolvePersonaIdentities(project: ProjectConfig): Promise<
 		reviewer: reviewerLogin,
 	};
 
-	logger.info('Resolved persona identities', {
+	logger.debug('Resolved persona identities', {
 		projectId: project.id,
 		implementer: implementerLogin,
 		reviewer: reviewerLogin,

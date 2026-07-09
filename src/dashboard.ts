@@ -67,7 +67,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 	const port = Number(process.env.DASHBOARD_PORT ?? 3101);
 	const app = createDashboardApp();
 	const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
-		logger.info('swarm-dashboard: listening', { port, hostname: '127.0.0.1' });
+		logger.debug('swarm-dashboard: listening', { port, hostname: '127.0.0.1' });
 	});
 	for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		process.on(signal, () => server.close(() => process.exit(0)));

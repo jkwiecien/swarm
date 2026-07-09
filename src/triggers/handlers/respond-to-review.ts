@@ -74,7 +74,7 @@ export function createRespondToReviewTrigger(
 			if (persona !== 'reviewer') {
 				// A human review, or the implementer's own event — not the reviewer
 				// persona's batched review, so not an auto-response trigger.
-				logger.info('respond-to-review: review not authored by reviewer persona — skipping', {
+				logger.debug('respond-to-review: review not authored by reviewer persona — skipping', {
 					reviewAuthor: event.actorLogin,
 					expectedReviewer: identities.reviewer,
 				});
@@ -92,7 +92,7 @@ export function createRespondToReviewTrigger(
 				return null;
 			}
 
-			logger.info('respond-to-review: dispatching Respond-to-review phase', {
+			logger.debug('respond-to-review: dispatching Respond-to-review phase', {
 				prNumber,
 				prBranch,
 				reviewId,

@@ -162,7 +162,7 @@ async function isReviewablePullRequest(
 		return { kind: 'none' };
 	}
 	if (event.isCrossRepo) {
-		logger.info('review: fork PR — skipping (head SHA unreachable for review)', { prNumber });
+		logger.debug('review: fork PR — skipping (head SHA unreachable for review)', { prNumber });
 		return { kind: 'none' };
 	}
 	if (!event.prAuthorLogin) {
@@ -171,7 +171,7 @@ async function isReviewablePullRequest(
 	}
 	try {
 		if (!(await isSwarmAuthoredPr(project, event.prAuthorLogin))) {
-			logger.info('review: PR not authored by a SWARM persona — skipping', {
+			logger.debug('review: PR not authored by a SWARM persona — skipping', {
 				prNumber,
 				prAuthorLogin: event.prAuthorLogin,
 			});
@@ -226,7 +226,7 @@ async function scheduleCheckSuiteRecheck(
 		coalesceKey,
 		RECHECK_DELAY_MS,
 	);
-	logger.info('review: scheduled deferred check-suite recheck', {
+	logger.debug('review: scheduled deferred check-suite recheck', {
 		prNumber,
 		headSha,
 		recheckAttempt: recheckAttempt + 1,
@@ -279,14 +279,14 @@ async function resolveCheckSuiteReview(
 			getPullRequestAuthorLogin(owner, repo, Number(prNumber)),
 		);
 		if (!authorLogin) {
-			logger.info('review: check-suite PR has no resolvable author — skipping', {
+			logger.debug('review: check-suite PR has no resolvable author — skipping', {
 				prNumber,
 				headSha,
 			});
 			return { kind: 'none' };
 		}
 		if (!(await isSwarmAuthoredPr(project, authorLogin))) {
-			logger.info('review: check-suite PR not authored by a SWARM persona — skipping', {
+			logger.debug('review: check-suite PR not authored by a SWARM persona — skipping', {
 				prNumber,
 				headSha,
 				prAuthorLogin: authorLogin,
@@ -387,7 +387,7 @@ async function dispatchRespondToCi(
 	const { allowed, attempt } = await claimRespondToCiAttempt(attemptKey, { prNumber, headSha });
 	if (!allowed) return null;
 
-	logger.info('respond-to-ci: dispatching Respond-to-CI phase', {
+	logger.debug('respond-to-ci: dispatching Respond-to-CI phase', {
 		prNumber,
 		headSha,
 		prBranch: event.prBranch,
@@ -474,7 +474,7 @@ export function createReviewTrigger(): TriggerHandler {
 				);
 			}
 
-			logger.info('review: dispatching Review phase', { prNumber, headSha: event.headSha });
+			logger.debug('review: dispatching Review phase', { prNumber, headSha: event.headSha });
 			return { phase: 'review', taskId: prNumber, prNumber, headSha: event.headSha };
 		},
 	};

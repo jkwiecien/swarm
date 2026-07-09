@@ -120,7 +120,7 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 				return null;
 			}
 
-			logger.info('pm-status: dispatching pipeline phase', {
+			logger.debug('pm-status: dispatching pipeline phase', {
 				itemNodeId: event.itemNodeId,
 				taskId,
 				phase,

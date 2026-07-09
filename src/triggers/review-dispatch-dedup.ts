@@ -98,7 +98,7 @@ export async function claimReviewDispatch(
 	try {
 		const result = await getRedis().set(namespacedKey, triggerName, 'EX', DEDUP_TTL_SEC, 'NX');
 		if (result === 'OK') {
-			logger.info('review-dispatch dedup: claimed review for PR+SHA', {
+			logger.debug('review-dispatch dedup: claimed review for PR+SHA', {
 				trigger: triggerName,
 				reviewDispatchKey: key,
 				prNumber: context.prNumber,
@@ -106,7 +106,7 @@ export async function claimReviewDispatch(
 			});
 			return true;
 		}
-		logger.info('review-dispatch dedup: review already dispatched for this PR+SHA, skipping', {
+		logger.debug('review-dispatch dedup: review already dispatched for this PR+SHA, skipping', {
 			trigger: triggerName,
 			reviewDispatchKey: key,
 			prNumber: context.prNumber,

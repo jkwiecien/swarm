@@ -21,7 +21,7 @@ const port = Number(process.env.PORT ?? 3000);
 
 const app = createWebhookApp();
 const server = serve({ fetch: app.fetch, port }, () => {
-	logger.info('swarm-router: listening', { port });
+	logger.debug('swarm-router: listening', { port });
 });
 
 // Docker sends SIGTERM on `compose down`/`stop`; close the listener so the

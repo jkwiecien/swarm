@@ -279,7 +279,7 @@ export class GitHubProjectsPMProvider implements PMProvider {
 				optionId,
 			});
 		});
-		logger.info('pm: moved work item', { itemId: id, status });
+		logger.debug('pm: moved work item', { itemId: id, status });
 	}
 
 	async addComment(id: string, text: string): Promise<string> {

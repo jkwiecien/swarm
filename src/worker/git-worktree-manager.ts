@@ -147,7 +147,7 @@ export class GitWorktreeManager {
 			args.push(path, branch);
 		}
 
-		logger.info('Provisioning worktree', { taskId, path, branch, createBranch, detached });
+		logger.debug('Provisioning worktree', { taskId, path, branch, createBranch, detached });
 		await this.git(args);
 
 		await claimWorktreeLease(this.project.id, taskId);
@@ -175,7 +175,7 @@ export class GitWorktreeManager {
 			logger.warn('Worktree cleanup skipped — path does not exist', { taskId, path });
 			return;
 		}
-		logger.info('Removing worktree', { taskId, path });
+		logger.debug('Removing worktree', { taskId, path });
 		await this.git(['worktree', 'remove', '--force', path]);
 	}
 
