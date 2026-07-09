@@ -6,6 +6,7 @@ import {
 	ProjectConfigSchema,
 	SwarmConfigSchema,
 	validateConfig,
+	type WorktreeRetentionConfig,
 } from '@/config/schema.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 
@@ -133,6 +134,47 @@ describe('ProjectConfigSchema', () => {
 			planning: { autoAdvance: true },
 			implementation: { autoAdvance: false },
 		});
+	});
+
+	it('omits worktreeRetention entirely by default', () => {
+		const project = createMockProjectConfig();
+		expect(project.worktreeRetention).toBeUndefined();
+	});
+
+	it('applies defaults to worktreeRetention.maxWorktrees when the block is present but field is omitted', () => {
+		const project = createMockProjectConfig({
+			worktreeRetention: {} as unknown as WorktreeRetentionConfig,
+		});
+		expect(project.worktreeRetention).toEqual({
+			maxWorktrees: PROJECT_DEFAULTS.maxWorktrees,
+		});
+	});
+
+	it('accepts a valid worktreeRetention config', () => {
+		const project = createMockProjectConfig({
+			worktreeRetention: { maxWorktrees: 5 },
+		});
+		expect(project.worktreeRetention?.maxWorktrees).toBe(5);
+	});
+
+	it('rejects a non-positive or non-integer maxWorktrees', () => {
+		expect(() =>
+			createMockProjectConfig({
+				worktreeRetention: { maxWorktrees: 0 },
+			}),
+		).toThrow();
+
+		expect(() =>
+			createMockProjectConfig({
+				worktreeRetention: { maxWorktrees: -3 },
+			}),
+		).toThrow();
+
+		expect(() =>
+			createMockProjectConfig({
+				worktreeRetention: { maxWorktrees: 5.5 },
+			}),
+		).toThrow();
 	});
 });
 

@@ -34,6 +34,7 @@ function rowToProjectConfig(row: ProjectRow): ProjectConfig {
 		credentials: row.credentials,
 		agents: row.agents ?? undefined,
 		pipeline: row.pipeline ?? undefined,
+		worktreeRetention: row.worktreeRetention ?? undefined,
 	};
 }
 
@@ -52,6 +53,7 @@ function projectConfigToRow(config: ProjectConfig) {
 		credentials: config.credentials,
 		agents: config.agents ?? null,
 		pipeline: config.pipeline ?? null,
+		worktreeRetention: config.worktreeRetention ?? null,
 	};
 }
 

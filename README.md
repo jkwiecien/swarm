@@ -96,6 +96,7 @@ The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps a
 - `swarm start [--build]` / `swarm stop [-v]` — bring the Compose stack up/down.
 - `swarm status` — shows the container states and probes the router's `/health`.
 - `swarm logs [service] [-f]` — tails the logs.
+- `swarm worktrees prune [--project <id>] [--dry-run]` (a.k.a. `npm run worktrees:prune`) — reclaims stale `task-<id>` worktrees under `.swarm-workspaces/` that are no longer in use and have no uncommitted changes.
 
 It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.
 
@@ -139,6 +140,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | --- | --- | --- |
 | `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
 | `SWARM_WORKER_CONCURRENCY` | `1` | How many jobs the worker runs at once (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
 
 **Credential encryption at rest** — `src/db/crypto.ts`
 | Variable | Default | Purpose |
@@ -200,6 +202,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
 | `agents` | optional | Per-phase agent CLI/model overrides (below). |
 | `pipeline` | optional | Per-phase autonomous board-move control (below). |
+| `worktreeRetention` | optional | Retention sweep tuning — `{ maxWorktrees }`, default `10`; how many of the project's most-recently-active `task-<id>` worktrees to keep (`src/config/schema.ts`'s `WorktreeRetentionConfigSchema`). |
 
 **`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
 | Field | Purpose |

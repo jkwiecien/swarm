@@ -20,6 +20,7 @@ export const PROJECT_DEFAULTS = {
 	branchPrefix: 'issue-',
 	/** Relative to `repoRoot`; matches the worktree lifecycle in ai/ARCHITECTURE.md. */
 	worktreeRoot: '.swarm-workspaces',
+	maxWorktrees: 10,
 } as const;
 
 /**
@@ -124,6 +125,17 @@ export const PipelineConfigSchema = z
 	})
 	.describe('Per-phase autonomous board-move control for Planning and Implementation');
 
+export const WorktreeRetentionConfigSchema = z
+	.object({
+		/**
+		 * How many of the project's most-recently-active task-<id> worktrees to
+		 * keep; the rest are candidates for pruning (subject to the in-flight and
+		 * uncommitted-changes safety checks — see src/worktree/retention.ts).
+		 */
+		maxWorktrees: z.number().int().positive().default(PROJECT_DEFAULTS.maxWorktrees),
+	})
+	.describe('Retention policy for stale per-task worktrees under worktreeRoot');
+
 export const ProjectConfigSchema = z.object({
 	/** Stable internal identifier for this SWARM project (one Postgres row per project). */
 	id: z.string().min(1),
@@ -176,6 +188,9 @@ export const ProjectConfigSchema = z.object({
 
 	/** Per-phase autonomous board-move control. Omit entirely to keep the coded defaults. */
 	pipeline: PipelineConfigSchema.optional(),
+
+	/** Per-project worktree retention policy (`WorktreeRetentionConfig`) — nullable: most projects omit it and use the coded default. */
+	worktreeRetention: WorktreeRetentionConfigSchema.optional(),
 });
 
 export const SwarmConfigSchema = z.object({
@@ -186,6 +201,7 @@ export type Credentials = z.infer<typeof CredentialsSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
+export type WorktreeRetentionConfig = z.infer<typeof WorktreeRetentionConfigSchema>;
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
 export type SwarmConfig = z.infer<typeof SwarmConfigSchema>;
 

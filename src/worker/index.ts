@@ -11,12 +11,14 @@
 import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
+import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry } from '../queue/producer.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
+import { pruneStaleWorktrees } from '../worktree/retention.js';
 import { type JobOutcome, processJob } from './consumer.js';
 
 // Tag every line this process emits so router and worker logs stay
@@ -37,6 +39,14 @@ const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
 const concurrency = Number(rawConcurrency);
 if (!Number.isInteger(concurrency) || concurrency < 1) {
 	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${rawConcurrency}'`);
+}
+
+const rawSweepInterval = optionalEnv('SWARM_WORKTREE_SWEEP_INTERVAL_MS', String(60 * 60 * 1000));
+const sweepIntervalMs = Number(rawSweepInterval);
+if (!Number.isInteger(sweepIntervalMs) || sweepIntervalMs < 1) {
+	throw new Error(
+		`SWARM_WORKTREE_SWEEP_INTERVAL_MS must be a positive integer, got '${rawSweepInterval}'`,
+	);
 }
 
 const registry = createTriggerRegistry();
@@ -120,6 +130,35 @@ worker.on('error', (err) => {
 
 logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 
+async function runWorktreeSweep(): Promise<void> {
+	try {
+		logger.info('Starting background worktree retention sweep');
+		const projects = await listAllProjectsFromDb();
+		for (const project of projects) {
+			try {
+				await pruneStaleWorktrees(project);
+			} catch (err) {
+				logger.error('Failed to run worktree retention sweep for project', {
+					projectId: project.id,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	} catch (err) {
+		logger.error('Failed to list projects for worktree retention sweep', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+// Run once immediately after startup
+void runWorktreeSweep();
+
+const sweepInterval = setInterval(() => {
+	void runWorktreeSweep();
+}, sweepIntervalMs);
+sweepInterval.unref();
+
 // On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
 // the in-flight agent run (it completes as `phase-failed`; each phase runs its
 // own worktree cleanup in a `finally`), then let worker.close() wait for the
@@ -127,6 +166,7 @@ logger.info('swarm-worker started', { queue: QUEUE_NAME, concurrency });
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
 		logger.info(`Received ${signal} — aborting in-flight agent run and closing worker`);
+		clearInterval(sweepInterval);
 		shutdown.abort();
 		void worker.close().then(
 			() => process.exit(0),
