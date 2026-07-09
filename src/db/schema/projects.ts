@@ -1,6 +1,11 @@
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
-import type { AgentsConfig, Credentials, PipelineConfig } from '../../config/schema.js';
+import type {
+	AgentsConfig,
+	Credentials,
+	PipelineConfig,
+	WorktreeRetentionConfig,
+} from '../../config/schema.js';
 import { PROJECT_DEFAULTS } from '../../config/schema.js';
 import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
 
@@ -36,6 +41,8 @@ export const projects = pgTable('projects', {
 	agents: jsonb('agents').$type<AgentsConfig>(),
 	/** Per-phase autonomous board-move control (`PipelineConfig`) — nullable: most projects omit it entirely. */
 	pipeline: jsonb('pipeline').$type<PipelineConfig>(),
+	/** Per-project worktree retention policy (`WorktreeRetentionConfig`) — nullable: most projects omit it and use the coded default. */
+	worktreeRetention: jsonb('worktree_retention').$type<WorktreeRetentionConfig>(),
 
 	createdAt: timestamp('created_at').defaultNow(),
 	updatedAt: timestamp('updated_at')

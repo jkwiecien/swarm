@@ -17,6 +17,7 @@ import * as logs from './commands/logs.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
+import * as worktrees from './commands/worktrees.js';
 
 type Command = { run: (argv: string[]) => Promise<number> };
 
@@ -27,6 +28,7 @@ const COMMANDS: Record<string, Command> = {
 	stop,
 	status,
 	logs,
+	worktrees,
 };
 
 const USAGE = `swarm — SWARM operator CLI
@@ -40,6 +42,7 @@ Commands:
   stop [-v]        Stop the stack (-v/--volumes also drops its volumes)
   status           Show stack container states and probe the router's health
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
+  worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;
 

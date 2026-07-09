@@ -6,18 +6,31 @@ import { createMockProjectConfig } from '../../helpers/factories.js';
 // `promisify` resolves with whatever we pass as the callback's second arg —
 // i.e. `{ stdout, stderr }`. `gitHandler` lets each test decide the outcome of
 // every git invocation; `gitCalls` records the exact argv for assertions.
+const { claimWorktreeLeaseMock, releaseWorktreeLeaseMock } = vi.hoisted(() => ({
+	claimWorktreeLeaseMock: vi.fn(),
+	releaseWorktreeLeaseMock: vi.fn(),
+}));
+
+vi.mock('@/worktree/worktree-lease.js', () => ({
+	claimWorktreeLease: claimWorktreeLeaseMock,
+	releaseWorktreeLease: releaseWorktreeLeaseMock,
+	isWorktreeLeased: vi.fn(),
+}));
+
 type GitOutcome = { stdout?: string; stderr?: string } | Error;
 let gitHandler: (args: string[]) => GitOutcome;
 const gitCalls: string[][] = [];
+const gitOpts: unknown[] = [];
 
 vi.mock('node:child_process', () => ({
 	execFile: (
 		_cmd: string,
 		args: string[],
-		_opts: unknown,
+		opts: unknown,
 		cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void,
 	) => {
 		gitCalls.push(args);
+		gitOpts.push(opts);
 		const outcome = gitHandler(args);
 		if (outcome instanceof Error) cb(outcome);
 		else cb(null, { stdout: outcome.stdout ?? '', stderr: outcome.stderr ?? '' });
@@ -51,7 +64,10 @@ function makeManager(overrides = {}) {
 describe('GitWorktreeManager', () => {
 	beforeEach(() => {
 		gitCalls.length = 0;
+		gitOpts.length = 0;
 		gitHandler = () => ({ stdout: '' });
+		claimWorktreeLeaseMock.mockReset();
+		releaseWorktreeLeaseMock.mockReset();
 		// Default world: the repo root exists and is a git repo; no worktrees yet.
 		existingPaths = new Set([REPO_ROOT]);
 		realpaths = new Map();
@@ -218,6 +234,13 @@ describe('GitWorktreeManager', () => {
 			await makeManager().provision('14', { createBranch: false, branch: 'issue-14-x' });
 			expect(gitCalls.some((c) => c[0] === 'branch')).toBe(false);
 		});
+
+		it('claims a worktree lease after successful provision', async () => {
+			const project = createMockProjectConfig({ id: 'project-1' });
+			const manager = new GitWorktreeManager(project);
+			await manager.provision('14');
+			expect(claimWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14');
+		});
 	});
 
 	describe('cleanup', () => {
@@ -230,6 +253,60 @@ describe('GitWorktreeManager', () => {
 		it('is a no-op when the worktree is already gone', async () => {
 			await makeManager().cleanup('14');
 			expect(gitCalls).toHaveLength(0);
+		});
+
+		it('releases the worktree lease unconditionally', async () => {
+			existingPaths.add(WORKTREE_14);
+			const project = createMockProjectConfig({ id: 'project-1' });
+			const manager = new GitWorktreeManager(project);
+			await manager.cleanup('14');
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14');
+
+			// Also when the path does not exist
+			existingPaths.delete(WORKTREE_14);
+			releaseWorktreeLeaseMock.mockClear();
+			await manager.cleanup('14');
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14');
+		});
+	});
+
+	describe('isClean', () => {
+		it('returns true when git status --porcelain is empty', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'status' && args[1] === '--porcelain') {
+					return { stdout: '' };
+				}
+				return { stdout: '' };
+			};
+			const manager = makeManager();
+			const result = await manager.isClean('14');
+			expect(result).toBe(true);
+			const lastCallIndex = gitCalls.findIndex((c) => c[0] === 'status');
+			expect(gitOpts[lastCallIndex]).toEqual({ cwd: WORKTREE_14 });
+		});
+
+		it('returns false when git status --porcelain is non-empty', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'status' && args[1] === '--porcelain') {
+					return { stdout: ' M package.json\n?? untracked.txt\n' };
+				}
+				return { stdout: '' };
+			};
+			const manager = makeManager();
+			const result = await manager.isClean('14');
+			expect(result).toBe(false);
+		});
+
+		it('returns false and does not throw when the git command errors', async () => {
+			gitHandler = (args) => {
+				if (args[0] === 'status' && args[1] === '--porcelain') {
+					return new Error('git status failed');
+				}
+				return { stdout: '' };
+			};
+			const manager = makeManager();
+			const result = await manager.isClean('14');
+			expect(result).toBe(false);
 		});
 	});
 

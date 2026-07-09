@@ -19,6 +19,7 @@ import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { ProjectConfig } from '../config/schema.js';
 import { logger } from '../lib/logger.js';
+import { claimWorktreeLease, releaseWorktreeLease } from '../worktree/worktree-lease.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -149,6 +150,8 @@ export class GitWorktreeManager {
 		logger.info('Provisioning worktree', { taskId, path, branch, createBranch, detached });
 		await this.git(args);
 
+		await claimWorktreeLease(this.project.id, taskId);
+
 		// SWARM-15 grafts untracked build state (node_modules, .env, caches) in here
 		// via symlinks before the agent runs; git-tracked files (incl. the committed
 		// `cascade` symlink) are already checked out by `git worktree add`.
@@ -167,12 +170,35 @@ export class GitWorktreeManager {
 	 */
 	async cleanup(taskId: string): Promise<void> {
 		const path = this.worktreePath(taskId);
+		await releaseWorktreeLease(this.project.id, taskId);
 		if (!existsSync(path)) {
 			logger.warn('Worktree cleanup skipped — path does not exist', { taskId, path });
 			return;
 		}
 		logger.info('Removing worktree', { taskId, path });
 		await this.git(['worktree', 'remove', '--force', path]);
+	}
+
+	/**
+	 * Whether the worktree for `taskId` has no uncommitted changes (tracked or
+	 * untracked) — `git status --porcelain` in the worktree itself, not the main
+	 * repo root. Fails CLOSED on any error (missing worktree, git failure): treats
+	 * it as *not* clean, so a caller using this as a prune safety gate skips
+	 * rather than risks discarding someone's in-progress work.
+	 */
+	async isClean(taskId: string): Promise<boolean> {
+		const path = this.worktreePath(taskId);
+		try {
+			const stdout = await this.git(['status', '--porcelain'], path);
+			return stdout.trim().length === 0;
+		} catch (err) {
+			logger.warn('worktree cleanliness check failed — treating as dirty', {
+				taskId,
+				path,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
 	}
 
 	/**
@@ -245,13 +271,13 @@ export class GitWorktreeManager {
 	}
 
 	/**
-	 * Run a git command in the project's repo root and return its stdout. Uses
-	 * argv (not a shell string) so task IDs / branch names can't inject shell
+	 * Run a git command in the project's repo root (or custom cwd) and return its stdout.
+	 * Uses argv (not a shell string) so task IDs / branch names can't inject shell
 	 * syntax. Throws with the captured stderr on a non-zero exit.
 	 */
-	private async git(args: string[]): Promise<string> {
+	private async git(args: string[], cwd?: string): Promise<string> {
 		try {
-			const { stdout } = await execFileAsync('git', args, { cwd: this.project.repoRoot });
+			const { stdout } = await execFileAsync('git', args, { cwd: cwd ?? this.project.repoRoot });
 			return stdout;
 		} catch (err) {
 			const stderr =

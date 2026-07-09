@@ -96,6 +96,7 @@ The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps a
 - `swarm start [--build]` / `swarm stop [-v]` — bring the Compose stack up/down.
 - `swarm status` — shows the container states and probes the router's `/health`.
 - `swarm logs [service] [-f]` — tails the logs.
+- `swarm worktrees prune [--project <id>] [--dry-run]` (a.k.a. `npm run worktrees:prune`) — reclaims stale `task-<id>` worktrees under `.swarm-workspaces/` that are no longer in use and have no uncommitted changes.
 
 It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.
 

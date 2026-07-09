@@ -95,6 +95,7 @@ Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-spec
 - Main repo at `~/swarm/{project-name}/`, worktrees under `~/swarm/{project-name}/.swarm-workspaces/task-<id>/`.
 - `git worktree add` per task; config/caches and the `cascade` sibling-checkout pointer (`.env`, `node_modules`, `cascade`, build caches) grafted in via symlinks with **absolute** targets — a relative link would dangle at the worktree's `.swarm-workspaces/<name>/` depth (see `ai/RULES.md` §1).
 - `git worktree remove --force` on completion.
+- Stale `task-<id>` worktrees left behind by interrupted runs are reclaimed by a retention sweep running periodically in the background of the worker process, or manually on-demand via `swarm worktrees prune`. The sweep preserves up to a configurable number of most-recently-active worktrees (defined by `worktreeRetention.maxWorktrees` in the project config, defaulting to 10), checking against a Redis-backed "worktree lease" and local cleanliness (`git status`) to ensure in-flight and dirty worktrees are never pruned.
 
 ## Harness (agent-CLI execution engine)
 
