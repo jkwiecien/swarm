@@ -140,6 +140,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | --- | --- | --- |
 | `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
 | `SWARM_WORKER_CONCURRENCY` | `1` | How many jobs the worker runs at once (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
 
 **Credential encryption at rest** — `src/db/crypto.ts`
 | Variable | Default | Purpose |
@@ -201,6 +202,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
 | `agents` | optional | Per-phase agent CLI/model overrides (below). |
 | `pipeline` | optional | Per-phase autonomous board-move control (below). |
+| `worktreeRetention` | optional | Retention sweep tuning — `{ maxWorktrees }`, default `10`; how many of the project's most-recently-active `task-<id>` worktrees to keep (`src/config/schema.ts`'s `WorktreeRetentionConfigSchema`). |
 
 **`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
 | Field | Purpose |
