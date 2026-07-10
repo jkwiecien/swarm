@@ -244,4 +244,10 @@ describe('buildRespondToCiPrompt', () => {
 		expect(prompt).toContain('Do not merge the PR');
 		expect(prompt).toContain('do not review it');
 	});
+
+	it('carries the GH identity guard so the implementer persona token is not overridden', () => {
+		const prompt = buildRespondToCiPrompt(context);
+		expect(prompt).toContain('GH_TOKEN');
+		expect(prompt).toContain('gh auth switch');
+	});
 });

@@ -52,6 +52,7 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
@@ -159,6 +160,8 @@ export function buildImplementationPrompt(
 	const { repo, taskId, branch, baseBranch } = context;
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
+		'',
+		...GH_IDENTITY_GUARD,
 		'',
 		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
 		'worktree whose root is your current working directory. The repository is',

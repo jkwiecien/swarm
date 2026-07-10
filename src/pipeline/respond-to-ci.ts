@@ -54,6 +54,7 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -149,6 +150,8 @@ export function buildRespondToCiPrompt(context: {
 	const { repo, prNumber, prBranch, headSha } = context;
 	return [
 		'You are a senior software engineer whose pull request has failing CI checks.',
+		'',
+		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
 		`#${prNumber} in ${repo} on GitHub. Its check suite completed with at least one`,
