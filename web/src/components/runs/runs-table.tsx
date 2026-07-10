@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
 import { formatDuration, formatPhase, formatRelativeTime } from '@/lib/format.js';
+import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -25,6 +26,7 @@ export function RunsTable({
 	const navigate = useNavigate();
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectsMap = new Map(projectsQuery.data?.map((p) => [p.id, p]) ?? []);
+	const now = useNow(runs.some((run) => run.status === 'running'));
 
 	const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 	const startIdx = (currentPage - 1) * pageSize + 1;
@@ -145,7 +147,7 @@ export function RunsTable({
 									{formatRelativeTime(run.startedAt)}
 								</td>
 								<td className="px-4 py-3 text-sm text-zinc-400 font-mono">
-									{formatDuration(run.durationMs)}
+									{formatDuration(resolveRunDurationMs(run, now))}
 								</td>
 								<td className="px-4 py-3 text-sm text-zinc-400 font-mono text-xs">
 									{run.model || '—'}

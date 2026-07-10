@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { formatDuration, formatPhase } from '@/lib/format.js';
+import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -112,6 +113,8 @@ interface RunOverviewProps {
 }
 
 function RunOverview({ run, project }: RunOverviewProps) {
+	const now = useNow(run.status === 'running');
+
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm space-y-6">
 			<div>
@@ -158,7 +161,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					<div>
 						<span className="block text-xs font-medium text-zinc-400">Duration</span>
 						<span className="text-sm text-zinc-200 mt-1 block font-mono">
-							{formatDuration(run.durationMs)}
+							{formatDuration(resolveRunDurationMs(run, now))}
 						</span>
 					</div>
 				</div>
