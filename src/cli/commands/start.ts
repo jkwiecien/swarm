@@ -17,15 +17,19 @@ export async function run(argv: string[]): Promise<number> {
 		allowPositionals: false,
 	});
 
-	const composeArgs = ['compose', 'up', '-d'];
+	const composeArgs = ['compose', 'up', '-d', '--wait'];
 	if (values.build) {
 		composeArgs.push('--build');
 	}
 
 	out.step('starting the local stack (postgres, redis, router)…');
 	const code = await runCommand('docker', composeArgs, { cwd: REPO_ROOT });
-	if (code === 0) {
-		out.info('stack is up. The worker runs on the host — start it with: npm run dev:worker');
-	}
-	return code;
+	if (code !== 0) return code;
+
+	out.step('applying pending database migrations…');
+	const migrationCode = await runCommand('npm', ['run', 'db:migrate'], { cwd: REPO_ROOT });
+	if (migrationCode !== 0) return migrationCode;
+
+	out.info('stack is up. The worker runs on the host — start it with: npm run dev:worker');
+	return 0;
 }

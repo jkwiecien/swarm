@@ -79,6 +79,11 @@ npm run dev:dashboard         # start the dashboard API on the host (default por
 npm run dev:web               # start the Vite dev server (default port 5173)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker); SWARM_WORKER_CONCURRENCY in .env sets how many jobs run at once (default 1)
 ```
+`swarm start`, `npm run dev:dashboard`, `npm run dev:worker`, and their production
+start variants apply pending committed migrations before serving requests or processing
+jobs. The explicit `npm run db:migrate` step remains useful for setup and maintenance,
+and is safe to run repeatedly.
+
 The dashboard can be run in two modes:
 
 - **Development Mode (with Hot-Reloading)**:

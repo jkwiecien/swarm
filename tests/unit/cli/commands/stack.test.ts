@@ -11,16 +11,40 @@ import { run as stopRun } from '@/cli/commands/stop.js';
 const anyCwd = expect.objectContaining({ cwd: expect.any(String) });
 
 describe('swarm start', () => {
-	beforeEach(() => vi.spyOn(console, 'log').mockImplementation(() => {}));
+	beforeEach(() => {
+		vi.mocked(runCommand).mockReset().mockResolvedValue(0);
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
 
-	it('runs `docker compose up -d`', async () => {
+	it('waits for the stack, then applies pending database migrations', async () => {
 		expect(await startRun([])).toBe(0);
-		expect(runCommand).toHaveBeenCalledWith('docker', ['compose', 'up', '-d'], anyCwd);
+		expect(runCommand).toHaveBeenNthCalledWith(
+			1,
+			'docker',
+			['compose', 'up', '-d', '--wait'],
+			anyCwd,
+		);
+		expect(runCommand).toHaveBeenNthCalledWith(2, 'npm', ['run', 'db:migrate'], anyCwd);
 	});
 
 	it('adds --build with the flag', async () => {
 		await startRun(['--build']);
-		expect(runCommand).toHaveBeenCalledWith('docker', ['compose', 'up', '-d', '--build'], anyCwd);
+		expect(runCommand).toHaveBeenCalledWith(
+			'docker',
+			['compose', 'up', '-d', '--wait', '--build'],
+			anyCwd,
+		);
+	});
+
+	it('does not migrate when Docker Compose fails', async () => {
+		vi.mocked(runCommand).mockResolvedValueOnce(1);
+		expect(await startRun([])).toBe(1);
+		expect(runCommand).toHaveBeenCalledTimes(1);
+	});
+
+	it('returns the migration failure when the schema cannot be updated', async () => {
+		vi.mocked(runCommand).mockResolvedValueOnce(0).mockResolvedValueOnce(2);
+		expect(await startRun([])).toBe(2);
 	});
 });
 
