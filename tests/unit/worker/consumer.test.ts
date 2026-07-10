@@ -33,7 +33,10 @@ vi.mock('@/integrations/pm/github-projects/provider.js', () => ({
 
 type PhaseCall = { phase: string; args: Record<string, unknown> };
 const phaseCalls: PhaseCall[] = [];
-let phaseImpl: (phase: string, args: Record<string, unknown>) => Promise<{ agent: AgentCliResult }>;
+let phaseImpl: (
+	phase: string,
+	args: Record<string, unknown>,
+) => Promise<{ agent: AgentCliResult; movedTo?: string }>;
 
 function mockPhase(phase: string) {
 	return (args: Record<string, unknown>) => {
@@ -48,6 +51,11 @@ vi.mock('@/pipeline/implementation.js', () => ({
 vi.mock('@/pipeline/review.js', () => ({ runReviewPhase: mockPhase('review') }));
 vi.mock('@/pipeline/respond-to-review.js', () => ({
 	runRespondToReviewPhase: mockPhase('respond-to-review'),
+}));
+
+const enqueueJob = vi.fn(async (_job: unknown) => 'synthetic-job-1');
+vi.mock('@/queue/producer.js', () => ({
+	enqueueJob: (job: unknown) => enqueueJob(job),
 }));
 
 import { createTriggerRegistry } from '@/triggers/registry.js';
@@ -100,6 +108,8 @@ describe('processJob', () => {
 		phaseImpl = async () => ({ agent: agentResult() });
 		addComment.mockClear();
 		addComment.mockResolvedValue('comment-1');
+		enqueueJob.mockClear();
+		enqueueJob.mockResolvedValue('synthetic-job-1');
 	});
 
 	it('throws for a job referencing an unknown project', async () => {
@@ -193,6 +203,79 @@ describe('processJob', () => {
 			taskId: '10',
 			workItem,
 			pm: provider,
+		});
+	});
+
+	describe('self-enqueue after auto-advance', () => {
+		it('self-enqueues a synthetic board job when Planning auto-advances to ToDo', async () => {
+			const workItem = createMockWorkItem({ statusId: '3fe662f4' });
+			const trigger: TriggerResult = { phase: 'planning', taskId: '10', workItem };
+			phaseImpl = async () => ({ agent: agentResult(), movedTo: 'todo' });
+
+			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+			expect(enqueueJob).toHaveBeenCalledExactlyOnceWith({
+				type: 'github-projects',
+				projectId: PROJECT.id,
+				event: {
+					eventType: 'projects_v2_item',
+					action: 'edited',
+					itemNodeId: workItem.id,
+					projectNodeId: PROJECT.githubProjects.projectId,
+					changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
+					changedFieldType: 'single_select',
+				},
+			});
+		});
+
+		it('does not self-enqueue when the phase made no move (autoAdvance off)', async () => {
+			const trigger: TriggerResult = {
+				phase: 'planning',
+				taskId: '10',
+				workItem: createMockWorkItem(),
+			};
+			phaseImpl = async () => ({ agent: agentResult() });
+
+			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+			expect(enqueueJob).not.toHaveBeenCalled();
+		});
+
+		it("does not self-enqueue when the destination status doesn't start a phase", async () => {
+			const trigger: TriggerResult = {
+				phase: 'implementation',
+				taskId: '10',
+				workItem: createMockWorkItem(),
+			};
+			// Implementation's own report-back move (to "inReview") isn't a trigger.
+			phaseImpl = async () => ({ agent: agentResult(), movedTo: 'inReview' });
+
+			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+			expect(enqueueJob).not.toHaveBeenCalled();
+		});
+
+		it('does not self-enqueue for a non-PM (PR-driven) phase', async () => {
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(enqueueJob).not.toHaveBeenCalled();
+		});
+
+		it('still reports phase-succeeded when the self-enqueue itself fails', async () => {
+			const trigger: TriggerResult = {
+				phase: 'planning',
+				taskId: '10',
+				workItem: createMockWorkItem(),
+			};
+			phaseImpl = async () => ({ agent: agentResult(), movedTo: 'todo' });
+			enqueueJob.mockRejectedValueOnce(new Error('redis unreachable'));
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(trigger),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
 		});
 	});
 

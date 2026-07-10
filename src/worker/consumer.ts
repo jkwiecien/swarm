@@ -32,7 +32,10 @@ import { runPlanningPhase } from '../pipeline/planning.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
+import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
+import type { WorkItem } from '../pm/types.js';
 import type { SwarmJob } from '../queue/jobs.js';
+import { enqueueJob } from '../queue/producer.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 
@@ -194,12 +197,17 @@ const inFlightTaskIds = new Set<string>();
  * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
  * provision anything. `signal` (the worker's shutdown signal) is threaded
  * through so a graceful shutdown kills any in-flight agent CLI.
+ *
+ * `movedTo` (planning/implementation only) surfaces the canonical status the
+ * phase's own `autoAdvance` moved the item to, if any — `processJob` uses it to
+ * self-enqueue the next phase (see {@link selfEnqueueNextPhase}) rather than
+ * waiting on a webhook GitHub will never deliver for a SWARM persona's own move.
  */
 function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	signal?: AbortSignal,
-): Promise<{ agent: AgentCliResult }> {
+): Promise<{ agent: AgentCliResult; movedTo?: PmStatusKey }> {
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -257,6 +265,71 @@ function runPhase(
 				model: project.agents?.respondToCi?.model,
 				signal,
 			});
+	}
+}
+
+/**
+ * After a PM-driven phase's own `autoAdvance` moves the item to a status that
+ * starts the *next* phase (currently only Planning → "ToDo" → Implementation,
+ * `src/pm/pipeline.ts`), self-enqueue a synthetic board-status job for it
+ * instead of waiting on GitHub's webhook echo of that move.
+ *
+ * The router's loop-prevention gate (`GitHubProjectsRouterAdapter.isSelfAuthored`)
+ * drops *every* Projects status-change webhook authored by a SWARM persona —
+ * correctly, since that's exactly the feedback loop it exists to break. But
+ * Planning moves its own card using the `implementer` persona
+ * (`src/integrations/scm/github/personas.ts`), the very identity that move's
+ * webhook gets checked against — so the direct webhook for this transition is
+ * dropped every time, and the pipeline previously advanced only when some
+ * other, differently-attributed webhook for the same item happened to arrive
+ * later (an unbounded wait — confirmed live: an item sat in "ToDo" for hours
+ * with Implementation never dispatching). This bypasses the router and webhook
+ * entirely — a manual/synthetic job with no `deliveryId`, exactly the
+ * `enqueueJob` carve-out already documented in `src/queue/producer.ts` — and
+ * drives it through the *same* trigger-match → authoritative-re-read → dedup
+ * path a real webhook would, so "which phase does this status start" is
+ * resolved in exactly one place.
+ *
+ * Best-effort: a failure to self-enqueue is logged, not thrown, so it can't
+ * turn an already-succeeded phase into a failed job — worst case the item is
+ * left exactly where the phase left it, same as before this existed.
+ */
+async function selfEnqueueNextPhase(
+	project: ProjectConfig,
+	workItem: WorkItem,
+	movedTo: PmStatusKey | undefined,
+): Promise<void> {
+	if (!movedTo) return;
+	const nextPhase = resolvePipelinePhaseForStatusKey(movedTo);
+	if (!nextPhase) return;
+
+	try {
+		await enqueueJob({
+			type: 'github-projects',
+			projectId: project.id,
+			event: {
+				eventType: 'projects_v2_item',
+				action: 'edited',
+				itemNodeId: workItem.id,
+				projectNodeId: project.githubProjects.projectId,
+				changedFieldNodeId: project.githubProjects.statusFieldId,
+				changedFieldType: 'single_select',
+			},
+		});
+		logger.debug('pm-status: self-enqueued next phase after auto-advance', {
+			projectId: project.id,
+			itemNodeId: workItem.id,
+			movedTo,
+			nextPhase,
+		});
+	} catch (err) {
+		logger.error('Failed to self-enqueue next phase after auto-advance', {
+			projectId: project.id,
+			itemNodeId: workItem.id,
+			movedTo,
+			nextPhase,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 }
 
@@ -476,6 +549,9 @@ export async function processJob(
 			phase: trigger.phase,
 			taskId: trigger.taskId,
 		});
+		if (trigger.phase === 'planning' || trigger.phase === 'implementation') {
+			await selfEnqueueNextPhase(project, trigger.workItem, result.movedTo);
+		}
 		return {
 			status: 'phase-succeeded',
 			phase: trigger.phase,
