@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { parseWorkItemId, unwrap } from '@/pm/ids.js';
-import type { ListWorkItemsFilter, PMProvider, WorkItem } from '@/pm/types.js';
+import type {
+	CreateWorkItemInput,
+	ListWorkItemsFilter,
+	PMProvider,
+	UpdateWorkItemPatch,
+	WorkItem,
+} from '@/pm/types.js';
 import { createMockWorkItem } from '../../helpers/factories.js';
 
 /**
@@ -60,6 +66,29 @@ class InMemoryPMProvider implements PMProvider {
 		await this.getWorkItem(id);
 		return `comment-${this.nextCommentId++}`;
 	}
+
+	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
+		const id = `PVTI_new-${this.items.size + 1}`;
+		const item: WorkItem = {
+			id,
+			title: input.title,
+			description: input.description,
+			url: `https://example.test/${id}`,
+			statusId: this.statusOptions[input.status],
+			labels: (input.labels ?? []).map((name) => ({ id: name, name })),
+		};
+		this.items.set(id, item);
+		return item;
+	}
+
+	async updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void> {
+		const item = await this.getWorkItem(id);
+		this.items.set(id, {
+			...item,
+			...(patch.title !== undefined ? { title: patch.title } : {}),
+			...(patch.description !== undefined ? { description: patch.description } : {}),
+		});
+	}
 }
 
 describe('PMProvider contract', () => {
@@ -117,6 +146,32 @@ describe('PMProvider contract', () => {
 	it('addComment throws on an unknown item ID rather than posting into the void', async () => {
 		const provider = new InMemoryPMProvider([]);
 		await expect(provider.addComment('PVTI_missing', 'a plan')).rejects.toThrow(/not found/);
+	});
+
+	it('createWorkItem adds a new item in the requested status with its labels', async () => {
+		const provider = new InMemoryPMProvider([], STATUS_OPTIONS);
+		const created = await provider.createWorkItem({
+			title: 'Spawned task',
+			description: 'Second half of the split',
+			status: 'inProgress',
+			labels: ['swarm:split-child'],
+		});
+		expect(created.statusId).toBe(STATUS_OPTIONS.inProgress);
+		expect(created.labels.map((l) => l.name)).toContain('swarm:split-child');
+		// It's readable back through the same board.
+		await expect(provider.getWorkItem(created.id)).resolves.toMatchObject({
+			title: 'Spawned task',
+		});
+	});
+
+	it('updateWorkItem patches only the fields provided', async () => {
+		const item = createMockWorkItem({ title: 'Old', description: 'Old body' });
+		const provider = new InMemoryPMProvider([item]);
+		await provider.updateWorkItem(item.id, { title: 'New' });
+		await expect(provider.getWorkItem(item.id)).resolves.toMatchObject({
+			title: 'New',
+			description: 'Old body',
+		});
 	});
 
 	it('accepts branded work-item IDs unwrapped at the boundary', async () => {

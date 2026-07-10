@@ -210,6 +210,7 @@ function runPhase(
 				cli: project.agents?.planning?.cli,
 				model: project.agents?.planning?.model,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
+				autoSplit: project.pipeline?.planning?.autoSplit,
 				signal,
 			});
 		case 'implementation':

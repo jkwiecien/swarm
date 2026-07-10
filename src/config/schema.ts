@@ -112,8 +112,16 @@ export const PipelineConfigSchema = z
 		 * Unset (or the whole `pipeline.planning` block omitted) defaults to
 		 * `false`: a human reviews the plan and moves the item themselves to
 		 * greenlight Implementation.
+		 *
+		 * `autoSplit` (default `true`) lets the planning agent decompose a task it
+		 * judges too large for a single PR: the original item becomes the smaller
+		 * first task (re-scoped, possibly renamed), and the remaining work is spawned
+		 * as sibling items that are each planned automatically but never auto-advance
+		 * to "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
 		 */
-		planning: z.object({ autoAdvance: z.boolean().optional() }).optional(),
+		planning: z
+			.object({ autoAdvance: z.boolean().optional(), autoSplit: z.boolean().optional() })
+			.optional(),
 		/**
 		 * Whether Implementation moves the item to "In review" once it opens the
 		 * PR. Unset (or the whole `pipeline.implementation` block omitted)

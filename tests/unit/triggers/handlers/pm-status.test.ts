@@ -41,6 +41,8 @@ function providerReturning(workItem: WorkItem, seen: string[] = []): PMProvider 
 		listWorkItems: async () => [],
 		moveWorkItem: async () => undefined,
 		addComment: async () => 'c1',
+		createWorkItem: async () => workItem,
+		updateWorkItem: async () => undefined,
 	};
 }
 

@@ -53,6 +53,34 @@ export interface WorkItem {
 	updatedAt?: string;
 }
 
+/**
+ * Fields for creating a new work item — a fresh backing Issue added to the
+ * board. Used by Planning's task-splitting to spawn the sibling tasks a large
+ * item decomposes into. Provider-agnostic on purpose: `status` is a canonical
+ * SWARM status key (the adapter resolves it to a board option ID), and `labels`
+ * are label *names* (the adapter ensures they exist and applies them).
+ */
+export interface CreateWorkItemInput {
+	title: string;
+	description: string;
+	/**
+	 * Canonical SWARM pipeline status key the new item should start in (e.g.
+	 * `planning` — `PM_STATUS_KEYS` in `src/pm/pipeline.ts`). The adapter resolves
+	 * it to the board's option ID.
+	 */
+	status: string;
+	/** Label names to apply to the new item's backing Issue at creation. */
+	labels?: string[];
+}
+
+/** A patch of mutable work-item fields for {@link PMProvider.updateWorkItem}. */
+export interface UpdateWorkItemPatch {
+	/** New title for the backing Issue. Omit to leave unchanged. */
+	title?: string;
+	/** New description/body for the backing Issue. Omit to leave unchanged. */
+	description?: string;
+}
+
 /** Optional server-side filters for {@link PMProvider.listWorkItems}. */
 export interface ListWorkItemsFilter {
 	/**
@@ -110,4 +138,22 @@ export interface PMProvider {
 	 * item ID; resolving it to the backing Issue/PR is the adapter's job.
 	 */
 	addComment(id: string, text: string): Promise<string>;
+
+	/**
+	 * Create a new work item on the board (a fresh backing Issue added to the
+	 * project) in the given status, and return it. Planning's task-splitting uses
+	 * this to spawn the sibling tasks a too-large item decomposes into.
+	 *
+	 * Widening the interface (rather than special-casing GitHub Projects at the
+	 * call site) keeps splitting provider-agnostic — a future Jira/Linear provider
+	 * implements the same method (ai/RULES.md §2 "widen the interface").
+	 */
+	createWorkItem(input: CreateWorkItemInput): Promise<WorkItem>;
+
+	/**
+	 * Update a work item's mutable fields (title/description on the backing Issue).
+	 * Used when Planning re-scopes the original item into the smaller first task it
+	 * becomes after a split — the split "can even change [its] name".
+	 */
+	updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void>;
 }

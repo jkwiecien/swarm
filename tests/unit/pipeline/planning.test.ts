@@ -1,19 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The plan file is read via node:fs; presence + contents are controlled per test.
+// The plan and split files are read via node:fs; presence + contents are
+// controlled per test, keyed on the filename so the two files are independent.
 let planExists: boolean;
 let planContents: string;
+let splitExists: boolean;
+let splitContents: string;
+function fsFor(path: unknown): { exists: boolean; contents: string } {
+	return String(path).endsWith('proposed_split.json')
+		? { exists: splitExists, contents: splitContents }
+		: { exists: planExists, contents: planContents };
+}
 vi.mock('node:fs', () => ({
-	existsSync: () => planExists,
-	readFileSync: () => planContents,
+	existsSync: (path: unknown) => fsFor(path).exists,
+	readFileSync: (path: unknown) => fsFor(path).contents,
 }));
 
 import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
 	buildPlanningPrompt,
 	PROPOSED_PLAN_FILENAME,
+	PROPOSED_SPLIT_FILENAME,
 	planCommentBody,
 	runPlanningPhase,
+	SPLIT_CHILD_LABEL,
 } from '@/pipeline/planning.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
@@ -52,6 +62,10 @@ function makeDeps() {
 		listWorkItems: vi.fn(),
 		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
 		moveWorkItem: vi.fn(async () => {}),
+		createWorkItem: vi.fn(async (input) =>
+			createMockWorkItem({ id: `PVTI_${input.title}`, title: input.title, url: input.title }),
+		),
+		updateWorkItem: vi.fn(async () => {}),
 	};
 	return {
 		project: createMockProjectConfig(),
@@ -70,6 +84,9 @@ describe('runPlanningPhase', () => {
 	beforeEach(() => {
 		planExists = true;
 		planContents = '# Plan\n\n1. Do the thing.';
+		// No split by default — most tests exercise the single-task path.
+		splitExists = false;
+		splitContents = '';
 	});
 
 	it('provisions a detached worktree, runs the planning agent, posts the plan, and leaves the item in Planning by default (autoAdvance off)', async () => {
@@ -115,6 +132,99 @@ describe('runPlanningPhase', () => {
 
 		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
 		expect(result).toMatchObject({ movedTo: 'todo' });
+	});
+
+	it('splits a large task: spawns siblings in Planning with the split-child label and a comment, and re-scopes the original', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			mainTask: { title: 'First slice', description: 'Just the API' },
+			subTasks: [
+				{ title: 'Second slice', description: 'The UI' },
+				{ title: 'Third slice', description: 'The docs' },
+			],
+		});
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, autoAdvance: true });
+
+		// Original re-scoped/renamed into the smaller first task.
+		expect(deps.pm.updateWorkItem).toHaveBeenCalledWith('PVTI_item18', {
+			title: 'First slice',
+			description: 'Just the API',
+		});
+
+		// Two siblings created, each in Planning, each carrying the split-child label.
+		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(2);
+		for (const call of deps.pm.createWorkItem.mock.calls) {
+			expect(call[0]).toMatchObject({ status: 'planning', labels: [SPLIT_CHILD_LABEL] });
+		}
+		expect(deps.pm.createWorkItem.mock.calls.map((c) => c[0].title)).toEqual([
+			'Second slice',
+			'Third slice',
+		]);
+
+		// Each sibling gets an explanatory comment (plus the original's plan comment).
+		const commentTargets = deps.pm.addComment.mock.calls.map((c) => c[0]);
+		expect(commentTargets).toContain('PVTI_Second slice');
+		expect(commentTargets).toContain('PVTI_Third slice');
+		const siblingComment = deps.pm.addComment.mock.calls.find(
+			(c) => c[0] === 'PVTI_Second slice',
+		)?.[1];
+		expect(siblingComment).toMatch(/Split from a larger task/);
+
+		// The first task still auto-advances (autoAdvance on, not a split-child).
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
+		expect(result.split).toEqual({
+			subTaskItemIds: ['PVTI_Second slice', 'PVTI_Third slice'],
+			mainTaskUpdated: true,
+		});
+	});
+
+	it('does not split when autoSplit is off, even if a split file exists', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({ subTasks: [{ title: 'X', description: 'Y' }] });
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, autoSplit: false });
+		expect(deps.pm.createWorkItem).not.toHaveBeenCalled();
+		expect(deps.pm.updateWorkItem).not.toHaveBeenCalled();
+		expect(result.split).toBeUndefined();
+	});
+
+	it('never auto-advances a split-child item even when autoAdvance is on', async () => {
+		const deps = makeDeps();
+		deps.workItem = createMockWorkItem({
+			id: 'PVTI_child',
+			title: 'A spawned task',
+			labels: [{ id: SPLIT_CHILD_LABEL, name: SPLIT_CHILD_LABEL }],
+		});
+		await runPlanningPhase({ ...deps, autoAdvance: true });
+		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+	});
+
+	it('leaves the original title untouched when the split omits mainTask', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({ subTasks: [{ title: 'Only sibling', description: 'Z' }] });
+		const deps = makeDeps();
+		const result = await runPlanningPhase(deps);
+		expect(deps.pm.updateWorkItem).not.toHaveBeenCalled();
+		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(1);
+		expect(result.split).toMatchObject({ mainTaskUpdated: false });
+	});
+
+	it('treats an empty subTasks array as no split', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({ subTasks: [] });
+		const deps = makeDeps();
+		const result = await runPlanningPhase(deps);
+		expect(deps.pm.createWorkItem).not.toHaveBeenCalled();
+		expect(result.split).toBeUndefined();
+	});
+
+	it('throws on a malformed split file rather than silently skipping the split', async () => {
+		splitExists = true;
+		splitContents = '{ not valid json';
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
@@ -224,6 +334,17 @@ describe('buildPlanningPrompt', () => {
 	it('falls back to a placeholder when the work item has no description', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem({ description: '' }));
 		expect(prompt).toContain('(no description provided)');
+	});
+
+	it('omits split instructions by default', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem());
+		expect(prompt).not.toContain(PROPOSED_SPLIT_FILENAME);
+	});
+
+	it('invites splitting when allowSplit is on', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
+		expect(prompt).toContain(PROPOSED_SPLIT_FILENAME);
+		expect(prompt).toMatch(/too large/i);
 	});
 });
 

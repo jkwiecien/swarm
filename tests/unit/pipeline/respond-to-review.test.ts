@@ -229,6 +229,8 @@ describe('runRespondToReviewPhase', () => {
 				listWorkItems: vi.fn(async () => workItems),
 				moveWorkItem: vi.fn(async (_id: string, _status: string) => {}),
 				addComment: vi.fn(async () => 'c1'),
+				createWorkItem: vi.fn(async () => createMockWorkItem({ id: 'PVTI_sibling' })),
+				updateWorkItem: vi.fn(async () => {}),
 			};
 		}
 

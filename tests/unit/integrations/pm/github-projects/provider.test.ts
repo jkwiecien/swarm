@@ -2,8 +2,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
 const createComment = vi.fn();
+const createIssue = vi.fn();
+const updateIssue = vi.fn();
+const getLabel = vi.fn();
+const createLabel = vi.fn();
 vi.mock('@/integrations/scm/github/client.js', () => ({
-	getScopedClient: () => ({ graphql, issues: { createComment } }),
+	getScopedClient: () => ({
+		graphql,
+		issues: {
+			createComment,
+			create: createIssue,
+			update: updateIssue,
+			getLabel,
+			createLabel,
+		},
+	}),
 }));
 // Run the credential-scoped fn straight through — token resolution is out of
 // scope for the provider's own logic.
@@ -43,6 +56,10 @@ describe('GitHubProjectsPMProvider', () => {
 	beforeEach(() => {
 		graphql.mockReset();
 		createComment.mockReset();
+		createIssue.mockReset();
+		updateIssue.mockReset();
+		getLabel.mockReset();
+		createLabel.mockReset();
 	});
 
 	it('createGitHubProjectsProvider builds the provider', () => {
@@ -248,6 +265,124 @@ describe('GitHubProjectsPMProvider', () => {
 			});
 			await expect(provider.addComment('PVTI_draft', 'x')).rejects.toThrow('no backing Issue/PR');
 			expect(createComment).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('createWorkItem', () => {
+		it('creates the Issue, adds it to the board, sets its status, and applies labels', async () => {
+			getLabel.mockResolvedValue({ data: {} }); // label already exists
+			createIssue.mockResolvedValue({
+				data: {
+					node_id: 'I_new',
+					number: 42,
+					title: 'Sibling task',
+					body: 'Second half',
+					html_url: 'https://github.com/jkwiecien/swarm/issues/42',
+					labels: [{ id: 1, name: 'swarm:split-child', color: 'ededed' }],
+				},
+			});
+			graphql
+				.mockResolvedValueOnce({ addProjectV2ItemById: { item: { id: 'PVTI_new' } } })
+				.mockResolvedValueOnce({});
+
+			const created = await provider.createWorkItem({
+				title: 'Sibling task',
+				description: 'Second half',
+				status: 'planning',
+				labels: ['swarm:split-child'],
+			});
+
+			expect(createIssue).toHaveBeenCalledWith({
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				title: 'Sibling task',
+				body: 'Second half',
+				labels: ['swarm:split-child'],
+			});
+			// Added to the board...
+			expect(graphql).toHaveBeenNthCalledWith(1, expect.stringContaining('addProjectV2ItemById'), {
+				projectId: PROJECT.githubProjects.projectId,
+				contentId: 'I_new',
+			});
+			// ...then placed in Planning (option 61e4505c per the mock config).
+			expect(graphql).toHaveBeenNthCalledWith(
+				2,
+				expect.stringContaining('updateProjectV2ItemFieldValue'),
+				{
+					projectId: PROJECT.githubProjects.projectId,
+					itemId: 'PVTI_new',
+					fieldId: PROJECT.githubProjects.statusFieldId,
+					optionId: '61e4505c',
+				},
+			);
+			expect(created).toMatchObject({
+				id: 'PVTI_new',
+				title: 'Sibling task',
+				statusId: '61e4505c',
+				url: 'https://github.com/jkwiecien/swarm/issues/42',
+			});
+			expect(created.labels.map((l) => l.name)).toContain('swarm:split-child');
+		});
+
+		it('creates a missing label before creating the Issue', async () => {
+			getLabel.mockRejectedValue({ status: 404 });
+			createLabel.mockResolvedValue({ data: {} });
+			createIssue.mockResolvedValue({
+				data: { node_id: 'I_new', number: 43, title: 'T', body: '', html_url: 'u', labels: [] },
+			});
+			graphql
+				.mockResolvedValueOnce({ addProjectV2ItemById: { item: { id: 'PVTI_new' } } })
+				.mockResolvedValueOnce({});
+
+			await provider.createWorkItem({
+				title: 'T',
+				description: '',
+				status: 'planning',
+				labels: ['swarm:split-child'],
+			});
+
+			expect(createLabel).toHaveBeenCalledWith(
+				expect.objectContaining({ owner: 'jkwiecien', repo: 'swarm', name: 'swarm:split-child' }),
+			);
+		});
+
+		it('throws for a status with no option mapping without creating anything', async () => {
+			await expect(
+				provider.createWorkItem({ title: 'T', description: '', status: 'nonsense' }),
+			).rejects.toThrow("status 'nonsense' has no option ID");
+			expect(createIssue).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('updateWorkItem', () => {
+		it('updates only the fields provided on the backing Issue', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			updateIssue.mockResolvedValue({ data: {} });
+
+			await provider.updateWorkItem('PVTI_x', { title: 'Renamed' });
+
+			expect(updateIssue).toHaveBeenCalledWith({
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				issue_number: 10,
+				title: 'Renamed',
+			});
+		});
+
+		it('is a no-op write when the patch is empty', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			await provider.updateWorkItem('PVTI_x', {});
+			expect(updateIssue).not.toHaveBeenCalled();
+		});
+
+		it('throws when the item has no backing Issue (draft)', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			await expect(provider.updateWorkItem('PVTI_draft', { title: 'x' })).rejects.toThrow(
+				'no backing Issue',
+			);
+			expect(updateIssue).not.toHaveBeenCalled();
 		});
 	});
 });

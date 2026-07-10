@@ -52,6 +52,8 @@ function makeDeps() {
 		listWorkItems: vi.fn(),
 		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
 		moveWorkItem: vi.fn(async () => {}),
+		createWorkItem: vi.fn(async () => createMockWorkItem({ id: 'PVTI_sibling' })),
+		updateWorkItem: vi.fn(async () => {}),
 	};
 	return {
 		project: createMockProjectConfig(),

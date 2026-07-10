@@ -21,7 +21,14 @@
 
 import type { ProjectConfig } from '../../../config/schema.js';
 import { logger } from '../../../lib/logger.js';
-import type { PMProvider, PMType, WorkItem, WorkItemLabel } from '../../../pm/types.js';
+import type {
+	CreateWorkItemInput,
+	PMProvider,
+	PMType,
+	UpdateWorkItemPatch,
+	WorkItem,
+	WorkItemLabel,
+} from '../../../pm/types.js';
 import { getScopedClient } from '../../scm/github/client.js';
 import { GitHubSCMIntegration } from '../../scm/github/scm-integration.js';
 
@@ -149,6 +156,27 @@ const MOVE_ITEM_MUTATION = /* GraphQL */ `
 		}
 	}
 `;
+
+/**
+ * Add an existing Issue/PR (by its content node ID) to the board, returning the
+ * new item's node ID. Paired with {@link MOVE_ITEM_MUTATION} to place the item
+ * in a starting Status — the two writes {@link GitHubProjectsPMProvider.createWorkItem}
+ * makes after creating the backing Issue via REST.
+ */
+const ADD_PROJECT_ITEM_MUTATION = /* GraphQL */ `
+	mutation($projectId: ID!, $contentId: ID!) {
+		addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+			item { id }
+		}
+	}
+`;
+
+interface AddProjectItemResponse {
+	addProjectV2ItemById?: { item?: { id?: string } | null } | null;
+}
+
+/** Default label color (GitHub's neutral grey) for a SWARM-created label. */
+const DEFAULT_LABEL_COLOR = 'ededed';
 
 function mapLabels(content: ContentNode | null | undefined): WorkItemLabel[] {
 	const nodes = content?.labels?.nodes ?? [];
@@ -303,6 +331,119 @@ export class GitHubProjectsPMProvider implements PMProvider {
 			return String(data.id);
 		});
 	}
+
+	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
+		const [owner, repo] = this.project.repo.split('/');
+		const { projectId, statusFieldId, statusOptions } = this.project.githubProjects;
+		const optionId = statusOptions[input.status];
+		if (!optionId) {
+			// Same fail-loud contract as moveWorkItem: an unmappable status is a
+			// config/logic error, not a value to silently write (ai/CODING_STANDARDS.md).
+			throw new Error(
+				`Cannot create item: status '${input.status}' has no option ID in the project's statusOptions map`,
+			);
+		}
+		const labels = input.labels ?? [];
+		return this.run(async () => {
+			const client = getScopedClient();
+			// A label referenced on a new issue must already exist, so ensure each
+			// before creating — otherwise the whole create fails on an unknown label.
+			for (const name of labels) {
+				await ensureLabel(owner, repo, name);
+			}
+			const { data: issue } = await client.issues.create({
+				owner,
+				repo,
+				title: input.title,
+				body: input.description,
+				labels,
+			});
+			// Add the fresh Issue to the board, then place it in its starting Status —
+			// two writes, since addProjectV2ItemById can't set a field value.
+			const added = await client.graphql<AddProjectItemResponse>(ADD_PROJECT_ITEM_MUTATION, {
+				projectId,
+				contentId: issue.node_id,
+			});
+			const itemId = added.addProjectV2ItemById?.item?.id;
+			if (!itemId) {
+				throw new Error(`addProjectV2ItemById returned no item id for issue #${issue.number}`);
+			}
+			await client.graphql(MOVE_ITEM_MUTATION, {
+				projectId,
+				itemId,
+				fieldId: statusFieldId,
+				optionId,
+			});
+			logger.debug('pm: created work item', {
+				itemId,
+				issueNumber: issue.number,
+				status: input.status,
+			});
+			return {
+				id: itemId,
+				title: issue.title,
+				description: issue.body ?? '',
+				url: issue.html_url,
+				statusId: optionId,
+				labels: (issue.labels ?? [])
+					.map((l) =>
+						typeof l === 'string'
+							? { id: l, name: l }
+							: { id: String(l.id), name: l.name ?? '', color: l.color ?? undefined },
+					)
+					.filter((l): l is WorkItemLabel => l.name.length > 0),
+			};
+		});
+	}
+
+	async updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void> {
+		// Title/description live on the backing Issue, not the board card — resolve
+		// it first (its own scoped run), mirroring addComment's two-step shape.
+		const { owner, repo, contentNumber } = await this.resolveItem(id);
+		if (!owner || !repo || contentNumber == null) {
+			throw new Error(
+				`Cannot update item '${id}': it has no backing Issue to update (likely a draft item)`,
+			);
+		}
+		if (patch.title === undefined && patch.description === undefined) return;
+		await this.run(async () => {
+			await getScopedClient().issues.update({
+				owner,
+				repo,
+				issue_number: contentNumber,
+				...(patch.title !== undefined ? { title: patch.title } : {}),
+				...(patch.description !== undefined ? { body: patch.description } : {}),
+			});
+		});
+		logger.debug('pm: updated work item', { itemId: id });
+	}
+}
+
+/**
+ * Ensure a label exists in the repo before it's applied to a new issue —
+ * `issues.create` errors on an unknown label. Created with GitHub's neutral grey
+ * when missing; a concurrent create that already made it (422) is treated as
+ * success. Must run inside a scoped-credentials context (its callers do).
+ */
+async function ensureLabel(owner: string, repo: string, name: string): Promise<void> {
+	const client = getScopedClient();
+	try {
+		await client.issues.getLabel({ owner, repo, name });
+		return;
+	} catch (err) {
+		if (!isHttpStatus(err, 404)) throw err;
+	}
+	try {
+		await client.issues.createLabel({ owner, repo, name, color: DEFAULT_LABEL_COLOR });
+	} catch (err) {
+		// A parallel create won the race — the label now exists, which is all we need.
+		if (!isHttpStatus(err, 422)) throw err;
+	}
+}
+
+/** Whether an Octokit error carries a specific HTTP status. */
+function isHttpStatus(err: unknown, status: number): boolean {
+	return typeof err === 'object' && err !== null && (err as { status?: number }).status === status;
 }
 
 /**
