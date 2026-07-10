@@ -113,7 +113,7 @@ function DefaultModelsForm({
 													value={selectedModel ?? ''}
 													onChange={(e) => handleModelChange(cli, e.target.value)}
 													disabled={isPending}
-													className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+													className="block w-full max-w-[390px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
 												>
 													<option value="">{getGlobalModelDefaultLabel(cli)}</option>
 													{modelOptions.map((model) => (
