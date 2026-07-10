@@ -4,6 +4,7 @@ import { Play } from 'lucide-react';
 import { z } from 'zod';
 import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
+import { runsListRefetchInterval } from '@/lib/runs-refresh.js';
 import { trpc } from '@/lib/trpc.js';
 import type { RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
@@ -79,10 +80,7 @@ function RunsRouteComponent() {
 			limit: PAGE_SIZE,
 			offset: (currentPage - 1) * PAGE_SIZE,
 		}),
-		refetchInterval: (query) => {
-			const data = query.state.data;
-			return data?.data?.some((run) => run.status === 'running') ? 2000 : false;
-		},
+		refetchInterval: (query) => runsListRefetchInterval(query.state.data),
 	});
 
 	const hasActiveFilters = !!(search.projectId || search.status || search.phase);
