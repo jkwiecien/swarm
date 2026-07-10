@@ -52,7 +52,7 @@ vi.mock('node:fs', () => ({
 	},
 }));
 
-import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+import { GitWorktreeManager, WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 
 const REPO_ROOT = '/Users/dev/swarm/swarm';
 const WORKTREE_14 = `${REPO_ROOT}/.swarm-workspaces/task-14`;
@@ -155,7 +155,7 @@ describe('GitWorktreeManager', () => {
 
 		it('throws if a worktree for the task already exists', async () => {
 			existingPaths.add(WORKTREE_14);
-			await expect(makeManager().provision('14')).rejects.toThrow(/already exists/);
+			await expect(makeManager().provision('14')).rejects.toThrow(WorktreeAlreadyExistsError);
 			expect(gitCalls.some((c) => c[1] === 'add')).toBe(false);
 		});
 

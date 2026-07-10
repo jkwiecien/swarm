@@ -20,7 +20,13 @@
 import type { AgentCliResult } from './agent-cli.js';
 
 /** Why an agent run failed, from the worker's point of view. */
-export type AgentFailureKind = 'rate-limit' | 'timeout' | 'aborted' | 'stalled' | 'error';
+export type AgentFailureKind =
+	| 'rate-limit'
+	| 'timeout'
+	| 'aborted'
+	| 'stalled'
+	| 'error'
+	| 'worktree-exists';
 
 export interface AgentFailure {
 	kind: AgentFailureKind;

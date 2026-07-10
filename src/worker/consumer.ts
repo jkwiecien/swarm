@@ -45,6 +45,7 @@ import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueJob } from '../queue/producer.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
+import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
@@ -113,7 +114,7 @@ const RETRY_BUFFER_MS = 60 * 1000;
  * dedup-claim floor a rate-limit retry respects.
  */
 function retryDelayForFailure(failure: AgentFailure, now: number): number {
-	if (failure.kind === 'aborted') return MIN_RETRY_DELAY_MS;
+	if (failure.kind === 'aborted' || failure.kind === 'worktree-exists') return MIN_RETRY_DELAY_MS;
 	const raw = failure.retryAfter
 		? failure.retryAfter.getTime() - now + RETRY_BUFFER_MS
 		: DEFAULT_RETRY_DELAY_MS;
@@ -151,7 +152,9 @@ function deferAgentRunError(
 	logger.warn(
 		failure.kind === 'aborted'
 			? `Phase stopped - ${phaseLabel(trigger.phase)} — worker shutdown, deferring retry`
-			: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
+			: failure.kind === 'worktree-exists'
+				? `Phase stopped - ${phaseLabel(trigger.phase)} — worktree already exists, deferring retry`
+				: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
 		{
 			projectId,
 			phase: trigger.phase,
@@ -497,38 +500,40 @@ export function phaseFailureCommentBody(
 
 /**
  * Post a phase-failure comment on the backing Issue of a work-item-carrying
- * phase (planning/implementation). Best-effort: a failed comment is swallowed
- * and logged so it can't mask the phase failure it's reporting (the same
- * swallow-and-log contract the phases use for worktree cleanup).
- *
- * Only the PM-driven phases carry a `workItem` to comment on. The PR-driven
- * phases (review/respond-*) act on a PR the agent already comments on itself
- * inside the run, and the PM provider has no PR-number → comment mapping, so
- * they're intentionally skipped here. Callers must only reach this on a
- * *terminal* failure — a deferrable rate-limit/abort is re-enqueued and would
- * otherwise post a premature "failed" for a run that's about to be retried.
+ * phase (planning/implementation) or on the backing PR of a PR-driven phase
+ * (review/respond-*). Best-effort: a failed comment is swallowed and logged so
+ * it can't mask the phase failure it's reporting (the same swallow-and-log
+ * contract the phases use for worktree cleanup).
  */
-async function reportPhaseFailureToBoard(
+async function reportPhaseFailureToBoardOrPr(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	error: string,
 	kind?: AgentFailureKind,
 ): Promise<void> {
-	if (trigger.phase !== 'planning' && trigger.phase !== 'implementation') return;
-
 	try {
-		const pm = createGitHubProjectsProvider(project);
-		const commentId = await pm.addComment(
-			trigger.workItem.id,
-			phaseFailureCommentBody(trigger.phase, error, kind),
-		);
-		logger.debug('Posted phase-failure comment to the board item', {
-			projectId: project.id,
-			phase: trigger.phase,
-			taskId: trigger.taskId,
-			workItemId: trigger.workItem.id,
-			commentId,
-		});
+		const body = phaseFailureCommentBody(trigger.phase, error, kind);
+		if ('workItem' in trigger) {
+			const pm = createGitHubProjectsProvider(project);
+			const commentId = await pm.addComment(trigger.workItem.id, body);
+			logger.debug('Posted phase-failure comment to the board item', {
+				projectId: project.id,
+				phase: trigger.phase,
+				taskId: trigger.taskId,
+				workItemId: trigger.workItem.id,
+				commentId,
+			});
+		} else if ('prNumber' in trigger) {
+			const scm = new GitHubSCMIntegration();
+			const commentId = await scm.commentOnPullRequest(project, Number(trigger.prNumber), body);
+			logger.debug('Posted phase-failure comment to the PR', {
+				projectId: project.id,
+				phase: trigger.phase,
+				taskId: trigger.taskId,
+				prNumber: trigger.prNumber,
+				commentId,
+			});
+		}
 	} catch (commentErr) {
 		logger.error('Failed to post phase-failure comment', {
 			projectId: project.id,
@@ -700,19 +705,25 @@ async function handlePhaseFailure(
 	project: ProjectConfig,
 ): Promise<JobOutcome> {
 	const error = err instanceof Error ? err.message : String(err);
-	const failureKind = err instanceof AgentRunError ? err.failure.kind : undefined;
+	const failureKind =
+		err instanceof AgentRunError
+			? err.failure.kind
+			: err instanceof WorktreeAlreadyExistsError
+				? 'worktree-exists'
+				: undefined;
 
-	// A usage/session-limit hit or a worker-shutdown abort is transient: the
-	// agent never did any lasting work, so rather than failing the job we defer
-	// it and let the worker re-enqueue it once it's safe to retry (rate-limit:
-	// issue #91; aborted: the run was killed by the worker's own shutdown, not
-	// by anything the agent did). Capped so a persistent limit — or a job that
-	// keeps getting aborted, or a misclassified failure — can't loop forever.
+	// A usage/session-limit hit, a worker-shutdown abort, or a worktree "already
+	// exists" directory collision is transient/recoverable: rather than failing the
+	// job, we defer it and let the worker re-enqueue it once it's safe to retry.
+	// Capped so a persistent limit or collision can't loop forever.
 	const isDeferrable =
-		err instanceof AgentRunError &&
-		(err.failure.kind === 'rate-limit' || err.failure.kind === 'aborted');
+		(err instanceof AgentRunError &&
+			(err.failure.kind === 'rate-limit' || err.failure.kind === 'aborted')) ||
+		err instanceof WorktreeAlreadyExistsError;
 	if (isDeferrable) {
-		const deferred = deferAgentRunError(err.failure, job, trigger, project.id, error);
+		const failure: AgentFailure =
+			err instanceof AgentRunError ? err.failure : { kind: 'worktree-exists' };
+		const deferred = deferAgentRunError(failure, job, trigger, project.id, error);
 		if (deferred) return deferred;
 	}
 
@@ -722,11 +733,11 @@ async function handlePhaseFailure(
 		taskId: trigger.taskId,
 		error,
 	});
-	// Report the terminal failure on the backing Issue so a human watching the
-	// board sees why the item stalled. Reached only for non-deferrable failures
-	// (the deferral above returns early), so a run that's about to be retried
-	// never posts a premature "failed".
-	await reportPhaseFailureToBoard(trigger, project, error, failureKind);
+	// Report the terminal failure on the backing Issue or PR so a human sees why
+	// the item stalled. Reached only for non-deferrable failures (the deferral
+	// above returns early), so a run that's about to be retried never posts a
+	// premature "failed".
+	await reportPhaseFailureToBoardOrPr(trigger, project, error, failureKind);
 	// The review handler's claim intentionally survives a failed run: the review
 	// agent submits its formal `gh pr review` *inside* the run, so a phase that
 	// threw afterward may have already posted the review — releasing the claim
