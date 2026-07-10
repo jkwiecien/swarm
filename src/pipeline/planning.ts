@@ -345,6 +345,68 @@ function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResu
 }
 
 /**
+ * Read and validate the plan the agent was told to write. Throws (after logging
+ * the agent's captured output) when the file is missing or empty — a planning
+ * run that didn't yield a plan is a failed job, not a soft miss
+ * (ai/CODING_STANDARDS.md "Error handling"). Split out of {@link runPlanningPhase}
+ * to keep that function's branching within the complexity budget.
+ */
+function readPlanOrThrow(
+	worktreePath: string,
+	cli: AgentCli,
+	taskId: string,
+	workItem: WorkItem,
+	agent: AgentCliResult,
+): string {
+	const planPath = join(worktreePath, PROPOSED_PLAN_FILENAME);
+	if (!existsSync(planPath)) {
+		logAgentFailure(taskId, workItem.id, agent);
+		throw new Error(
+			`Planning agent (${cli}) did not write ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
+		);
+	}
+	const plan = readFileSync(planPath, 'utf8').trim();
+	if (plan.length === 0) {
+		logAgentFailure(taskId, workItem.id, agent);
+		throw new Error(
+			`Planning agent (${cli}) wrote an empty ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
+		);
+	}
+	return plan;
+}
+
+/**
+ * Apply a split: re-scope/rename the original item into the smaller first task
+ * (when the agent asked), then spawn each sibling task in "Planning" — tagged so
+ * its own Planning run won't auto-advance, and with a comment explaining the
+ * split. Returns the spawned siblings' IDs (in order) and whether the original
+ * was patched. Split out of {@link runPlanningPhase} for the same
+ * complexity-budget reason as {@link readPlanOrThrow}.
+ */
+async function applySplit(
+	pm: PMProvider,
+	parent: WorkItem,
+	split: ProposedSplit,
+): Promise<{ subTaskItemIds: string[]; mainTaskUpdated: boolean }> {
+	const mainPatch = split.mainTask ? buildMainTaskPatch(parent, split.mainTask) : undefined;
+	if (mainPatch) {
+		await pm.updateWorkItem(parent.id, mainPatch);
+	}
+	const subTaskItemIds: string[] = [];
+	for (const sub of split.subTasks) {
+		const sibling = await pm.createWorkItem({
+			title: sub.title,
+			description: sub.description,
+			status: SIBLING_START_STATUS,
+			labels: [SPLIT_CHILD_LABEL],
+		});
+		await pm.addComment(sibling.id, splitChildCommentBody(parent));
+		subTaskItemIds.push(sibling.id);
+	}
+	return { subTaskItemIds, mainTaskUpdated: mainPatch !== undefined };
+}
+
+/**
  * Run the Planning phase for one work item. Provisions a detached worktree, runs
  * the planning agent to produce `proposed_plan.md`, and posts it as a comment on
  * the linked Issue. Whether the item then moves to "ToDo" is `autoAdvance`
@@ -422,72 +484,31 @@ export async function runPlanningPhase(
 			);
 		}
 
-		const planPath = join(handle.path, PROPOSED_PLAN_FILENAME);
-		if (!existsSync(planPath)) {
-			logAgentFailure(taskId, workItem.id, agent);
-			throw new Error(
-				`Planning agent (${cli}) did not write ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
-			);
-		}
-		const plan = readFileSync(planPath, 'utf8').trim();
-		if (plan.length === 0) {
-			logAgentFailure(taskId, workItem.id, agent);
-			throw new Error(
-				`Planning agent (${cli}) wrote an empty ${PROPOSED_PLAN_FILENAME} for task '${taskId}'`,
-			);
-		}
+		const plan = readPlanOrThrow(handle.path, cli, taskId, workItem, agent);
 
 		// The agent may have decided to split (only honored when autoSplit is on).
+		// The re-scope/rename and sibling spawns happen before the first task is
+		// greenlit below, so autoAdvance never fires ahead of the siblings existing.
 		const split = autoSplit ? readProposedSplit(handle.path) : undefined;
-
-		// Re-scope/rename the original item into the smaller first task, if asked.
-		const mainPatch = split?.mainTask ? buildMainTaskPatch(workItem, split.mainTask) : undefined;
-		if (mainPatch) {
-			await pm.updateWorkItem(workItem.id, mainPatch);
-		}
 
 		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
 
-		// Spawn the sibling tasks (before greenlighting the first one), each starting
-		// in "Planning" so the pm-status trigger plans it, tagged so its own run
-		// won't auto-advance, and carrying a comment explaining the split.
-		const subTaskItemIds: string[] = [];
-		if (split) {
-			for (const sub of split.subTasks) {
-				const sibling = await pm.createWorkItem({
-					title: sub.title,
-					description: sub.description,
-					status: SIBLING_START_STATUS,
-					labels: [SPLIT_CHILD_LABEL],
-				});
-				await pm.addComment(sibling.id, splitChildCommentBody(workItem));
-				subTaskItemIds.push(sibling.id);
-			}
-		}
+		const splitResult = split ? await applySplit(pm, workItem, split) : undefined;
 
-		if (effectiveAutoAdvance) {
-			await pm.moveWorkItem(workItem.id, NEXT_STATUS);
+		const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
+		if (movedTo) {
+			await pm.moveWorkItem(workItem.id, movedTo);
 		}
-
-		const splitResult = split
-			? { subTaskItemIds, mainTaskUpdated: mainPatch !== undefined }
-			: undefined;
 
 		logger.info('Phase finished - Planning', {
 			taskId,
 			workItemId: workItem.id,
 			commentId,
-			movedTo: effectiveAutoAdvance ? NEXT_STATUS : undefined,
-			splitInto: split ? subTaskItemIds.length : undefined,
+			movedTo,
+			splitInto: splitResult?.subTaskItemIds.length,
 		});
 
-		return {
-			plan,
-			commentId,
-			agent,
-			movedTo: effectiveAutoAdvance ? NEXT_STATUS : undefined,
-			split: splitResult,
-		};
+		return { plan, commentId, agent, movedTo, split: splitResult };
 	} finally {
 		// Swallow-and-log: a cleanup failure must not mask the run's outcome
 		// (a successful phase turning into a reported failure, or a genuine
