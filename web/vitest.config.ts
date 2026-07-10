@@ -1,0 +1,19 @@
+import path from 'node:path';
+import { defineConfig } from 'vitest/config';
+
+// The web package tests pure helpers only (no rendered components yet), so a
+// node environment is enough — no jsdom / @testing-library machinery. Mirror the
+// `@` → web/src alias so imports resolve the same way tsc/vite do.
+export default defineConfig({
+	test: {
+		name: 'web',
+		globals: true,
+		environment: 'node',
+		// Match the root unit project's thread pool: the default `forks` pool uses
+		// child_process IPC, which collides with the IPC channel of the process
+		// that spawns the test run.
+		pool: 'threads',
+		include: ['src/**/*.test.{ts,tsx}'],
+	},
+	resolve: { alias: { '@': path.resolve(__dirname, './src') } },
+});
