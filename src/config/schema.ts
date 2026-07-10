@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod';
-import { AgentCliSchema } from '../harness/agent-cli.js';
+import { type AgentCli, AgentCliSchema } from '../harness/agent-cli.js';
 import { AGENT_MODELS, ALL_AGENT_MODELS } from '../harness/models.js';
 import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/config-schema.js';
 
@@ -77,6 +77,36 @@ export const AgentConfigSchema = z
 	.describe('Per-phase agent CLI/model override');
 
 /**
+ * Per-CLI default model — the model used when a phase specifies (or falls back
+ * to) a given CLI but doesn't set its own per-phase model override. Configuring
+ * `defaults: { claude: "sonnet" }` means every claude-phase without an explicit
+ * model runs on sonnet, rather than whatever the `claude` binary itself would
+ * pick.
+ *
+ * Each key must be a known `AgentCli`, and the value must be valid for that CLI
+ * per `AGENT_MODELS` — the same validation `AgentConfigSchema.model` uses, just
+ * keyed by CLI instead of by phase.
+ */
+export const AgentDefaultsSchema = z
+	.record(AgentCliSchema, z.string().min(1).optional())
+	.refine(
+		(defaults) => {
+			for (const [cli, model] of Object.entries(defaults)) {
+				if (!model) continue;
+				const allowed = AGENT_MODELS[cli as AgentCli];
+				if (!allowed) return false;
+				if (!(allowed as readonly string[]).includes(model)) return false;
+			}
+			return true;
+		},
+		{
+			message:
+				'each default model must be one of the known models for its cli (src/harness/models.ts)',
+		},
+	)
+	.describe('Per-CLI default model — used when a phase omits its own model override');
+
+/**
  * Per-phase agent overrides, keyed by the same phase names the trigger/worker
  * layer already uses (`TriggerResult['phase']`, `src/triggers/types.ts`) —
  * camelCased to match this config's other multi-word keys (`statusOptions`'s
@@ -84,9 +114,14 @@ export const AgentConfigSchema = z
  * optional; an entirely absent `agents` block (or an absent phase within it)
  * means every phase keeps running on its coded default, unchanged from before
  * this existed.
+ *
+ * `defaults` sets a per-CLI default model (e.g. `{ claude: "sonnet" }`) — the
+ * fallback when a phase specifies (or inherits) a CLI but doesn't set its own
+ * `model`. Without it, the CLI runs with its own built-in default.
  */
 export const AgentsConfigSchema = z
 	.object({
+		defaults: AgentDefaultsSchema.optional(),
 		planning: AgentConfigSchema.optional(),
 		implementation: AgentConfigSchema.optional(),
 		review: AgentConfigSchema.optional(),
@@ -208,6 +243,7 @@ export const SwarmConfigSchema = z.object({
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
+export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type WorktreeRetentionConfig = z.infer<typeof WorktreeRetentionConfigSchema>;

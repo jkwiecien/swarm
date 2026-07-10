@@ -63,3 +63,10 @@ export const ALL_AGENT_MODELS: readonly string[] = [
 	...ANTIGRAVITY_MODELS,
 	...CODEX_MODELS,
 ];
+
+/** Coded default models per agent CLI when no configuration overrides it. */
+export const DEFAULT_MODEL_PER_CLI: Record<AgentCli, string> = {
+	claude: 'sonnet',
+	antigravity: 'Gemini 3.5 Flash (Medium)',
+	codex: 'gpt-5.6-terra',
+};

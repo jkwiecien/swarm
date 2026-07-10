@@ -236,11 +236,13 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `statusOptions` | **required** | Map of SWARM pipeline status keys (`backlog`, `planning`, `todo`, `inProgress`, `inReview`, `done`) → the Status field's single-select option ids. |
 | `phaseLabels` | optional | Map of SWARM phase keys (`phase-0`…) → repo label names. |
 
-**`agents`** — per-phase overrides; every phase key is optional, omit to keep the phase's coded default. Phases: `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
-| Field | Purpose |
-| --- | --- |
-| `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
-| `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`; Antigravity: the exact `agy models` display strings; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`). Omit for the CLI's default model. |
+**`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
+- **`defaults`** — optional map of `cli` -> default `model` override for the whole project.
+- **Phases** — `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
+  | Field | Purpose |
+  | --- | --- |
+  | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
+  | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]` or the coded default. |
 
 **`pipeline`** — controls whether a phase moves the board item itself on completion, and whether Planning may split a too-large task. Only `planning` and `implementation` are configurable (the other phases are SCM-event-driven and never move a card):
 | Field | Default | Purpose |

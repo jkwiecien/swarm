@@ -326,7 +326,7 @@ describe('processJob', () => {
 		});
 	});
 
-	it('passes undefined cli/model when the project has no agents override, leaving each phase on its coded default', async () => {
+	it('passes undefined cli and the default model when the project has no agents override, leaving phase on coded default CLI but resolving default model', async () => {
 		const trigger: TriggerResult = {
 			phase: 'planning',
 			taskId: '10',
@@ -336,7 +336,27 @@ describe('processJob', () => {
 		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
 		expect(phaseCalls[0].args.cli).toBeUndefined();
-		expect(phaseCalls[0].args.model).toBeUndefined();
+		expect(phaseCalls[0].args.model).toBe('sonnet');
+	});
+
+	it('resolves model to the project defaults block when phase override omits model', async () => {
+		const projectWithDefaults = createMockProjectConfig({
+			agents: {
+				defaults: { claude: 'opus' },
+				planning: { cli: 'claude' },
+			},
+		});
+		projectLookup = () => projectWithDefaults;
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.cli).toBe('claude');
+		expect(phaseCalls[0].args.model).toBe('opus');
 	});
 
 	it("threads the project's per-phase autoAdvance setting into planning and implementation calls", async () => {
@@ -835,7 +855,7 @@ describe('processJob', () => {
 				phase: 'review',
 				workItemId: undefined,
 				prNumber: '17',
-				model: undefined,
+				model: 'sonnet',
 			});
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
 				status: 'completed',

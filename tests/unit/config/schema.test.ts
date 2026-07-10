@@ -201,6 +201,28 @@ describe('AgentsConfigSchema', () => {
 		expect(AgentsConfigSchema.safeParse({ review: { cli: 'claude' } }).success).toBe(true);
 		expect(AgentsConfigSchema.safeParse({ review: { model: 'opus' } }).success).toBe(true);
 	});
+
+	it('accepts valid defaults block', () => {
+		expect(
+			AgentsConfigSchema.safeParse({
+				defaults: {
+					claude: 'sonnet',
+					antigravity: 'Gemini 3.5 Flash (Medium)',
+					codex: 'gpt-5.6-terra',
+				},
+			}).success,
+		).toBe(true);
+	});
+
+	it('rejects invalid defaults block model names', () => {
+		expect(
+			AgentsConfigSchema.safeParse({
+				defaults: {
+					claude: 'Gemini 3.5 Flash (Medium)',
+				},
+			}).success,
+		).toBe(false);
+	});
 });
 
 describe('PipelineConfigSchema', () => {

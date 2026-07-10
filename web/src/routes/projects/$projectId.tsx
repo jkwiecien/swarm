@@ -19,8 +19,42 @@ const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: strin
 	respondToCi: { label: 'Respond to CI', code: 'respondToCi' },
 };
 
+function getModelDefaultLabel(
+	cli: string,
+	projectDefaults?: Record<string, string | undefined>,
+): string {
+	const defaultModel =
+		projectDefaults?.[cli] ||
+		{
+			claude: 'sonnet',
+			codex: 'gpt-5.6-terra',
+			antigravity: 'Gemini 3.5 Flash (Medium)',
+		}[cli] ||
+		'Unset';
+
+	const displayModel =
+		defaultModel === 'sonnet'
+			? 'Sonnet'
+			: defaultModel === 'opus'
+				? 'Opus'
+				: defaultModel === 'fable'
+					? 'Fable'
+					: defaultModel === 'haiku'
+						? 'Haiku'
+						: defaultModel;
+
+	return `Default (${displayModel})`;
+}
+
+function isPhaseConfigDirty(local: AgentConfig = {}, db: AgentConfig = {}): boolean {
+	return (local.cli ?? '') !== (db.cli ?? '') || (local.model ?? '') !== (db.model ?? '');
+}
+
 function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 	const cleanAgents: AgentsConfig = {};
+	if (agents.defaults) {
+		cleanAgents.defaults = agents.defaults;
+	}
 	for (const phase of PHASES) {
 		const phaseConfig = agents[phase];
 		if (!phaseConfig) continue;
@@ -337,7 +371,11 @@ function AgentConfigurationForm({
 													disabled={isPending || !selectedCli}
 													className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
 												>
-													<option value="">Default (Unset)</option>
+													<option value="">
+														{selectedCli
+															? getModelDefaultLabel(selectedCli, agents.defaults)
+															: 'Default (Unset)'}
+													</option>
 													{modelOptions.map((model) => (
 														<option key={model} value={model}>
 															{model}
@@ -463,17 +501,14 @@ function ProjectDetailRouteComponent() {
 	const isAgentsDirty = useMemo(() => {
 		if (!project) return false;
 		const projectAgents = project.agents ?? {};
-		for (const phase of PHASES) {
-			const localPhase = agents[phase] ?? {};
-			const dbPhase = projectAgents[phase] ?? {};
-			if (
-				(localPhase.cli ?? '') !== (dbPhase.cli ?? '') ||
-				(localPhase.model ?? '') !== (dbPhase.model ?? '')
-			) {
-				return true;
-			}
-		}
-		return false;
+		const localDefaults = agents.defaults ?? {};
+		const dbDefaults = projectAgents.defaults ?? {};
+		const hasDefaultChange = (['claude', 'antigravity', 'codex'] as const).some(
+			(cli) => (localDefaults[cli] ?? '') !== (dbDefaults[cli] ?? ''),
+		);
+		if (hasDefaultChange) return true;
+
+		return PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase]));
 	}, [project, agents]);
 
 	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {

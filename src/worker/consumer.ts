@@ -30,6 +30,7 @@ import {
 	type AgentFailureKind,
 	AgentRunError,
 } from '../harness/agent-failure.js';
+import { DEFAULT_MODEL_PER_CLI } from '../harness/models.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
 import { logger } from '../lib/logger.js';
@@ -202,6 +203,21 @@ function deferAgentRunError(
 const inFlightTaskIds = new Set<string>();
 
 /**
+ * Resolve the model for a phase: per-phase model → CLI-level default
+ * (`agents.defaults[cli]`) → undefined (CLI's own built-in). The per-phase CLI
+ * may itself be undefined (meaning the pipeline phase's own coded default); in
+ * that case the defaults map can't resolve a CLI-keyed fallback, so the model
+ * falls through to the phase's pipeline-side resolution.
+ */
+function resolveModel(project: ProjectConfig, phaseCli?: AgentCli, phaseModel?: string): string {
+	if (phaseModel) return phaseModel;
+	const cli = phaseCli ?? 'claude';
+	const configured = project.agents?.defaults?.[cli];
+	if (configured) return configured;
+	return DEFAULT_MODEL_PER_CLI[cli];
+}
+
+/**
  * Run the pipeline phase a matched trigger resolved to. The orchestrators
  * differ in their inputs but all resolve to a result carrying the agent run
  * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
@@ -226,7 +242,11 @@ function runPhase(
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.planning?.cli,
-				model: project.agents?.planning?.model,
+				model: resolveModel(
+					project,
+					project.agents?.planning?.cli,
+					project.agents?.planning?.model,
+				),
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				signal,
@@ -238,7 +258,11 @@ function runPhase(
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.implementation?.cli,
-				model: project.agents?.implementation?.model,
+				model: resolveModel(
+					project,
+					project.agents?.implementation?.cli,
+					project.agents?.implementation?.model,
+				),
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				signal,
 			});
@@ -249,7 +273,7 @@ function runPhase(
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
 				cli: project.agents?.review?.cli,
-				model: project.agents?.review?.model,
+				model: resolveModel(project, project.agents?.review?.cli, project.agents?.review?.model),
 				signal,
 			});
 		case 'respond-to-review':
@@ -261,7 +285,11 @@ function runPhase(
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.respondToReview?.cli,
-				model: project.agents?.respondToReview?.model,
+				model: resolveModel(
+					project,
+					project.agents?.respondToReview?.cli,
+					project.agents?.respondToReview?.model,
+				),
 				signal,
 			});
 		case 'respond-to-ci':
@@ -272,7 +300,11 @@ function runPhase(
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
 				cli: project.agents?.respondToCi?.cli,
-				model: project.agents?.respondToCi?.model,
+				model: resolveModel(
+					project,
+					project.agents?.respondToCi?.cli,
+					project.agents?.respondToCi?.model,
+				),
 				signal,
 			});
 	}
@@ -286,23 +318,33 @@ function runPhase(
  * is in effect", the same convention `describeAgent` uses. The `engine` column
  * is set at completion from what actually ran (`AgentCliResult.cli`), so it
  * reads null while a run is `running`.
+ *
+ * The model is resolved through the same fallback chain `runPhase` uses
+ * (per-phase → CLI default → undefined), so the recorded value matches what
+ * actually runs.
  */
 function agentOverrideFor(
 	project: ProjectConfig,
 	phase: TriggerPhase,
 ): { cli?: AgentCli; model?: string } {
-	switch (phase) {
-		case 'planning':
-			return project.agents?.planning ?? {};
-		case 'implementation':
-			return project.agents?.implementation ?? {};
-		case 'review':
-			return project.agents?.review ?? {};
-		case 'respond-to-review':
-			return project.agents?.respondToReview ?? {};
-		case 'respond-to-ci':
-			return project.agents?.respondToCi ?? {};
-	}
+	const phaseConfig = (() => {
+		switch (phase) {
+			case 'planning':
+				return project.agents?.planning ?? {};
+			case 'implementation':
+				return project.agents?.implementation ?? {};
+			case 'review':
+				return project.agents?.review ?? {};
+			case 'respond-to-review':
+				return project.agents?.respondToReview ?? {};
+			case 'respond-to-ci':
+				return project.agents?.respondToCi ?? {};
+		}
+	})();
+	return {
+		cli: phaseConfig.cli,
+		model: resolveModel(project, phaseConfig.cli, phaseConfig.model),
+	};
 }
 
 /**
