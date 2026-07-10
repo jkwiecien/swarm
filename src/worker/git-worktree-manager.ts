@@ -90,6 +90,19 @@ export interface ProvisionOptions {
 	fetch?: boolean;
 }
 
+/** Thrown when a worktree directory already exists for a task. */
+export class WorktreeAlreadyExistsError extends Error {
+	constructor(
+		readonly taskId: string,
+		readonly path: string,
+	) {
+		super(
+			`Worktree for task '${taskId}' already exists at ${path} — clean it up before re-provisioning`,
+		);
+		this.name = 'WorktreeAlreadyExistsError';
+	}
+}
+
 /** Manages the git-worktree lifecycle for one SWARM project. Construct one per project. */
 export class GitWorktreeManager {
 	constructor(private readonly project: ProjectConfig) {}
@@ -115,9 +128,7 @@ export class GitWorktreeManager {
 
 		const path = this.worktreePath(taskId);
 		if (existsSync(path)) {
-			throw new Error(
-				`Worktree for task '${taskId}' already exists at ${path} — clean it up before re-provisioning`,
-			);
+			throw new WorktreeAlreadyExistsError(taskId, path);
 		}
 
 		const baseBranch = options.baseBranch ?? this.project.baseBranch;

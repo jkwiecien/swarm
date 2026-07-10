@@ -3,6 +3,7 @@ import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError } from '@/harness/agent-failure.js';
 import type { PMProvider } from '@/pm/types.js';
+import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 import {
 	createMockGitHubParsedEvent,
 	createMockGitHubProjectsWebhookJob,
@@ -653,6 +654,67 @@ describe('processJob', () => {
 			taskId: '17',
 			error: 'Review agent (claude) exited with code 143 (aborted)',
 		});
+	});
+
+	it('defers a worktree already exists error with the dedup-safe floor delay', async () => {
+		phaseImpl = async () => {
+			throw new WorktreeAlreadyExistsError('17', '/some/path');
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
+		expect(outcome.attempt).toBe(0);
+		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000);
+	});
+
+	it('fails a worktree already exists error once retry budget is exhausted and comments on PR', async () => {
+		phaseImpl = async () => {
+			throw new WorktreeAlreadyExistsError('17', '/some/path');
+		};
+
+		commentOnPullRequest.mockClear();
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toEqual({
+			status: 'phase-failed',
+			phase: 'review',
+			taskId: '17',
+			error:
+				"Worktree for task '17' already exists at /some/path — clean it up before re-provisioning",
+		});
+		expect(commentOnPullRequest).toHaveBeenCalledTimes(1);
+		expect(commentOnPullRequest.mock.calls[0][1]).toBe(17);
+		expect(commentOnPullRequest.mock.calls[0][2]).toContain(
+			"Worktree for task '17' already exists",
+		);
+	});
+
+	it('fails a worktree already exists error once retry budget is exhausted and comments on board for PM phase', async () => {
+		const workItem = createMockWorkItem({ id: 'item-100' });
+		phaseImpl = async () => {
+			throw new WorktreeAlreadyExistsError('100', '/some/path');
+		};
+
+		addComment.mockClear();
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
+		expect(addComment.mock.calls[0][0]).toBe('item-100');
+		expect(addComment.mock.calls[0][1]).toContain("Worktree for task '100' already exists");
 	});
 
 	describe('in-flight guard (duplicate-dispatch collision)', () => {
