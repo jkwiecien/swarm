@@ -48,6 +48,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.engine).toBeNull();
 			expect(row?.model).toBeNull();
 			expect(row?.completedAt).toBeNull();
+			expect(row?.nextRetryAt).toBeNull();
 			expect(row?.startedAt).toBeInstanceOf(Date);
 		});
 
@@ -83,6 +84,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.timedOut).toBe(false);
 			expect(row?.durationMs).toBe(9876);
 			expect(row?.completedAt).toBeInstanceOf(Date);
+			expect(row?.nextRetryAt).toBeNull();
 		});
 
 		it('records a failed run with its error message', async () => {
@@ -98,12 +100,14 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('records a deferred run without treating it as an error', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '3', phase: 'review' });
+			const nextRetryAt = new Date('2026-07-10T12:30:00.000Z');
 
-			await completeRun(id, { status: 'deferred', error: 'rate limited' });
+			await completeRun(id, { status: 'deferred', error: 'rate limited', nextRetryAt });
 
 			const row = await getRunByIdFromDb(id);
 			expect(row?.status).toBe('deferred');
 			expect(row?.completedAt).toBeInstanceOf(Date);
+			expect(row?.nextRetryAt).toEqual(nextRetryAt);
 		});
 	});
 

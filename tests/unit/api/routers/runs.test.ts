@@ -36,6 +36,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		error: null,
 		startedAt: new Date('2026-07-10T00:00:00Z'),
 		completedAt: new Date('2026-07-10T00:01:00Z'),
+		nextRetryAt: null,
 		durationMs: 60000,
 		...overrides,
 	};
@@ -52,9 +53,11 @@ describe('runsRouter', () => {
 
 	describe('list', () => {
 		it('returns whatever listRunsFromDb resolves and applies default pagination', async () => {
+			const nextRetryAt = new Date('2026-07-10T00:30:00Z');
 			const data = [
 				makeRun({
 					id: 'run-1',
+					nextRetryAt,
 					workItemTitle: 'Fix the widget',
 					workItemUrl: 'https://github.com/acme/widgets/issues/103',
 				}),
@@ -64,6 +67,7 @@ describe('runsRouter', () => {
 
 			const result = await caller.list({});
 			expect(result).toEqual({ data, total: 2 });
+			expect(result.data[0].nextRetryAt).toEqual(nextRetryAt);
 			expect(listRunsFromDb).toHaveBeenCalledWith({ limit: 50, offset: 0 });
 		});
 
@@ -113,8 +117,10 @@ describe('runsRouter', () => {
 
 	describe('getById', () => {
 		it('returns the run when getRunByIdFromDb resolves one', async () => {
+			const nextRetryAt = new Date('2026-07-10T00:30:00Z');
 			const run = makeRun({
 				id: 'run-1',
+				nextRetryAt,
 				workItemTitle: 'Fix the widget',
 				workItemUrl: 'https://github.com/acme/widgets/issues/103',
 			});
@@ -122,6 +128,7 @@ describe('runsRouter', () => {
 
 			const result = await caller.getById({ id: 'run-1' });
 			expect(result).toEqual(run);
+			expect(result.nextRetryAt).toEqual(nextRetryAt);
 			expect(getRunByIdFromDb).toHaveBeenCalledWith('run-1');
 		});
 

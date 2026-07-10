@@ -4,7 +4,7 @@ import { AlertTriangle, ExternalLink, Info, Terminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
-import { formatDuration, formatPhase } from '@/lib/format.js';
+import { formatDuration, formatPhase, formatTimeUntil } from '@/lib/format.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -38,8 +38,29 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 				<RunStatusBadge status={run.status as RunStatus} className="text-sm px-3 py-1" />
 			</div>
 
-			{/* Error Banner if run failed or deferred */}
-			{run.error && (
+			{run.status === 'deferred' && run.nextRetryAt && (
+				<div className="p-4 bg-amber-950/20 border border-amber-900/30 rounded flex items-start gap-3">
+					<AlertTriangle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
+					<div>
+						<h3 className="text-xs font-semibold text-amber-200">
+							Deferred — automatic retry scheduled
+						</h3>
+						{run.error && (
+							<p className="text-xs text-amber-200/70 mt-1 font-mono whitespace-pre-wrap">
+								{run.error}
+							</p>
+						)}
+						<p className="text-xs text-amber-200/70 mt-2 font-mono">
+							{new Date(run.nextRetryAt).toLocaleString()} ({formatTimeUntil(run.nextRetryAt)})
+						</p>
+						<p className="text-xs text-amber-200/70 mt-1 font-mono">
+							UTC: {new Date(run.nextRetryAt).toISOString()}
+						</p>
+					</div>
+				</div>
+			)}
+
+			{run.status === 'failed' && run.error && (
 				<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
 					<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
 					<div>
@@ -216,6 +237,18 @@ function RunOverview({ run, project }: RunOverviewProps) {
 							{run.completedAt ? new Date(run.completedAt).toLocaleString() : '—'}
 						</span>
 					</div>
+
+					{run.nextRetryAt && (
+						<div>
+							<span className="block text-xs font-medium text-zinc-400">Next Retry</span>
+							<span className="text-sm text-zinc-200 mt-1 block font-mono text-xs">
+								{new Date(run.nextRetryAt).toLocaleString()} ({formatTimeUntil(run.nextRetryAt)})
+							</span>
+							<span className="text-xs text-zinc-500 mt-1 block font-mono">
+								{new Date(run.nextRetryAt).toISOString()}
+							</span>
+						</div>
+					)}
 				</div>
 			</div>
 		</div>
@@ -230,20 +263,23 @@ function RunDetailRouteComponent() {
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectsMap = new Map(projectsQuery.data?.map((p) => [p.id, p]) ?? []);
 
-	// Fetch run details and poll if running
+	// Fetch run details and poll while the run can still change automatically.
 	const runQuery = useQuery({
 		...trpc.runs.getById.queryOptions({ id: runId }),
 		refetchInterval: (query) => {
 			const run = query.state.data;
-			return run && run.status === 'running' ? 2000 : false;
+			return run && (run.status === 'running' || run.status === 'deferred') ? 2000 : false;
 		},
 	});
 
-	// Fetch run logs and poll if running
+	// Fetch run logs and poll while the run can still change automatically.
 	const logsQuery = useQuery({
 		...trpc.runs.getLogs.queryOptions({ runId }),
 		refetchInterval: () => {
-			return runQuery.data && runQuery.data.status === 'running' ? 2000 : false;
+			return runQuery.data &&
+				(runQuery.data.status === 'running' || runQuery.data.status === 'deferred')
+				? 2000
+				: false;
 		},
 	});
 
