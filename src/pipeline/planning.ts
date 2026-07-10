@@ -471,6 +471,7 @@ export async function runPlanningPhase(
 			cwd: handle.path,
 			args: [buildPlanningPrompt(workItem, autoSplit)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+			logContext: { taskId, phase: 'planning', workItemId: workItem.id },
 			timeoutMs,
 			signal,
 		});

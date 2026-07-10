@@ -140,6 +140,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | --- | --- | --- |
 | `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
 | `SWARM_WORKER_CONCURRENCY` | `1` | How many jobs the worker runs at once (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_WORKER_LOCK_DURATION_MS` | `300000` (5m) | BullMQ job-lock duration (`src/worker/index.ts`). The lock is renewed at ~half this interval while a phase runs, so it only has to exceed the worst-case event-loop stall between renewals — well above BullMQ's 30s default, so a brief CPU/GC/Redis hiccup can't get an in-flight run reclaimed as stalled (and, with `maxStalledCount: 0`, failed with no retry). Must be a positive integer or startup throws. |
 | `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
 
 **Credential encryption at rest** — `src/db/crypto.ts`

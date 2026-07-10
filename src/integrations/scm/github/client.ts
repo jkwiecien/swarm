@@ -153,3 +153,30 @@ export async function getGitHubUserForToken(token: string | null): Promise<strin
 		return null;
 	}
 }
+
+/**
+ * Post a top-level comment on an issue *or* a pull request — GitHub models both
+ * as issues, so `issues.createComment` works for a PR number too. Returns the
+ * created comment's id. Runs against whatever token is in scope (wrap in
+ * `withGitHubToken` / the SCM integration's `withPersonaCredentials`).
+ *
+ * Used by the worker's stalled-job safety net (`reportInterruptedJobToBoard`) to
+ * leave a board-visible trace on a PR whose Review phase was reclaimed mid-run —
+ * the PM provider has no PR-number → comment mapping, so a review/CI job's target
+ * is reached through this SCM path rather than the PM one.
+ */
+export async function postIssueComment(
+	owner: string,
+	repo: string,
+	issueNumber: number,
+	body: string,
+): Promise<number> {
+	const client = getScopedClient();
+	const { data } = await client.issues.createComment({
+		owner,
+		repo,
+		issue_number: issueNumber,
+		body,
+	});
+	return data.id;
+}

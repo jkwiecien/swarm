@@ -19,7 +19,7 @@ import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry } from '../queue/producer.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
-import { type JobOutcome, processJob } from './consumer.js';
+import { type JobOutcome, processJob, reportInterruptedJobToBoard } from './consumer.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -39,6 +39,25 @@ const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
 const concurrency = Number(rawConcurrency);
 if (!Number.isInteger(concurrency) || concurrency < 1) {
 	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${rawConcurrency}'`);
+}
+
+// BullMQ holds a per-job lock and renews it on a timer at ~half this interval
+// while the phase runs. A phase is a multi-minute agent CLI run, so the lock is
+// renewed many times over its life — the only thing this duration has to exceed
+// is the worst-case gap *between* renewals, i.e. how long the single-threaded
+// event loop can stall (two concurrent chatty agents saturating CPU, a GC
+// pause, a Redis blip) before a renewal fires. BullMQ's 30s default is far too
+// tight for that: a brief event-loop starvation slips one renewal past 30s, the
+// lock expires, the stalled-checker reclaims the job, and — with
+// `maxStalledCount: 0` — it fails outright with no retry, silently losing an
+// in-flight review (observed live: PR review dropped when the lock could not be
+// renewed). Default to 5 min of headroom; override via env for a heavier host.
+const rawLockDuration = optionalEnv('SWARM_WORKER_LOCK_DURATION_MS', String(5 * 60 * 1000));
+const lockDuration = Number(rawLockDuration);
+if (!Number.isInteger(lockDuration) || lockDuration < 1) {
+	throw new Error(
+		`SWARM_WORKER_LOCK_DURATION_MS must be a positive integer, got '${rawLockDuration}'`,
+	);
 }
 
 const rawSweepInterval = optionalEnv('SWARM_WORKTREE_SWEEP_INTERVAL_MS', String(60 * 60 * 1000));
@@ -64,9 +83,15 @@ const worker = new Worker(
 	{
 		connection: parseRedisUrl(requireEnv('REDIS_URL')),
 		concurrency,
+		// Wide enough that an event-loop stall under concurrency can't slip a lock
+		// renewal past the deadline and get the running phase reclaimed as stalled
+		// (see SWARM_WORKER_LOCK_DURATION_MS above).
+		lockDuration,
 		// Agent runs aren't idempotent (see processJob's doc comment), so a job
 		// interrupted by process death must fail visibly rather than be re-queued
-		// by the stalled-job checker and silently re-run on restart.
+		// by the stalled-job checker and silently re-run on restart. A stall that
+		// slips through anyway is surfaced on the board by the `failed` handler
+		// below (`reportInterruptedJobToBoard`) rather than vanishing into the log.
 		maxStalledCount: 0,
 	},
 );
@@ -121,6 +146,16 @@ async function reenqueueDeferred(
 }
 worker.on('failed', (job, err) => {
 	logger.error('Job failed', { jobId: job?.id, name: job?.name, error: err.message });
+	// A job reaches `failed` only outside `processJob` (which turns phase failures
+	// into completed outcomes, never throws them): a stalled job the queue
+	// reclaimed (`maxStalledCount: 0` → terminal, no retry) or the lone
+	// unknown-project throw. The phase's own board-reporting never ran, so leave a
+	// board-visible trace here. Fire-and-forget with its own error handling so a
+	// comment failure can't reject the event handler; it no-ops when there's no
+	// resolvable target (e.g. the unknown-project case).
+	if (job?.data) {
+		void reportInterruptedJobToBoard(job.data, err.message);
+	}
 });
 // Connection-level errors (Redis down, …); BullMQ retries internally, but an
 // unhandled 'error' event would crash the process.
