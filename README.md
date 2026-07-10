@@ -334,7 +334,8 @@ Early implementation. Summary by area:
 - `projectsRepository` has full CRUD primitives (SWARM-77); a `projects` tRPC router (list/getById/create/update/delete, SWARM-78) is implemented and up for review, not yet merged into `appRouter`.
 - `runsRepository` has full CRUD, upsert, and pagination primitives for agent-run history (SWARM-102), ready for future dashboard API/UI integration.
 - A `web/` scaffold (Vite + React, TanStack Router/Query, a tRPC client, Tailwind and the `ai/DESIGN_SYSTEM.md` tokens, SWARM-81) is merged; the first real screen (projects list + create dialog, SWARM-82) is implemented.
-- Still backlog: credentials management (SWARM-79/80), and the remaining per-project settings screens (SWARM-83–87).
+- The `credentials` tRPC sub-router (list/set/delete, SWARM-79) is implemented under `projectsRouter`, exposing `credentialsRepository` database primitives over the dashboard API.
+- Still backlog: credentials token verification (SWARM-80), credentials dashboard UI (part of SWARM-85), and the remaining per-project settings screens (SWARM-83–87).
 
 ### Board & roadmap
 MVP scope and the active backlog live on the **[GitHub Projects board](https://github.com/orgs/SmartTechBrewery/projects/6/views/1)** — org-owned, since a user-owned board (the original location) can't receive the `projects_v2_item` webhook event the Status-changed trigger needs (see `ai/RULES.md` §5 for ids/field details; `KANBAN_BOARD.md` is retired). `PROJECT.md` §8 has the original longer-term roadmap; the MVP path diverges from it as noted throughout this section.
