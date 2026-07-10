@@ -88,10 +88,9 @@ The dashboard can be run in two modes:
   Open `http://localhost:5173` in your browser. Code changes will hot-reload automatically.
 
 - **Self-Hosted Mode (Production Build)**:
-  Because the compiled assets under `web/dist` are ignored in git, you must compile the frontend assets if you want the dashboard API server to serve the SPA statically:
+  Because the compiled assets under `web/dist` are ignored in git, you must compile the frontend assets if you want the dashboard API server to serve the SPA statically. You can run both steps with a single command:
   ```bash
-  npm run build:web             # Compiles the React SPA to web/dist
-  npm run dev:dashboard         # Starts the dashboard API on port 3101
+  npm run start:dashboard       # Compiles web assets and starts dashboard API on port 3101
   ```
   Open `http://localhost:3101` in your browser. The dashboard API will serve the compiled files as a fallback for any non-API/non-health routes.
 
