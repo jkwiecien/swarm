@@ -55,9 +55,10 @@ export const CredentialsSchema = z
  * `src/pipeline/*.ts`), omit `model` to run on that CLI's own default model.
  *
  * `model`, when given, must be one of `AGENT_MODELS[cli]` (`src/harness/models.ts`)
- * — `claude`'s short aliases (`sonnet`, `opus`, …) or `agy`'s exact `agy models`
- * display strings (`"Gemini 3.5 Flash (High)"`, …). When `cli` itself is
- * omitted, `model` is checked against the union of both lists, since the
+ * — `claude`'s short aliases (`sonnet`, `opus`, …), `agy`'s exact `agy models`
+ * display strings (`"Gemini 3.5 Flash (High)"`, …), or `codex`'s short model
+ * identifiers (`"gpt-5.6-sol"`, `"gpt-5.4-mini"`, …). When `cli` itself is
+ * omitted, `model` is checked against the union of all lists, since the
  * phase's actual coded-default `cli` isn't known at the config-schema layer.
  */
 export const AgentConfigSchema = z

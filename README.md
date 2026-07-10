@@ -35,7 +35,7 @@ Dashboard  (Hono + tRPC, host process, 127.0.0.1-only)
 
 - **Router**: Node.js/TypeScript, Hono — verifies GitHub webhook signatures, resolves the project, enqueues jobs.
 - **Queue**: BullMQ on Redis — retries, backoff, and a configurable worker concurrency (`SWARM_WORKER_CONCURRENCY`, default 1). PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always queue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation) regardless of that setting, so a review never sits behind a multi-minute implementation run (`src/queue/producer.ts`'s `priorityFor`).
-- **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity`, streams their stdout/stderr, pushes and opens PRs. Runs on the host (not containerized) so the agent CLIs have the developer's PATH/auth/config.
+- **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity` / `codex`, streams their stdout/stderr, pushes and opens PRs. Runs on the host (not containerized) so the agent CLIs have the developer's PATH/auth/config.
 - **Dashboard**: self-hosted config/credentials API, also host-run — see "Running the stack" below.
 - **Postgres**: project config, credentials, run history.
 - Router, Redis, and Postgres run in one Docker Compose stack; the worker and dashboard run alongside on the host — one machine either way, see `PROJECT.md` §2.1 and `ai/ARCHITECTURE.md`.
@@ -239,8 +239,8 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 **`agents`** — per-phase overrides; every phase key is optional, omit to keep the phase's coded default. Phases: `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
 | Field | Purpose |
 | --- | --- |
-| `cli` | `claude` or `antigravity`. Omit to keep the phase's coded-default CLI. |
-| `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`; Antigravity: the exact `agy models` display strings). Omit for the CLI's default model. |
+| `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
+| `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`; Antigravity: the exact `agy models` display strings; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`). Omit for the CLI's default model. |
 
 **`pipeline`** — controls whether a phase moves the board item itself on completion, and whether Planning may split a too-large task. Only `planning` and `implementation` are configurable (the other phases are SCM-event-driven and never move a card):
 | Field | Default | Purpose |
@@ -273,7 +273,7 @@ Early implementation. Summary by area:
 
 ### Worker & pipeline phases
 - The BullMQ job consumer (SWARM-17) resolves each dequeued job through a Cascade-style trigger registry (`src/triggers/`, SWARM-53) and dispatches the matched trigger to its pipeline phase; the consumer resolves the phase, hands off to the orchestrator, and maps its result to the job outcome.
-- Shared building blocks (`src/pipeline/`): per-task worktree lifecycle (`GitWorktreeManager`, `src/worker/git-worktree-manager.ts`, SWARM-14 — provisions an isolated worktree under `.swarm-workspaces/task-<id>/`, with a detached-HEAD mode for read-only phases), environment grafting (`graftEnvironment`, `src/worktree/graft.ts`, SWARM-15 — symlinks `node_modules`/`.env`/caches into it), and the agent-CLI execution engine (`src/harness/agent-cli.ts`, SWARM-16 — spawns `claude`/`antigravity` with the worktree as CWD).
+- Shared building blocks (`src/pipeline/`): per-task worktree lifecycle (`GitWorktreeManager`, `src/worker/git-worktree-manager.ts`, SWARM-14 — provisions an isolated worktree under `.swarm-workspaces/task-<id>/`, with a detached-HEAD mode for read-only phases), environment grafting (`graftEnvironment`, `src/worktree/graft.ts`, SWARM-15 — symlinks `node_modules`/`.env`/caches into it), and the agent-CLI execution engine (`src/harness/agent-cli.ts`, SWARM-16 — spawns `claude`/`antigravity`/`codex` with the worktree as CWD).
 - All five phases are wired into the trigger registry:
   - **Planning** (SWARM-18) — detached worktree → Claude Code writes `proposed_plan.md` → posted on the linked Issue → moves the item to "ToDo" itself only if `pipeline.planning.autoAdvance` is on (default off).
   - **Implementation** (SWARM-19) — task-branch worktree → Claude Code implements, pushes, opens the PR via `gh` → PR linked on the item → moves it to "In review" if `pipeline.implementation.autoAdvance` is on (default on). Either phase's agent CLI/model can be overridden per project via `swarm.config.json`'s `agents` block (`src/harness/models.ts`).
