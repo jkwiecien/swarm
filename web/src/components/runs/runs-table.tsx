@@ -64,7 +64,7 @@ export function RunsTable({
 				)}
 				{hasWorkItem && run.workItemTitle && workItemRef ? (
 					<>
-						<span className="text-zinc-300 truncate max-w-[150px]" title={run.workItemTitle}>
+						<span className="text-zinc-300 truncate max-w-[300px]" title={run.workItemTitle}>
 							{run.workItemTitle}
 						</span>
 						<a
@@ -91,25 +91,25 @@ export function RunsTable({
 				<table className="w-full text-left border-collapse">
 					<thead>
 						<tr className="bg-zinc-800/30 border-b border-zinc-800">
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Phase
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Project
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Task / ID
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Status
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Started
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Duration
 							</th>
-							<th className="px-4 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Model
 							</th>
 						</tr>
@@ -121,13 +121,13 @@ export function RunsTable({
 								onClick={() => handleRowClick(run.id)}
 								className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
 							>
-								<td className="px-4 py-3 text-sm font-semibold text-zinc-100 capitalize">
+								<td className="px-2 py-3 text-sm font-semibold text-zinc-100 capitalize">
 									{formatPhase(run.phase)}
 								</td>
-								<td className="px-4 py-3 text-sm text-zinc-300 font-mono">
+								<td className="px-2 py-3 text-sm text-zinc-300 font-mono">
 									{projectsMap.get(run.projectId)?.name || run.projectId}
 								</td>
-								<td className="px-4 py-3 text-sm">
+								<td className="px-2 py-3 text-sm">
 									<div className="flex flex-col gap-1">
 										<span
 											className="font-mono text-zinc-300 text-xs truncate max-w-[150px]"
@@ -138,18 +138,18 @@ export function RunsTable({
 										{renderWorkItemCell(run)}
 									</div>
 								</td>
-								<td className="px-4 py-3 text-sm">
+								<td className="px-2 py-3 text-sm">
 									<RunStatusBadge
 										status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
 									/>
 								</td>
-								<td className="px-4 py-3 text-sm text-zinc-400">
+								<td className="px-2 py-3 text-sm text-zinc-400">
 									{formatRelativeTime(run.startedAt)}
 								</td>
-								<td className="px-4 py-3 text-sm text-zinc-400 font-mono">
+								<td className="px-2 py-3 text-sm text-zinc-400 font-mono">
 									{formatDuration(resolveRunDurationMs(run, now))}
 								</td>
-								<td className="px-4 py-3 text-sm text-zinc-400 font-mono text-xs">
+								<td className="px-2 py-3 text-sm text-zinc-400 font-mono text-xs">
 									{run.model || '—'}
 								</td>
 							</tr>
