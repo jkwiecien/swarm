@@ -97,7 +97,25 @@ describe('runAgentCli', () => {
 		);
 	});
 
-	it('inserts --model between the default flags and -p, never between -p and the prompt', async () => {
+	it('spawns codex with exec subcommand, --dangerously-bypass-approvals-and-sandbox, and no -p flag', async () => {
+		// Codex's non-interactive mode is `codex exec <prompt>` (a subcommand, not
+		// a -p flag — codex's -p is --profile, completely unrelated). Its permissions
+		// bypass is --dangerously-bypass-approvals-and-sandbox (not
+		// --dangerously-skip-permissions). Confirmed via `codex exec --help`.
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({ cli: 'codex', args: ['do the thing'] }),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			'codex',
+			['exec', '--dangerously-bypass-approvals-and-sandbox', 'do the thing'],
+			expect.anything(),
+		);
+	});
+
+	it('inserts --model between the default flags and -p for claude, never between -p and the prompt', async () => {
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({ model: 'sonnet', args: ['implement the thing'] }),
 		);
@@ -107,6 +125,30 @@ describe('runAgentCli', () => {
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
 			['--dangerously-skip-permissions', '--model', 'sonnet', '-p', 'implement the thing'],
+			expect.anything(),
+		);
+	});
+
+	it('inserts --model before the prompt for codex without a -p flag', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'codex',
+				model: 'gpt-5.6-sol',
+				args: ['implement the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock).toHaveBeenCalledWith(
+			'codex',
+			[
+				'exec',
+				'--dangerously-bypass-approvals-and-sandbox',
+				'--model',
+				'gpt-5.6-sol',
+				'implement the thing',
+			],
 			expect.anything(),
 		);
 	});
@@ -188,7 +230,7 @@ describe('runAgentCli', () => {
 
 	it('rejects on an unknown CLI', async () => {
 		// @ts-expect-error — exercising runtime validation with an invalid value
-		await expect(runAgentCli({ cli: 'codex', cwd: '/wt' })).rejects.toThrow();
+		await expect(runAgentCli({ cli: 'aider', cwd: '/wt' })).rejects.toThrow();
 	});
 
 	it('caps captured output at maxOutputBytes while still streaming every line', async () => {
@@ -329,5 +371,6 @@ describe('describeAgent', () => {
 		expect(describeAgent('antigravity', 'Gemini 3.5 Flash (High)')).toBe(
 			'antigravity (Gemini 3.5 Flash (High))',
 		);
+		expect(describeAgent('codex', 'gpt-5.6-sol')).toBe('codex (gpt-5.6-sol)');
 	});
 });

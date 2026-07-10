@@ -13,6 +13,11 @@
  * `antigravity`'s list is the exact display strings `agy models` prints —
  * confirmed live on this machine — since that's what its `--model` flag
  * expects verbatim (e.g. "Gemini 3.5 Flash (High)"), not a short alias.
+ *
+ * `codex`'s list is the short model identifiers shown by `codex` (the first
+ * token on each line of the models picker) — confirmed live from the user's
+ * own output. Codex's `--model` / `-m` flag accepts these verbatim (e.g.
+ * `gpt-5.6-sol`, `gpt-5.4-mini`).
  */
 
 import type { AgentCli } from './agent-cli.js';
@@ -34,11 +39,27 @@ export const ANTIGRAVITY_MODELS = [
 ] as const;
 export type AntigravityModel = (typeof ANTIGRAVITY_MODELS)[number];
 
+/** `codex --model <name>` — short identifiers from the Codex models list. */
+export const CODEX_MODELS = [
+	'gpt-5.6-sol',
+	'gpt-5.6-terra',
+	'gpt-5.6-luna',
+	'gpt-5.5',
+	'gpt-5.4',
+	'gpt-5.4-mini',
+] as const;
+export type CodexModel = (typeof CODEX_MODELS)[number];
+
 /** Per-CLI known-model list, keyed the same way `DEFAULT_COMMAND` (`agent-cli.ts`) is. */
 export const AGENT_MODELS: Readonly<Record<AgentCli, readonly string[]>> = {
 	claude: CLAUDE_MODELS,
 	antigravity: ANTIGRAVITY_MODELS,
+	codex: CODEX_MODELS,
 };
 
-/** Every known model across both CLIs — used when a config doesn't pin `cli`. */
-export const ALL_AGENT_MODELS: readonly string[] = [...CLAUDE_MODELS, ...ANTIGRAVITY_MODELS];
+/** Every known model across all CLIs — used when a config doesn't pin `cli`. */
+export const ALL_AGENT_MODELS: readonly string[] = [
+	...CLAUDE_MODELS,
+	...ANTIGRAVITY_MODELS,
+	...CODEX_MODELS,
+];

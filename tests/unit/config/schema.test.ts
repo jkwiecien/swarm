@@ -76,11 +76,13 @@ describe('ProjectConfigSchema', () => {
 			agents: {
 				planning: { cli: 'claude', model: 'sonnet' },
 				implementation: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' },
+				review: { cli: 'codex', model: 'gpt-5.6-sol' },
 			},
 		});
 		expect(project.agents).toEqual({
 			planning: { cli: 'claude', model: 'sonnet' },
 			implementation: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' },
+			review: { cli: 'codex', model: 'gpt-5.6-sol' },
 		});
 	});
 
@@ -107,6 +109,15 @@ describe('ProjectConfigSchema', () => {
 		).toThrow();
 	});
 
+	it("rejects a codex model under cli: 'claude' and a claude alias under cli: 'codex'", () => {
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { cli: 'claude', model: 'gpt-5.6-sol' } } }),
+		).toThrow();
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { cli: 'codex', model: 'sonnet' } } }),
+		).toThrow();
+	});
+
 	it('checks a model against the combined list when cli is omitted', () => {
 		expect(() =>
 			createMockProjectConfig({ agents: { planning: { model: 'sonnet' } } }),
@@ -115,6 +126,9 @@ describe('ProjectConfigSchema', () => {
 			createMockProjectConfig({
 				agents: { planning: { model: 'Gemini 3.5 Flash (High)' } },
 			}),
+		).not.toThrow();
+		expect(() =>
+			createMockProjectConfig({ agents: { planning: { model: 'gpt-5.6-sol' } } }),
 		).not.toThrow();
 		expect(() =>
 			createMockProjectConfig({ agents: { planning: { model: 'nonsense' } } }),

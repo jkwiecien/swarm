@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { logger } from '@/lib/logger.js';
 
 /** Agent CLIs the harness knows how to launch. Source of truth for the set. */
-export const AgentCliSchema = z.enum(['claude', 'antigravity']);
+export const AgentCliSchema = z.enum(['claude', 'antigravity', 'codex']);
 export type AgentCli = z.infer<typeof AgentCliSchema>;
 
 /**
@@ -37,10 +37,12 @@ export function describeAgent(cli: AgentCli, model?: string): string {
  * Default binary name per agent CLI; override per call via `command`.
  * Antigravity's actual CLI binary is `agy`, not `antigravity` — the enum value
  * above is SWARM's internal identifier for the harness, not the binary name.
+ * Codex's binary is `codex`.
  */
 const DEFAULT_COMMAND: Record<AgentCli, string> = {
 	claude: 'claude',
 	antigravity: 'agy',
+	codex: 'codex',
 };
 
 /**
@@ -48,40 +50,59 @@ const DEFAULT_COMMAND: Record<AgentCli, string> = {
  * has to remember them. Every run through this harness happens inside a
  * disposable git worktree with stdin closed (`stdio: ['ignore', ...]` below)
  * — there is no terminal to approve a tool call, so without
- * `--dangerously-skip-permissions` a run that needs to write a file or run a
+ * a permissions-bypass flag a run that needs to write a file or run a
  * command sits blocked on a permission prompt it can never receive. Confirmed
  * live: a Planning run produced a complete plan, then reported the write to
  * `proposed_plan.md` as "blocked pending your permission approval" in its
  * final response and exited 0 having written nothing.
  *
- * Both CLIs also expose a `-p`/`--print` flag for one-shot, non-interactive
- * output (`claude --help`: "starts an interactive session by default, use
- * -p/--print for non-interactive output"; `agy --help` has the identical flag
- * name). But the two parsers treat it differently: claude's `-p` is a bare
- * boolean — the prompt is a separate positional argument, so `-p`'s position
- * relative to other flags doesn't matter. agy's `-p`/`--print`/`--prompt` is a
- * *value* flag whose value is the prompt itself — confirmed live: an
- * Implementation run on `agy -p --dangerously-skip-permissions --model <m>
- * "<the real prompt>"` had `-p` swallow the literal string
- * `--dangerously-skip-permissions` as its prompt, ran a one-off Q&A about
- * that flag, and exited 0 having done none of the actual task. So `-p` must
- * be the *last* flag, immediately before the prompt, for every CLI — safe for
- * claude (position-independent) and required for agy. See PRINT_FLAG below;
- * don't add a third CLI's flags to this map without checking its own
- * `--help`, not assuming it matches claude's (ai/RULES.md).
+ * claude and agy both call their bypass `--dangerously-skip-permissions`.
+ * Codex calls it `--dangerously-bypass-approvals-and-sandbox` (confirmed via
+ * `codex exec --help`; it has no `--dangerously-skip-permissions` at all).
+ *
+ * claude and agy also expose a `-p`/`--print` flag for one-shot,
+ * non-interactive output (`claude --help`: "starts an interactive session by
+ * default, use -p/--print for non-interactive output"; `agy --help` has the
+ * identical flag name). But the two parsers treat it differently: claude's
+ * `-p` is a bare boolean — the prompt is a separate positional argument, so
+ * `-p`'s position relative to other flags doesn't matter. agy's
+ * `-p`/`--print`/`--prompt` is a *value* flag whose value is the prompt
+ * itself — confirmed live: an Implementation run on `agy -p
+ * --dangerously-skip-permissions --model <m> "<the real prompt>"` had `-p`
+ * swallow the literal string `--dangerously-skip-permissions` as its prompt,
+ * ran a one-off Q&A about that flag, and exited 0 having done none of the
+ * actual task. So `-p` must be the *last* flag, immediately before the
+ * prompt, for claude and agy — safe for claude (position-independent) and
+ * required for agy.
+ *
+ * Codex is different again: it has no `-p` print flag at all. Its `-p` is
+ * `--profile` (layer a config profile), entirely unrelated. Non-interactive
+ * mode is the `exec` subcommand — `codex exec <prompt>`, where the prompt is
+ * a trailing positional argument. So `DEFAULT_ARGS['codex']` starts with
+ * `'exec'` to invoke the subcommand, and `PRINT_FLAG['codex']` is an empty
+ * string (nothing to insert before the prompt). See PRINT_FLAG below;
+ * don't add a fourth CLI's flags to this map without checking its own
+ * `--help`, not assuming it matches another CLI's (ai/RULES.md).
  */
 const DEFAULT_ARGS: Record<AgentCli, string[]> = {
 	claude: ['--dangerously-skip-permissions'],
 	antigravity: ['--dangerously-skip-permissions'],
+	codex: ['exec', '--dangerously-bypass-approvals-and-sandbox'],
 };
 
 /**
  * The non-interactive-mode flag, inserted immediately before the prompt (see
  * DEFAULT_ARGS above for why the position is load-bearing for agy).
+ *
+ * Codex has no print flag — non-interactive mode is via the `exec` subcommand
+ * (already in DEFAULT_ARGS), so PRINT_FLAG is empty for it. The assembly
+ * logic in `runAgentCli` filters out empty strings, so no stray '' arg leaks
+ * into the spawn call.
  */
 const PRINT_FLAG: Record<AgentCli, string> = {
 	claude: '-p',
 	antigravity: '-p',
+	codex: '',
 };
 
 /**
@@ -251,7 +272,13 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
 	const modelArgs = options.model ? ['--model', options.model] : [];
-	const args = [...DEFAULT_ARGS[cli], ...modelArgs, PRINT_FLAG[cli], ...(options.args ?? [])];
+	const printFlag = PRINT_FLAG[cli];
+	const args = [
+		...DEFAULT_ARGS[cli],
+		...modelArgs,
+		...(printFlag ? [printFlag] : []),
+		...(options.args ?? []),
+	];
 	const start = Date.now();
 
 	return new Promise<AgentCliResult>((resolve, reject) => {
