@@ -97,7 +97,7 @@ export function RunsTable({
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Project
 							</th>
-							<th className="w-full px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="w-[30%] px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Task / ID
 							</th>
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -127,7 +127,7 @@ export function RunsTable({
 								<td className="px-2 py-3 text-sm text-zinc-300 font-mono">
 									{projectsMap.get(run.projectId)?.name || run.projectId}
 								</td>
-								<td className="w-full px-2 py-3 text-sm">
+								<td className="w-[30%] px-2 py-3 text-sm">
 									<div className="flex w-full min-w-0 flex-col gap-1">
 										<span
 											className="block w-full truncate font-mono text-xs text-zinc-300"
