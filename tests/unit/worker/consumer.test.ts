@@ -73,6 +73,14 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
 }));
 
+// Global (app-wide) settings are loaded once per job for the default-model tier
+// (`resolveModel`). Mocked at the module boundary so these tests drive the
+// global `agents.defaults` without a live Postgres; defaults to "nothing stored".
+const getAppSettings = vi.fn(async () => ({}) as Record<string, unknown>);
+vi.mock('@/db/repositories/appSettingsRepository.js', () => ({
+	getAppSettings: () => getAppSettings(),
+}));
+
 // The PR-comment path of `reportInterruptedJobToBoard` goes through the concrete
 // SCM integration (the PM provider has no PR → comment mapping); mock it at the
 // module boundary the same way the PM provider is mocked above.
@@ -141,6 +149,8 @@ describe('processJob', () => {
 		completeRun.mockResolvedValue(undefined);
 		storeRunLogs.mockClear();
 		storeRunLogs.mockResolvedValue(undefined);
+		getAppSettings.mockClear();
+		getAppSettings.mockResolvedValue({});
 	});
 
 	it('throws for a job referencing an unknown project', async () => {
@@ -357,6 +367,86 @@ describe('processJob', () => {
 
 		expect(phaseCalls[0].args.cli).toBe('claude');
 		expect(phaseCalls[0].args.model).toBe('opus');
+	});
+
+	it('resolves model to the global defaults when the project has none', async () => {
+		getAppSettings.mockResolvedValue({ agents: { defaults: { claude: 'opus' } } });
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		// No project override at all → the global default wins over the coded default.
+		expect(phaseCalls[0].args.model).toBe('opus');
+	});
+
+	it('prefers the project default over the global default', async () => {
+		getAppSettings.mockResolvedValue({ agents: { defaults: { claude: 'haiku' } } });
+		const projectWithDefaults = createMockProjectConfig({
+			agents: { defaults: { claude: 'opus' }, planning: { cli: 'claude' } },
+		});
+		projectLookup = () => projectWithDefaults;
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.model).toBe('opus');
+	});
+
+	it('prefers the per-phase model over both project and global defaults', async () => {
+		getAppSettings.mockResolvedValue({ agents: { defaults: { claude: 'haiku' } } });
+		const projectWithDefaults = createMockProjectConfig({
+			agents: {
+				defaults: { claude: 'opus' },
+				planning: { cli: 'claude', model: 'sonnet' },
+			},
+		});
+		projectLookup = () => projectWithDefaults;
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.model).toBe('sonnet');
+	});
+
+	it('falls back to the coded default when neither project nor global sets one', async () => {
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(phaseCalls[0].args.model).toBe('sonnet');
+	});
+
+	it('still runs the phase on coded defaults when the settings load fails', async () => {
+		getAppSettings.mockRejectedValueOnce(new Error('db down'));
+		const trigger: TriggerResult = {
+			phase: 'planning',
+			taskId: '10',
+			workItem: createMockWorkItem({ statusId: '61e4505c' }),
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning(trigger),
+		);
+
+		expect(outcome.status).toBe('phase-succeeded');
+		expect(phaseCalls[0].args.model).toBe('sonnet');
 	});
 
 	it("threads the project's per-phase autoAdvance setting into planning and implementation calls", async () => {
