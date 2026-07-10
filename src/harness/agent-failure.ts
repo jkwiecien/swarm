@@ -20,7 +20,7 @@
 import type { AgentCliResult } from './agent-cli.js';
 
 /** Why an agent run failed, from the worker's point of view. */
-export type AgentFailureKind = 'rate-limit' | 'timeout' | 'aborted' | 'error';
+export type AgentFailureKind = 'rate-limit' | 'timeout' | 'aborted' | 'stalled' | 'error';
 
 export interface AgentFailure {
 	kind: AgentFailureKind;
@@ -167,14 +167,24 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * output and `signal: null`, since it trapped SIGTERM and called `process.exit`
  * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
  * exists precisely because `result.signal` can't be trusted to reflect this).
- * Otherwise a recognisable limit banner makes it a `rate-limit`, and everything
- * else is a plain `error`.
+ * Otherwise a stalled run is classified as `stalled`. Next, a recognisable limit
+ * banner makes it a `rate-limit`, and everything else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
 	if (result.timedOut) return { kind: 'timeout' };
 	if (result.aborted) return { kind: 'aborted' };
 
 	const output = `${result.stdout}\n${result.stderr}`;
+	const trimmed = output.trim();
+
+	// The CLI's own give-up-waiting phrasing (matched case-insensitively). Checked
+	// after timedOut and aborted (which take priority), and before rate limits.
+	// We match narrowly: only when the phrase is the entire output or its trailing line,
+	// to avoid false positives from borrowed text (e.g. CI logs in respond-to-ci).
+	if (/timeout waiting for response$/i.test(trimmed)) {
+		return { kind: 'stalled' };
+	}
+
 	const resetMatch = RESET_RE.exec(output);
 	const isRateLimited =
 		LIMIT_BANNER_RE.test(output) ||
@@ -211,6 +221,8 @@ export function agentRunError(
 				? ' (rate limited)'
 				: failure.kind === 'aborted'
 					? ' (aborted)'
-					: '';
+					: failure.kind === 'stalled'
+						? ' (stalled)'
+						: '';
 	return new AgentRunError(`${prefix}${reason}${tail}`, failure);
 }

@@ -144,6 +144,49 @@ describe('classifyAgentFailure', () => {
 			'timeout',
 		);
 	});
+
+	it('classifies whole-output stall as stalled', () => {
+		const failure = classifyAgentFailure(
+			result({ stdout: 'Error: timeout waiting for response\n' }),
+			NOW,
+		);
+		expect(failure.kind).toBe('stalled');
+	});
+
+	it('classifies trailing-line stall as stalled', () => {
+		const failure = classifyAgentFailure(
+			result({
+				stdout: ' narration line 1\nnarration line 2\nError: timeout waiting for response\n',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('stalled');
+	});
+
+	it('does not classify mid-transcript stall occurrence as stalled', () => {
+		const failure = classifyAgentFailure(
+			result({
+				stdout:
+					'Error: timeout waiting for response\n' + 'Error: process completed with exit code 1.',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
+	});
+
+	it('prioritizes timeout and aborted over a stall phrase', () => {
+		const timedOutFailure = classifyAgentFailure(
+			result({ timedOut: true, stdout: 'Error: timeout waiting for response' }),
+			NOW,
+		);
+		expect(timedOutFailure.kind).toBe('timeout');
+
+		const abortedFailure = classifyAgentFailure(
+			result({ aborted: true, stdout: 'Error: timeout waiting for response' }),
+			NOW,
+		);
+		expect(abortedFailure.kind).toBe('aborted');
+	});
 });
 
 describe('agentRunError', () => {
@@ -170,5 +213,16 @@ describe('agentRunError', () => {
 		const err = agentRunError(result({ aborted: true }), 'x exited', ' for y', NOW);
 		expect(err.message).toBe('x exited (aborted) for y');
 		expect(err.failure.kind).toBe('aborted');
+	});
+
+	it('notes a stall', () => {
+		const err = agentRunError(
+			result({ stdout: 'Error: timeout waiting for response' }),
+			'x exited',
+			' for y',
+			NOW,
+		);
+		expect(err.message).toBe('x exited (stalled) for y');
+		expect(err.failure.kind).toBe('stalled');
 	});
 });
