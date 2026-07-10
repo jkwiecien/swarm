@@ -23,6 +23,12 @@ function ProjectDetailRouteComponent() {
 
 	const project = projectQuery.data;
 
+	const handleInputChange =
+		(setter: (val: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+			setter(e.target.value);
+			updateMutation.reset();
+		};
+
 	useEffect(() => {
 		if (project) {
 			setName(project.name);
@@ -156,10 +162,11 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="name"
 									value={name}
-									onChange={(e) => setName(e.target.value)}
+									onChange={handleInputChange(setName)}
+									disabled={updateMutation.isPending}
 									required
 									placeholder="Project Name"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									Display name for this project shown in the dashboard.
@@ -175,11 +182,12 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="repo"
 									value={repo}
-									onChange={(e) => setRepo(e.target.value)}
+									onChange={handleInputChange(setRepo)}
+									disabled={updateMutation.isPending}
 									required
 									pattern="[^/]+/[^/]+"
 									placeholder="owner/repo"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									The GitHub repository this project operates on, in "owner/repo" format.
@@ -195,10 +203,11 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="repoRoot"
 									value={repoRoot}
-									onChange={(e) => setRepoRoot(e.target.value)}
+									onChange={handleInputChange(setRepoRoot)}
+									disabled={updateMutation.isPending}
 									required
 									placeholder="/Users/username/Projects/my-project"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									Absolute path to the main repository checkout on the developer's machine.
@@ -217,10 +226,11 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="worktreeRoot"
 									value={worktreeRoot}
-									onChange={(e) => setWorktreeRoot(e.target.value)}
+									onChange={handleInputChange(setWorktreeRoot)}
+									disabled={updateMutation.isPending}
 									required
 									placeholder=".swarm-workspaces"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									Directory under the repository root where task-specific git worktrees live.
@@ -239,10 +249,11 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="baseBranch"
 									value={baseBranch}
-									onChange={(e) => setBaseBranch(e.target.value)}
+									onChange={handleInputChange(setBaseBranch)}
+									disabled={updateMutation.isPending}
 									required
 									placeholder="main"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									Branch task worktrees are cut from and PRs target.
@@ -261,9 +272,10 @@ function ProjectDetailRouteComponent() {
 									type="text"
 									id="branchPrefix"
 									value={branchPrefix}
-									onChange={(e) => setBranchPrefix(e.target.value)}
+									onChange={handleInputChange(setBranchPrefix)}
+									disabled={updateMutation.isPending}
 									placeholder="issue-"
-									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow"
+									className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 font-mono transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 								/>
 								<p className="text-xs text-zinc-500 mt-1">
 									Prefix for task branch names (convention is 'issue-').
@@ -297,7 +309,7 @@ function ProjectDetailRouteComponent() {
 						<button
 							type="button"
 							onClick={handleReset}
-							disabled={!isDirty}
+							disabled={updateMutation.isPending || !isDirty}
 							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 						>
 							Reset
