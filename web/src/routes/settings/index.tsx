@@ -1,0 +1,267 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { createRoute } from '@tanstack/react-router';
+import { Cpu } from 'lucide-react';
+import type React from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { trpc, trpcClient } from '@/lib/trpc.js';
+import type { AppSettings } from '../../../../src/config/app-settings.js';
+import type { AgentDefaults } from '../../../../src/config/schema.js';
+import type { AgentCli } from '../../../../src/harness/agent-cli.js';
+import { AGENT_MODELS, DEFAULT_MODEL_PER_CLI } from '../../../../src/harness/models.js';
+import { rootRoute } from '../__root.js';
+
+const CLIS = ['claude', 'antigravity', 'codex'] as const;
+
+const CLI_LABELS: Record<AgentCli, string> = {
+	claude: 'Claude',
+	antigravity: 'Antigravity',
+	codex: 'Codex',
+};
+
+/**
+ * Placeholder label for a CLI's "no global default" option, showing the coded
+ * default that applies when the global default is cleared (per-CLI, from
+ * `DEFAULT_MODEL_PER_CLI`). Mirrors `getModelDefaultLabel` in
+ * `routes/projects/$projectId.tsx`, but always resolves to the coded default —
+ * global settings are the tier directly above it, so there's no higher default
+ * to fall through to.
+ */
+function getGlobalModelDefaultLabel(cli: AgentCli): string {
+	const defaultModel = DEFAULT_MODEL_PER_CLI[cli];
+
+	const displayModel =
+		defaultModel === 'sonnet'
+			? 'Sonnet'
+			: defaultModel === 'opus'
+				? 'Opus'
+				: defaultModel === 'fable'
+					? 'Fable'
+					: defaultModel === 'haiku'
+						? 'Haiku'
+						: defaultModel;
+
+	return `Default (${displayModel})`;
+}
+
+/** Strip empty/undefined per-CLI entries so cleared defaults aren't persisted. */
+function cleanDefaults(defaults: AgentDefaults): AgentDefaults | undefined {
+	const clean: AgentDefaults = {};
+	for (const cli of CLIS) {
+		const model = defaults[cli];
+		if (model) clean[cli] = model;
+	}
+	return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
+interface DefaultModelsFormProps {
+	defaults: AgentDefaults;
+	handleModelChange: (cli: AgentCli, value: string) => void;
+	handleSubmit: (e: React.FormEvent) => void;
+	handleReset: () => void;
+	isDirty: boolean;
+	isPending: boolean;
+	isSuccess: boolean;
+	isError: boolean;
+	errorMessage?: string;
+}
+
+function DefaultModelsForm({
+	defaults,
+	handleModelChange,
+	handleSubmit,
+	handleReset,
+	isDirty,
+	isPending,
+	isSuccess,
+	isError,
+	errorMessage,
+}: DefaultModelsFormProps) {
+	return (
+		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+			<form onSubmit={handleSubmit} className="space-y-6">
+				<div>
+					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+						Default Agent Models
+					</h2>
+					<p className="text-xs text-zinc-400 mb-4">
+						The default model each agent CLI uses across all projects, when neither a pipeline phase
+						nor a project sets one. Leaving a CLI on its default option falls back to the coded
+						default.
+					</p>
+
+					<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+						<table className="w-full text-left border-collapse">
+							<thead>
+								<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
+									<th className="px-4 py-3">Agent CLI</th>
+									<th className="px-4 py-3">Default Model</th>
+								</tr>
+							</thead>
+							<tbody className="divide-y divide-zinc-800/60">
+								{CLIS.map((cli) => {
+									const selectedModel = defaults[cli];
+									const modelOptions = AGENT_MODELS[cli];
+
+									return (
+										<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
+											<td className="px-4 py-3.5">
+												<div className="text-sm font-medium text-zinc-200">{CLI_LABELS[cli]}</div>
+												<div className="text-xs text-zinc-500 font-mono select-all">{cli}</div>
+											</td>
+											<td className="px-4 py-3.5">
+												<select
+													value={selectedModel ?? ''}
+													onChange={(e) => handleModelChange(cli, e.target.value)}
+													disabled={isPending}
+													className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+												>
+													<option value="">{getGlobalModelDefaultLabel(cli)}</option>
+													{modelOptions.map((model) => (
+														<option key={model} value={model}>
+															{model}
+														</option>
+													))}
+												</select>
+											</td>
+										</tr>
+									);
+								})}
+							</tbody>
+						</table>
+					</div>
+				</div>
+
+				{/* Feedback Banners */}
+				{isSuccess && (
+					<div className="p-3 bg-emerald-950/20 border border-emerald-900/30 text-sm text-emerald-400 rounded">
+						Default models saved successfully.
+					</div>
+				)}
+
+				{isError && (
+					<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+						Failed to save settings: {errorMessage}
+					</div>
+				)}
+
+				{/* Action Buttons */}
+				<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
+					<button
+						type="submit"
+						disabled={isPending || !isDirty}
+						className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
+					>
+						{isPending ? 'Saving…' : 'Save Changes'}
+					</button>
+					<button
+						type="button"
+						onClick={handleReset}
+						disabled={isPending || !isDirty}
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+					>
+						Reset
+					</button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
+function SettingsRouteComponent() {
+	const queryClient = useQueryClient();
+	const settingsQuery = useQuery(trpc.settings.get.queryOptions());
+
+	const [defaults, setDefaults] = useState<AgentDefaults>({});
+	const [isInitialized, setIsInitialized] = useState(false);
+
+	const settings = settingsQuery.data;
+	const dbDefaults = useMemo<AgentDefaults>(() => settings?.agents?.defaults ?? {}, [settings]);
+
+	const isDirty = useMemo(() => {
+		return CLIS.some((cli) => (defaults[cli] ?? '') !== (dbDefaults[cli] ?? ''));
+	}, [defaults, dbDefaults]);
+
+	useEffect(() => {
+		if (!isInitialized && settings) {
+			setDefaults(dbDefaults);
+			setIsInitialized(true);
+		} else if (isInitialized && !isDirty) {
+			setDefaults(dbDefaults);
+		}
+	}, [dbDefaults, isDirty, isInitialized, settings]);
+
+	const updateMutation = useMutation({
+		mutationFn: (variables: AppSettings) => trpcClient.settings.update.mutate(variables),
+		onSuccess: () => {
+			return queryClient.invalidateQueries({
+				queryKey: trpc.settings.get.queryOptions().queryKey,
+			});
+		},
+	});
+
+	const handleModelChange = (cli: AgentCli, value: string) => {
+		setDefaults((prev) => ({
+			...prev,
+			[cli]: value || undefined,
+		}));
+		updateMutation.reset();
+	};
+
+	const handleReset = () => {
+		setDefaults(dbDefaults);
+		updateMutation.reset();
+	};
+
+	const handleSubmit = (e: React.FormEvent) => {
+		e.preventDefault();
+		const cleaned = cleanDefaults(defaults);
+		updateMutation.mutate({ agents: cleaned ? { defaults: cleaned } : undefined });
+	};
+
+	if (settingsQuery.isLoading) {
+		return <div className="text-sm text-zinc-400">Loading settings…</div>;
+	}
+
+	if (settingsQuery.isError) {
+		return (
+			<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex flex-col gap-2">
+				<h3 className="text-sm font-semibold text-red-200">Error Loading Settings</h3>
+				<p className="text-xs text-red-400/80 font-mono">{settingsQuery.error.message}</p>
+			</div>
+		);
+	}
+
+	return (
+		<div className="space-y-6">
+			{/* Page Title */}
+			<div>
+				<h1 className="text-2xl font-semibold tracking-tight text-zinc-100">Settings</h1>
+				<p className="text-xs text-zinc-500 mt-1">Application-wide SWARM configuration.</p>
+			</div>
+
+			{/* Section Header */}
+			<div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-3">
+				<Cpu className="h-4 w-4 text-violet-400" />
+				<span className="text-sm font-semibold text-zinc-100">Agent Defaults</span>
+			</div>
+
+			<DefaultModelsForm
+				defaults={defaults}
+				handleModelChange={handleModelChange}
+				handleSubmit={handleSubmit}
+				handleReset={handleReset}
+				isDirty={isDirty}
+				isPending={updateMutation.isPending}
+				isSuccess={updateMutation.isSuccess}
+				isError={updateMutation.isError}
+				errorMessage={updateMutation.error?.message}
+			/>
+		</div>
+	);
+}
+
+export const settingsRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: '/settings',
+	component: SettingsRouteComponent,
+});

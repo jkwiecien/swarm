@@ -4,6 +4,7 @@ import { projectDetailRoute } from './projects/$projectId.js';
 import { projectsIndexRoute } from './projects/index.js';
 import { runDetailRoute } from './runs/$runId.js';
 import { runsIndexRoute } from './runs/index.js';
+import { settingsRoute } from './settings/index.js';
 
 export const routeTree = rootRoute.addChildren([
 	indexRoute,
@@ -11,4 +12,5 @@ export const routeTree = rootRoute.addChildren([
 	projectDetailRoute,
 	runsIndexRoute,
 	runDetailRoute,
+	settingsRoute,
 ]);

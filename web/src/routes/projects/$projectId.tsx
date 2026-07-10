@@ -4,7 +4,7 @@ import { Cpu, Settings } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { trpc, trpcClient } from '@/lib/trpc.js';
-import type { AgentsConfig } from '../../../../src/config/schema.js';
+import type { AgentConfig, AgentsConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
 import { AGENT_MODELS } from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
@@ -514,7 +514,7 @@ function ProjectDetailRouteComponent() {
 	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {
 		const cli = value ? (value as AgentCli) : undefined;
 		setAgents((prev) => {
-			const updatedPhase = { ...prev[phase] };
+			const updatedPhase: AgentConfig = { ...(prev[phase] as AgentConfig) };
 			if (cli) {
 				updatedPhase.cli = cli;
 				if (updatedPhase.model && !AGENT_MODELS[cli].includes(updatedPhase.model)) {
