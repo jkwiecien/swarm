@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "max_concurrent_jobs" integer DEFAULT 1 NOT NULL;

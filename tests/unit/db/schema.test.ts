@@ -50,6 +50,7 @@ describe('db schema', () => {
 			expect(columns.get('worktree_root')?.default).toBe('.swarm-workspaces');
 			expect(columns.get('base_branch')?.default).toBe('main');
 			expect(columns.get('branch_prefix')?.default).toBe('issue-');
+			expect(columns.get('max_concurrent_jobs')?.default).toBe(1);
 		});
 	});
 

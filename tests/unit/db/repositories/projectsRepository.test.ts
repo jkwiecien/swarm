@@ -46,6 +46,7 @@ const row = {
 	worktreeRoot: '.swarm-workspaces',
 	baseBranch: 'main',
 	branchPrefix: 'issue-',
+	maxConcurrentJobs: 4,
 	pmType: 'github-projects',
 	githubProjects: {
 		projectId: 'PVT_x',
@@ -69,6 +70,7 @@ describe('projectsRepository', () => {
 			expect(project).toMatchObject({
 				id: 'proj-1',
 				repo: 'jkwiecien/swarm',
+				maxConcurrentJobs: 4,
 				pm: { type: 'github-projects' },
 				credentials: { implementer: 'IMPL', reviewer: 'REV', webhookSecret: 'HOOK' },
 			});
@@ -154,6 +156,12 @@ describe('projectsRepository', () => {
 			const { values } = stubInsert();
 			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1' }));
 			expect(values.mock.calls[0][0]).toMatchObject({ agents: null });
+		});
+
+		it('writes the configured maximum concurrent jobs', async () => {
+			const { values } = stubInsert();
+			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1', maxConcurrentJobs: 3 }));
+			expect(values.mock.calls[0][0]).toMatchObject({ maxConcurrentJobs: 3 });
 		});
 
 		it('writes the agents block as-is when the config sets one', async () => {

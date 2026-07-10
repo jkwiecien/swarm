@@ -76,12 +76,15 @@ interface GeneralSettingsFormProps {
 	worktreeRoot: string;
 	baseBranch: string;
 	branchPrefix: string;
+	maxConcurrentJobs: string;
+	maxConcurrentJobsError?: string;
 	setName: (val: string) => void;
 	setRepo: (val: string) => void;
 	setRepoRoot: (val: string) => void;
 	setWorktreeRoot: (val: string) => void;
 	setBaseBranch: (val: string) => void;
 	setBranchPrefix: (val: string) => void;
+	setMaxConcurrentJobs: (val: string) => void;
 	handleInputChange: (
 		setter: (val: string) => void,
 	) => (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -101,12 +104,15 @@ function GeneralSettingsForm({
 	worktreeRoot,
 	baseBranch,
 	branchPrefix,
+	maxConcurrentJobs,
+	maxConcurrentJobsError,
 	setName,
 	setRepo,
 	setRepoRoot,
 	setWorktreeRoot,
 	setBaseBranch,
 	setBranchPrefix,
+	setMaxConcurrentJobs,
 	handleInputChange,
 	handleSubmit,
 	handleReset,
@@ -118,7 +124,7 @@ function GeneralSettingsForm({
 }: GeneralSettingsFormProps) {
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-			<form onSubmit={handleSubmit} className="space-y-6">
+			<form onSubmit={handleSubmit} noValidate className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 						General Configuration
@@ -248,6 +254,33 @@ function GeneralSettingsForm({
 							<p className="text-xs text-zinc-500 mt-1">
 								Prefix for task branch names (convention is 'issue-').
 							</p>
+						</div>
+
+						<div>
+							<label
+								htmlFor="maxConcurrentJobs"
+								className="block text-xs font-medium text-zinc-400 mb-1"
+							>
+								Maximum Concurrent Jobs <span className="text-red-500">*</span>
+							</label>
+							<input
+								type="number"
+								id="maxConcurrentJobs"
+								value={maxConcurrentJobs}
+								onChange={handleInputChange(setMaxConcurrentJobs)}
+								disabled={isPending}
+								required
+								min={1}
+								step={1}
+								className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
+							/>
+							{maxConcurrentJobsError ? (
+								<p className="text-xs text-red-400 mt-1">{maxConcurrentJobsError}</p>
+							) : (
+								<p className="text-xs text-zinc-500 mt-1">
+									Maximum jobs this project may run at once. Must be a positive whole number.
+								</p>
+							)}
 						</div>
 					</div>
 				</div>
@@ -441,6 +474,8 @@ function ProjectDetailRouteComponent() {
 	const [worktreeRoot, setWorktreeRoot] = useState('');
 	const [baseBranch, setBaseBranch] = useState('');
 	const [branchPrefix, setBranchPrefix] = useState('');
+	const [maxConcurrentJobs, setMaxConcurrentJobs] = useState('');
+	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
 	const [activeTab, setActiveTab] = useState<'general' | 'agents'>('general');
 	const [agents, setAgents] = useState<AgentsConfig>({});
@@ -450,6 +485,7 @@ function ProjectDetailRouteComponent() {
 	const handleInputChange =
 		(setter: (val: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
 			setter(e.target.value);
+			setMaxConcurrentJobsError(undefined);
 			updateMutation.reset();
 		};
 
@@ -461,6 +497,8 @@ function ProjectDetailRouteComponent() {
 			setWorktreeRoot(project.worktreeRoot ?? '');
 			setBaseBranch(project.baseBranch ?? '');
 			setBranchPrefix(project.branchPrefix ?? '');
+			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
+			setMaxConcurrentJobsError(undefined);
 			setAgents(project.agents ?? {});
 		}
 	}, [project]);
@@ -474,6 +512,7 @@ function ProjectDetailRouteComponent() {
 			worktreeRoot?: string;
 			baseBranch?: string;
 			branchPrefix?: string;
+			maxConcurrentJobs?: number;
 			agents?: AgentsConfig;
 		}) => trpcClient.projects.update.mutate(variables),
 		onSuccess: () => {
@@ -494,9 +533,10 @@ function ProjectDetailRouteComponent() {
 			repoRoot !== project.repoRoot ||
 			worktreeRoot !== (project.worktreeRoot ?? '') ||
 			baseBranch !== (project.baseBranch ?? '') ||
-			branchPrefix !== (project.branchPrefix ?? '')
+			branchPrefix !== (project.branchPrefix ?? '') ||
+			maxConcurrentJobs !== String(project.maxConcurrentJobs)
 		);
-	}, [project, name, repo, repoRoot, worktreeRoot, baseBranch, branchPrefix]);
+	}, [project, name, repo, repoRoot, worktreeRoot, baseBranch, branchPrefix, maxConcurrentJobs]);
 
 	const isAgentsDirty = useMemo(() => {
 		if (!project) return false;
@@ -567,12 +607,20 @@ function ProjectDetailRouteComponent() {
 			setWorktreeRoot(project.worktreeRoot ?? '');
 			setBaseBranch(project.baseBranch ?? '');
 			setBranchPrefix(project.branchPrefix ?? '');
+			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
+			setMaxConcurrentJobsError(undefined);
 			updateMutation.reset();
 		}
 	};
 
 	const handleSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
+		const parsedMaxConcurrentJobs = Number(maxConcurrentJobs);
+		if (!Number.isInteger(parsedMaxConcurrentJobs) || parsedMaxConcurrentJobs < 1) {
+			setMaxConcurrentJobsError('Maximum concurrent jobs must be a positive whole number.');
+			return;
+		}
+		setMaxConcurrentJobsError(undefined);
 		updateMutation.mutate({
 			id: projectId,
 			name,
@@ -581,6 +629,7 @@ function ProjectDetailRouteComponent() {
 			worktreeRoot,
 			baseBranch,
 			branchPrefix,
+			maxConcurrentJobs: parsedMaxConcurrentJobs,
 		});
 	};
 
@@ -664,12 +713,15 @@ function ProjectDetailRouteComponent() {
 					worktreeRoot={worktreeRoot}
 					baseBranch={baseBranch}
 					branchPrefix={branchPrefix}
+					maxConcurrentJobs={maxConcurrentJobs}
+					maxConcurrentJobsError={maxConcurrentJobsError}
 					setName={setName}
 					setRepo={setRepo}
 					setRepoRoot={setRepoRoot}
 					setWorktreeRoot={setWorktreeRoot}
 					setBaseBranch={setBaseBranch}
 					setBranchPrefix={setBranchPrefix}
+					setMaxConcurrentJobs={setMaxConcurrentJobs}
 					handleInputChange={handleInputChange}
 					handleSubmit={handleSubmit}
 					handleReset={handleReset}

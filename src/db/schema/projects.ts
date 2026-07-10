@@ -1,4 +1,4 @@
-import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import { integer, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 
 import type {
 	AgentsConfig,
@@ -34,6 +34,9 @@ export const projects = pgTable('projects', {
 	worktreeRoot: text('worktree_root').notNull().default(PROJECT_DEFAULTS.worktreeRoot),
 	baseBranch: text('base_branch').notNull().default(PROJECT_DEFAULTS.baseBranch),
 	branchPrefix: text('branch_prefix').notNull().default(PROJECT_DEFAULTS.branchPrefix),
+	maxConcurrentJobs: integer('max_concurrent_jobs')
+		.notNull()
+		.default(PROJECT_DEFAULTS.maxConcurrentJobs),
 	pmType: text('pm_type').notNull().default('github-projects'),
 	githubProjects: jsonb('github_projects').$type<GitHubProjectsIntegrationConfig>().notNull(),
 	credentials: jsonb('credentials').$type<Credentials>().notNull(),

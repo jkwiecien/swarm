@@ -18,6 +18,8 @@ import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/c
 export const PROJECT_DEFAULTS = {
 	baseBranch: 'main',
 	branchPrefix: 'issue-',
+	/** Mirrors the documented SWARM_WORKER_CONCURRENCY default. */
+	maxConcurrentJobs: 1,
 	/** Relative to `repoRoot`; matches the worktree lifecycle in ai/ARCHITECTURE.md. */
 	worktreeRoot: '.swarm-workspaces',
 	maxWorktrees: 10,
@@ -209,6 +211,9 @@ export const ProjectConfigSchema = z.object({
 
 	/** Prefix for task branch names — SWARM's convention is `issue-<n>-<slug>`. */
 	branchPrefix: z.string().default(PROJECT_DEFAULTS.branchPrefix),
+
+	/** Maximum number of jobs this project may run concurrently. */
+	maxConcurrentJobs: z.number().int().positive().default(PROJECT_DEFAULTS.maxConcurrentJobs),
 
 	/**
 	 * PM provider discriminator. SWARM has exactly one provider for the MVP;

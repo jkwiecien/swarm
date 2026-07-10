@@ -26,12 +26,14 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('projectsRepository (integ
 				id: 'proj-new',
 				name: 'New Project',
 				repo: 'jkwiecien/new-repo',
+				maxConcurrentJobs: 4,
 			});
 			await createProjectInDb(config);
 
 			const resolved = await findProjectByIdFromDb('proj-new');
 			expect(resolved).toBeDefined();
 			expect(resolved?.name).toBe('New Project');
+			expect(resolved?.maxConcurrentJobs).toBe(4);
 		});
 
 		it('rejects if the project ID already exists', async () => {
