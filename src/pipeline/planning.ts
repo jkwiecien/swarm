@@ -37,6 +37,7 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
@@ -207,6 +208,8 @@ export interface PlanningPhaseResult {
 export function buildPlanningPrompt(workItem: WorkItem, allowSplit = false): string {
 	const lines = [
 		'You are a senior software architect creating a detailed implementation plan.',
+		'',
+		...PIPELINE_PHASE_GUARD,
 		'',
 		'PLANNING ONLY. Do NOT implement, edit, or create any source files, and do NOT',
 		'run any command that changes the repository. Your sole deliverable is a plan',

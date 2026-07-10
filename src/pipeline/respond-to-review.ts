@@ -77,6 +77,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
+import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider } from '@/pm/types.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
@@ -284,6 +285,8 @@ export function buildRespondToReviewPrompt(context: {
 	return [
 		'You are a senior software engineer responding to a code review on a pull request',
 		'you authored.',
+		'',
+		...PIPELINE_PHASE_GUARD,
 		'',
 		...GH_IDENTITY_GUARD,
 		'',

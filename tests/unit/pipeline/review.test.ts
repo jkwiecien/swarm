@@ -215,6 +215,7 @@ describe('buildReviewPrompt', () => {
 		const prompt = buildReviewPrompt(context);
 		expect(prompt).toContain(HEAD_SHA);
 		expect(prompt).toContain('REVIEW ONLY');
+		expect(prompt).toContain('Do NOT invoke the `solve-issue` skill');
 		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
 		expect(prompt).toContain('Do not merge the PR');
 	});

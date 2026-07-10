@@ -72,6 +72,10 @@ Implement it against the same `PMProvider`-shaped interface Cascade uses (`getWo
 
 Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the sole SCM:
 
+Each worker-spawned agent is scoped to one phase. A shared prompt guard forbids pipeline
+agents from invoking the manual `solve-issue` skill, spawning subagents, or continuing
+into later phases; only the worker owns phase hand-offs, personas, and worktrees.
+
 1. **Planning** — item enters "Planning" status → worktree provisioned → the planning agent writes `proposed_plan.md` → plan posted as a comment on the linked Issue. By default the item stays in "Planning" (a human reviews the plan, then moves it to "ToDo" to greenlight Implementation); `pipeline.planning.autoAdvance` flips that to an automatic move. When `pipeline.planning.autoSplit` is on (default) and the agent judges the item too large for one PR, it also writes `proposed_split.json`: the original item is re-scoped into the smaller **first** task (`proposed_plan.md` is that task's plan) and the remaining work is spawned as sibling items via `PMProvider.createWorkItem`. Each sibling starts in "Planning" (so this same trigger plans it), is tagged `swarm:split-child` — the label `runPlanningPhase` reads to force `autoAdvance` off for that sibling's own run, so a split-off task never moves itself to "ToDo" — and gets a comment explaining the split. This keeps splitting behind the provider-agnostic `PMProvider` (no GitHub Projects specifics leak into the phase).
 2. **Implementation** — item enters "ToDo" → the phase moves it to "In Progress" to report the pickup (a status report, not a trigger) → worktree on the task branch → Claude Code (implementer persona) implements the plan, runs tests, commits, pushes → PR opened, linked back to the Projects item.
 3. **Review** — PR opened / check suite completes with all checks passing → Claude Code (reviewer persona) reviews the diff, posts PR review comments — mirrors Cascade's review-agent trigger on `check_suite` success.

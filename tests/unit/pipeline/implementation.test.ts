@@ -277,6 +277,9 @@ describe('buildImplementationPrompt', () => {
 		expect(prompt).toContain('--base main');
 		expect(prompt).toContain('--head issue-19');
 		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
+		expect(prompt).toContain('Do NOT invoke the `solve-issue` skill');
+		expect(prompt).toContain('After step 6, STOP immediately and exit');
+		expect(prompt).toContain('Do not wait for a review');
 	});
 
 	it('falls back to a placeholder when the work item has no description', () => {

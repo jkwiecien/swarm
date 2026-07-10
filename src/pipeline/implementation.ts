@@ -53,6 +53,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
+import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
@@ -161,6 +162,8 @@ export function buildImplementationPrompt(
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
+		...PIPELINE_PHASE_GUARD,
+		'',
 		...GH_IDENTITY_GUARD,
 		'',
 		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
@@ -174,6 +177,10 @@ export function buildImplementationPrompt(
 		`4. Commit your work with a conventional-commit message, then push the branch: \`git push -u origin ${branch}\`.`,
 		`5. Open a pull request against "${baseBranch}" non-interactively: \`gh pr create --base ${baseBranch} --head ${branch} --title <title> --body <body>\` (pass every flag — a bare \`gh pr create\` prompts interactively and will hang in this headless run). The \`--body\` MUST contain the line \`Closes #${taskId}\` so the PR links back to the issue.`,
 		`6. Write ONLY the resulting PR URL (nothing else) to a file named "${OPENED_PR_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file — it is a scratch hand-off read by SWARM, not part of the change.`,
+		'',
+		'After step 6, STOP immediately and exit. Do not wait for a review, review the PR,',
+		'respond to a review, post any additional PR comment, or invoke another agent.',
+		'SWARM runs Review and Respond-to-review as separate phases after you exit.',
 		'',
 		'Do not merge the PR — a human does that. Keep the change scoped to the work item.',
 		'',

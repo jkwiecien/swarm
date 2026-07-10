@@ -327,6 +327,7 @@ describe('buildPlanningPrompt', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem({ title: 'T', description: 'D' }));
 		expect(prompt).toContain(PROPOSED_PLAN_FILENAME);
 		expect(prompt).toMatch(/PLANNING ONLY/);
+		expect(prompt).toContain('Do NOT invoke the `solve-issue` skill');
 		expect(prompt).toContain('T');
 		expect(prompt).toContain('D');
 	});

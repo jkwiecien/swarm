@@ -334,6 +334,7 @@ describe('buildRespondToReviewPrompt', () => {
 
 	it('offers both paths — fix the code or push back with rationale — and forbids merging or self-review', () => {
 		const prompt = buildRespondToReviewPrompt(context);
+		expect(prompt).toContain('Do NOT invoke the `solve-issue` skill');
 		expect(prompt).toContain('fix the code');
 		expect(prompt).toContain('push back');
 		expect(prompt).toContain('`fixed`');

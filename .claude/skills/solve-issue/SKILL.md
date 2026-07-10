@@ -1,6 +1,6 @@
 ---
 name: solve-issue
-description: Implements a GitHub issue from the project's GitHub Projects board end-to-end in its own git worktree — implementation, then an independent subagent review posted as a comment on the PR, then a separate subagent that responds to that review in the same PR thread — and opens a PR for human merge.
+description: Manual interactive workflow that implements a GitHub issue from the project's GitHub Projects board end-to-end in its own git worktree — implementation, then independent subagent review and response. Never use for a SWARM pipeline agent or a prompt assigning one pipeline phase.
 ---
 
 # Solve Issue Skill
@@ -10,6 +10,11 @@ description: Implements a GitHub issue from the project's GitHub Projects board 
 Trigger with `/solve-issue <issue-number>` — e.g. `/solve-issue 6`. Also trigger by asking to "solve issue 6" / "work issue 6" / "pick up issue 6 from the board".
 
 This is a manual, single-persona stand-in for the automated pipeline described in `PROJECT.md` §5.1–§5.4 (Planning → Implementation → Review → Respond-to-review). It runs a **lightweight** Planning phase — a short written plan appended to the issue, no separate Antigravity/CLI persona — before implementing; see Step 3. Since SWARM's own dual-persona bot setup (`ai/CODING_STANDARDS.md` "Loop prevention") doesn't exist yet, all GitHub actions here happen under whatever `gh` identity is currently active — that's fine because this skill runs once, linearly, on explicit human invocation; it isn't a webhook-triggered loop.
+
+**Pipeline exclusion:** Never use this skill when the prompt identifies the agent as a
+SWARM pipeline agent or assigns a single phase such as Planning, Implementation, Review,
+Respond-to-review, or Respond-to-CI. Those agents must follow only their phase prompt;
+the worker separately dispatches the other phases with the correct persona and worktree.
 
 Each invocation does its work in a **dedicated git worktree**, not the shared working directory — see Step 2. This is what lets you run `/solve-issue 6` and `/solve-issue 9` back to back (or hand them to separate subagents) without one issue's branch checkout stepping on the other's.
 

@@ -60,6 +60,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
+import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -147,6 +148,8 @@ export function buildReviewPrompt(context: {
 	const { repo, prNumber, headSha } = context;
 	return [
 		'You are a senior code reviewer reviewing a pull request.',
+		'',
+		...PIPELINE_PHASE_GUARD,
 		'',
 		...GH_IDENTITY_GUARD,
 		'',

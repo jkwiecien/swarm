@@ -237,6 +237,7 @@ describe('buildRespondToCiPrompt', () => {
 
 	it('offers both outcomes — fix the build or make no change — and forbids merging or self-review', () => {
 		const prompt = buildRespondToCiPrompt(context);
+		expect(prompt).toContain('Do NOT invoke the `solve-issue` skill');
 		expect(prompt).toContain('`fixed`');
 		expect(prompt).toContain('`no-fix`');
 		expect(prompt).toMatch(/keep the fix surgical|Keep the fix surgical/i);
