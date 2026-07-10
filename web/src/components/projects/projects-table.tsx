@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Trash2 } from 'lucide-react';
+import { Link } from '@tanstack/react-router';
+import { Settings, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { Modal, ModalFooter } from '../ui/modal.js';
@@ -60,14 +61,24 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 								<td className="px-4 py-3 text-sm text-zinc-200">{project.name}</td>
 								<td className="px-4 py-3 text-sm font-mono text-zinc-300">{project.repo}</td>
 								<td className="px-4 py-3 text-sm text-right">
-									<button
-										type="button"
-										onClick={() => setDeleteTarget({ id: project.id, name: project.name })}
-										className="text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors"
-										title={`Delete ${project.name}`}
-									>
-										<Trash2 className="w-4 h-4" />
-									</button>
+									<div className="flex items-center justify-end gap-1.5">
+										<Link
+											to="/projects/$projectId"
+											params={{ projectId: project.id }}
+											className="text-zinc-500 hover:text-zinc-300 p-1.5 rounded hover:bg-zinc-800/60 transition-colors"
+											title={`Settings for ${project.name}`}
+										>
+											<Settings className="w-4 h-4" />
+										</Link>
+										<button
+											type="button"
+											onClick={() => setDeleteTarget({ id: project.id, name: project.name })}
+											className="text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors"
+											title={`Delete ${project.name}`}
+										>
+											<Trash2 className="w-4 h-4" />
+										</button>
+									</div>
 								</td>
 							</tr>
 						))}
