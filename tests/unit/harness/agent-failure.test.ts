@@ -225,4 +225,17 @@ describe('agentRunError', () => {
 		expect(err.message).toBe('x exited (stalled) for y');
 		expect(err.failure.kind).toBe('stalled');
 	});
+
+	it('attaches the failed run result so its output can be persisted', () => {
+		const failed = result({ exitCode: 1, stdout: 'partial work', stderr: 'boom' });
+		const err = agentRunError(failed, 'x exited', ' for y', NOW);
+		expect(err.agent).toBe(failed);
+		expect(err.agent?.stdout).toBe('partial work');
+		expect(err.agent?.stderr).toBe('boom');
+	});
+
+	it('leaves .agent undefined when the error is constructed directly', () => {
+		const err = new AgentRunError('synthetic', { kind: 'error' });
+		expect(err.agent).toBeUndefined();
+	});
 });
