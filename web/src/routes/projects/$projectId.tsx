@@ -327,6 +327,7 @@ function AgentConfigurationForm({
 													<option value="">Default (Unset)</option>
 													<option value="claude">Claude</option>
 													<option value="antigravity">Antigravity</option>
+													<option value="codex">Codex</option>
 												</select>
 											</td>
 											<td className="px-4 py-3.5">
