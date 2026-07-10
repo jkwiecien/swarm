@@ -124,7 +124,7 @@ function GeneralSettingsForm({
 }: GeneralSettingsFormProps) {
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-			<form onSubmit={handleSubmit} noValidate className="space-y-6">
+			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 						General Configuration
@@ -269,9 +269,6 @@ function GeneralSettingsForm({
 								value={maxConcurrentJobs}
 								onChange={handleInputChange(setMaxConcurrentJobs)}
 								disabled={isPending}
-								required
-								min={1}
-								step={1}
 								className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow disabled:opacity-50 disabled:cursor-not-allowed"
 							/>
 							{maxConcurrentJobsError ? (
