@@ -49,7 +49,7 @@ export function RunsTable({
 		const stopPropagation = (e: React.MouseEvent) => e.stopPropagation();
 
 		return (
-			<div className="flex flex-col gap-1 text-xs">
+			<div className="flex w-full min-w-0 flex-col gap-1 text-xs">
 				{hasPR && (
 					<a
 						href={`https://github.com/${project.repo}/pull/${run.prNumber}`}
@@ -64,7 +64,7 @@ export function RunsTable({
 				)}
 				{hasWorkItem && run.workItemTitle && workItemRef ? (
 					<>
-						<span className="text-zinc-300 truncate max-w-[300px]" title={run.workItemTitle}>
+						<span className="block w-full truncate text-zinc-300" title={run.workItemTitle}>
 							{run.workItemTitle}
 						</span>
 						<a
@@ -97,7 +97,7 @@ export function RunsTable({
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Project
 							</th>
-							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							<th className="w-full px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Task / ID
 							</th>
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -127,10 +127,10 @@ export function RunsTable({
 								<td className="px-2 py-3 text-sm text-zinc-300 font-mono">
 									{projectsMap.get(run.projectId)?.name || run.projectId}
 								</td>
-								<td className="px-2 py-3 text-sm">
-									<div className="flex flex-col gap-1">
+								<td className="w-full px-2 py-3 text-sm">
+									<div className="flex w-full min-w-0 flex-col gap-1">
 										<span
-											className="font-mono text-zinc-300 text-xs truncate max-w-[150px]"
+											className="block w-full truncate font-mono text-xs text-zinc-300"
 											title={run.taskId}
 										>
 											{run.taskId}
