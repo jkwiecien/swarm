@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
+import { Link, useNavigate } from '@tanstack/react-router';
 import { Settings, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { trpc, trpcClient } from '@/lib/trpc.js';
@@ -18,6 +18,7 @@ interface ProjectsTableProps {
 
 export function ProjectsTable({ projects }: ProjectsTableProps) {
 	const queryClient = useQueryClient();
+	const navigate = useNavigate();
 	const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
 
 	const deleteMutation = useMutation({
@@ -56,7 +57,13 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 					</thead>
 					<tbody className="divide-y divide-zinc-800/60">
 						{projects.map((project) => (
-							<tr key={project.id} className="hover:bg-zinc-800/40 transition-colors">
+							<tr
+								key={project.id}
+								onClick={() =>
+									navigate({ to: '/projects/$projectId', params: { projectId: project.id } })
+								}
+								className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
+							>
 								<td className="px-4 py-3 text-sm font-mono text-zinc-300">{project.id}</td>
 								<td className="px-4 py-3 text-sm text-zinc-200">{project.name}</td>
 								<td className="px-4 py-3 text-sm font-mono text-zinc-300">{project.repo}</td>
@@ -72,7 +79,10 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 										</Link>
 										<button
 											type="button"
-											onClick={() => setDeleteTarget({ id: project.id, name: project.name })}
+											onClick={(e) => {
+												e.stopPropagation();
+												setDeleteTarget({ id: project.id, name: project.name });
+											}}
 											className="text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors"
 											title={`Delete ${project.name}`}
 										>
