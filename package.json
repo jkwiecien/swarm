@@ -10,8 +10,8 @@
 	"scripts": {
 		"swarm": "node --import tsx/esm src/cli/index.ts",
 		"dev": "node --env-file=.env --import tsx/esm --watch src/index.ts",
-		"dev:router": "node --env-file=.env --import tsx/esm --watch src/router/index.ts",
-		"dev:dashboard": "node --env-file=.env --import tsx/esm --watch src/dashboard.ts",
+		"dev:router": "node --env-file=.env bin/kill-port.js ROUTER_PORT && node --env-file=.env --import tsx/esm --watch src/router/index.ts",
+		"dev:dashboard": "node --env-file=.env bin/kill-port.js DASHBOARD_PORT && node --env-file=.env --import tsx/esm --watch src/dashboard.ts",
 		"dev:worker": "node --env-file=.env --import tsx/esm --watch src/worker/index.ts",
 		"dev:worker:seed": "npm run db:seed && npm run dev:worker",
 		"dev:web": "cd web && npx vite",
