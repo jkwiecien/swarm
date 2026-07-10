@@ -77,8 +77,25 @@ npm run dev:dashboard         # start the dashboard API on the host (default por
 npm run dev:web               # start the Vite dev server (default port 5173)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker); SWARM_WORKER_CONCURRENCY in .env sets how many jobs run at once (default 1)
 ```
+The dashboard can be run in two modes:
 
-The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. When present, the dashboard API also serves the built `web/dist` SPA statically as a fallback (self-hosted mode) for any non-API/non-health routes. Future frontends read the token from local configuration rather than displaying a login screen.
+- **Development Mode (with Hot-Reloading)**:
+  Run the backend API and the Vite development server side-by-side:
+  ```bash
+  npm run dev:dashboard         # Starts the dashboard API on port 3101
+  npm run dev:web               # Starts the Vite dev server on port 5173
+  ```
+  Open `http://localhost:5173` in your browser. Code changes will hot-reload automatically.
+
+- **Self-Hosted Mode (Production Build)**:
+  Because the compiled assets under `web/dist` are ignored in git, you must compile the frontend assets if you want the dashboard API server to serve the SPA statically:
+  ```bash
+  npm run build:web             # Compiles the React SPA to web/dist
+  npm run dev:dashboard         # Starts the dashboard API on port 3101
+  ```
+  Open `http://localhost:3101` in your browser. The dashboard API will serve the compiled files as a fallback for any non-API/non-health routes.
+
+The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. Future frontends read the token from local configuration rather than displaying a login screen.
 
 You can verify the dashboard API is running and authenticated using `curl`:
 ```bash
