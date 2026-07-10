@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import { z } from 'zod';
 
 import { logger } from '@/lib/logger.js';
+import { type AgentUsage, parseAgentOutput } from './usage.js';
 
 /** Agent CLIs the harness knows how to launch. Source of truth for the set. */
 export const AgentCliSchema = z.enum(['claude', 'antigravity', 'codex']);
@@ -103,6 +104,30 @@ const PRINT_FLAG: Record<AgentCli, string> = {
 	claude: '-p',
 	antigravity: '-p',
 	codex: '',
+};
+
+/**
+ * Per-CLI flag(s) requesting machine-readable output, inserted after
+ * `modelArgs` and before `PRINT_FLAG`/the prompt — never between `PRINT_FLAG`
+ * and the prompt, which is the only position load-bearing for agy (see
+ * PRINT_FLAG above), so this map is safe to extend without disturbing that.
+ *
+ * `claude --help`: combined with `-p`, `--output-format json` emits a single
+ * JSON object on stdout — `{ result: <final text>, usage: {...}, ... }` —
+ * instead of the plain final-text stdout `-p` alone produces. The harness
+ * parses that JSON (`./usage.js`) to recover both the same human-readable
+ * text the log viewer showed before this feature (`.result`) and per-run
+ * token usage (`.usage`), so switching Claude to JSON output is invisible to
+ * the log viewer.
+ *
+ * `antigravity`/`codex` get no flag yet — their output-format flags (if any)
+ * haven't been live-verified (ai/RULES.md §6), so `parseAgentOutput` is a
+ * no-op for them until a follow-up task adds their parsers.
+ */
+const OUTPUT_FORMAT_ARGS: Record<AgentCli, string[]> = {
+	claude: ['--output-format', 'json'],
+	antigravity: [],
+	codex: [],
 };
 
 /**
@@ -203,6 +228,13 @@ export interface AgentCliResult {
 	 * truncated. The per-line callbacks still saw the full stream.
 	 */
 	outputTruncated: boolean;
+	/**
+	 * Normalized token usage extracted from this run's stdout (`./usage.js`),
+	 * or `undefined` when the CLI/output didn't yield any — an unsupported CLI
+	 * (`antigravity`/`codex`, until a follow-up task), malformed/truncated
+	 * output, or a run that never produced output at all.
+	 */
+	usage?: AgentUsage;
 }
 
 /**
@@ -276,6 +308,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const args = [
 		...DEFAULT_ARGS[cli],
 		...modelArgs,
+		...OUTPUT_FORMAT_ARGS[cli],
 		...(printFlag ? [printFlag] : []),
 		...(options.args ?? []),
 	];
@@ -361,16 +394,21 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			cleanup();
 			forwardStdout.flush();
 			forwardStderr.flush();
+			// A truncated stream means any JSON in `stdout.text` is incomplete —
+			// skip parsing entirely and fall back to the raw (capped) text, same as
+			// any other unparseable output.
+			const parsed = stdout.truncated ? {} : parseAgentOutput(cli, stdout.text);
 			const result: AgentCliResult = {
 				cli,
 				exitCode: code,
 				signal,
-				stdout: stdout.text,
+				stdout: parsed.logText ?? stdout.text,
 				stderr: stderr.text,
 				durationMs: Date.now() - start,
 				timedOut,
 				aborted,
 				outputTruncated: stdout.truncated || stderr.truncated,
+				usage: parsed.usage,
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,

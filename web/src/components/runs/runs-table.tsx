@@ -1,7 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
-import { formatDuration, formatPhase, formatRelativeTime } from '@/lib/format.js';
+import {
+	formatDuration,
+	formatPhase,
+	formatRelativeTime,
+	formatTokensCompact,
+} from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
@@ -112,6 +117,9 @@ export function RunsTable({
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Model
 							</th>
+							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+								Tokens
+							</th>
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-zinc-800/60">
@@ -151,6 +159,12 @@ export function RunsTable({
 								</td>
 								<td className="px-2 py-3 text-sm text-zinc-400 font-mono text-xs">
 									{run.model || '—'}
+								</td>
+								<td
+									className="px-2 py-3 text-sm text-zinc-400 font-mono text-xs"
+									title="input / output tokens"
+								>
+									{formatTokensCompact(run.usage)}
 								</td>
 							</tr>
 						))}

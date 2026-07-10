@@ -1,3 +1,17 @@
+/**
+ * Mirrors `AgentUsage` (`src/harness/usage.ts`) — the web package doesn't
+ * import server modules, so this hand-mirrors the shape the same way `RunRow`
+ * hand-mirrors the DB row.
+ */
+export interface AgentUsage {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens?: number;
+	cacheCreationTokens?: number;
+	reasoningTokens?: number;
+	totalTokens?: number;
+}
+
 export interface RunRow {
 	id: string;
 	projectId: string;
@@ -17,4 +31,5 @@ export interface RunRow {
 	completedAt: string | null;
 	nextRetryAt: string | null;
 	durationMs: number | null;
+	usage: AgentUsage | null;
 }

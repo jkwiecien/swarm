@@ -38,6 +38,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		completedAt: new Date('2026-07-10T00:01:00Z'),
 		nextRetryAt: null,
 		durationMs: 60000,
+		usage: null,
 		...overrides,
 	};
 }

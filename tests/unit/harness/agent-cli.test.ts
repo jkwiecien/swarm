@@ -53,18 +53,24 @@ describe('runAgentCli', () => {
 			cli: 'claude',
 			exitCode: 0,
 			signal: null,
+			// Not valid JSON, so it falls back to the raw captured text unchanged.
 			stdout: 'hello\nworld\n',
 			stderr: 'a warning\n',
 			timedOut: false,
 			aborted: false,
 			outputTruncated: false,
+			usage: undefined,
 		});
 
-		expect(spawnMock).toHaveBeenCalledWith('claude', ['--dangerously-skip-permissions', '-p'], {
-			cwd: '/wt',
-			env: process.env,
-			stdio: ['ignore', 'pipe', 'pipe'],
-		});
+		expect(spawnMock).toHaveBeenCalledWith(
+			'claude',
+			['--dangerously-skip-permissions', '--output-format', 'json', '-p'],
+			{
+				cwd: '/wt',
+				env: process.env,
+				stdio: ['ignore', 'pipe', 'pipe'],
+			},
+		);
 	});
 
 	it('puts -p immediately before the caller-supplied prompt for claude', async () => {
@@ -74,9 +80,26 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['--dangerously-skip-permissions', '-p', 'implement the thing'],
+			['--dangerously-skip-permissions', '--output-format', 'json', '-p', 'implement the thing'],
 			expect.anything(),
 		);
+	});
+
+	it('requests JSON output only for claude, not antigravity or codex', async () => {
+		const claude = runAgentCli(createMockRunAgentCliOptions());
+		lastChild().emit('close', 0, null);
+		await claude;
+		expect(spawnMock.mock.calls[0][1]).toContain('--output-format');
+
+		const agy = runAgentCli(createMockRunAgentCliOptions({ cli: 'antigravity' }));
+		lastChild().emit('close', 0, null);
+		await agy;
+		expect(spawnMock.mock.calls[1][1]).not.toContain('--output-format');
+
+		const codex = runAgentCli(createMockRunAgentCliOptions({ cli: 'codex' }));
+		lastChild().emit('close', 0, null);
+		await codex;
+		expect(spawnMock.mock.calls[2][1]).not.toContain('--output-format');
 	});
 
 	it('spawns the agy binary for antigravity, with -p immediately before the prompt too', async () => {
@@ -124,7 +147,15 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['--dangerously-skip-permissions', '--model', 'sonnet', '-p', 'implement the thing'],
+			[
+				'--dangerously-skip-permissions',
+				'--model',
+				'sonnet',
+				'--output-format',
+				'json',
+				'-p',
+				'implement the thing',
+			],
 			expect.anything(),
 		);
 	});
@@ -223,7 +254,14 @@ describe('runAgentCli', () => {
 			{ env: Record<string, string> },
 		];
 		expect(command).toBe('/usr/bin/fake-claude');
-		expect(args).toEqual(['--dangerously-skip-permissions', '-p', '--print', 'do the thing']);
+		expect(args).toEqual([
+			'--dangerously-skip-permissions',
+			'--output-format',
+			'json',
+			'-p',
+			'--print',
+			'do the thing',
+		]);
 		expect(opts.env.SWARM_TASK).toBe('42');
 		expect(opts.env.PATH).toBe(process.env.PATH);
 	});
@@ -249,6 +287,49 @@ describe('runAgentCli', () => {
 		expect(result.outputTruncated).toBe(true);
 		// The line callbacks are unaffected by the cap — they saw the full stream.
 		expect(lines).toEqual(['aaa', 'bbbbbb', 'ccc']);
+	});
+
+	describe('usage extraction', () => {
+		it('parses Claude JSON output into usage, and swaps stdout for the readable result text', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions());
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				JSON.stringify({
+					result: 'All done, implemented the feature.',
+					usage: { input_tokens: 100, output_tokens: 50 },
+				}),
+			);
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 50 });
+			expect(result.stdout).toBe('All done, implemented the feature.');
+		});
+
+		it('leaves usage undefined and stdout raw for non-JSON stdout', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions());
+			const child = lastChild();
+			child.stdout.emit('data', 'plain text, not JSON\n');
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.usage).toBeUndefined();
+			expect(result.stdout).toBe('plain text, not JSON\n');
+		});
+
+		it('skips parsing (leaving usage undefined and stdout raw/capped) when the stream was truncated', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ maxOutputBytes: 5 }));
+			const child = lastChild();
+			// A truncated Claude JSON blob would otherwise fail to parse anyway, but
+			// the guard must skip parsing outright rather than rely on that.
+			child.stdout.emit('data', JSON.stringify({ result: 'x', usage: { input_tokens: 1 } }));
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.outputTruncated).toBe(true);
+			expect(result.usage).toBeUndefined();
+		});
 	});
 
 	it('does not echo output lines to the logger by default, but does when logLines is set', async () => {
