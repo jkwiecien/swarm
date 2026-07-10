@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useRouterState } from '@tanstack/react-router';
-import { FolderGit2 } from 'lucide-react';
+import { FolderGit2, Play } from 'lucide-react';
 import { trpc } from '@/lib/trpc.js';
 import { version } from '../../../../package.json';
 
@@ -31,6 +31,17 @@ export function Sidebar() {
 					>
 						<FolderGit2 className="h-4 w-4" />
 						Projects
+					</Link>
+					<Link
+						to="/runs"
+						className={
+							currentPath.startsWith('/runs')
+								? 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium bg-zinc-800/40 text-zinc-100'
+								: 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800/40'
+						}
+					>
+						<Play className="h-4 w-4" />
+						Runs
 					</Link>
 				</nav>
 			</div>
