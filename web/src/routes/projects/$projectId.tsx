@@ -297,7 +297,7 @@ function AgentConfigurationForm({
 								<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
-									<th className="px-4 py-3">Model Override</th>
+									<th className="px-4 py-3">Model</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
