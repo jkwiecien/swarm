@@ -13,6 +13,7 @@
 		"dev:router": "node --env-file=.env --import tsx/esm --watch src/router/index.ts",
 		"dev:dashboard": "node --env-file=.env --import tsx/esm --watch src/dashboard.ts",
 		"dev:worker": "node --env-file=.env --import tsx/esm --watch src/worker/index.ts",
+		"dev:worker:seed": "npm run db:seed && npm run dev:worker",
 		"dev:web": "cd web && npx vite",
 		"build:web": "cd web && npm run build",
 		"typecheck:web": "cd web && npx tsc -b --noEmit",
