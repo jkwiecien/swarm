@@ -350,6 +350,12 @@ describe('buildRespondToReviewPrompt', () => {
 		expect(prompt).toMatch(/post a short comment thanking the reviewer/);
 		expect(prompt).toMatch(/never skip this step, even when there is nothing to fix/);
 	});
+
+	it('carries the GH identity guard so the implementer persona token is not overridden', () => {
+		const prompt = buildRespondToReviewPrompt(context);
+		expect(prompt).toContain('GH_TOKEN');
+		expect(prompt).toContain('gh auth switch');
+	});
 });
 
 describe('issueNumberFromBranch', () => {

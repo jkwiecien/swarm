@@ -59,6 +59,7 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -146,6 +147,8 @@ export function buildReviewPrompt(context: {
 	const { repo, prNumber, headSha } = context;
 	return [
 		'You are a senior code reviewer reviewing a pull request.',
+		'',
+		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
 		'in any way. When you find a problem, report it as a review finding — never fix it',

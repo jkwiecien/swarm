@@ -59,6 +59,17 @@ As above, don't *build* Bitbucket/GitLab providers until they're needed — just
 
 ## 3. GitHub
 
+> **Scope: interactive/human-driven sessions only — NOT SWARM pipeline agents.** This
+> section is for an agent working *on* SWARM as a stand-in for the human contributor
+> `jkwiecien`. It does **not** apply to SWARM's own pipeline personas (the
+> Implementation / Review / Respond-to-review / Respond-to-CI agents the worker spawns
+> inside `.swarm-workspaces/`). Those are authenticated by the worker via a persona
+> `GH_TOKEN` (`src/pipeline/*.ts`) and **must not** run `gh auth switch`/`login`/`logout`,
+> touch `GH_TOKEN`, or change commit attribution — doing so posts their work under the
+> wrong identity and breaks the pipeline (their prompts carry `GH_IDENTITY_GUARD` from
+> `src/pipeline/agent-auth.ts` telling them to ignore this section). If you were spawned
+> by the SWARM worker, skip the rest of §3 entirely.
+
 - **Always interact with GitHub through the `gh` CLI** (PRs, issues, reviews, merges, releases) — not the web UI or raw API.
 - **Contribute as the `jkwiecien` account.** Before any GitHub operation, verify the active account and switch if needed:
 

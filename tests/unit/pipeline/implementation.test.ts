@@ -283,6 +283,12 @@ describe('buildImplementationPrompt', () => {
 		const prompt = buildImplementationPrompt(createMockWorkItem({ description: '' }), context);
 		expect(prompt).toContain('(no description provided)');
 	});
+
+	it('carries the GH identity guard so the implementer persona token is not overridden', () => {
+		const prompt = buildImplementationPrompt(createMockWorkItem(), context);
+		expect(prompt).toContain('GH_TOKEN');
+		expect(prompt).toContain('gh auth switch');
+	});
 });
 
 describe('implementationCommentBody', () => {

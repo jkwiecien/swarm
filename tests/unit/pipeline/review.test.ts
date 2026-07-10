@@ -218,4 +218,10 @@ describe('buildReviewPrompt', () => {
 		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
 		expect(prompt).toContain('Do not merge the PR');
 	});
+
+	it('carries the GH identity guard so the reviewer persona token is not overridden', () => {
+		const prompt = buildReviewPrompt(context);
+		expect(prompt).toContain('GH_TOKEN');
+		expect(prompt).toContain('gh auth switch');
+	});
 });
