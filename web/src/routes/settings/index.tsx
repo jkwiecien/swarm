@@ -172,26 +172,32 @@ function SettingsRouteComponent() {
 	const settingsQuery = useQuery(trpc.settings.get.queryOptions());
 
 	const [defaults, setDefaults] = useState<AgentDefaults>({});
+	const [isInitialized, setIsInitialized] = useState(false);
 
 	const settings = settingsQuery.data;
 	const dbDefaults = useMemo<AgentDefaults>(() => settings?.agents?.defaults ?? {}, [settings]);
 
+	const isDirty = useMemo(() => {
+		return CLIS.some((cli) => (defaults[cli] ?? '') !== (dbDefaults[cli] ?? ''));
+	}, [defaults, dbDefaults]);
+
 	useEffect(() => {
-		setDefaults(dbDefaults);
-	}, [dbDefaults]);
+		if (!isInitialized && settings) {
+			setDefaults(dbDefaults);
+			setIsInitialized(true);
+		} else if (isInitialized && !isDirty) {
+			setDefaults(dbDefaults);
+		}
+	}, [dbDefaults, isDirty, isInitialized, settings]);
 
 	const updateMutation = useMutation({
 		mutationFn: (variables: AppSettings) => trpcClient.settings.update.mutate(variables),
 		onSuccess: () => {
-			queryClient.invalidateQueries({
+			return queryClient.invalidateQueries({
 				queryKey: trpc.settings.get.queryOptions().queryKey,
 			});
 		},
 	});
-
-	const isDirty = useMemo(() => {
-		return CLIS.some((cli) => (defaults[cli] ?? '') !== (dbDefaults[cli] ?? ''));
-	}, [defaults, dbDefaults]);
 
 	const handleModelChange = (cli: AgentCli, value: string) => {
 		setDefaults((prev) => ({
