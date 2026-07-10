@@ -10,6 +10,21 @@
  *  - `check_suite` `completed` — review the commit CI just validated (why the
  *    phase pins its checkout to the head SHA), or fix it if CI failed.
  *
+ * **The `opened` dispatch races the Implementation phase's own wrap-up — by
+ * design.** The implementer opens the PR (`gh pr create`) as one of its last
+ * actions *inside* its still-running agent process, so GitHub delivers
+ * `pull_request opened` — and this handler dispatches Review — a few seconds
+ * before the Implementation phase logs its own `Phase finished` and moves the
+ * board. In an interleaved worker log (`SWARM_WORKER_CONCURRENCY > 1`) that reads
+ * as "Review started before Implementation finished", which looks like an
+ * out-of-order pipeline but isn't: Review provisions its *own* detached worktree
+ * at the head SHA and touches nothing the implementer owns, and if the implementer
+ * pushes further commits after opening the PR, their `check_suite` re-enters here
+ * and re-reviews at the final SHA (the PR+SHA dedup keys on the new commit, so the
+ * later review isn't dropped). No serialization needed; the per-run `logContext`
+ * (`taskId`/`phase` on every `agent run finished` line) is what disambiguates the
+ * interleave.
+ *
  * **Aggregate check state, not this suite's conclusion.** GitHub fires one
  * `check_suite.completed` per workflow, so any single event's own `conclusion`
  * describes only its suite while siblings may still be running. On a

@@ -233,6 +233,26 @@ describe('runAgentCli', () => {
 		}
 	});
 
+	it('merges logContext into the "agent run finished" line so concurrent runs are attributable', async () => {
+		const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+		try {
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({
+					logContext: { taskId: '42', phase: 'review', prNumber: '42' },
+				}),
+			);
+			lastChild().emit('close', 0, null);
+			await promise;
+
+			expect(debugSpy).toHaveBeenCalledWith(
+				'agent run finished',
+				expect.objectContaining({ taskId: '42', phase: 'review', prNumber: '42', cli: 'claude' }),
+			);
+		} finally {
+			debugSpy.mockRestore();
+		}
+	});
+
 	describe('termination', () => {
 		beforeEach(() => vi.useFakeTimers());
 		afterEach(() => vi.useRealTimers());

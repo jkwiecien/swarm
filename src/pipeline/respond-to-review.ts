@@ -401,6 +401,7 @@ export async function runRespondToReviewPhase(
 			// implementer persona, not the worker host's own logged-in account.
 			env: { GH_TOKEN: implementerToken },
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+			logContext: { taskId, phase: 'respond-to-review', prNumber, prBranch },
 			timeoutMs,
 			signal,
 		});

@@ -13,7 +13,7 @@
 
 import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider.js';
 import type { ProjectConfig } from '../../../config/schema.js';
-import { withGitHubToken } from './client.js';
+import { postIssueComment, withGitHubToken } from './client.js';
 import type { GitHubPersona } from './personas.js';
 
 export class GitHubSCMIntegration {
@@ -60,5 +60,27 @@ export class GitHubSCMIntegration {
 	 */
 	async withCredentials<T>(project: ProjectConfig, fn: () => Promise<T>): Promise<T> {
 		return this.withPersonaCredentials(project, 'implementer', fn);
+	}
+
+	/**
+	 * Post a top-level comment on a pull request as `persona`, returning the new
+	 * comment's id. The PR-driven phases (review / respond-to-*) normally comment
+	 * from *inside* the agent run via `gh`; this is the out-of-band path for the
+	 * worker's stalled-job safety net, where the run was reclaimed before it could
+	 * comment itself and the PM provider has no PR → comment mapping. Defaults to
+	 * the implementer (the PR's author, whose token is always configured for a
+	 * project that opens PRs); a comment triggers no pipeline phase, so the persona
+	 * choice is immaterial to loop prevention.
+	 */
+	async commentOnPullRequest(
+		project: ProjectConfig,
+		prNumber: number,
+		body: string,
+		persona: GitHubPersona = 'implementer',
+	): Promise<number> {
+		const [owner, repo] = project.repo.split('/');
+		return this.withPersonaCredentials(project, persona, () =>
+			postIssueComment(owner, repo, prNumber, body),
+		);
 	}
 }
