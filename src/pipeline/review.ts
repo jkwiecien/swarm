@@ -243,6 +243,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			// call the agent makes acts as the reviewer persona.
 			env: { GH_TOKEN: reviewerToken },
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+			logContext: { taskId, phase: 'review', prNumber, headSha },
 			timeoutMs,
 			signal,
 		});

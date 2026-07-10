@@ -4,6 +4,7 @@ import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError } from '@/harness/agent-failure.js';
 import type { PMProvider } from '@/pm/types.js';
 import {
+	createMockGitHubParsedEvent,
 	createMockGitHubProjectsWebhookJob,
 	createMockGitHubWebhookJob,
 	createMockProjectConfig,
@@ -71,9 +72,19 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
 }));
 
+// The PR-comment path of `reportInterruptedJobToBoard` goes through the concrete
+// SCM integration (the PM provider has no PR → comment mapping); mock it at the
+// module boundary the same way the PM provider is mocked above.
+const commentOnPullRequest = vi.fn(async (_p: ProjectConfig, _n: number, _b: string) => 99);
+vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
+	GitHubSCMIntegration: class {
+		commentOnPullRequest = commentOnPullRequest;
+	},
+}));
+
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
-import { processJob } from '@/worker/consumer.js';
+import { processJob, reportInterruptedJobToBoard } from '@/worker/consumer.js';
 
 const PROJECT = createMockProjectConfig();
 
@@ -900,5 +911,78 @@ describe('processJob', () => {
 			release?.();
 			await first;
 		});
+	});
+});
+
+describe('reportInterruptedJobToBoard', () => {
+	beforeEach(() => {
+		projectLookup = () => PROJECT;
+		addComment.mockClear();
+		addComment.mockResolvedValue('comment-1');
+		commentOnPullRequest.mockClear();
+		commentOnPullRequest.mockResolvedValue(99);
+	});
+
+	it('comments on the PR for a github (PR/check) job', async () => {
+		// createMockGitHubWebhookJob's event carries workItemId '17'.
+		await reportInterruptedJobToBoard(
+			createMockGitHubWebhookJob(),
+			'job stalled more than allowable limit',
+		);
+
+		expect(commentOnPullRequest).toHaveBeenCalledTimes(1);
+		const [proj, prNumber, body] = commentOnPullRequest.mock.calls[0];
+		expect(proj).toBe(PROJECT);
+		expect(prNumber).toBe(17);
+		expect(body).toContain('SWARM run interrupted');
+		expect(body).toContain('job stalled more than allowable limit');
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('comments on the work item for a github-projects (board) job', async () => {
+		const job = createMockGitHubProjectsWebhookJob();
+
+		await reportInterruptedJobToBoard(job, 'stalled');
+
+		expect(addComment).toHaveBeenCalledTimes(1);
+		const [itemId, body] = addComment.mock.calls[0];
+		expect(itemId).toBe(job.event.itemNodeId);
+		expect(body).toContain('SWARM run interrupted');
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
+	});
+
+	it('skips silently when the project cannot be resolved', async () => {
+		projectLookup = () => undefined;
+
+		await expect(
+			reportInterruptedJobToBoard(createMockGitHubWebhookJob(), 'stalled'),
+		).resolves.toBeUndefined();
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('skips a github job that carries no PR/issue number', async () => {
+		const job = createMockGitHubWebhookJob({
+			event: createMockGitHubParsedEvent({ workItemId: undefined }),
+		});
+
+		await reportInterruptedJobToBoard(job, 'stalled');
+
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('swallows malformed job data without throwing', async () => {
+		await expect(reportInterruptedJobToBoard({ not: 'a job' }, 'stalled')).resolves.toBeUndefined();
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('swallows a comment failure without throwing', async () => {
+		commentOnPullRequest.mockRejectedValue(new Error('github 500'));
+
+		await expect(
+			reportInterruptedJobToBoard(createMockGitHubWebhookJob(), 'stalled'),
+		).resolves.toBeUndefined();
 	});
 });
