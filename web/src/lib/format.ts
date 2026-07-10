@@ -24,6 +24,14 @@ export function formatRelativeTime(dateString: string): string {
 	);
 }
 
+export function formatTimeUntil(dateString: string): string {
+	const diffMs = new Date(dateString).getTime() - Date.now();
+	if (diffMs <= 60_000) return 'shortly';
+	const diffMin = Math.ceil(diffMs / 60_000);
+	if (diffMin < 60) return `in ${diffMin} min`;
+	return `in ~${Math.round(diffMin / 60)} h`;
+}
+
 export function formatPhase(phase: string): string {
 	return phase.replace(/-/g, ' ');
 }

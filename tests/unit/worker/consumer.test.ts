@@ -1030,6 +1030,9 @@ describe('processJob', () => {
 		});
 
 		it('finalizes the run deferred (not failed) for a rate-limited AgentRunError', async () => {
+			vi.useFakeTimers();
+			const now = new Date('2026-07-10T10:00:00.000Z');
+			vi.setSystemTime(now);
 			phaseImpl = async () => {
 				throw new AgentRunError(
 					'rate limited',
@@ -1044,9 +1047,14 @@ describe('processJob', () => {
 			);
 
 			expect(outcome.status).toBe('phase-deferred');
+			if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
 			expect(completeRun).toHaveBeenCalledTimes(1);
-			expect(completeRun.mock.calls[0][1]).toMatchObject({ status: 'deferred' });
+			expect(completeRun.mock.calls[0][1]).toMatchObject({
+				status: 'deferred',
+				nextRetryAt: new Date(now.getTime() + outcome.retryDelayMs),
+			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'ro', 're');
+			vi.useRealTimers();
 		});
 
 		it('still reports phase-succeeded when createRun fails (best-effort, no id to finalize)', async () => {

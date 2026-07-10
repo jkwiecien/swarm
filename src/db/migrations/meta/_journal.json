@@ -50,6 +50,13 @@
       "when": 1783697998725,
       "tag": "0006_outstanding_jean_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783712561560,
+      "tag": "0007_minor_clint_barton",
+      "breakpoints": true
     }
   ]
 }

@@ -15,5 +15,6 @@ export interface RunRow {
 	error: string | null;
 	startedAt: string;
 	completedAt: string | null;
+	nextRetryAt: string | null;
 	durationMs: number | null;
 }

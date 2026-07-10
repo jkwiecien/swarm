@@ -22,6 +22,7 @@ export const runs = pgTable(
 		error: text('error'),
 		startedAt: timestamp('started_at').defaultNow().notNull(),
 		completedAt: timestamp('completed_at'),
+		nextRetryAt: timestamp('next_retry_at'),
 		durationMs: integer('duration_ms'),
 	},
 	(table) => [

@@ -61,6 +61,7 @@ export interface CompleteRunInput {
 	timedOut?: boolean;
 	error?: string;
 	durationMs?: number;
+	nextRetryAt?: Date | null;
 }
 
 /**
@@ -78,6 +79,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			timedOut: input.timedOut,
 			error: input.error,
 			durationMs: input.durationMs,
+			nextRetryAt: input.nextRetryAt,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
