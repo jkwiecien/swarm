@@ -1,38 +1,18 @@
 import { useQuery } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
 import { AlertTriangle, ExternalLink, Info, Terminal } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
+import { formatDuration, formatPhase } from '@/lib/format.js';
 import { trpc } from '@/lib/trpc.js';
+import type { RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
-
-interface RunRow {
-	id: string;
-	projectId: string;
-	taskId: string;
-	workItemId: string | null;
-	prNumber: string | null;
-	phase: string;
-	engine: string | null;
-	model: string | null;
-	status: string;
-	exitCode: number | null;
-	timedOut: boolean;
-	error: string | null;
-	startedAt: string;
-	completedAt: string | null;
-	durationMs: number | null;
-}
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
 
 interface RunDetailHeaderProps {
 	run: RunRow;
-}
-
-function formatPhase(phase: string) {
-	return phase.replace(/-/g, ' ');
 }
 
 function RunDetailHeader({ run }: RunDetailHeaderProps) {
@@ -73,24 +53,59 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 	);
 }
 
+interface GitHubReferencesProps {
+	run: RunRow;
+	project?: { name: string; repo: string } | null;
+}
+
+function GitHubReferences({ run, project }: GitHubReferencesProps) {
+	const hasWorkItem = !!run.workItemId;
+	const hasPR = !!run.prNumber;
+
+	if (!hasWorkItem && !hasPR) {
+		return <span className="text-zinc-500 font-mono">—</span>;
+	}
+
+	return (
+		<div className="flex flex-col gap-1.5">
+			{hasPR &&
+				(project?.repo ? (
+					<a
+						href={`https://github.com/${project.repo}/pull/${run.prNumber}`}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="inline-flex items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline w-fit"
+					>
+						PR #{run.prNumber}
+						<ExternalLink className="h-3 w-3" />
+					</a>
+				) : (
+					<span className="text-zinc-400 font-mono">PR #{run.prNumber}</span>
+				))}
+			{hasWorkItem &&
+				(project?.repo ? (
+					<a
+						href={`https://github.com/${project.repo}/issues/${run.workItemId}`}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline w-fit"
+					>
+						Issue #{run.workItemId}
+						<ExternalLink className="h-3 w-3" />
+					</a>
+				) : (
+					<span className="text-zinc-400 font-mono">Issue #{run.workItemId}</span>
+				))}
+		</div>
+	);
+}
+
 interface RunOverviewProps {
 	run: RunRow;
 	project?: { name: string; repo: string } | null;
 }
 
 function RunOverview({ run, project }: RunOverviewProps) {
-	const hasWorkItem = !!run.workItemId;
-	const hasPR = !!run.prNumber;
-
-	function formatDuration(ms: number | null): string {
-		if (ms === null || ms === undefined) return '—';
-		const sec = Math.round(ms / 1000);
-		if (sec < 60) return `${sec}s`;
-		const min = Math.floor(sec / 60);
-		const remainingSec = sec % 60;
-		return `${min}m ${remainingSec}s`;
-	}
-
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm space-y-6">
 			<div>
@@ -130,34 +145,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 							GitHub References
 						</span>
 						<div className="text-sm text-zinc-200 mt-1 block">
-							{!hasWorkItem && !hasPR ? (
-								<span className="text-zinc-500 font-mono">—</span>
-							) : (
-								<div className="flex flex-col gap-1.5">
-									{hasPR && (
-										<a
-											href={`https://github.com/${project?.repo}/pull/${run.prNumber}`}
-											target="_blank"
-											rel="noopener noreferrer"
-											className="inline-flex items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline w-fit"
-										>
-											PR #{run.prNumber}
-											<ExternalLink className="h-3 w-3" />
-										</a>
-									)}
-									{hasWorkItem && (
-										<a
-											href={`https://github.com/${project?.repo}/issues/${run.workItemId}`}
-											target="_blank"
-											rel="noopener noreferrer"
-											className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline w-fit"
-										>
-											Issue #{run.workItemId}
-											<ExternalLink className="h-3 w-3" />
-										</a>
-									)}
-								</div>
-							)}
+							<GitHubReferences run={run} project={project} />
 						</div>
 					</div>
 
@@ -252,6 +240,16 @@ function RunDetailRouteComponent() {
 			return runQuery.data && runQuery.data.status === 'running' ? 2000 : false;
 		},
 	});
+
+	// Trigger a final logs refetch when status transitions out of 'running'
+	const status = runQuery.data?.status;
+	const prevStatusRef = useRef<string | undefined>(status);
+	useEffect(() => {
+		if (prevStatusRef.current === 'running' && status && status !== 'running') {
+			logsQuery.refetch();
+		}
+		prevStatusRef.current = status;
+	}, [status, logsQuery]);
 
 	if (runQuery.isLoading) {
 		return <div className="text-sm text-zinc-400">Loading run details…</div>;

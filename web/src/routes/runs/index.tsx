@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
 import { trpc } from '@/lib/trpc.js';
+import type { RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
 
 const PAGE_SIZE = 20;
@@ -110,7 +111,7 @@ function RunsRouteComponent() {
 				</div>
 			) : runsQuery.data && runsQuery.data.data.length > 0 ? (
 				<RunsTable
-					runs={runsQuery.data.data}
+					runs={runsQuery.data.data as RunRow[]}
 					totalCount={runsQuery.data.total}
 					currentPage={currentPage}
 					pageSize={PAGE_SIZE}

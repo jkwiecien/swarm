@@ -1,26 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
+import { formatDuration, formatPhase, formatRelativeTime } from '@/lib/format.js';
 import { trpc } from '@/lib/trpc.js';
+import type { RunRow } from '@/types/runs.js';
 import { RunStatusBadge } from './run-status-badge.js';
-
-interface RunRow {
-	id: string;
-	projectId: string;
-	taskId: string;
-	workItemId: string | null;
-	prNumber: string | null;
-	phase: string;
-	engine: string | null;
-	model: string | null;
-	status: string;
-	exitCode: number | null;
-	timedOut: boolean;
-	error: string | null;
-	startedAt: string;
-	completedAt: string | null;
-	durationMs: number | null;
-}
 
 interface RunsTableProps {
 	runs: RunRow[];
@@ -44,32 +28,6 @@ export function RunsTable({
 	const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
 	const startIdx = (currentPage - 1) * pageSize + 1;
 	const endIdx = Math.min(currentPage * pageSize, totalCount);
-
-	function formatDuration(ms: number | null): string {
-		if (ms === null || ms === undefined) return '—';
-		const sec = Math.round(ms / 1000);
-		if (sec < 60) return `${sec}s`;
-		const min = Math.floor(sec / 60);
-		const remainingSec = sec % 60;
-		return `${min}m ${remainingSec}s`;
-	}
-
-	function formatRelativeTime(dateString: string): string {
-		const date = new Date(dateString);
-		const now = new Date();
-		const diffMs = now.getTime() - date.getTime();
-		const diffSec = Math.floor(diffMs / 1000);
-		if (diffSec < 60) return 'Just now';
-		const diffMin = Math.floor(diffSec / 60);
-		if (diffMin < 60) return `${diffMin}m ago`;
-		const diffHr = Math.floor(diffMin / 60);
-		if (diffHr < 24) return `${diffHr}h ago`;
-		return (
-			date.toLocaleDateString() +
-			' ' +
-			date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-		);
-	}
 
 	const handleRowClick = (runId: string) => {
 		navigate({ to: `/runs/${runId}` });
@@ -116,10 +74,6 @@ export function RunsTable({
 		);
 	};
 
-	const formatPhase = (phase: string) => {
-		return phase.replace(/-/g, ' ');
-	};
-
 	return (
 		<div className="space-y-4">
 			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
@@ -150,53 +104,45 @@ export function RunsTable({
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-zinc-800/60">
-						{runs.length === 0 ? (
-							<tr>
-								<td colSpan={7} className="px-4 py-8 text-center text-sm text-zinc-500">
-									No runs found matching the selected filters.
+						{runs.map((run) => (
+							<tr
+								key={run.id}
+								onClick={() => handleRowClick(run.id)}
+								className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
+							>
+								<td className="px-4 py-3 text-sm font-semibold text-zinc-100 capitalize">
+									{formatPhase(run.phase)}
+								</td>
+								<td className="px-4 py-3 text-sm text-zinc-300 font-mono">
+									{projectsMap.get(run.projectId)?.name || run.projectId}
+								</td>
+								<td className="px-4 py-3 text-sm">
+									<div className="flex flex-col gap-1">
+										<span
+											className="font-mono text-zinc-300 text-xs truncate max-w-[150px]"
+											title={run.taskId}
+										>
+											{run.taskId}
+										</span>
+										{renderWorkItemCell(run)}
+									</div>
+								</td>
+								<td className="px-4 py-3 text-sm">
+									<RunStatusBadge
+										status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
+									/>
+								</td>
+								<td className="px-4 py-3 text-sm text-zinc-400">
+									{formatRelativeTime(run.startedAt)}
+								</td>
+								<td className="px-4 py-3 text-sm text-zinc-400 font-mono">
+									{formatDuration(run.durationMs)}
+								</td>
+								<td className="px-4 py-3 text-sm text-zinc-400 font-mono text-xs">
+									{run.model || '—'}
 								</td>
 							</tr>
-						) : (
-							runs.map((run) => (
-								<tr
-									key={run.id}
-									onClick={() => handleRowClick(run.id)}
-									className="hover:bg-zinc-800/40 transition-colors cursor-pointer"
-								>
-									<td className="px-4 py-3 text-sm font-semibold text-zinc-100 capitalize">
-										{formatPhase(run.phase)}
-									</td>
-									<td className="px-4 py-3 text-sm text-zinc-300 font-mono">
-										{projectsMap.get(run.projectId)?.name || run.projectId}
-									</td>
-									<td className="px-4 py-3 text-sm">
-										<div className="flex flex-col gap-1">
-											<span
-												className="font-mono text-zinc-300 text-xs truncate max-w-[150px]"
-												title={run.taskId}
-											>
-												{run.taskId}
-											</span>
-											{renderWorkItemCell(run)}
-										</div>
-									</td>
-									<td className="px-4 py-3 text-sm">
-										<RunStatusBadge
-											status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
-										/>
-									</td>
-									<td className="px-4 py-3 text-sm text-zinc-400">
-										{formatRelativeTime(run.startedAt)}
-									</td>
-									<td className="px-4 py-3 text-sm text-zinc-400 font-mono">
-										{formatDuration(run.durationMs)}
-									</td>
-									<td className="px-4 py-3 text-sm text-zinc-400 font-mono text-xs">
-										{run.model || '—'}
-									</td>
-								</tr>
-							))
-						)}
+						))}
 					</tbody>
 				</table>
 			</div>

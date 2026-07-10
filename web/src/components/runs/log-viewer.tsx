@@ -75,7 +75,7 @@ export function LogViewer({ stdout, stderr }: LogViewerProps) {
 			</div>
 
 			{/* Log Viewer Body */}
-			<div className="p-4 overflow-auto max-h-[600px] min-h-[250px] font-mono text-xs leading-relaxed text-zinc-300 whitespace-pre">
+			<div className="p-4 overflow-auto max-h-[600px] min-h-[250px] font-mono text-xs leading-relaxed text-zinc-300 whitespace-pre-wrap">
 				{isContentEmpty ? (
 					<div className="flex h-full items-center justify-center text-zinc-500 py-12 italic">
 						No {activeTab === 'stdout' ? 'stdout' : 'stderr'} logs captured for this run.
