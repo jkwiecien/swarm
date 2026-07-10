@@ -313,6 +313,58 @@ describe('processJob', () => {
 		expect(body).toContain('SWARM run failed');
 		expect(body).toContain('**implementation**');
 		expect(body).toContain("exited with code 1 for task '100'");
+		expect(body).not.toContain('splitting the issue');
+	});
+
+	it('posts a failure comment with splitting suggestion for stalled agent runs', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('stalled', { kind: 'stalled' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
+		const [, body] = addComment.mock.calls[0];
+		expect(body).toContain('splitting the issue');
+	});
+
+	it('posts a failure comment with splitting suggestion for timeout agent runs', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('timeout', { kind: 'timeout' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
+		const [, body] = addComment.mock.calls[0];
+		expect(body).toContain('splitting the issue');
+	});
+
+	it('does not append splitting suggestion for a non-stalled AgentRunError', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('some other agent failure', { kind: 'error' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledTimes(1);
+		const [, body] = addComment.mock.calls[0];
+		expect(body).not.toContain('splitting the issue');
 	});
 
 	it('does not comment on a deferred (rate-limited) failure — the run will retry', async () => {

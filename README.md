@@ -274,6 +274,7 @@ Early implementation. Summary by area:
 ### Worker resilience & queue
 - A usage/session-limit hit from the agent CLI (`classifyAgentFailure`, `src/harness/agent-failure.ts`) doesn't fail the job outright — it's deferred and re-enqueued once the CLI's own reported reset time passes (SWARM-91).
 - That same defer-and-retry path also covers a run the *worker itself* killed (a dev `--watch` restart, a deploy, a graceful shutdown mid-phase) — previously indistinguishable from an unexplained agent crash, since an aborted `claude`/`agy` process can exit with empty output and no OS-reported signal. Both cases share one capped retry budget, with the retry delay floored above the review-dispatch-dedup TTL so it can't collide with a claim the interrupted run may have already taken.
+- Agent runs that stall (`stalled` kind, e.g. "timeout waiting for response") or timeout are terminal failures. For PM-driven phases (planning/implementation), `reportPhaseFailureToBoard` appends a splitting suggestion to the failure comment, advising that the task's scope may be too large and should be split by hand.
 - Job-priority split: PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always dequeue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation), via `src/queue/producer.ts`'s `priorityFor`.
 - Worker concurrency is configurable (`SWARM_WORKER_CONCURRENCY`, default 1) instead of hardcoded to one job at a time.
 
