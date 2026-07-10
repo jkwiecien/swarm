@@ -38,7 +38,15 @@ describe('ProjectConfigSchema', () => {
 		expect(project.worktreeRoot).toBe(PROJECT_DEFAULTS.worktreeRoot);
 		expect(project.baseBranch).toBe(PROJECT_DEFAULTS.baseBranch);
 		expect(project.branchPrefix).toBe(PROJECT_DEFAULTS.branchPrefix);
+		expect(project.maxConcurrentJobs).toBe(PROJECT_DEFAULTS.maxConcurrentJobs);
 		expect(project.pm.type).toBe('github-projects');
+	});
+
+	it('accepts only positive integer maximum concurrent jobs', () => {
+		expect(createMockProjectConfig({ maxConcurrentJobs: 4 }).maxConcurrentJobs).toBe(4);
+		for (const maxConcurrentJobs of [0, -1, 1.5]) {
+			expect(() => createMockProjectConfig({ maxConcurrentJobs })).toThrow();
+		}
 	});
 
 	it('rejects a repo that is not owner/repo', () => {

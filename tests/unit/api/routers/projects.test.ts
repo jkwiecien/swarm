@@ -54,11 +54,12 @@ describe('projectsRouter', () => {
 
 	describe('getById', () => {
 		it('returns the project when getProjectByIdFromDb resolves one', async () => {
-			const project = createMockProjectConfig({ id: 'p1' });
+			const project = createMockProjectConfig({ id: 'p1', maxConcurrentJobs: 4 });
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 
 			const result = await caller.getById({ id: 'p1' });
 			expect(result).toEqual(project);
+			expect(result.maxConcurrentJobs).toBe(4);
 			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
 		});
 
@@ -99,6 +100,7 @@ describe('projectsRouter', () => {
 
 			const expectedConfig = {
 				...validProjectInput,
+				maxConcurrentJobs: 1,
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -124,6 +126,7 @@ describe('projectsRouter', () => {
 				worktreeRoot: '.swarm-workspaces',
 				baseBranch: 'main',
 				branchPrefix: 'issue-',
+				maxConcurrentJobs: 1,
 				pm: { type: 'github-projects' as const },
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
@@ -150,6 +153,7 @@ describe('projectsRouter', () => {
 
 			const expectedConfig = {
 				...validProjectInput,
+				maxConcurrentJobs: 1,
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -175,6 +179,7 @@ describe('projectsRouter', () => {
 
 			const expectedConfig = {
 				...validProjectInput,
+				maxConcurrentJobs: 1,
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -259,6 +264,27 @@ describe('projectsRouter', () => {
 
 			expect(result).toEqual(expectedConfig);
 			expect(upsertProjectToDb).toHaveBeenCalledWith(expectedConfig);
+		});
+
+		it('saves the maximum concurrent jobs setting', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			const result = await caller.update({ id: 'p1', maxConcurrentJobs: 4 });
+
+			expect(result.maxConcurrentJobs).toBe(4);
+			expect(upsertProjectToDb).toHaveBeenCalledWith({
+				...existing,
+				maxConcurrentJobs: 4,
+			});
+		});
+
+		it.each([0, -1, 1.5, 'many'])('rejects invalid maximum concurrent jobs: %s', async (value) => {
+			await expect(
+				caller.update({ id: 'p1', maxConcurrentJobs: value as number }),
+			).rejects.toThrow();
+			expect(getProjectByIdFromDb).not.toHaveBeenCalled();
+			expect(upsertProjectToDb).not.toHaveBeenCalled();
 		});
 
 		it('absent keys are not updated/merged to undefined', async () => {

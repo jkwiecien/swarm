@@ -222,6 +222,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `worktreeRoot` | `.swarm-workspaces` | Directory under `repoRoot` for per-task git worktrees. |
 | `baseBranch` | `main` | Branch worktrees are cut from and PRs target. |
 | `branchPrefix` | `issue-` | Prefix for task branch names (`issue-<n>-<slug>`). |
+| `maxConcurrentJobs` | `1` | Maximum jobs this project may run concurrently (positive integer). Mirrors the `SWARM_WORKER_CONCURRENCY` default; per-project runtime enforcement is a follow-up. |
 | `pm` | `{ type: "github-projects" }` | PM provider discriminator (only `github-projects` exists today). |
 | `githubProjects` | **required** | GitHub Projects board mapping (below). |
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
