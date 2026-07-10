@@ -30,6 +30,8 @@ export interface CreateRunInput {
 	taskId: string;
 	phase: TriggerPhase;
 	workItemId?: string;
+	workItemTitle?: string;
+	workItemUrl?: string;
 	prNumber?: string;
 	model?: string;
 }
@@ -43,6 +45,8 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			taskId: input.taskId,
 			phase: input.phase,
 			workItemId: input.workItemId,
+			workItemTitle: input.workItemTitle,
+			workItemUrl: input.workItemUrl,
 			prNumber: input.prNumber,
 			model: input.model,
 		})

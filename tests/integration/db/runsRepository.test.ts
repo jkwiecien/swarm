@@ -31,6 +31,8 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				taskId: '42',
 				phase: 'implementation',
 				workItemId: 'WI_42',
+				workItemTitle: 'Fix the widget',
+				workItemUrl: 'https://github.com/jkwiecien/runs-repo/issues/42',
 			});
 
 			const row = await getRunByIdFromDb(id);
@@ -39,12 +41,22 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.taskId).toBe('42');
 			expect(row?.phase).toBe('implementation');
 			expect(row?.workItemId).toBe('WI_42');
+			expect(row?.workItemTitle).toBe('Fix the widget');
+			expect(row?.workItemUrl).toBe('https://github.com/jkwiecien/runs-repo/issues/42');
 			expect(row?.status).toBe('running');
 			// Columns only set at completion (or when a model override exists) stay null.
 			expect(row?.engine).toBeNull();
 			expect(row?.model).toBeNull();
 			expect(row?.completedAt).toBeNull();
 			expect(row?.startedAt).toBeInstanceOf(Date);
+		});
+
+		it('stores null work-item metadata when it is omitted', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '7', phase: 'review' });
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.workItemTitle).toBeNull();
+			expect(row?.workItemUrl).toBeNull();
 		});
 
 		it('returns undefined for an unknown run id', async () => {

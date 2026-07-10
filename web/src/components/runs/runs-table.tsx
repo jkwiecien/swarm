@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { ExternalLink } from 'lucide-react';
 import { formatDuration, formatPhase, formatRelativeTime } from '@/lib/format.js';
 import { trpc } from '@/lib/trpc.js';
+import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
 import { RunStatusBadge } from './run-status-badge.js';
 
@@ -37,6 +38,7 @@ export function RunsTable({
 		const project = projectsMap.get(run.projectId);
 		const hasWorkItem = !!run.workItemId;
 		const hasPR = !!run.prNumber;
+		const workItemRef = parseWorkItemRef(run.workItemUrl);
 
 		if (!project || (!hasWorkItem && !hasPR)) {
 			return <span className="text-zinc-500 font-mono">—</span>;
@@ -58,18 +60,25 @@ export function RunsTable({
 						<ExternalLink className="h-3 w-3" />
 					</a>
 				)}
-				{hasWorkItem && (
-					<a
-						href={`https://github.com/${project.repo}/issues/${run.workItemId}`}
-						target="_blank"
-						rel="noopener noreferrer"
-						onClick={stopPropagation}
-						className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
-					>
-						Issue #{run.workItemId}
-						<ExternalLink className="h-3 w-3" />
-					</a>
-				)}
+				{hasWorkItem && run.workItemTitle && workItemRef ? (
+					<>
+						<span className="text-zinc-300 truncate max-w-[150px]" title={run.workItemTitle}>
+							{run.workItemTitle}
+						</span>
+						<a
+							href={run.workItemUrl ?? undefined}
+							target="_blank"
+							rel="noopener noreferrer"
+							onClick={stopPropagation}
+							className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
+						>
+							{workItemLabel(workItemRef)}
+							<ExternalLink className="h-3 w-3" />
+						</a>
+					</>
+				) : hasWorkItem ? (
+					<span className="text-zinc-400 font-mono">Issue: #{run.taskId}</span>
+				) : null}
 			</div>
 		);
 	};

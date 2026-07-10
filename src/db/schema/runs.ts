@@ -10,6 +10,8 @@ export const runs = pgTable(
 			.references(() => projects.id, { onDelete: 'cascade' }),
 		taskId: text('task_id').notNull(),
 		workItemId: text('work_item_id'),
+		workItemTitle: text('work_item_title'),
+		workItemUrl: text('work_item_url'),
 		prNumber: text('pr_number'),
 		phase: text('phase').notNull(),
 		engine: text('engine'),

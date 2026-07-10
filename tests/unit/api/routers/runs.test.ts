@@ -24,6 +24,8 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		projectId: 'p1',
 		taskId: '103',
 		workItemId: null,
+		workItemTitle: null,
+		workItemUrl: null,
 		prNumber: null,
 		phase: 'implementation',
 		engine: null,
@@ -50,7 +52,14 @@ describe('runsRouter', () => {
 
 	describe('list', () => {
 		it('returns whatever listRunsFromDb resolves and applies default pagination', async () => {
-			const data = [makeRun({ id: 'run-1' }), makeRun({ id: 'run-2' })];
+			const data = [
+				makeRun({
+					id: 'run-1',
+					workItemTitle: 'Fix the widget',
+					workItemUrl: 'https://github.com/acme/widgets/issues/103',
+				}),
+				makeRun({ id: 'run-2' }),
+			];
 			vi.mocked(listRunsFromDb).mockResolvedValue({ data, total: 2 });
 
 			const result = await caller.list({});
@@ -104,7 +113,11 @@ describe('runsRouter', () => {
 
 	describe('getById', () => {
 		it('returns the run when getRunByIdFromDb resolves one', async () => {
-			const run = makeRun({ id: 'run-1' });
+			const run = makeRun({
+				id: 'run-1',
+				workItemTitle: 'Fix the widget',
+				workItemUrl: 'https://github.com/acme/widgets/issues/103',
+			});
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(run);
 
 			const result = await caller.getById({ id: 'run-1' });

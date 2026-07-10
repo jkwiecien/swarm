@@ -403,6 +403,8 @@ async function tryCreateRun(
 			taskId: trigger.taskId,
 			phase: trigger.phase,
 			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
+			workItemTitle: 'workItem' in trigger ? trigger.workItem.title : undefined,
+			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
 			prNumber: 'prNumber' in trigger ? trigger.prNumber : undefined,
 			model: agentOverrideFor(project, globalDefaults, trigger.phase).model,
 		});

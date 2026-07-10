@@ -944,6 +944,8 @@ describe('processJob', () => {
 				taskId: '17',
 				phase: 'review',
 				workItemId: undefined,
+				workItemTitle: undefined,
+				workItemUrl: undefined,
 				prNumber: '17',
 				model: 'sonnet',
 			});
@@ -957,7 +959,7 @@ describe('processJob', () => {
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'o', 'e');
 		});
 
-		it('records the work item id and the requested model for a PM-driven phase', async () => {
+		it('records the work item metadata and requested model for a PM-driven phase', async () => {
 			const projectWithAgents = createMockProjectConfig({
 				agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
 			});
@@ -974,9 +976,24 @@ describe('processJob', () => {
 				taskId: '10',
 				phase: 'planning',
 				workItemId: workItem.id,
+				workItemTitle: workItem.title,
+				workItemUrl: workItem.url,
 				prNumber: undefined,
 				model: 'Gemini 3.5 Flash (High)',
 			});
+		});
+
+		it('does not store an empty provider URL', async () => {
+			const workItem = createMockWorkItem({ statusId: '61e4505c', url: '' });
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning({ phase: 'planning', taskId: '10', workItem }),
+			);
+
+			expect(createRun).toHaveBeenCalledWith(
+				expect.objectContaining({ workItemTitle: workItem.title, workItemUrl: undefined }),
+			);
 		});
 
 		it('finalizes the run failed and stores its logs for a terminal AgentRunError', async () => {

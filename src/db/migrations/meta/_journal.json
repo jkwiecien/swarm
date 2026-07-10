@@ -43,6 +43,13 @@
       "when": 1783695760253,
       "tag": "0005_wandering_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783697998725,
+      "tag": "0006_outstanding_jean_grey",
+      "breakpoints": true
     }
   ]
 }
