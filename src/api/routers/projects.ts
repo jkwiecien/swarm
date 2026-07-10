@@ -11,6 +11,7 @@ import {
 } from '../../db/repositories/projectsRepository.js';
 import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
 import { publicProcedure, router } from '../trpc.js';
+import { credentialsRouter } from './credentials.js';
 
 export const DEFAULT_GITHUB_PROJECTS_CONFIG: GitHubProjectsIntegrationConfig = {
 	projectId: '',
@@ -123,4 +124,6 @@ export const projectsRouter = router({
 		}
 		await deleteProjectFromDb(input.id);
 	}),
+
+	credentials: credentialsRouter,
 });
