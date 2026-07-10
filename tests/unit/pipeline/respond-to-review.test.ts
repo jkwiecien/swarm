@@ -11,11 +11,12 @@ vi.mock('node:fs', () => ({
 import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
 	buildRespondToReviewPrompt,
+	issueNumberFromBranch,
 	RESPOND_OUTCOME_FILENAME,
 	runRespondToReviewPhase,
 } from '@/pipeline/respond-to-review.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
-import { createMockProjectConfig } from '../../helpers/factories.js';
+import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
 
 const WORKTREE_PATH = '/Users/dev/swarm/swarm/.swarm-workspaces/task-respond-21';
 const PR_BRANCH = 'issue-21';
@@ -212,6 +213,100 @@ describe('runRespondToReviewPhase', () => {
 		const result = await runRespondToReviewPhase(deps);
 		expect(result.outcome).toBe(expected);
 	});
+
+	describe('board status reports', () => {
+		// PR_BRANCH is `issue-21`, and the mock project's branchPrefix is `issue-`,
+		// so the phase resolves the backing issue as #21 and matches this card.
+		function makePm(
+			items: Array<{ id: string; url: string }> = [
+				{ id: 'ITEM_21', url: 'https://github.com/jkwiecien/swarm/issues/21' },
+			],
+		) {
+			const workItems = items.map(({ id, url }) => createMockWorkItem({ id, url }));
+			return {
+				type: 'github-projects' as const,
+				getWorkItem: vi.fn(),
+				listWorkItems: vi.fn(async () => workItems),
+				moveWorkItem: vi.fn(async (_id: string, _status: string) => {}),
+				addComment: vi.fn(async () => 'c1'),
+			};
+		}
+
+		it('reports In progress before the agent runs and In review after a successful response', async () => {
+			const deps = makeDeps();
+			const pm = makePm();
+			const order: string[] = [];
+			pm.moveWorkItem.mockImplementation(async (_id: string, status: string) => {
+				order.push(`move:${status}`);
+			});
+			deps.runAgent = vi.fn(async () => {
+				order.push('agent');
+				return agentResult();
+			});
+
+			const result = await runRespondToReviewPhase({ ...deps, pm });
+
+			expect(pm.moveWorkItem).toHaveBeenNthCalledWith(1, 'ITEM_21', 'inProgress');
+			expect(pm.moveWorkItem).toHaveBeenNthCalledWith(2, 'ITEM_21', 'inReview');
+			// In progress before the agent, In review after — a real status report.
+			expect(order).toEqual(['move:inProgress', 'agent', 'move:inReview']);
+			expect(result.movedTo).toBe('inReview');
+		});
+
+		it('does not report to the board when no pm provider is injected', async () => {
+			const deps = makeDeps();
+			const result = await runRespondToReviewPhase(deps);
+			expect(result.movedTo).toBeUndefined();
+		});
+
+		it('skips reports (best-effort) when the board has no item for the PR issue', async () => {
+			const deps = makeDeps();
+			const pm = makePm([{ id: 'ITEM_OTHER', url: 'https://github.com/jkwiecien/swarm/issues/7' }]);
+
+			const result = await runRespondToReviewPhase({ ...deps, pm });
+
+			expect(pm.moveWorkItem).not.toHaveBeenCalled();
+			expect(result.movedTo).toBeUndefined();
+			// The response itself still succeeded.
+			expect(result.outcome).toBe('fixed');
+		});
+
+		it('never fails the response when a board move throws (best-effort)', async () => {
+			const deps = makeDeps();
+			const pm = makePm();
+			pm.moveWorkItem.mockRejectedValue(new Error('board unreachable'));
+
+			const result = await runRespondToReviewPhase({ ...deps, pm });
+
+			expect(result.outcome).toBe('fixed');
+			expect(result.movedTo).toBeUndefined();
+			expect(deps.runAgent).toHaveBeenCalledTimes(1);
+		});
+
+		it('never fails the response when listing the board throws (best-effort)', async () => {
+			const deps = makeDeps();
+			const pm = makePm();
+			pm.listWorkItems.mockRejectedValue(new Error('graphql 502'));
+
+			const result = await runRespondToReviewPhase({ ...deps, pm });
+
+			expect(result.outcome).toBe('fixed');
+			expect(pm.moveWorkItem).not.toHaveBeenCalled();
+			expect(result.movedTo).toBeUndefined();
+		});
+
+		it('leaves the card at In progress (no In review move) when the agent fails', async () => {
+			const deps = makeDeps();
+			const pm = makePm();
+			deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
+
+			await expect(runRespondToReviewPhase({ ...deps, pm })).rejects.toThrow(/exited with code 1/);
+
+			// Picked up (In progress) but never returned to In review — mirrors
+			// Implementation's leave-in-progress-on-failure behavior.
+			expect(pm.moveWorkItem).toHaveBeenCalledExactlyOnceWith('ITEM_21', 'inProgress');
+		});
+	});
 });
 
 describe('buildRespondToReviewPrompt', () => {
@@ -252,5 +347,27 @@ describe('buildRespondToReviewPrompt', () => {
 		expect(prompt).toMatch(/ALWAYS reply on the PR/);
 		expect(prompt).toMatch(/post a short comment thanking the reviewer/);
 		expect(prompt).toMatch(/never skip this step, even when there is nothing to fix/);
+	});
+});
+
+describe('issueNumberFromBranch', () => {
+	it('extracts the issue number from the bare convention branch', () => {
+		expect(issueNumberFromBranch('issue-100', 'issue-')).toBe('100');
+	});
+
+	it('extracts the issue number when a slug follows', () => {
+		expect(issueNumberFromBranch('issue-100-runs-list-screen', 'issue-')).toBe('100');
+	});
+
+	it('honours a custom branch prefix', () => {
+		expect(issueNumberFromBranch('task/42-fix', 'task/')).toBe('42');
+	});
+
+	it('returns undefined for a branch that does not start with the prefix', () => {
+		expect(issueNumberFromBranch('feature/login', 'issue-')).toBeUndefined();
+	});
+
+	it('returns undefined when the prefix is not followed by digits', () => {
+		expect(issueNumberFromBranch('issue-fix-login', 'issue-')).toBeUndefined();
 	});
 });

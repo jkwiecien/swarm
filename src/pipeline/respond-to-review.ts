@@ -37,9 +37,25 @@
  * session happens to be ambient on the worker's host. (An earlier version of
  * this comment claimed the ambient credentials already *were* the implementer
  * persona; confirmed live on the Implementation phase that assumption was
- * false — see `runImplementationPhase`'s header.) No PM interaction: the item
- * already sits at "In review" and a response doesn't change board status —
- * the reviewer's next round (or a human merge) is what moves things next.
+ * false — see `runImplementationPhase`'s header.)
+ *
+ * Board status reports (Implementation's pattern, mirrored here): the item sits
+ * at "In review" when this phase starts; it moves the card to "In progress"
+ * while the implementer works and back to "In review" once it has responded, so
+ * a human watching the board sees the response happening rather than a card that
+ * looks idle for minutes. These are **status reports, not triggers** — neither
+ * "In progress" nor "In review" starts a PM-driven phase (`src/pm/pipeline.ts`),
+ * so bouncing the card between them can't re-fire Review or anything else (that
+ * re-review is driven only by the *new commit* a fix pushes, deduped per head
+ * SHA — `src/triggers/review-dispatch-dedup.ts`). And they are strictly
+ * **best-effort**: the board item is resolved from the PR branch's issue number
+ * (`<branchPrefix><n>`), and a failure to resolve it (a human-named branch, an
+ * item not on the board) or to move it is logged and swallowed — a cosmetic
+ * status report must never fail an otherwise-successful response. On a failed
+ * run the card is left at "In progress" (as Implementation leaves it), with the
+ * worker's failure comment explaining why; the next reviewer round moves it on.
+ * Skipped entirely when no `pm` provider is injected (unit tests that don't
+ * exercise the board).
  *
  * This is the phase's orchestration only, same as the other three. It composes
  * `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15) and
@@ -60,11 +76,30 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import type { PmStatusKey } from '@/pm/pipeline.js';
+import type { PMProvider } from '@/pm/types.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the respond agent is instructed to write its outcome to, at the worktree root. */
 export const RESPOND_OUTCOME_FILENAME = 'respond_outcome.txt';
+
+/**
+ * Status the card moves to while the implementer responds — the board's "In
+ * progress". A status *report* (a human watching sees the response happening),
+ * never a trigger: entering "In progress" starts no PM-driven phase
+ * (`src/pm/pipeline.ts`). Typed to {@link PmStatusKey} so a typo fails to
+ * compile rather than silently addressing a status the adapter can't resolve.
+ */
+const PICKUP_STATUS: PmStatusKey = 'inProgress';
+
+/**
+ * Status the card returns to once the response is posted — back to the board's
+ * "In review" it started at. Also a report, not a trigger (`src/pm/pipeline.ts`),
+ * so returning here can't re-fire Review; only a *new commit* does, deduped per
+ * head SHA (`src/triggers/review-dispatch-dedup.ts`).
+ */
+const DONE_STATUS: PmStatusKey = 'inReview';
 
 /**
  * The outcomes the agent may report — PROJECT.md §5.4's two paths, now also
@@ -117,6 +152,14 @@ export interface RunRespondToReviewPhaseOptions {
 	 * uses, for exactly that reason (see git history for the incident this fixed).
 	 */
 	taskId: string;
+	/**
+	 * PM provider for the project's board, used purely for best-effort status
+	 * reports (→ In progress while responding, → In review when done). Provider-
+	 * agnostic — this phase only ever calls the {@link PMProvider} interface, so a
+	 * future Jira/Linear/Trello provider drops in with no change here. Omitted in
+	 * unit tests that don't exercise the board (board reports are then skipped).
+	 */
+	pm?: PMProvider;
 	/** Worktree manager for the project — provisions and cleans up the checkout. */
 	worktrees?: GitWorktreeManager;
 	/** Which agent CLI to run. Defaults to Claude Code. */
@@ -138,8 +181,85 @@ export interface RunRespondToReviewPhaseOptions {
 export interface RespondToReviewPhaseResult {
 	/** The outcome the agent reported, read from {@link RESPOND_OUTCOME_FILENAME}. */
 	outcome: RespondOutcome;
+	/**
+	 * The canonical status the card was moved back to on success ({@link DONE_STATUS}),
+	 * or `undefined` when no board report happened — no `pm` injected, the board
+	 * item couldn't be resolved, or the move failed (all best-effort).
+	 */
+	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
+}
+
+/**
+ * The backing issue number encoded in a SWARM task branch (`<branchPrefix><n>`,
+ * e.g. `issue-100` or `issue-100-runs-list` → `100`), or `undefined` when the
+ * branch doesn't follow the convention (a human-named PR branch). Used only to
+ * resolve the board card for a best-effort status report, so a miss is fine.
+ */
+export function issueNumberFromBranch(branch: string, branchPrefix: string): string | undefined {
+	if (!branch.startsWith(branchPrefix)) return undefined;
+	const match = branch.slice(branchPrefix.length).match(/^(\d+)/);
+	return match ? match[1] : undefined;
+}
+
+/**
+ * Resolve the board item wrapping issue `#{issueNumber}` to its provider-native
+ * ID, or `undefined` if it isn't on the board. Provider-agnostic: matches on the
+ * work item's backing `url` (which every {@link PMProvider} populates) rather
+ * than anything GitHub-specific. Swallows and logs provider errors — the caller
+ * treats any failure as "no board report", never a phase failure.
+ */
+async function resolveBoardItemId(
+	pm: PMProvider,
+	issueNumber: string,
+	taskId: string,
+): Promise<string | undefined> {
+	try {
+		const items = await pm.listWorkItems();
+		// `endsWith('/issues/100')` can't false-match `/issues/1001` — the char
+		// before `100` must be `/` — so no need to anchor on the repo too.
+		const match = items.find((item) => item.url.endsWith(`/issues/${issueNumber}`));
+		if (!match) {
+			logger.debug('respond-to-review: no board item found for issue — skipping status report', {
+				taskId,
+				issueNumber,
+			});
+			return undefined;
+		}
+		return match.id;
+	} catch (error) {
+		logger.warn('respond-to-review: could not resolve board item — skipping status report', {
+			taskId,
+			issueNumber,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	}
+}
+
+/**
+ * Best-effort board status report. Moves the item and returns whether it
+ * succeeded; a provider error is logged and swallowed (returns `false`) so a
+ * cosmetic report can never fail the response — see the module header.
+ */
+async function reportBoardStatus(
+	pm: PMProvider,
+	itemId: string,
+	status: PmStatusKey,
+	taskId: string,
+): Promise<boolean> {
+	try {
+		await pm.moveWorkItem(itemId, status);
+		return true;
+	} catch (error) {
+		logger.warn('respond-to-review: board status report failed — continuing', {
+			taskId,
+			status,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return false;
+	}
 }
 
 /**
@@ -229,6 +349,7 @@ export async function runRespondToReviewPhase(
 		prBranch,
 		reviewId,
 		taskId,
+		pm,
 		cli = DEFAULT_RESPOND_CLI,
 		model,
 		timeoutMs,
@@ -252,6 +373,17 @@ export async function runRespondToReviewPhase(
 	// worktree exists to clean up. Never returned or passed on — it goes straight
 	// into the subprocess env below.
 	const implementerToken = await getToken(project, 'implementer');
+
+	// Best-effort board report: resolve the card once (reused for the closing
+	// move) and reflect "In progress" before the (possibly long) agent run, so a
+	// human watching the board sees the response start — never blocks or fails the
+	// response. See the module header. Skipped when no provider is injected.
+	const issueNumber = issueNumberFromBranch(prBranch, project.branchPrefix);
+	const boardItemId =
+		pm && issueNumber ? await resolveBoardItemId(pm, issueNumber, taskId) : undefined;
+	if (pm && boardItemId) {
+		await reportBoardStatus(pm, boardItemId, PICKUP_STATUS, taskId);
+	}
 
 	// The existing task branch, not a fresh one — the agent commits and pushes to
 	// the PR here (see the module header for the local-branch precondition).
@@ -307,9 +439,23 @@ export async function runRespondToReviewPhase(
 			);
 		}
 
-		logger.info('Phase finished - Respond-to-review', { taskId, prNumber, prBranch, outcome });
+		// Best-effort: return the card to "In review" now the response is posted.
+		// Only on success — a failed run leaves it at "In progress" (as
+		// Implementation does), with the worker's failure comment explaining why.
+		let movedTo: PmStatusKey | undefined;
+		if (pm && boardItemId && (await reportBoardStatus(pm, boardItemId, DONE_STATUS, taskId))) {
+			movedTo = DONE_STATUS;
+		}
 
-		return { outcome, agent };
+		logger.info('Phase finished - Respond-to-review', {
+			taskId,
+			prNumber,
+			prBranch,
+			outcome,
+			movedTo,
+		});
+
+		return { outcome, movedTo, agent };
 	} finally {
 		// Swallow-and-log: a cleanup failure must not mask the run's outcome
 		// (a successful phase turning into a reported failure, or a genuine

@@ -236,6 +236,7 @@ function runPhase(
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
 				taskId: trigger.taskId,
+				pm: createGitHubProjectsProvider(project),
 				cli: project.agents?.respondToReview?.cli,
 				model: project.agents?.respondToReview?.model,
 				signal,
