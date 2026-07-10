@@ -18,7 +18,13 @@
 
 import type { ProjectConfig } from '../config/schema.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
-import type { AgentCliResult } from '../harness/agent-cli.js';
+import {
+	type CompleteRunInput,
+	completeRun,
+	createRun,
+	storeRunLogs,
+} from '../db/repositories/runsRepository.js';
+import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
 	type AgentFailureKind,
@@ -267,6 +273,126 @@ function runPhase(
 				signal,
 			});
 	}
+}
+
+/**
+ * The per-phase agent override (`cli`/`model`) a project configured, resolving
+ * `runPhase`'s own `project.agents?.<phase>?.{cli,model}` lookup once so a run
+ * row can record the *requested* model at creation without threading it through
+ * `runPhase`'s signature. `model` may be undefined — "the phase's coded default
+ * is in effect", the same convention `describeAgent` uses. The `engine` column
+ * is set at completion from what actually ran (`AgentCliResult.cli`), so it
+ * reads null while a run is `running`.
+ */
+function agentOverrideFor(
+	project: ProjectConfig,
+	phase: TriggerPhase,
+): { cli?: AgentCli; model?: string } {
+	switch (phase) {
+		case 'planning':
+			return project.agents?.planning ?? {};
+		case 'implementation':
+			return project.agents?.implementation ?? {};
+		case 'review':
+			return project.agents?.review ?? {};
+		case 'respond-to-review':
+			return project.agents?.respondToReview ?? {};
+		case 'respond-to-ci':
+			return project.agents?.respondToCi ?? {};
+	}
+}
+
+/**
+ * Best-effort creation of a run-history row before a phase runs. Run tracking is
+ * a secondary, single-dev dashboard view (issue #102); a DB hiccup here must
+ * never fail an actual pipeline run, so this swallows and logs any error and
+ * returns `undefined` — the completion path then no-ops for a run with no id.
+ */
+async function tryCreateRun(
+	project: ProjectConfig,
+	trigger: TriggerResult,
+): Promise<string | undefined> {
+	try {
+		return await createRun({
+			projectId: project.id,
+			taskId: trigger.taskId,
+			phase: trigger.phase,
+			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
+			prNumber: 'prNumber' in trigger ? trigger.prNumber : undefined,
+			model: agentOverrideFor(project, trigger.phase).model,
+		});
+	} catch (err) {
+		logger.error('Failed to create run row (continuing)', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return undefined;
+	}
+}
+
+/**
+ * Best-effort finalization of a run-history row: set its terminal columns and,
+ * when the run produced captured output, store its stdout/stderr. No-ops when
+ * `runId` is undefined (creation failed) and swallows+logs any DB error, so the
+ * two completion sites (success/failure) don't each repeat the try/catch and a
+ * DB hiccup can't turn a settled pipeline run into a failed job (issue #102).
+ */
+async function finalizeRun(
+	runId: string | undefined,
+	input: CompleteRunInput,
+	agent?: AgentCliResult,
+): Promise<void> {
+	if (!runId) return;
+	try {
+		await completeRun(runId, input);
+		if (agent) await storeRunLogs(runId, agent.stdout, agent.stderr);
+	} catch (err) {
+		logger.error('Failed to finalize run row (continuing)', {
+			runId,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
+ * Finalize a run row for a failed/deferred outcome. A `phase-deferred` outcome
+ * records `deferred` (the run will retry — not an error); anything else records
+ * `failed`. When the failure carried its agent result ({@link AgentRunError.agent}),
+ * its engine/exit/timing columns and captured logs are persisted too; a failure
+ * that never ran an agent (missing hand-off file, worktree setup) records the
+ * `error` message only.
+ */
+async function finalizeFailedRun(
+	runId: string | undefined,
+	outcome: JobOutcome,
+	err: unknown,
+): Promise<void> {
+	const agent = err instanceof AgentRunError ? err.agent : undefined;
+	if (outcome.status === 'phase-deferred') {
+		await finalizeRun(
+			runId,
+			{ status: 'deferred', error: outcome.reason, ...agentColumns(agent) },
+			agent,
+		);
+	} else if (outcome.status === 'phase-failed') {
+		await finalizeRun(
+			runId,
+			{ status: 'failed', error: outcome.error, ...agentColumns(agent) },
+			agent,
+		);
+	}
+}
+
+/** The run's engine/exit/timing columns, pulled from a captured agent result. */
+function agentColumns(agent: AgentCliResult | undefined): Partial<CompleteRunInput> {
+	return {
+		engine: agent?.cli,
+		exitCode: agent?.exitCode,
+		timedOut: agent?.timedOut,
+		durationMs: agent?.durationMs,
+	};
 }
 
 /**
@@ -648,6 +774,11 @@ export async function processJob(
 	}
 	inFlightTaskIds.add(trigger.taskId);
 
+	// Record a run-history row for this agent-CLI invocation. Everything here is
+	// best-effort (own try/catch inside the helpers, logged not thrown): the
+	// dashboard is a secondary view, so a DB hiccup must never fail a real run.
+	const runId = await tryCreateRun(project, trigger);
+
 	try {
 		const result = await runPhase(trigger, project, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
@@ -658,6 +789,17 @@ export async function processJob(
 			phase: trigger.phase,
 			taskId: trigger.taskId,
 		});
+		await finalizeRun(
+			runId,
+			{
+				status: 'completed',
+				engine: result.agent.cli,
+				exitCode: result.agent.exitCode,
+				timedOut: result.agent.timedOut,
+				durationMs: result.agent.durationMs,
+			},
+			result.agent,
+		);
 		if (trigger.phase === 'planning' || trigger.phase === 'implementation') {
 			await selfEnqueueNextPhase(project, trigger.workItem, result.movedTo);
 		}
@@ -671,7 +813,9 @@ export async function processJob(
 			durationMs: result.agent.durationMs,
 		};
 	} catch (err) {
-		return await handlePhaseFailure(err, job, trigger, project);
+		const outcome = await handlePhaseFailure(err, job, trigger, project);
+		await finalizeFailedRun(runId, outcome, err);
+		return outcome;
 	} finally {
 		// Release the slot once the run settles (success, failure, or deferral) so
 		// a later legitimate dispatch for the same task — a genuine retry, or a

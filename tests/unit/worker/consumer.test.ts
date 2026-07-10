@@ -59,6 +59,19 @@ vi.mock('@/queue/producer.js', () => ({
 	enqueueJob: (job: unknown) => enqueueJob(job),
 }));
 
+// The run-history repository is mocked at the module boundary: these assertions
+// pin the best-effort run-row lifecycle (create before the phase, finalize after)
+// without a live Postgres. `createRun` resolves a fixed id the completion sites
+// finalize against.
+const createRun = vi.fn(async (_input: unknown) => 'run-1');
+const completeRun = vi.fn(async (_id: string, _input: unknown) => {});
+const storeRunLogs = vi.fn(async (_id: string, _stdout: string, _stderr: string) => {});
+vi.mock('@/db/repositories/runsRepository.js', () => ({
+	createRun: (input: unknown) => createRun(input),
+	completeRun: (id: string, input: unknown) => completeRun(id, input),
+	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
+}));
+
 // The PR-comment path of `reportInterruptedJobToBoard` goes through the concrete
 // SCM integration (the PM provider has no PR → comment mapping); mock it at the
 // module boundary the same way the PM provider is mocked above.
@@ -121,6 +134,12 @@ describe('processJob', () => {
 		addComment.mockResolvedValue('comment-1');
 		enqueueJob.mockClear();
 		enqueueJob.mockResolvedValue('synthetic-job-1');
+		createRun.mockClear();
+		createRun.mockResolvedValue('run-1');
+		completeRun.mockClear();
+		completeRun.mockResolvedValue(undefined);
+		storeRunLogs.mockClear();
+		storeRunLogs.mockResolvedValue(undefined);
 	});
 
 	it('throws for a job referencing an unknown project', async () => {
@@ -724,6 +743,170 @@ describe('processJob', () => {
 			const second = await processJob(createMockGitHubWebhookJob(), registryReturning(other));
 
 			expect(second.status).toBe('phase-succeeded');
+
+			release?.();
+			await first;
+		});
+	});
+
+	describe('run-history tracking', () => {
+		it('creates a run row then finalizes it completed with the agent result on success', async () => {
+			phaseImpl = async () => ({
+				agent: agentResult({
+					exitCode: 0,
+					timedOut: false,
+					durationMs: 1234,
+					stdout: 'o',
+					stderr: 'e',
+				}),
+			});
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(createRun).toHaveBeenCalledExactlyOnceWith({
+				projectId: PROJECT.id,
+				taskId: '17',
+				phase: 'review',
+				workItemId: undefined,
+				prNumber: '17',
+				model: undefined,
+			});
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
+				status: 'completed',
+				engine: 'claude',
+				exitCode: 0,
+				timedOut: false,
+				durationMs: 1234,
+			});
+			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'o', 'e');
+		});
+
+		it('records the work item id and the requested model for a PM-driven phase', async () => {
+			const projectWithAgents = createMockProjectConfig({
+				agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
+			});
+			projectLookup = () => projectWithAgents;
+			const workItem = createMockWorkItem({ statusId: '61e4505c' });
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning({ phase: 'planning', taskId: '10', workItem }),
+			);
+
+			expect(createRun).toHaveBeenCalledExactlyOnceWith({
+				projectId: projectWithAgents.id,
+				taskId: '10',
+				phase: 'planning',
+				workItemId: workItem.id,
+				prNumber: undefined,
+				model: 'Gemini 3.5 Flash (High)',
+			});
+		});
+
+		it('finalizes the run failed and stores its logs for a terminal AgentRunError', async () => {
+			phaseImpl = async () => {
+				throw new AgentRunError(
+					'review agent exited with code 1',
+					{ kind: 'error' },
+					agentResult({
+						cli: 'claude',
+						exitCode: 1,
+						timedOut: false,
+						durationMs: 42,
+						stdout: 'so',
+						stderr: 'se',
+					}),
+				);
+			};
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-failed');
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
+				status: 'failed',
+				error: 'review agent exited with code 1',
+				engine: 'claude',
+				exitCode: 1,
+				timedOut: false,
+				durationMs: 42,
+			});
+			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'so', 'se');
+		});
+
+		it('finalizes the run deferred (not failed) for a rate-limited AgentRunError', async () => {
+			phaseImpl = async () => {
+				throw new AgentRunError(
+					'rate limited',
+					{ kind: 'rate-limit' },
+					agentResult({ exitCode: 1, stdout: 'ro', stderr: 're' }),
+				);
+			};
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-deferred');
+			expect(completeRun).toHaveBeenCalledTimes(1);
+			expect(completeRun.mock.calls[0][1]).toMatchObject({ status: 'deferred' });
+			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'ro', 're');
+		});
+
+		it('still reports phase-succeeded when createRun fails (best-effort, no id to finalize)', async () => {
+			createRun.mockRejectedValueOnce(new Error('postgres down'));
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			// Creation failed → no run id → the completion path no-ops.
+			expect(completeRun).not.toHaveBeenCalled();
+			expect(storeRunLogs).not.toHaveBeenCalled();
+		});
+
+		it('still reports phase-succeeded when completeRun rejects (best-effort swallow)', async () => {
+			completeRun.mockRejectedValueOnce(new Error('postgres down'));
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+		});
+
+		it('does not create a run row for a no-trigger job', async () => {
+			await processJob(createMockGitHubWebhookJob(), createTriggerRegistry());
+			expect(createRun).not.toHaveBeenCalled();
+		});
+
+		it('does not create a run row for a skipped-in-flight duplicate', async () => {
+			let release: (() => void) | undefined;
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			phaseImpl = async () => {
+				await gate;
+				return { agent: agentResult() };
+			};
+
+			const first = processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+			await new Promise((r) => setTimeout(r, 0));
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			// Only the first (in-flight) run created a row; the skipped duplicate did not.
+			expect(createRun).toHaveBeenCalledTimes(1);
 
 			release?.();
 			await first;

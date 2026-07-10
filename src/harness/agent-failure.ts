@@ -45,10 +45,20 @@ export interface AgentFailure {
  */
 export class AgentRunError extends Error {
 	readonly failure: AgentFailure;
-	constructor(message: string, failure: AgentFailure) {
+	/**
+	 * The failed run's captured result (stdout/stderr, exit code, timing), so the
+	 * worker can persist a failed run's output without re-parsing the message.
+	 * Optional because the ~10 synthetic `new AgentRunError(msg, failure)` throws
+	 * in tests don't have one; in production the error is only ever built via
+	 * {@link agentRunError}, which always forwards the `result` it classified, so
+	 * `.agent` is populated for every real failure.
+	 */
+	readonly agent?: AgentCliResult;
+	constructor(message: string, failure: AgentFailure, agent?: AgentCliResult) {
 		super(message);
 		this.name = 'AgentRunError';
 		this.failure = failure;
+		this.agent = agent;
 	}
 }
 
@@ -224,5 +234,5 @@ export function agentRunError(
 					: failure.kind === 'stalled'
 						? ' (stalled)'
 						: '';
-	return new AgentRunError(`${prefix}${reason}${tail}`, failure);
+	return new AgentRunError(`${prefix}${reason}${tail}`, failure, result);
 }

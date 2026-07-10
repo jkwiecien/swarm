@@ -243,7 +243,7 @@ Early implementation. Summary by area:
 
 ### Toolchain & persistence
 - Node.js/TypeScript toolchain scaffolded: strict TS + ESM, `@/*` alias, Biome, Vitest, Lefthook, commitlint; `npm run verify` runs lint + typecheck + tests.
-- Postgres persistence layer in place: Drizzle schema + migrations for project config and encrypted-at-rest credentials.
+- Postgres persistence layer in place: Drizzle schema + migrations for project config, encrypted-at-rest credentials, and agent-run history.
 
 ### GitHub SCM layer
 - Dual-persona (`implementer`/`reviewer`) credential scoping via `AsyncLocalStorage`, with per-persona token resolution from Postgres.
@@ -287,6 +287,7 @@ Early implementation. Summary by area:
 ### Web dashboard (phase-6 backlog)
 - Host-run, same model as the worker. API scaffold in place: Hono + tRPC entrypoint (`src/dashboard.ts`, SWARM-75) and its localhost-bound bearer-token auth guard (SWARM-76).
 - `projectsRepository` has full CRUD primitives (SWARM-77); a `projects` tRPC router (list/getById/create/update/delete, SWARM-78) is implemented and up for review, not yet merged into `appRouter`.
+- `runsRepository` has full CRUD, upsert, and pagination primitives for agent-run history (SWARM-102), ready for future dashboard API/UI integration.
 - A `web/` scaffold (Vite + React, TanStack Router/Query, a tRPC client, Tailwind and the `ai/DESIGN_SYSTEM.md` tokens, SWARM-81) is merged; the first real screen (projects list + create dialog, SWARM-82) is implemented.
 - Still backlog: credentials management (SWARM-79/80), and the remaining per-project settings screens (SWARM-83–87).
 
