@@ -31,6 +31,30 @@ Read before writing code in the relevant area — these encode Cascade's actual 
 
 Keep these current the same way `README.md` must stay current (§1): if a change makes one of them inaccurate, update it in the same change.
 
+### Project-management features must stay provider-agnostic
+
+Today SWARM's only PM provider is **GitHub Projects**, but Jira, Linear, and Trello connectors are planned (Cascade already ships all three — it's the structural precedent per §1). **Every feature that touches the project board must be built behind the provider-agnostic `PMProvider` interface (`src/pm/types.ts`), never against GitHub Projects directly**, so a new connector drops in by implementing that interface alone — no pipeline, trigger, or phase code changes.
+
+Concretely:
+
+- **Program against `PMProvider`, not the concrete provider.** Pipeline phases, triggers, and the worker take a `PMProvider` (or have one injected) and call only its interface methods (`getWorkItem`, `listWorkItems`, `moveWorkItem`, `addComment`). They must not import `createGitHubProjectsProvider` or reach into `src/integrations/pm/github-projects/` — only the composition root (`src/worker/consumer.ts`) names the concrete provider.
+- **Speak canonical status keys, not board option IDs.** Pipeline/phase/trigger code uses the canonical `PmStatusKey`s (`backlog`, `planning`, `todo`, `inProgress`, `inReview`, `done` — `src/pm/pipeline.ts`); translating those to a provider's opaque option IDs (GitHub's `SingleSelectOptionId`, a Jira transition, a Trello list) is the adapter's job and stays inside the provider.
+- **Keep provider-specific shapes out of shared code.** No GitHub-issue-URL parsing, `projects_v2` payload assumptions, or GraphQL node IDs leaking into pipeline/trigger logic. When a piece of data is provider-specific, resolve it through a `PMProvider` method or the work item's generic fields (`id`, `url`, `status`), not by pattern-matching a GitHub shape. (Example: `src/pipeline/respond-to-review.ts` resolves its board card via `listWorkItems()` + the generic `url` field, so it works unchanged for any provider.)
+- **If the four-method interface is too small for a feature, widen the interface** (add a method to `PMProvider` and implement it for every provider), rather than special-casing GitHub Projects at the call site. Mirror Cascade's `src/pm/types.ts` when deciding the method shape.
+
+The same "don't build it speculatively" rule (`ai/CODING_STANDARDS.md`) still applies — don't add Jira/Linear/Trello providers until they're needed — but whatever you build for GitHub Projects now must not *assume* it's the only provider.
+
+### Source-control features must not hard-code GitHub
+
+Same story on the SCM side: **GitHub is SWARM's only source-control provider today, but Bitbucket and GitLab are planned.** Unlike the PM side, the SCM integration is *not* yet behind a clean interface — it was ported close to verbatim from Cascade (`ai/ARCHITECTURE.md` "SCM = GitHub … copy this piece close to verbatim"), so `GitHubSCMIntegration` (`src/integrations/scm/github/scm-integration.ts`) is currently concrete. That's an accepted MVP shortcut, **not licence to spread GitHub-specific naming and assumptions through the rest of the codebase.** Build SCM features so a future `SCMProvider` interface (and Bitbucket/GitLab providers beside GitHub) can be introduced without a rename sweep:
+
+- **Keep GitHub specifics inside `src/integrations/scm/github/` and the router adapter (`src/router/adapters/github.ts`).** GraphQL node IDs, `check_suite`/`pull_request_review` webhook payload shapes, `gh` CLI invocations, and GitHub REST/GraphQL calls live there — not in pipeline, trigger, or worker code, which should speak in domain terms and take the integration as a dependency.
+- **Name SCM features by the domain concept, not the GitHub vocabulary.** Prefer provider-neutral names — "pull request" / "review" / "check run" / "comment" / "default branch" — over GitHub-only wording, in identifiers, config keys, and log messages. (GitLab calls a PR a "merge request"; a provider-neutral `pullRequest`/`changeRequest` name at the seam saves a later rename.) Provider-specific vocabulary (`check_suite`, `projects_v2`, a `gh` subcommand) is fine *inside* the GitHub module, not in the shared surface.
+- **When you'd reach for a GitHub client in shared code, add a seam instead.** If a pipeline/trigger needs an SCM operation the current code exposes only as a raw GitHub call, factor it into a provider-neutral method on the integration (the same "widen the interface, don't special-case" move as the PM rule) so a second provider can implement it — rather than importing the GitHub client at the call site.
+- **New per-provider code goes under `src/integrations/scm/<provider>/`**, mirroring the existing `github/` folder and the `pm/<provider>/` layout, so the directory structure already anticipates the second and third providers.
+
+As above, don't *build* Bitbucket/GitLab providers until they're needed — just don't write GitHub assumptions into places a second provider would then have to unpick.
+
 ---
 
 ## 3. GitHub
