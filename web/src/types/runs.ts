@@ -3,6 +3,8 @@ export interface RunRow {
 	projectId: string;
 	taskId: string;
 	workItemId: string | null;
+	workItemTitle: string | null;
+	workItemUrl: string | null;
 	prNumber: string | null;
 	phase: string;
 	engine: string | null;

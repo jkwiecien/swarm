@@ -6,6 +6,7 @@ import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { formatDuration, formatPhase } from '@/lib/format.js';
 import { trpc } from '@/lib/trpc.js';
+import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
 
@@ -61,6 +62,7 @@ interface GitHubReferencesProps {
 function GitHubReferences({ run, project }: GitHubReferencesProps) {
 	const hasWorkItem = !!run.workItemId;
 	const hasPR = !!run.prNumber;
+	const workItemRef = parseWorkItemRef(run.workItemUrl);
 
 	if (!hasWorkItem && !hasPR) {
 		return <span className="text-zinc-500 font-mono">—</span>;
@@ -82,20 +84,24 @@ function GitHubReferences({ run, project }: GitHubReferencesProps) {
 				) : (
 					<span className="text-zinc-400 font-mono">PR #{run.prNumber}</span>
 				))}
-			{hasWorkItem &&
-				(project?.repo ? (
+			{hasWorkItem && run.workItemTitle && workItemRef ? (
+				<>
+					<span className="text-zinc-300" title={run.workItemTitle}>
+						{run.workItemTitle}
+					</span>
 					<a
-						href={`https://github.com/${project.repo}/issues/${run.workItemId}`}
+						href={run.workItemUrl ?? undefined}
 						target="_blank"
 						rel="noopener noreferrer"
 						className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline w-fit"
 					>
-						Issue #{run.workItemId}
+						{workItemLabel(workItemRef)}
 						<ExternalLink className="h-3 w-3" />
 					</a>
-				) : (
-					<span className="text-zinc-400 font-mono">Issue #{run.workItemId}</span>
-				))}
+				</>
+			) : hasWorkItem ? (
+				<span className="text-zinc-400 font-mono">Issue: #{run.taskId}</span>
+			) : null}
 		</div>
 	);
 }
