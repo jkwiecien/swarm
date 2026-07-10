@@ -460,7 +460,12 @@ async function finalizeFailedRun(
 	if (outcome.status === 'phase-deferred') {
 		await finalizeRun(
 			runId,
-			{ status: 'deferred', error: outcome.reason, ...agentColumns(agent) },
+			{
+				status: 'deferred',
+				error: outcome.reason,
+				nextRetryAt: new Date(Date.now() + outcome.retryDelayMs),
+				...agentColumns(agent),
+			},
 			agent,
 		);
 	} else if (outcome.status === 'phase-failed') {

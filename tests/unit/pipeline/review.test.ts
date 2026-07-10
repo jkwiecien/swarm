@@ -209,6 +209,8 @@ describe('buildReviewPrompt', () => {
 		expect(prompt).toContain('--request-changes');
 		expect(prompt).toContain('--comment');
 		expect(prompt).toContain(REVIEW_VERDICT_FILENAME);
+		expect(prompt).toContain('Confirm README.md remains accurate for the changes in this PR.');
+		expect(prompt).toContain('report the missing README update as a review finding');
 	});
 
 	it('pins the review to the head SHA and forbids modifying the repository', () => {

@@ -1,0 +1,1 @@
+ALTER TABLE "runs" ADD COLUMN "next_retry_at" timestamp;
