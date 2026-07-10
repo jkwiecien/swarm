@@ -140,6 +140,7 @@ describe('pretty format color', () => {
 	beforeEach(() => {
 		originalIsTTY = process.stdout.isTTY;
 		vi.stubEnv('SWARM_LOG_FORMAT', 'pretty');
+		vi.stubEnv('NO_COLOR', '');
 		Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
 	});
 
