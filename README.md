@@ -128,10 +128,11 @@ To let GitHub reach this local router with webhooks, expose it over a public HTT
 
 ## Configuration
 
-SWARM's configuration splits into two layers:
+SWARM's configuration splits into three layers:
 
 - **General settings** — process/host-level knobs, set as **environment variables** (usually in `.env`, sourced from `.env.docker.example`). No schema; read directly where needed. These configure the router, worker, dashboard, database, Redis, credential encryption, and logging.
 - **Project config** — the **per-project** shape (`swarm.config.json`, one entry per project), validated by a Zod schema (`src/config/schema.ts` — the single source of truth) and loaded into Postgres via `swarm config apply` / `npm run db:seed`. This is where a project's repo, worktree layout, board mapping, credential references, and per-phase agent/pipeline behaviour live.
+- **Global settings** — **app-wide** knobs that apply across every project, validated by a Zod schema (`src/config/app-settings.ts` — the single source of truth) and stored **DB-first** in the single-row `app_settings` table. Unlike project config these are *not* file-sourced; they're edited through the dashboard API (the `settings` tRPC router), and when nothing is stored the coded defaults apply. Today the only global setting is `agents.defaults` (the global per-CLI default model).
 
 > **This section is the canonical, human-editable catalogue of every configuration option.** It is meant to be kept in lock-step with the code (see [`ai/RULES.md` §7](./ai/RULES.md)): when an option is added, removed, renamed, or its default changes, update the matching row here in the same change. When you'd rather not click through the dashboard UI, point an agent at this section and ask it to change a setting — everything editable is listed here with the exact key, default, and file it lives in.
 
@@ -237,12 +238,12 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `phaseLabels` | optional | Map of SWARM phase keys (`phase-0`…) → repo label names. |
 
 **`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
-- **`defaults`** — optional map of `cli` -> default `model` override for the whole project.
+- **`defaults`** — optional map of `cli` -> default `model` override for the whole project. This is the tier above the **global** `agents.defaults` (see [Global settings](#global-settings-app_settings)).
 - **Phases** — `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
   | Field | Purpose |
   | --- | --- |
   | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
-  | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]` or the coded default. |
+  | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]`, then the global `defaults[cli]`, then the coded default. |
 
 **`pipeline`** — controls whether a phase moves the board item itself on completion, and whether Planning may split a too-large task. Only `planning` and `implementation` are configurable (the other phases are SCM-event-driven and never move a card):
 | Field | Default | Purpose |
@@ -250,6 +251,19 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. Always forced off for a spawned `swarm:split-child` item. |
 | `pipeline.planning.autoSplit` | `true` | If true, Planning may decompose a task it judges too large into smaller sibling items (the original becomes the first task; siblings are created in "Planning", labelled `swarm:split-child`, and never auto-advance). Set false to always plan an item as a single task. |
 | `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
+
+### Global settings (`app_settings`)
+
+App-wide settings that apply across **every** project, as opposed to the per-project `swarm.config.json`. Source of truth: `src/config/app-settings.ts` (`AppSettingsSchema`). Stored **DB-first** as one jsonb blob in the single-row `app_settings` table (id `global`) and edited through the dashboard API (the `settings` tRPC router — `get`/`update`), **not** a config file — so there is nothing to `swarm config apply`. When no row exists the coded defaults apply, so no seeding is required for correct default behaviour. The blob is extensible: future global settings (host URL, worker concurrency, …) are added as sibling keys without a migration.
+
+**`agents.defaults`** — the **global** per-CLI default model: a map of `cli` (`claude` / `antigravity` / `codex`) → default `model`, each validated for that CLI per `src/harness/models.ts` (same rules as the project-level `agents.defaults`).
+
+The worker resolves the model for a phase through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
+
+1. the phase's own `model` (project `agents.<phase>.model`);
+2. the **project** default — project `agents.defaults[cli]`;
+3. the **global** default — `agents.defaults[cli]` from these settings;
+4. the coded default — `DEFAULT_MODEL_PER_CLI[cli]` (`src/harness/models.ts`: Claude `sonnet`, Antigravity `Gemini 3.5 Flash (Medium)`, Codex `gpt-5.6-terra`).
 
 ### Editable via the dashboard UI
 

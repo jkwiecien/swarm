@@ -5,6 +5,7 @@ export default defineConfig({
 		'./src/db/schema/projects.ts',
 		'./src/db/schema/projectCredentials.ts',
 		'./src/db/schema/runs.ts',
+		'./src/db/schema/appSettings.ts',
 	],
 	out: './src/db/migrations',
 	dialect: 'postgresql',

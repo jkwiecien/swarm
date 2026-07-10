@@ -16,7 +16,8 @@
  * point (`src/worker/index.ts`) stays a thin shell.
  */
 
-import type { ProjectConfig } from '../config/schema.js';
+import type { AgentDefaults, ProjectConfig } from '../config/schema.js';
+import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
 	type CompleteRunInput,
@@ -203,18 +204,26 @@ function deferAgentRunError(
 const inFlightTaskIds = new Set<string>();
 
 /**
- * Resolve the model for a phase: per-phase model → CLI-level default
- * (`agents.defaults[cli]`) → undefined (CLI's own built-in). The per-phase CLI
- * may itself be undefined (meaning the pipeline phase's own coded default); in
- * that case the defaults map can't resolve a CLI-keyed fallback, so the model
- * falls through to the phase's pipeline-side resolution.
+ * Resolve the model for a phase, walking a four-tier fallback chain (most to
+ * least specific):
+ *
+ *   per-phase model → project `agents.defaults[cli]` → global
+ *   `agents.defaults[cli]` (`globalDefaults`, the DB-backed app settings,
+ *   `src/config/app-settings.ts`) → coded `DEFAULT_MODEL_PER_CLI[cli]`.
+ *
+ * The per-phase CLI may itself be undefined (meaning the pipeline phase's own
+ * coded default); when so, `'claude'` is used only to key the defaults maps and
+ * the coded fallback — the *actual* phase CLI is resolved pipeline-side.
  */
-function resolveModel(project: ProjectConfig, phaseCli?: AgentCli, phaseModel?: string): string {
+function resolveModel(
+	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
+	phaseCli?: AgentCli,
+	phaseModel?: string,
+): string {
 	if (phaseModel) return phaseModel;
 	const cli = phaseCli ?? 'claude';
-	const configured = project.agents?.defaults?.[cli];
-	if (configured) return configured;
-	return DEFAULT_MODEL_PER_CLI[cli];
+	return project.agents?.defaults?.[cli] ?? globalDefaults?.[cli] ?? DEFAULT_MODEL_PER_CLI[cli];
 }
 
 /**
@@ -232,6 +241,7 @@ function resolveModel(project: ProjectConfig, phaseCli?: AgentCli, phaseModel?: 
 function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	signal?: AbortSignal,
 ): Promise<{ agent: AgentCliResult; movedTo?: PmStatusKey }> {
 	switch (trigger.phase) {
@@ -244,6 +254,7 @@ function runPhase(
 				cli: project.agents?.planning?.cli,
 				model: resolveModel(
 					project,
+					globalDefaults,
 					project.agents?.planning?.cli,
 					project.agents?.planning?.model,
 				),
@@ -260,6 +271,7 @@ function runPhase(
 				cli: project.agents?.implementation?.cli,
 				model: resolveModel(
 					project,
+					globalDefaults,
 					project.agents?.implementation?.cli,
 					project.agents?.implementation?.model,
 				),
@@ -273,7 +285,12 @@ function runPhase(
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
 				cli: project.agents?.review?.cli,
-				model: resolveModel(project, project.agents?.review?.cli, project.agents?.review?.model),
+				model: resolveModel(
+					project,
+					globalDefaults,
+					project.agents?.review?.cli,
+					project.agents?.review?.model,
+				),
 				signal,
 			});
 		case 'respond-to-review':
@@ -287,6 +304,7 @@ function runPhase(
 				cli: project.agents?.respondToReview?.cli,
 				model: resolveModel(
 					project,
+					globalDefaults,
 					project.agents?.respondToReview?.cli,
 					project.agents?.respondToReview?.model,
 				),
@@ -302,6 +320,7 @@ function runPhase(
 				cli: project.agents?.respondToCi?.cli,
 				model: resolveModel(
 					project,
+					globalDefaults,
 					project.agents?.respondToCi?.cli,
 					project.agents?.respondToCi?.model,
 				),
@@ -320,11 +339,12 @@ function runPhase(
  * reads null while a run is `running`.
  *
  * The model is resolved through the same fallback chain `runPhase` uses
- * (per-phase → CLI default → undefined), so the recorded value matches what
- * actually runs.
+ * (per-phase → project default → global default → coded default), so the
+ * recorded value matches what actually runs.
  */
 function agentOverrideFor(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 ): { cli?: AgentCli; model?: string } {
 	const phaseConfig = (() => {
@@ -343,8 +363,27 @@ function agentOverrideFor(
 	})();
 	return {
 		cli: phaseConfig.cli,
-		model: resolveModel(project, phaseConfig.cli, phaseConfig.model),
+		model: resolveModel(project, globalDefaults, phaseConfig.cli, phaseConfig.model),
 	};
+}
+
+/**
+ * Best-effort load of the global per-CLI default models (`agents.defaults` in
+ * the DB-backed app settings, `src/config/app-settings.ts`) — the tier
+ * `resolveModel` walks between a project's own defaults and the coded defaults.
+ * A DB hiccup here must never fail a real pipeline run, so this swallows+logs
+ * any error and returns `undefined` (fall through to the coded defaults),
+ * consistent with the "run tracking is best-effort" contract in this file.
+ */
+async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
+	try {
+		return (await getAppSettings()).agents?.defaults;
+	} catch (err) {
+		logger.error('Failed to load global agent defaults (using coded defaults)', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return undefined;
+	}
 }
 
 /**
@@ -355,6 +394,7 @@ function agentOverrideFor(
  */
 async function tryCreateRun(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 ): Promise<string | undefined> {
 	try {
@@ -364,7 +404,7 @@ async function tryCreateRun(
 			phase: trigger.phase,
 			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
 			prNumber: 'prNumber' in trigger ? trigger.prNumber : undefined,
-			model: agentOverrideFor(project, trigger.phase).model,
+			model: agentOverrideFor(project, globalDefaults, trigger.phase).model,
 		});
 	} catch (err) {
 		logger.error('Failed to create run row (continuing)', {
@@ -827,13 +867,19 @@ export async function processJob(
 	}
 	inFlightTaskIds.add(trigger.taskId);
 
+	// The global per-CLI default models (DB-backed app settings) — the fallback
+	// tier between the project's own defaults and the coded defaults. Loaded once
+	// per job, best-effort: a DB hiccup falls through to the coded defaults rather
+	// than failing the run.
+	const globalDefaults = await loadGlobalDefaults();
+
 	// Record a run-history row for this agent-CLI invocation. Everything here is
 	// best-effort (own try/catch inside the helpers, logged not thrown): the
 	// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-	const runId = await tryCreateRun(project, trigger);
+	const runId = await tryCreateRun(project, globalDefaults, trigger);
 
 	try {
-		const result = await runPhase(trigger, project, signal);
+		const result = await runPhase(trigger, project, globalDefaults, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
 		// orchestration-level echo, kept at debug so success shows one finish line.
