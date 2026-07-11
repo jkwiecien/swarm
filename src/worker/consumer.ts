@@ -23,6 +23,7 @@ import {
 	type CompleteRunInput,
 	completeRun,
 	createRun,
+	getLatestRunForTask,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
@@ -420,6 +421,38 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 	}
 }
 
+async function tryReuseLatestRun(
+	project: ProjectConfig,
+	trigger: TriggerResult,
+	job: SwarmJob,
+): Promise<string | undefined> {
+	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
+	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
+	job.runId = prior.id;
+	return (await resetRunToRunning(prior.id, job, prior.status)) ? prior.id : undefined;
+}
+
+async function tryResetCarriedRun(
+	project: ProjectConfig,
+	trigger: TriggerResult,
+	job: SwarmJob,
+): Promise<string | undefined> {
+	const runId = job.runId;
+	if (!runId) return undefined;
+	try {
+		return (await resetRunToRunning(runId, job)) ? runId : undefined;
+	} catch (err) {
+		logger.error('Failed to reset run row for retry (creating a new one)', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			runId,
+			error: describeError(err),
+		});
+		return undefined;
+	}
+}
+
 /**
  * Best-effort creation of a run-history row before a phase runs. Run tracking is
  * a secondary, single-dev dashboard view (issue #102); a DB hiccup here must
@@ -440,15 +473,17 @@ async function tryCreateRun(
 ): Promise<string | undefined> {
 	const existingRunId = job.runId;
 	if (existingRunId) {
+		const reusedRunId = await tryResetCarriedRun(project, trigger, job);
+		if (reusedRunId) return reusedRunId;
+	} else {
 		try {
-			if (await resetRunToRunning(existingRunId, job)) return existingRunId;
-			// Row gone (pruned) — fall through to create a fresh one below.
+			const reusedRunId = await tryReuseLatestRun(project, trigger, job);
+			if (reusedRunId) return reusedRunId;
 		} catch (err) {
-			logger.error('Failed to reset run row for retry (creating a new one)', {
+			logger.error('Failed to reuse terminal run row (creating a new one)', {
 				projectId: project.id,
 				phase: trigger.phase,
 				taskId: trigger.taskId,
-				runId: existingRunId,
 				error: describeError(err),
 			});
 		}

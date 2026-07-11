@@ -99,10 +99,15 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * outcome columns (`engine`/`exitCode`/`timedOut`/`durationMs`/`usage`) so the
  * fresh attempt records its own; `model` is left as-is (the requested model
  * doesn't change on retry). Returns `true` when a row was updated, `false` when
- * no row matched (it was pruned) — the caller then falls back to `createRun`.
- * Best-effort like the rest of run tracking: the worker swallows/logs any throw.
+ * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
+ * guard is supplied) — the caller then falls back to `createRun`. Best-effort
+ * like the rest of run tracking: the worker swallows/logs any throw.
  */
-export async function resetRunToRunning(runId: string, jobPayload?: SwarmJob): Promise<boolean> {
+export async function resetRunToRunning(
+	runId: string,
+	jobPayload?: SwarmJob,
+	fromStatus?: RunStatus,
+): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
 		.set({
@@ -117,9 +122,27 @@ export async function resetRunToRunning(runId: string, jobPayload?: SwarmJob): P
 			usage: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 		})
-		.where(eq(runs.id, runId))
+		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });
 	return rows.length > 0;
+}
+
+/**
+ * Resolve the most recent run for one project task and phase. Fresh webhook
+ * reruns use this to find a deferred or failed row that can be reused.
+ */
+export async function getLatestRunForTask(
+	projectId: string,
+	taskId: string,
+	phase: TriggerPhase,
+): Promise<RunRow | undefined> {
+	const rows = await getDb()
+		.select()
+		.from(runs)
+		.where(and(eq(runs.projectId, projectId), eq(runs.taskId, taskId), eq(runs.phase, phase)))
+		.orderBy(desc(runs.startedAt))
+		.limit(1);
+	return rows[0];
 }
 
 /**

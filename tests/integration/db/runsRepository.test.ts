@@ -7,6 +7,7 @@ import {
 	completeRun,
 	createRun,
 	failOrphanedRunningRuns,
+	getLatestRunForTask,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
@@ -167,6 +168,43 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('returns false when no row matches the id (pruned between defer and retry)', async () => {
 			expect(await resetRunToRunning('00000000-0000-0000-0000-000000000000')).toBe(false);
+		});
+
+		it('atomically claims a failed row from its expected status', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '10', phase: 'review' });
+			await completeRun(id, { status: 'failed', error: 'boom' });
+
+			expect(await resetRunToRunning(id, undefined, 'failed')).toBe(true);
+			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+
+		it('returns false without changing a row that no longer has the expected status', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '11', phase: 'review' });
+
+			expect(await resetRunToRunning(id, undefined, 'failed')).toBe(false);
+			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+	});
+
+	describe('getLatestRunForTask', () => {
+		it('returns only the newest row matching project, task, and phase', async () => {
+			await seedProject({ id: 'proj-other', repo: 'jkwiecien/other-repo' });
+			const older = await createRun({ projectId: PROJECT_ID, taskId: '42', phase: 'review' });
+			const newest = await createRun({ projectId: PROJECT_ID, taskId: '42', phase: 'review' });
+			await getDb()
+				.update(runs)
+				.set({ startedAt: new Date('2026-01-01') })
+				.where(eq(runs.id, older));
+			await getDb()
+				.update(runs)
+				.set({ startedAt: new Date('2026-02-01') })
+				.where(eq(runs.id, newest));
+			await createRun({ projectId: PROJECT_ID, taskId: '42', phase: 'planning' });
+			await createRun({ projectId: PROJECT_ID, taskId: 'other', phase: 'review' });
+			await createRun({ projectId: 'proj-other', taskId: '42', phase: 'review' });
+
+			expect((await getLatestRunForTask(PROJECT_ID, '42', 'review'))?.id).toBe(newest);
+			expect(await getLatestRunForTask(PROJECT_ID, 'missing', 'review')).toBeUndefined();
 		});
 	});
 
