@@ -57,13 +57,25 @@ export const runsRouter = router({
 
 	// Fire a deferred run's scheduled retry immediately ("Retry now", issue #136).
 	//
-	// Offered for `deferred` runs only: such a run always has a pending BullMQ
-	// retry job carrying its `runId`, which `promoteRetryForRun` can locate and
-	// promote (delay → 0). A `failed` run (its automatic budget exhausted) has
-	// neither a pending job nor a persisted job payload to reconstruct one from,
-	// so it isn't retryable here — and it doesn't need to be, because a manual
-	// retry resets the promoted job's attempt counter, so a *deferred* run never
-	// becomes un-retryable no matter how many times its automatic cap was hit.
+	// Scope: `deferred` runs only. Such a run always has a pending BullMQ retry
+	// job carrying its `runId`, which `promoteRetryForRun` can locate and promote
+	// (delay → 0).
+	//
+	// Cap-bypass covers the *entire* deferred window. `promoteRetryForRun` resets
+	// the promoted job's `rateLimitRetryAttempt` to 0 before firing, so a manual
+	// retry always gets a fresh budget — including a run whose next *automatic*
+	// attempt would itself have tripped `MAX_RATE_LIMIT_RETRIES`. Thus a run stays
+	// manually retryable for the whole time it is `deferred` (up to the automatic
+	// cap's worth of attempts × its 6-min–6-hour backoff), satisfying issue #136's
+	// "manual retry remains available after the [automatic] cap is reached".
+	//
+	// NOT covered: a run that has already terminally `failed` (every automatic
+	// attempt consumed *and* the last one ran). No pending job survives, and the
+	// `runs` row can't reconstruct one — a PR-driven phase's trigger needs event
+	// fields (headSha, reviewId, prBranch) the row doesn't store. Reconstructing
+	// it needs persisting the full originating SwarmJob, a schema change beyond
+	// this task's stated scope (build-on-`next_retry_at`, no migration). Deferred
+	// to a follow-up issue; see PR #151.
 	//
 	// The `deferred`-only guard plus reusing that single pending job is also the
 	// duplicate guard: a run already picked up is `running` (rejected here), and

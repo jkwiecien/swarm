@@ -6,7 +6,7 @@ import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
-import { retryButtonLabel } from '@/lib/run-retry.js';
+import { canRetryRun, retryButtonLabel } from '@/lib/run-retry.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { AgentUsage, RunRow } from '@/types/runs.js';
@@ -97,7 +97,7 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 						<p className="text-xs text-amber-200/70 mt-1 font-mono">
 							UTC: {new Date(run.nextRetryAt).toISOString()}
 						</p>
-						<RetryNowButton runId={run.id} />
+						{canRetryRun(run.status) && <RetryNowButton runId={run.id} />}
 					</div>
 				</div>
 			)}

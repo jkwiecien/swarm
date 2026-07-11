@@ -997,10 +997,23 @@ export async function processJob(
 	if (!slot.acquired) {
 		inFlightTaskIds.delete(trigger.taskId);
 		const deferred = deferForConcurrencyLimit(job, trigger, project.id);
-		if (deferred) return deferred;
+		if (deferred) {
+			// A retry job carries its originating row (`job.runId`); this early
+			// return sits outside the try/catch below, so finalize the carried row
+			// here or it stays stuck `deferred` with the *previous* attempt's stale
+			// `nextRetryAt`. `finalizeFailedRun` refreshes status=`deferred` +
+			// recomputes `nextRetryAt` from `retryDelayMs`, and no-ops when there is
+			// no row (a fresh webhook, which defers before `tryCreateRun`).
+			await finalizeFailedRun(job.runId, deferred, undefined);
+			return deferred;
+		}
 
 		const error = `Project '${project.id}' remained at its concurrent-job limit until the retry budget was exhausted`;
 		await reportPhaseFailureToBoardOrPr(trigger, project, error);
+		// Terminal failure on the same pre-try/catch path: flip the reused row to
+		// `failed` so the dashboard stops offering Retry now (which would 409 — no
+		// pending job survives). No-ops for a fresh webhook with no row yet.
+		await finalizeRun(job.runId, { status: 'failed', error });
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 
