@@ -133,11 +133,10 @@ export const AgentsConfigSchema = z
 	.describe('Per-phase agent CLI/model overrides — omit any phase to keep its coded default');
 
 /**
- * Per-phase control over whether Planning/Implementation move the board item
- * on completion by themselves, or leave that to a human. Only these two
- * phases are configurable here — they're the only ones that touch the board
- * at all; Review, Respond-to-review, and Respond-to-CI are SCM-event-driven
- * and never move a card (`src/pm/pipeline.ts`). `autoAdvance` governs only the
+ * Per-phase pipeline controls. Planning and Implementation configure whether
+ * they move the board item on completion by themselves or leave that to a
+ * human. The SCM-event-driven Review, Respond-to-review, and Respond-to-CI
+ * phases can each be disabled. `autoAdvance` governs only the
  * *end-of-phase* move (Planning → "ToDo", Implementation → "In review") —
  * Implementation's separate pickup report (→ "In progress" as soon as it
  * starts) is unconditional either way, since it's a status report, not a
@@ -168,8 +167,18 @@ export const PipelineConfigSchema = z
 		 * for that look, so there's nothing to gate on first.
 		 */
 		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
+		review: z.object({ enabled: z.boolean().optional() }).optional(),
+		respondToReview: z.object({ enabled: z.boolean().optional() }).optional(),
+		respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
 	})
-	.describe('Per-phase autonomous board-move control for Planning and Implementation');
+	.refine(
+		(pipeline) => pipeline.review?.enabled !== false || pipeline.respondToReview?.enabled === false,
+		{
+			message: 'Respond-to-review cannot be enabled when Review is disabled',
+			path: ['respondToReview', 'enabled'],
+		},
+	)
+	.describe('Per-phase pipeline controls');
 
 export const WorktreeRetentionConfigSchema = z
 	.object({

@@ -63,6 +63,10 @@ export function createRespondToReviewTrigger(
 		async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
 			if (ctx.source !== 'github') return null;
 			const { event, project } = ctx;
+			if (project.pipeline?.respondToReview?.enabled === false) {
+				logger.debug('respond-to-review: phase disabled — skipping');
+				return null;
+			}
 
 			if (!event.actorLogin) {
 				logger.debug('respond-to-review: review has no author — skipping');
