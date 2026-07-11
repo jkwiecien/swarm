@@ -19,8 +19,8 @@ const CLI_LABELS: Record<AgentCli, string> = {
 };
 
 /**
- * Placeholder label for a CLI's "no global default" option, showing the coded
- * default that applies when the global default is cleared (per-CLI, from
+ * Placeholder label for a CLI's "no global default" option, showing only the
+ * coded model that applies when the global default is cleared (per-CLI, from
  * `DEFAULT_MODEL_PER_CLI`). Mirrors `getModelDefaultLabel` in
  * `routes/projects/$projectId.tsx`, but always resolves to the coded default —
  * global settings are the tier directly above it, so there's no higher default
@@ -40,7 +40,7 @@ function getGlobalModelDefaultLabel(cli: AgentCli): string {
 						? 'Haiku'
 						: defaultModel;
 
-	return `Default (${displayModel})`;
+	return displayModel;
 }
 
 /** Strip empty/undefined per-CLI entries so cleared defaults aren't persisted. */
