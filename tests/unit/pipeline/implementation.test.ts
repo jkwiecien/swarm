@@ -130,6 +130,16 @@ describe('runImplementationPhase', () => {
 		expect(result).toMatchObject({ movedTo: undefined });
 	});
 
+	it('reuses the existing task branch when resuming a deferred implementation', async () => {
+		const deps = makeDeps();
+		await runImplementationPhase({ ...deps, resumeExistingBranch: true });
+
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('19', {
+			createBranch: false,
+			branch: 'issue-19',
+		});
+	});
+
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
 		const deps = makeDeps();
 		const signal = new AbortController().signal;

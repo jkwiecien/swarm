@@ -127,6 +127,10 @@ async function reenqueueDeferred(
 		const next: SwarmJob = {
 			...parsed,
 			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
+			...(parsed.type === 'github-projects' &&
+			(outcome.phase === 'planning' || outcome.phase === 'implementation')
+				? { resumePmPhase: outcome.phase }
+				: {}),
 		};
 		await enqueueDelayedRetry(next, outcome.retryDelayMs);
 		logger.debug('Rate-limited phase re-enqueued for retry', {

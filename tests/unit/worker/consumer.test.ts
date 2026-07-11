@@ -38,7 +38,11 @@ const phaseCalls: PhaseCall[] = [];
 let phaseImpl: (
 	phase: string,
 	args: Record<string, unknown>,
-) => Promise<{ agent: AgentCliResult; movedTo?: string }>;
+) => Promise<{
+	agent: AgentCliResult;
+	movedTo?: string;
+	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
+}>;
 
 function mockPhase(phase: string) {
 	return (args: Record<string, unknown>) => {
@@ -196,6 +200,27 @@ describe('processJob', () => {
 		expect(phaseCalls[0].phase).toBe('review');
 	});
 
+	it('threads a deferred PM phase through so its status trigger can resume it', async () => {
+		const seen: TriggerContext[] = [];
+		const job = createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation' });
+
+		await processJob(job, registryReturning(null, seen));
+
+		expect(seen[0].resumePmPhase).toBe('implementation');
+	});
+
+	it('reuses the implementation branch for a resumed PM implementation', async () => {
+		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(
+			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation' }),
+			registryReturning(trigger),
+		);
+
+		expect(phaseCalls[0].args.resumeExistingBranch).toBe(true);
+	});
+
 	it('discriminates the context source for a projects job', async () => {
 		const seen: TriggerContext[] = [];
 		const job = createMockGitHubProjectsWebhookJob();
@@ -248,6 +273,39 @@ describe('processJob', () => {
 	});
 
 	describe('self-enqueue after auto-advance', () => {
+		it('self-enqueues Planning for every newly created split child', async () => {
+			const trigger: TriggerResult = {
+				phase: 'planning',
+				taskId: '10',
+				workItem: createMockWorkItem(),
+			};
+			phaseImpl = async () => ({
+				agent: agentResult(),
+				split: {
+					subTaskItemIds: ['PVTI_child-one', 'PVTI_child-two'],
+					mainTaskUpdated: true,
+				},
+			});
+
+			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+			expect(enqueueJob).toHaveBeenCalledTimes(2);
+			for (const itemNodeId of ['PVTI_child-one', 'PVTI_child-two']) {
+				expect(enqueueJob).toHaveBeenCalledWith({
+					type: 'github-projects',
+					projectId: PROJECT.id,
+					event: {
+						eventType: 'projects_v2_item',
+						action: 'edited',
+						itemNodeId,
+						projectNodeId: PROJECT.githubProjects.projectId,
+						changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
+						changedFieldType: 'single_select',
+					},
+				});
+			}
+		});
+
 		it('self-enqueues a synthetic board job when Planning auto-advances to ToDo', async () => {
 			const workItem = createMockWorkItem({ statusId: '3fe662f4' });
 			const trigger: TriggerResult = { phase: 'planning', taskId: '10', workItem };

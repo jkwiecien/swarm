@@ -36,6 +36,8 @@ export type TriggerContext = {
 	 * webhook; the `pr-review` handler reads it to cap the recheck loop.
 	 */
 	recheckAttempt?: number;
+	/** A deferred PM phase that must resume even though its card is now In progress. */
+	resumePmPhase?: Extract<TriggerPhase, 'planning' | 'implementation'>;
 } & (
 	| { source: 'github'; event: GitHubParsedEvent }
 	| { source: 'github-projects'; event: GitHubProjectsParsedEvent }

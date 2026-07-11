@@ -242,8 +242,13 @@ function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	resumePmPhase: TriggerContext['resumePmPhase'],
 	signal?: AbortSignal,
-): Promise<{ agent: AgentCliResult; movedTo?: PmStatusKey }> {
+): Promise<{
+	agent: AgentCliResult;
+	movedTo?: PmStatusKey;
+	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
+}> {
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -276,6 +281,7 @@ function runPhase(
 					project.agents?.implementation?.model,
 				),
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
+				resumeExistingBranch: resumePmPhase === 'implementation',
 				signal,
 			});
 		case 'review':
@@ -553,6 +559,44 @@ async function selfEnqueueNextPhase(
 }
 
 /**
+ * A split child is created in Planning by the worker's own persona, so its
+ * GitHub Projects webhook is intentionally dropped by the self-authored-event
+ * guard. Queue a synthetic status event here to start its detailed Planning
+ * phase without reopening that feedback loop at the router boundary.
+ */
+async function selfEnqueueSplitChildPlanning(
+	project: ProjectConfig,
+	itemNodeIds: string[],
+): Promise<void> {
+	for (const itemNodeId of itemNodeIds) {
+		try {
+			await enqueueJob({
+				type: 'github-projects',
+				projectId: project.id,
+				event: {
+					eventType: 'projects_v2_item',
+					action: 'edited',
+					itemNodeId,
+					projectNodeId: project.githubProjects.projectId,
+					changedFieldNodeId: project.githubProjects.statusFieldId,
+					changedFieldType: 'single_select',
+				},
+			});
+			logger.debug('pm-status: self-enqueued Planning for split child', {
+				projectId: project.id,
+				itemNodeId,
+			});
+		} catch (err) {
+			logger.error('Failed to self-enqueue Planning for split child', {
+				projectId: project.id,
+				itemNodeId,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+}
+
+/**
  * The comment SWARM posts on a work item's backing Issue when its phase fails
  * terminally. It names the phase and carries the failure message so a human
  * watching the board sees *why* the item stalled without digging through worker
@@ -782,6 +826,7 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				resumePmPhase: job.resumePmPhase,
 				source: 'github-projects',
 				event: job.event,
 			};
@@ -886,7 +931,7 @@ export async function processJob(
 	const runId = await tryCreateRun(project, globalDefaults, trigger);
 
 	try {
-		const result = await runPhase(trigger, project, globalDefaults, signal);
+		const result = await runPhase(trigger, project, globalDefaults, ctx.resumePmPhase, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
 		// orchestration-level echo, kept at debug so success shows one finish line.
@@ -908,6 +953,9 @@ export async function processJob(
 		);
 		if (trigger.phase === 'planning' || trigger.phase === 'implementation') {
 			await selfEnqueueNextPhase(project, trigger.workItem, result.movedTo);
+		}
+		if (trigger.phase === 'planning' && result.split) {
+			await selfEnqueueSplitChildPlanning(project, result.split.subTaskItemIds);
 		}
 		return {
 			status: 'phase-succeeded',

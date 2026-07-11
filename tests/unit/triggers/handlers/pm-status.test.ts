@@ -112,6 +112,31 @@ describe('pm-status trigger', () => {
 			expect(await trigger(workItem).handle(ctx())).toBeNull();
 		});
 
+		it('resumes a deferred implementation despite its In progress status', async () => {
+			const workItem = createMockWorkItem({
+				statusId: '47fc9ee4', // In progress
+				url: 'https://github.com/jkwiecien/swarm/issues/138',
+			});
+			const result = await trigger(workItem).handle({
+				...ctx(),
+				resumePmPhase: 'implementation',
+			});
+			expect(result).toEqual({ phase: 'implementation', taskId: '138', workItem });
+		});
+
+		it('resumes a deferred phase even when status dedup says unchanged', async () => {
+			vi.mocked(recordStatusAndDetectChange).mockResolvedValue(false);
+			const workItem = createMockWorkItem({
+				statusId: '47fc9ee4',
+				url: 'https://github.com/jkwiecien/swarm/issues/138',
+			});
+			const result = await trigger(workItem).handle({
+				...ctx(),
+				resumePmPhase: 'implementation',
+			});
+			expect(result).toEqual({ phase: 'implementation', taskId: '138', workItem });
+		});
+
 		it('records a status that starts no phase (so a later return to a phase reads as a change)', async () => {
 			// Backlog starts no phase, but it must still be recorded — that is what lets
 			// a subsequent move back to ToDo/Planning register as a genuine change

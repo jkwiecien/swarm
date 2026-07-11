@@ -42,6 +42,12 @@ const jobBase = z.object({
 	 * `src/worker/consumer.ts`'s `MAX_RATE_LIMIT_RETRIES`) when either persists.
 	 */
 	rateLimitRetryAttempt: z.number().int().nonnegative().optional(),
+	/**
+	 * PM phase to resume after an agent failure. A retried implementation has
+	 * already moved its card to In progress, which normally is deliberately not
+	 * a phase-triggering status; this preserves the original dispatch intent.
+	 */
+	resumePmPhase: z.enum(['planning', 'implementation']).optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

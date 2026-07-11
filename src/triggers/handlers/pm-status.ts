@@ -62,6 +62,10 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 
 		matches(ctx: TriggerContext): boolean {
 			if (ctx.source !== 'github-projects') return false;
+			// Deferred PM phases resume from the original event after the phase's
+			// status report moved the card to In progress, so the normal status gate
+			// must not discard the retry.
+			if (ctx.resumePmPhase) return true;
 			const { event, project } = ctx;
 			if (!event.action || !TRIGGERING_ACTIONS.has(event.action)) return false;
 			// A card added to the board, or dragged to a different Board-view column,
@@ -96,7 +100,9 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 			// same-status no-op that gets silently skipped (`pm-status-dedup.ts`).
 			const statusChanged = await recordStatusAndDetectChange(event.itemNodeId, workItem.statusId);
 
-			const phase = resolvePipelinePhaseForOptionId(project.githubProjects, workItem.statusId);
+			const phase =
+				ctx.resumePmPhase ??
+				resolvePipelinePhaseForOptionId(project.githubProjects, workItem.statusId);
 			if (!phase) {
 				// A valid board status that simply doesn't start a phase (backlog, todo,
 				// inReview, done) — a "not for me" miss, not an error.
@@ -111,7 +117,7 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 			// the `TRIGGERING_ACTIONS` comment above): a pure within-column reorder
 			// re-reads the same status every time, so this is the check that actually
 			// stops it from re-dispatching the same phase over and over.
-			if (!statusChanged) {
+			if (!ctx.resumePmPhase && !statusChanged) {
 				return null;
 			}
 
@@ -132,6 +138,7 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 				itemNodeId: event.itemNodeId,
 				taskId,
 				phase,
+				resumed: Boolean(ctx.resumePmPhase),
 			});
 			return { phase, taskId, workItem };
 		},

@@ -122,6 +122,8 @@ export interface RunImplementationPhaseOptions {
 	 * unconditional either way — this only governs the end-of-phase move.
 	 */
 	autoAdvance?: boolean;
+	/** Resume a deferred implementation from its existing task branch. */
+	resumeExistingBranch?: boolean;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -269,6 +271,7 @@ export async function runImplementationPhase(
 		cli = DEFAULT_IMPLEMENTATION_CLI,
 		model,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
+		resumeExistingBranch = false,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -296,7 +299,12 @@ export async function runImplementationPhase(
 
 	// Task-branch checkout (createBranch defaults to true): the agent commits and
 	// pushes here, so — unlike Planning — this is not a detached, throwaway HEAD.
-	const handle = await worktrees.provision(taskId);
+	const handle = resumeExistingBranch
+		? await worktrees.provision(taskId, {
+				createBranch: false,
+				branch: `${project.branchPrefix}${taskId}`,
+			})
+		: await worktrees.provision(taskId);
 	try {
 		graft(project.repoRoot, handle.path);
 
