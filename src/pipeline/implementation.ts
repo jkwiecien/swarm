@@ -62,6 +62,9 @@ import { graftEnvironment } from '@/worktree/graft.js';
 /** The file the implementation agent is instructed to write the opened PR's URL to, at the worktree root. */
 export const OPENED_PR_FILENAME = 'opened_pr.txt';
 
+/** A concise, agent-written explanation when implementation is blocked by a prerequisite. */
+export const BLOCKED_REASON_FILENAME = 'blocked_reason.md';
+
 /** Claude Code is SWARM's implementer agent (PROJECT.md §5.2). */
 const DEFAULT_IMPLEMENTATION_CLI: AgentCli = 'claude';
 
@@ -179,6 +182,7 @@ export function buildImplementationPrompt(
 		`4. Commit your work with a conventional-commit message, then push the branch: \`git push -u origin ${branch}\`.`,
 		`5. Open a pull request against "${baseBranch}" non-interactively: \`gh pr create --base ${baseBranch} --head ${branch} --title <title> --body <body>\` (pass every flag — a bare \`gh pr create\` prompts interactively and will hang in this headless run). The \`--body\` MUST contain the line \`Closes #${taskId}\` so the PR links back to the issue.`,
 		`6. Write ONLY the resulting PR URL (nothing else) to a file named "${OPENED_PR_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file — it is a scratch hand-off read by SWARM, not part of the change.`,
+		`If a genuine external prerequisite blocks implementation (for example, a required PR has not merged), do not open a placeholder PR. Instead, write a concise, human-readable explanation and the actionable next step to "${BLOCKED_REASON_FILENAME}" at the worktree root, then stop. Do NOT commit that file.`,
 		'',
 		'After step 6, STOP immediately and exit. Do not wait for a review, review the PR,',
 		'respond to a review, post any additional PR comment, or invoke another agent.',
@@ -236,6 +240,14 @@ function logAgentFailure(taskId: string, workItemId: string, agent: AgentCliResu
 		stdout: agent.stdout,
 		stderr: agent.stderr,
 	});
+}
+
+/** Read an agent's concise blocker handoff, if it supplied one. */
+function readBlockedReason(worktreePath: string): string | undefined {
+	const path = join(worktreePath, BLOCKED_REASON_FILENAME);
+	if (!existsSync(path)) return undefined;
+	const reason = readFileSync(path, 'utf8').trim();
+	return reason.length > 0 ? reason.slice(0, 2_000) : undefined;
 }
 
 /**
@@ -342,6 +354,9 @@ export async function runImplementationPhase(
 		const prUrlPath = join(handle.path, OPENED_PR_FILENAME);
 		if (!existsSync(prUrlPath)) {
 			logAgentFailure(taskId, workItem.id, agent);
+			const blockedReason = readBlockedReason(handle.path);
+			if (blockedReason)
+				throw new Error(`Implementation blocked for task '${taskId}': ${blockedReason}`);
 			throw new Error(
 				`Implementation agent (${cli}) did not write ${OPENED_PR_FILENAME} for task '${taskId}'`,
 			);

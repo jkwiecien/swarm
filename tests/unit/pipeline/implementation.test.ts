@@ -3,13 +3,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // The PR-URL file is read via node:fs; presence + contents are controlled per test.
 let prFileExists: boolean;
 let prFileContents: string;
+let blockedReasonFileExists: boolean;
+let blockedReasonFileContents: string;
 vi.mock('node:fs', () => ({
-	existsSync: () => prFileExists,
-	readFileSync: () => prFileContents,
+	existsSync: (path: unknown) =>
+		String(path).endsWith('blocked_reason.md') ? blockedReasonFileExists : prFileExists,
+	readFileSync: (path: unknown) =>
+		String(path).endsWith('blocked_reason.md') ? blockedReasonFileContents : prFileContents,
 }));
 
 import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import {
+	BLOCKED_REASON_FILENAME,
 	buildImplementationPrompt,
 	implementationCommentBody,
 	OPENED_PR_FILENAME,
@@ -73,6 +78,8 @@ describe('runImplementationPhase', () => {
 	beforeEach(() => {
 		prFileExists = true;
 		prFileContents = 'https://github.com/jkwiecien/swarm/pull/99\n';
+		blockedReasonFileExists = false;
+		blockedReasonFileContents = '';
 	});
 
 	it('provisions the task-branch worktree, runs Claude Code, links the PR, and moves the item to inReview by default (autoAdvance on)', async () => {
@@ -236,6 +243,18 @@ describe('runImplementationPhase', () => {
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('19');
 	});
 
+	it('surfaces an agent-written blocker instead of a generic missing-PR error', async () => {
+		prFileExists = false;
+		blockedReasonFileExists = true;
+		blockedReasonFileContents = 'Wait for PR #147 to merge, then retry this task.';
+		const deps = makeDeps();
+
+		await expect(runImplementationPhase(deps)).rejects.toThrow(
+			"Implementation blocked for task '19': Wait for PR #147 to merge, then retry this task.",
+		);
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('19');
+	});
+
 	it('throws and cleans up when the PR-URL file is empty', async () => {
 		prFileContents = '   \n  ';
 		const deps = makeDeps();
@@ -269,6 +288,7 @@ describe('buildImplementationPrompt', () => {
 			context,
 		);
 		expect(prompt).toContain(OPENED_PR_FILENAME);
+		expect(prompt).toContain(BLOCKED_REASON_FILENAME);
 		expect(prompt).toContain('Closes #19');
 		expect(prompt).toContain('git push -u origin issue-19');
 		expect(prompt).toContain('gh pr create');
