@@ -75,6 +75,9 @@ const getLatestRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => undefined,
 );
 const resetRunToRunning = vi.fn(async (_id: string, _job?: unknown, _fromStatus?: string) => true);
+const getRunByIdFromDb = vi.fn(
+	async (_id: string) => undefined as { agentSessionId?: string | null } | undefined,
+);
 vi.mock('@/db/repositories/runsRepository.js', () => ({
 	createRun: (input: unknown) => createRun(input),
 	completeRun: (id: string, input: unknown) => completeRun(id, input),
@@ -83,6 +86,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 		getLatestRunForTask(projectId, taskId, phase),
 	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
 		resetRunToRunning(id, job, fromStatus),
+	getRunByIdFromDb: (id: string) => getRunByIdFromDb(id),
 }));
 
 // Global (app-wide) settings are loaded once per job for the default-model tier
@@ -173,6 +177,8 @@ describe('processJob', () => {
 		storeRunLogs.mockResolvedValue(undefined);
 		resetRunToRunning.mockClear();
 		resetRunToRunning.mockResolvedValue(true);
+		getRunByIdFromDb.mockClear();
+		getRunByIdFromDb.mockResolvedValue(undefined);
 		getLatestRunForTask.mockClear();
 		getLatestRunForTask.mockResolvedValue(undefined);
 		getAppSettings.mockClear();
@@ -312,6 +318,33 @@ describe('processJob', () => {
 		);
 
 		expect(phaseCalls[0].args.resumeExistingBranch).toBe(true);
+	});
+
+	it('threads the fresh run row id as the sessionId on a first PM run (nothing to resume)', async () => {
+		const workItem = createMockWorkItem({ statusId: '3fe662f4' });
+		const trigger: TriggerResult = { phase: 'planning', taskId: '10', workItem };
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		// createRun's id becomes the deterministic session handle; no resume yet.
+		expect(phaseCalls[0].args.sessionId).toBe('run-1');
+		expect(phaseCalls[0].args.resumeSessionId).toBeUndefined();
+	});
+
+	it('threads the restored session as resumeSessionId (not sessionId) on a resumed PM run', async () => {
+		getRunByIdFromDb.mockResolvedValue({ agentSessionId: 'sess-restored' });
+		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(
+			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation', runId: 'run-1' }),
+			registryReturning(trigger),
+		);
+
+		// The carried row's preserved session is restored from the DB and resumed.
+		expect(getRunByIdFromDb).toHaveBeenCalledWith('run-1');
+		expect(phaseCalls[0].args.resumeSessionId).toBe('sess-restored');
+		expect(phaseCalls[0].args.sessionId).toBeUndefined();
 	});
 
 	it('discriminates the context source for a projects job', async () => {
@@ -1331,6 +1364,7 @@ describe('processJob', () => {
 			expect(outcome.status).toBe('phase-failed');
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
 				status: 'failed',
+				agentSessionId: null,
 				error: 'review agent exited with code 1',
 				engine: 'claude',
 				exitCode: 1,

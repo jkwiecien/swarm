@@ -50,13 +50,13 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
-import { agentRunError } from '@/harness/agent-failure.js';
+import { type AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
-import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the implementation agent is instructed to write the opened PR's URL to, at the worktree root. */
@@ -119,6 +119,10 @@ export interface RunImplementationPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/** Deterministic Claude session handle assigned by the run row. */
+	sessionId?: string;
+	/** Resume this Claude session when its preserved worktree still exists. */
+	resumeSessionId?: string;
 	/**
 	 * Whether to move the item to "In review" once the PR is opened. Defaults
 	 * to `true`. The pickup move to "In progress" at the start of this phase is
@@ -272,6 +276,80 @@ function readBlockedReason(worktreePath: string): string | undefined {
  * provably safe to (no matching ref on `origin`), so this phase doesn't need
  * its own retry/leftover-branch handling.
  */
+/**
+ * Acquire the task-branch worktree for the implementation run. When resuming a
+ * Claude session (`resumeSessionId`) it reuses the existing worktree so the
+ * agent can `--resume` in place; if that worktree is gone (`reuse` returns
+ * undefined) it falls through to a fresh provision. Otherwise it provisions —
+ * reusing the existing task branch when retrying a PM phase
+ * (`resumeExistingBranch`), or creating a new branch. `resumed` reports whether
+ * a session worktree was actually reused, so the caller only threads the resume
+ * session id through when the checkout it belongs to is really in place.
+ */
+async function acquireImplementationWorktree(
+	worktrees: GitWorktreeManager,
+	taskId: string,
+	branch: string,
+	resumeSessionId: string | undefined,
+	resumeExistingBranch: boolean,
+): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
+	const resumedHandle = resumeSessionId ? await worktrees.reuse(taskId, branch, false) : undefined;
+	if (resumedHandle) return { handle: resumedHandle, resumed: true };
+	const handle = resumeExistingBranch
+		? await worktrees.provision(taskId, { createBranch: false, branch })
+		: await worktrees.provision(taskId);
+	return { handle, resumed: false };
+}
+
+/**
+ * Read the PR URL the implementation agent handed back through
+ * {@link OPENED_PR_FILENAME}. Throws a descriptive error when the file is
+ * missing (surfacing a `blocked` reason the agent may have written instead) or
+ * empty. `onInvalid` runs before each throw so the caller can log the captured
+ * agent output alongside the failure.
+ */
+function readOpenedPrUrl(
+	handlePath: string,
+	cli: AgentCli,
+	taskId: string,
+	onInvalid: () => void,
+): string {
+	const prUrlPath = join(handlePath, OPENED_PR_FILENAME);
+	if (!existsSync(prUrlPath)) {
+		onInvalid();
+		const blockedReason = readBlockedReason(handlePath);
+		if (blockedReason)
+			throw new Error(`Implementation blocked for task '${taskId}': ${blockedReason}`);
+		throw new Error(
+			`Implementation agent (${cli}) did not write ${OPENED_PR_FILENAME} for task '${taskId}'`,
+		);
+	}
+	const prUrl = readFileSync(prUrlPath, 'utf8').trim();
+	if (prUrl.length === 0) {
+		onInvalid();
+		throw new Error(
+			`Implementation agent (${cli}) wrote an empty ${OPENED_PR_FILENAME} for task '${taskId}'`,
+		);
+	}
+	return prUrl;
+}
+
+/**
+ * Whether a failed implementation run's worktree should be kept for a Claude
+ * `--resume` retry: only a `claude` run that carried (or reused) a session and
+ * failed on a rate limit — anything else cleans up as usual.
+ */
+function shouldPreserveForResume(
+	cli: AgentCli,
+	sessionId: string | undefined,
+	resumed: boolean,
+	error: AgentRunError,
+): boolean {
+	return (
+		cli === 'claude' && (sessionId !== undefined || resumed) && error.failure.kind === 'rate-limit'
+	);
+}
+
 export async function runImplementationPhase(
 	options: RunImplementationPhaseOptions,
 ): Promise<ImplementationPhaseResult> {
@@ -282,6 +360,8 @@ export async function runImplementationPhase(
 		pm,
 		cli = DEFAULT_IMPLEMENTATION_CLI,
 		model,
+		sessionId,
+		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		resumeExistingBranch = false,
 		timeoutMs,
@@ -311,18 +391,22 @@ export async function runImplementationPhase(
 
 	// Task-branch checkout (createBranch defaults to true): the agent commits and
 	// pushes here, so — unlike Planning — this is not a detached, throwaway HEAD.
-	const handle = resumeExistingBranch
-		? await worktrees.provision(taskId, {
-				createBranch: false,
-				branch: `${project.branchPrefix}${taskId}`,
-			})
-		: await worktrees.provision(taskId);
+	const { handle, resumed } = await acquireImplementationWorktree(
+		worktrees,
+		taskId,
+		`${project.branchPrefix}${taskId}`,
+		resumeSessionId,
+		resumeExistingBranch,
+	);
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
 		const agent = await runAgent({
 			cli,
 			model,
+			sessionId: resumed ? undefined : sessionId,
+			resumeSessionId: resumed ? resumeSessionId : undefined,
 			cwd: handle.path,
 			args: [
 				buildImplementationPrompt(workItem, {
@@ -344,30 +428,18 @@ export async function runImplementationPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, workItem.id, agent);
-			throw agentRunError(
+			const error = agentRunError(
 				agent,
 				`Implementation agent (${cli}) exited with code ${agent.exitCode}`,
 				` for task '${taskId}'`,
 			);
+			preserveForResume = shouldPreserveForResume(cli, sessionId, resumed, error);
+			throw error;
 		}
 
-		const prUrlPath = join(handle.path, OPENED_PR_FILENAME);
-		if (!existsSync(prUrlPath)) {
-			logAgentFailure(taskId, workItem.id, agent);
-			const blockedReason = readBlockedReason(handle.path);
-			if (blockedReason)
-				throw new Error(`Implementation blocked for task '${taskId}': ${blockedReason}`);
-			throw new Error(
-				`Implementation agent (${cli}) did not write ${OPENED_PR_FILENAME} for task '${taskId}'`,
-			);
-		}
-		const prUrl = readFileSync(prUrlPath, 'utf8').trim();
-		if (prUrl.length === 0) {
-			logAgentFailure(taskId, workItem.id, agent);
-			throw new Error(
-				`Implementation agent (${cli}) wrote an empty ${OPENED_PR_FILENAME} for task '${taskId}'`,
-			);
-		}
+		const prUrl = readOpenedPrUrl(handle.path, cli, taskId, () =>
+			logAgentFailure(taskId, workItem.id, agent),
+		);
 
 		const commentId = await pm.addComment(
 			workItem.id,
@@ -398,7 +470,13 @@ export async function runImplementationPhase(
 		// (a successful phase turning into a reported failure, or a genuine
 		// error being replaced by the cleanup error).
 		try {
-			await worktrees.cleanup(taskId);
+			if (preserveForResume) {
+				logger.debug('implementation phase: preserving worktree for Claude session resume', {
+					taskId,
+				});
+			} else {
+				await worktrees.cleanup(taskId);
+			}
 		} catch (error) {
 			logger.error('implementation phase: worktree cleanup failed', {
 				taskId,

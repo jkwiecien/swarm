@@ -53,6 +53,8 @@ export const runs = pgTable(
 		 * failed runs. Nullable for backward compatibility.
 		 */
 		jobPayload: jsonb('job_payload').$type<SwarmJob>(),
+		/** Claude Code session handle used to continue a deferred PM phase. */
+		agentSessionId: uuid('agent_session_id'),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),

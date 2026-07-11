@@ -24,6 +24,7 @@ import {
 	completeRun,
 	createRun,
 	getLatestRunForTask,
+	getRunByIdFromDb,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
@@ -83,6 +84,8 @@ export type JobOutcome =
 			reason: string;
 			/** The retry attempt count *before* this deferral (0 on the first). */
 			attempt: number;
+			/** True only for a Claude rate-limit deferral in a PM phase. */
+			resumable: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
 			 * created/reused for this job. Carried onto the re-enqueued job so the
@@ -201,6 +204,10 @@ function deferAgentRunError(
 		reason: error,
 		attempt,
 		runId,
+		resumable:
+			failure.kind === 'rate-limit' &&
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
 	};
 }
 
@@ -236,6 +243,7 @@ function deferForConcurrencyLimit(
 		retryDelayMs: MIN_RETRY_DELAY_MS,
 		reason,
 		attempt,
+		resumable: false,
 		// A fresh webhook has no row yet (this defers before `tryCreateRun`); a
 		// retry carries its originating row's id, which must survive so the next
 		// re-enqueue keeps resetting the same row rather than orphaning it.
@@ -329,6 +337,8 @@ function runPhase(
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
+				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 			});
 		case 'implementation':
 			return runImplementationPhase({
@@ -340,6 +350,8 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
+				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
+				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
@@ -463,6 +475,7 @@ async function tryReuseLatestRun(
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
+	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
 	const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
 	const claimed = await resetRunToRunning(
 		prior.id,
@@ -534,7 +547,16 @@ async function tryFetchPrTitle(
 	}
 }
 
-async function tryCreateRun(
+/**
+ * Reuse an existing `runs` row for this job rather than inserting a new one:
+ * the carried row when the job names one (a re-enqueued deferral or manual
+ * retry — issue #136), otherwise the latest terminal row for the task. Returns
+ * the reused row's id, or `undefined` when there's nothing to reuse (the caller
+ * then creates a fresh row). Restores a resumable Claude session id from the
+ * carried row onto the job before resetting it, so a resumed retry threads the
+ * session through to the phase.
+ */
+async function reuseRunRow(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
@@ -542,24 +564,41 @@ async function tryCreateRun(
 ): Promise<string | undefined> {
 	const existingRunId = job.runId;
 	if (existingRunId) {
-		const reusedRunId = await tryResetCarriedRun(project, globalDefaults, trigger, job);
-		if (reusedRunId) return reusedRunId;
-	} else {
 		try {
-			const reusedRunId = await tryReuseLatestRun(project, globalDefaults, trigger, job);
-			if (reusedRunId) return reusedRunId;
+			const existing = await getRunByIdFromDb(existingRunId);
+			if (existing?.agentSessionId) job.agentSessionId = existing.agentSessionId;
 		} catch (err) {
-			logger.error('Failed to reuse terminal run row (creating a new one)', {
-				projectId: project.id,
-				phase: trigger.phase,
-				taskId: trigger.taskId,
+			logger.debug('Failed to load resumable agent session (retrying from scratch)', {
+				runId: existingRunId,
 				error: describeError(err),
 			});
 		}
+		return tryResetCarriedRun(project, globalDefaults, trigger, job);
 	}
+	try {
+		return await tryReuseLatestRun(project, globalDefaults, trigger, job);
+	} catch (err) {
+		logger.error('Failed to reuse terminal run row (creating a new one)', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			error: describeError(err),
+		});
+		return undefined;
+	}
+}
+
+async function tryCreateRun(
+	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
+	trigger: TriggerResult,
+	job: SwarmJob,
+): Promise<string | undefined> {
+	const reusedRunId = await reuseRunRow(project, globalDefaults, trigger, job);
+	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
-		return await createRun({
+		const runId = await createRun({
 			projectId: project.id,
 			taskId: trigger.taskId,
 			phase: trigger.phase,
@@ -571,6 +610,8 @@ async function tryCreateRun(
 			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
 			jobPayload: job,
 		});
+		job.agentSessionId = runId;
+		return runId;
 	} catch (err) {
 		logger.error('Failed to create run row (continuing)', {
 			projectId: project.id,
@@ -628,13 +669,14 @@ async function finalizeFailedRun(
 				error: outcome.reason,
 				nextRetryAt: new Date(Date.now() + outcome.retryDelayMs),
 				...agentColumns(agent),
+				agentSessionId: outcome.resumable ? undefined : null,
 			},
 			agent,
 		);
 	} else if (outcome.status === 'phase-failed') {
 		await finalizeRun(
 			runId,
-			{ status: 'failed', error: outcome.error, ...agentColumns(agent) },
+			{ status: 'failed', error: outcome.error, agentSessionId: null, ...agentColumns(agent) },
 			agent,
 		);
 	}

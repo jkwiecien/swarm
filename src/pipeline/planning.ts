@@ -35,12 +35,12 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
-import { agentRunError } from '@/harness/agent-failure.js';
+import { type AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
-import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the planning agent is instructed to write its plan to, at the worktree root. */
@@ -150,6 +150,10 @@ export interface RunPlanningPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/** Deterministic Claude session handle assigned by the run row. */
+	sessionId?: string;
+	/** Resume this Claude session when its preserved worktree still exists. */
+	resumeSessionId?: string;
 	/**
 	 * Whether to move the item to "ToDo" once the plan is posted. Defaults to
 	 * `false` — a human reviews the plan and moves the item themselves. Always
@@ -431,6 +435,43 @@ async function applySplit(
  * "Error handling"), and the throw lets the worker mark the job failed. The
  * worktree is always removed, success or failure.
  */
+/**
+ * Acquire the read-only (detached-HEAD) checkout for the planning run. When
+ * resuming a Claude session (`resumeSessionId`) it reuses the existing worktree
+ * so the agent can `--resume` in place; if that worktree is gone (`reuse`
+ * returns undefined) it falls through to a fresh detached provision. `resumed`
+ * reports whether a session worktree was actually reused, so the caller only
+ * threads the resume session id through when its checkout is really in place.
+ */
+async function acquirePlanningWorktree(
+	worktrees: GitWorktreeManager,
+	taskId: string,
+	baseBranch: string,
+	resumeSessionId: string | undefined,
+): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
+	const resumedHandle = resumeSessionId
+		? await worktrees.reuse(taskId, baseBranch, true)
+		: undefined;
+	if (resumedHandle) return { handle: resumedHandle, resumed: true };
+	return { handle: await worktrees.provision(taskId, { detach: true }), resumed: false };
+}
+
+/**
+ * Whether a failed planning run's worktree should be kept for a Claude
+ * `--resume` retry: only a `claude` run that carried (or reused) a session and
+ * failed on a rate limit — anything else cleans up as usual.
+ */
+function shouldPreserveForResume(
+	cli: AgentCli,
+	sessionId: string | undefined,
+	resumed: boolean,
+	error: AgentRunError,
+): boolean {
+	return (
+		cli === 'claude' && (sessionId !== undefined || resumed) && error.failure.kind === 'rate-limit'
+	);
+}
+
 export async function runPlanningPhase(
 	options: RunPlanningPhaseOptions,
 ): Promise<PlanningPhaseResult> {
@@ -441,6 +482,8 @@ export async function runPlanningPhase(
 		pm,
 		cli = DEFAULT_PLANNING_CLI,
 		model,
+		sessionId,
+		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		autoSplit = DEFAULT_AUTO_SPLIT,
 		timeoutMs,
@@ -464,13 +507,23 @@ export async function runPlanningPhase(
 	});
 
 	// Read-only checkout: detached HEAD, no task branch (see ProvisionOptions.detach).
-	const handle = await worktrees.provision(taskId, { detach: true });
+	// Claude 2.1.207 also reattaches after recreating this exact path, but a missing
+	// checkout intentionally takes the safer from-scratch path requested by #155.
+	const { handle, resumed } = await acquirePlanningWorktree(
+		worktrees,
+		taskId,
+		project.baseBranch,
+		resumeSessionId,
+	);
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
 		const agent = await runAgent({
 			cli,
 			model,
+			sessionId: resumed ? undefined : sessionId,
+			resumeSessionId: resumed ? resumeSessionId : undefined,
 			cwd: handle.path,
 			args: [buildPlanningPrompt(workItem, autoSplit)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
@@ -481,11 +534,13 @@ export async function runPlanningPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, workItem.id, agent);
-			throw agentRunError(
+			const error = agentRunError(
 				agent,
 				`Planning agent (${cli}) exited with code ${agent.exitCode}`,
 				` for task '${taskId}'`,
 			);
+			preserveForResume = shouldPreserveForResume(cli, sessionId, resumed, error);
+			throw error;
 		}
 
 		const plan = readPlanOrThrow(handle.path, cli, taskId, workItem, agent);
@@ -518,7 +573,11 @@ export async function runPlanningPhase(
 		// (a successful phase turning into a reported failure, or a genuine
 		// error being replaced by the cleanup error).
 		try {
-			await worktrees.cleanup(taskId);
+			if (preserveForResume) {
+				logger.debug('planning phase: preserving worktree for Claude session resume', { taskId });
+			} else {
+				await worktrees.cleanup(taskId);
+			}
 		} catch (error) {
 			logger.error('planning phase: worktree cleanup failed', {
 				taskId,

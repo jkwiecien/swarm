@@ -58,6 +58,8 @@ const jobBase = z.object({
 	 * creates a fresh row as before.
 	 */
 	runId: z.string().min(1).optional(),
+	/** Persisted Claude session handle for a resumable deferred PM phase. */
+	agentSessionId: z.string().uuid().optional(),
 	/** Optional overrides for retrying/running with a specific agent CLI and model. */
 	cliOverride: AgentCliSchema.optional(),
 	modelOverride: z.string().min(1).optional(),

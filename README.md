@@ -36,6 +36,7 @@ Dashboard  (Hono + tRPC, host process, 127.0.0.1-only)
 - **Router**: Node.js/TypeScript, Hono — verifies GitHub webhook signatures, resolves the project, enqueues jobs.
 - **Queue**: BullMQ on Redis — retries, backoff, configurable worker-global concurrency (`SWARM_WORKER_CONCURRENCY`, default 1), and a per-project `maxConcurrentJobs` cap. Over-limit jobs are deferred. PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always queue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation) regardless of those limits, so a review never sits behind a multi-minute implementation run (`src/queue/producer.ts`'s `priorityFor`).
 - **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity` / `codex`, streams their stdout/stderr, pushes and opens PRs. Runs on the host (not containerized) so the agent CLIs have the developer's PATH/auth/config.
+- **Deferred Claude PM runs**: rate-limit retries for Planning and Implementation preserve their worktree and resume the same Claude session. Retention pins that checkout until the retry runs; missing checkouts and other CLIs fall back to a fresh invocation.
 - **Dashboard**: self-hosted config/credentials API, also host-run — see "Running the stack" below.
 - **Postgres**: project config, credentials, run history.
 - Router, Redis, and Postgres run in one Docker Compose stack; the worker and dashboard run alongside on the host — one machine either way, see `PROJECT.md` §2.1 and `ai/ARCHITECTURE.md`.

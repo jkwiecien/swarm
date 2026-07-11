@@ -1,0 +1,1 @@
+ALTER TABLE "runs" ADD COLUMN "agent_session_id" uuid;

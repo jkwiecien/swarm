@@ -13,7 +13,8 @@
  * view: a DB hiccup must never fail an actual pipeline run (`consumer.ts`).
  */
 
-import { and, count, desc, eq, type SQL } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { and, count, desc, eq, inArray, isNotNull, type SQL } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
@@ -42,9 +43,11 @@ export interface CreateRunInput {
 
 /** Insert a `running` row (the default status); returns the new row's id. */
 export async function createRun(input: CreateRunInput): Promise<string> {
+	const id = randomUUID();
 	const rows = await getDb()
 		.insert(runs)
 		.values({
+			id,
 			projectId: input.projectId,
 			taskId: input.taskId,
 			phase: input.phase,
@@ -55,9 +58,29 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			prTitle: input.prTitle,
 			model: input.model,
 			jobPayload: input.jobPayload,
+			agentSessionId: id,
 		})
 		.returning({ id: runs.id });
 	return rows[0].id;
+}
+
+/** Whether retention must pin this task's checkout for a resumable deferred PM run. */
+export async function hasResumableDeferredRun(projectId: string, taskId: string): Promise<boolean> {
+	const rows = await getDb()
+		.select({ id: runs.id })
+		.from(runs)
+		.where(
+			and(
+				eq(runs.projectId, projectId),
+				eq(runs.taskId, taskId),
+				eq(runs.status, 'deferred'),
+				inArray(runs.phase, ['planning', 'implementation']),
+				eq(runs.engine, 'claude'),
+				isNotNull(runs.agentSessionId),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
 }
 
 export interface CompleteRunInput {
@@ -69,6 +92,7 @@ export interface CompleteRunInput {
 	durationMs?: number;
 	nextRetryAt?: Date | null;
 	usage?: AgentUsage;
+	agentSessionId?: string | null;
 }
 
 /**
@@ -88,6 +112,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			durationMs: input.durationMs,
 			nextRetryAt: input.nextRetryAt,
 			usage: input.usage,
+			agentSessionId: input.agentSessionId,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));

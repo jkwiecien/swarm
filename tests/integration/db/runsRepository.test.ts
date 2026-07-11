@@ -10,6 +10,7 @@ import {
 	getLatestRunForTask,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
+	hasResumableDeferredRun,
 	listRunsFromDb,
 	resetRunToRunning,
 	storeRunLogs,
@@ -369,6 +370,68 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('returns 0 when there are no running rows', async () => {
 			expect(await failOrphanedRunningRuns('nothing to do')).toBe(0);
+		});
+	});
+
+	describe('agentSessionId', () => {
+		it('seeds agentSessionId with the run id on createRun and round-trips it', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '55', phase: 'planning' });
+			const row = await getRunByIdFromDb(id);
+			// createRun uses the row id as the deterministic Claude session handle.
+			expect(row?.agentSessionId).toBe(id);
+		});
+
+		it('leaves agentSessionId intact when completeRun omits it (a resumable defer)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '55', phase: 'planning' });
+			await completeRun(id, { status: 'deferred', engine: 'claude' });
+			const row = await getRunByIdFromDb(id);
+			expect(row?.agentSessionId).toBe(id);
+		});
+
+		it('clears agentSessionId when completeRun passes null (a non-resumable settle)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '55', phase: 'planning' });
+			await completeRun(id, { status: 'failed', engine: 'claude', agentSessionId: null });
+			const row = await getRunByIdFromDb(id);
+			expect(row?.agentSessionId).toBeNull();
+		});
+	});
+
+	describe('hasResumableDeferredRun', () => {
+		it('is true for a claude PM-phase run deferred with its session preserved', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'planning' });
+			await completeRun(id, { status: 'deferred', engine: 'claude' });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(true);
+		});
+
+		it('is false when the deferred run cleared its session (non-resumable)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'implementation' });
+			await completeRun(id, { status: 'deferred', engine: 'claude', agentSessionId: null });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+		});
+
+		it('is false for a non-claude engine', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'implementation' });
+			await completeRun(id, { status: 'deferred', engine: 'antigravity' });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+		});
+
+		it('is false for a non-PM phase (e.g. review)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'review' });
+			await completeRun(id, { status: 'deferred', engine: 'claude' });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+		});
+
+		it('is false for a settled (non-deferred) run', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'planning' });
+			await completeRun(id, { status: 'completed', engine: 'claude' });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+		});
+
+		it('scopes to the given project and task', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'planning' });
+			await completeRun(id, { status: 'deferred', engine: 'claude' });
+			expect(await hasResumableDeferredRun(PROJECT_ID, '81')).toBe(false);
+			expect(await hasResumableDeferredRun('proj-other', '80')).toBe(false);
 		});
 	});
 });

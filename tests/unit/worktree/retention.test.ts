@@ -4,6 +4,14 @@ import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { pruneStaleWorktrees } from '@/worktree/retention.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 
+const { hasResumableDeferredRunMock } = vi.hoisted(() => ({
+	hasResumableDeferredRunMock: vi.fn(),
+}));
+
+vi.mock('@/db/repositories/runsRepository.js', () => ({
+	hasResumableDeferredRun: hasResumableDeferredRunMock,
+}));
+
 // Mock worktree lease check
 const { isWorktreeLeasedMock } = vi.hoisted(() => ({
 	isWorktreeLeasedMock: vi.fn(),
@@ -59,6 +67,7 @@ describe('pruneStaleWorktrees', () => {
 	beforeEach(() => {
 		isWorktreeLeasedMock.mockReset();
 		isWorktreeLeasedMock.mockResolvedValue(false);
+		hasResumableDeferredRunMock.mockReset().mockResolvedValue(false);
 		statSyncMock.mockReset();
 	});
 
@@ -194,6 +203,29 @@ describe('pruneStaleWorktrees', () => {
 		]);
 		expect(result.pruned).toEqual([]);
 		expect(result.skippedDirty).toEqual(['/Users/dev/swarm/swarm/.swarm-workspaces/task-1']);
+		expect(manager.cleanedUpTasks).toEqual([]);
+	});
+
+	it('pins an old worktree while a resumable deferred run is pending', async () => {
+		const project = createMockProjectConfig({
+			repoRoot: '/Users/dev/swarm/swarm',
+			worktreeRoot: '.swarm-workspaces',
+			worktreeRetention: { maxWorktrees: 1 },
+		});
+		const manager = new FakeGitWorktreeManager(project);
+		manager.setWorktreesList([
+			'/Users/dev/swarm/swarm/.swarm-workspaces/task-1',
+			'/Users/dev/swarm/swarm/.swarm-workspaces/task-2',
+		]);
+		statSyncMock.mockImplementation(
+			(path: string) => ({ mtimeMs: path.endsWith('task-1') ? 1000 : 2000 }) as Stats,
+		);
+		hasResumableDeferredRunMock.mockImplementation(async (_projectId, taskId) => taskId === '1');
+
+		const result = await pruneStaleWorktrees(project, { worktrees: manager });
+
+		expect(result.skippedDeferred).toEqual(['/Users/dev/swarm/swarm/.swarm-workspaces/task-1']);
+		expect(result.pruned).toEqual([]);
 		expect(manager.cleanedUpTasks).toEqual([]);
 	});
 

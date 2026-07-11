@@ -40,6 +40,7 @@ describe('swarm worktrees', () => {
 				pruned: ['/path/to/task-1'],
 				skippedInFlight: [],
 				skippedDirty: [],
+				skippedDeferred: [],
 				ignored: [],
 			});
 
@@ -82,6 +83,7 @@ describe('swarm worktrees', () => {
 			pruned: [],
 			skippedInFlight: [],
 			skippedDirty: ['/path/to/task-1'],
+			skippedDeferred: [],
 			ignored: [],
 		});
 		const warnSpy = vi.spyOn(console, 'warn');
