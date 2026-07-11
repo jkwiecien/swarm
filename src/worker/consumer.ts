@@ -48,6 +48,7 @@ import { enqueueJob } from '../queue/producer.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
+import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
@@ -173,6 +174,41 @@ function deferAgentRunError(
 		taskId: trigger.taskId,
 		retryDelayMs,
 		reason: error,
+		attempt,
+	};
+}
+
+function deferForConcurrencyLimit(
+	job: SwarmJob,
+	trigger: TriggerResult,
+	projectId: string,
+): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
+	const attempt = job.rateLimitRetryAttempt ?? 0;
+	const reason = `Project '${projectId}' is at its concurrent-job limit`;
+	if (attempt >= MAX_RATE_LIMIT_RETRIES) {
+		logger.error(`Phase failed - ${phaseLabel(trigger.phase)} — retry budget exhausted`, {
+			projectId,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			attempt,
+			error: reason,
+		});
+		return undefined;
+	}
+
+	logger.warn(`Phase deferred - ${phaseLabel(trigger.phase)} — project at concurrency limit`, {
+		projectId,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		attempt,
+		retryDelayMs: MIN_RETRY_DELAY_MS,
+	});
+	return {
+		status: 'phase-deferred',
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		retryDelayMs: MIN_RETRY_DELAY_MS,
+		reason,
 		attempt,
 	};
 }
@@ -919,6 +955,16 @@ export async function processJob(
 		return { status: 'skipped-in-flight', phase: trigger.phase, taskId: trigger.taskId };
 	}
 	inFlightTaskIds.add(trigger.taskId);
+	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
+	if (!slot.acquired) {
+		inFlightTaskIds.delete(trigger.taskId);
+		const deferred = deferForConcurrencyLimit(job, trigger, project.id);
+		if (deferred) return deferred;
+
+		const error = `Project '${project.id}' remained at its concurrent-job limit until the retry budget was exhausted`;
+		await reportPhaseFailureToBoardOrPr(trigger, project, error);
+		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
+	}
 
 	// The global per-CLI default models (DB-backed app settings) — the fallback
 	// tier between the project's own defaults and the coded defaults. Loaded once
@@ -977,6 +1023,7 @@ export async function processJob(
 		// a later legitimate dispatch for the same task — a genuine retry, or a
 		// re-run after this one finished — isn't blocked. A deferred job is
 		// re-enqueued and re-enters `processJob` fresh, past this release.
+		if (slot.tracked) await releaseProjectSlot(project.id);
 		inFlightTaskIds.delete(trigger.taskId);
 	}
 }
