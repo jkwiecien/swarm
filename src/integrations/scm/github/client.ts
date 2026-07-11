@@ -136,6 +136,24 @@ export async function getPullRequestAuthorLogin(
 }
 
 /**
+ * Resolve a PR's title (`pull_request.title`) for a run-history row's display
+ * (`tryCreateRun`, issue: PR-driven runs showed the synthetic `<pr>-respond`
+ * taskId instead of a human-readable title). A single `pulls.get` — the
+ * PR-driven webhook events (review / check_suite) don't carry the title. Runs
+ * against whatever token is in scope. Throws on API failure; the caller treats
+ * the title as best-effort and swallows it so run creation never fails for it.
+ */
+export async function getPullRequestTitle(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<string | null> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	return data.title ?? null;
+}
+
+/**
  * Resolve the GitHub login a token authenticates as, or `null` if the token is
  * absent or the lookup fails. Used to map a persona's token to its bot identity
  * for loop prevention (see `personas.ts`). Failures return `null` rather than

@@ -137,12 +137,23 @@ export function RunsTable({
 								</td>
 								<td className="w-[30%] px-2 py-3 text-sm">
 									<div className="flex w-full min-w-0 flex-col gap-1">
-										<span
-											className="block w-full truncate font-mono text-xs text-zinc-300"
-											title={run.taskId}
-										>
-											{run.taskId}
-										</span>
+										{run.prTitle ? (
+											// PR-driven phases (review / respond-to-*): show the human-readable
+											// PR title rather than the synthetic `<pr>-respond` taskId.
+											<span
+												className="block w-full truncate text-xs text-zinc-200"
+												title={run.prTitle}
+											>
+												{run.prTitle}
+											</span>
+										) : (
+											<span
+												className="block w-full truncate font-mono text-xs text-zinc-300"
+												title={run.taskId}
+											>
+												{run.taskId}
+											</span>
+										)}
 										{renderWorkItemCell(run)}
 									</div>
 								</td>

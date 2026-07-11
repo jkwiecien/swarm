@@ -35,6 +35,7 @@ export interface CreateRunInput {
 	workItemTitle?: string;
 	workItemUrl?: string;
 	prNumber?: string;
+	prTitle?: string;
 	model?: string;
 	jobPayload?: SwarmJob;
 }
@@ -51,6 +52,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			workItemTitle: input.workItemTitle,
 			workItemUrl: input.workItemUrl,
 			prNumber: input.prNumber,
+			prTitle: input.prTitle,
 			model: input.model,
 			jobPayload: input.jobPayload,
 		})

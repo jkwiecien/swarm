@@ -35,6 +35,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		workItemTitle: null,
 		workItemUrl: null,
 		prNumber: null,
+		prTitle: null,
 		phase: 'implementation',
 		engine: null,
 		model: null,
@@ -291,14 +292,52 @@ describe('runsRouter', () => {
 			});
 		});
 
-		it('rejects with CONFLICT when no pending retry can be promoted (duplicate guard)', async () => {
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+		it('reconstructs from jobPayload when a deferred run has no pending retry to promote', async () => {
+			// The pending BullMQ retry can be lost (the fire-and-forget window on
+			// worker shutdown, or the completed job reaped from Redis), leaving a
+			// `deferred` row with no job to promote. Rather than a dead-end CONFLICT,
+			// retryNow falls back to reconstructing the job from the stored payload —
+			// the same path a terminally-`failed` run takes.
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', jobPayload: mockPayload }),
+			);
+			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			const result = await caller.retryNow({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
+			);
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.objectContaining({ runId: 'run-1' }),
+				0,
+			);
+		});
+
+		it('rejects a deferred run with no pending retry and no jobPayload', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', jobPayload: null }),
+			);
 			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
-				expect.objectContaining({ code: 'CONFLICT' }),
+				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
 			);
+			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
 		});
 
 		it('rejects a deferred retry when another caller already claimed the row', async () => {

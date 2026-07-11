@@ -43,6 +43,27 @@ async function claimRunOrThrow(
 	});
 }
 
+/**
+ * Rebuild a fresh retry job from a run's stored payload: carry the originating
+ * `runId` forward (so the retry reuses that row) and reset the rate-limit
+ * attempt counter to 0 (a manual retry bypasses the automatic cap), applying any
+ * cli/model overrides. Shared by the terminally-`failed` path and the
+ * lost-pending-job fallback on the `deferred` path.
+ */
+function reconstructRetryJob(
+	jobPayload: NonNullable<Parameters<typeof resetRunToRunning>[1]>,
+	runId: string,
+	cli?: z.infer<typeof AgentCliSchema>,
+	model?: string,
+): NonNullable<Parameters<typeof resetRunToRunning>[1]> {
+	const job = { ...jobPayload };
+	job.runId = runId;
+	job.rateLimitRetryAttempt = 0;
+	if (cli) job.cliOverride = cli;
+	if (model) job.modelOverride = model;
+	return job;
+}
+
 export const runsRouter = router({
 	// Paginated, filtered list; returns { data, total } straight from the repo.
 	list: publicProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
@@ -69,32 +90,37 @@ export const runsRouter = router({
 			return (await getRunLogsFromDb(input.runId)) ?? null;
 		}),
 
-	// Fire a deferred run's scheduled retry immediately ("Retry now", issue #136).
+	// Fire a run's retry immediately ("Retry now", issue #136).
 	//
-	// Scope: `deferred` runs only. Such a run always has a pending BullMQ retry
-	// job carrying its `runId`, which `promoteRetryForRun` can locate and promote
-	// (delay → 0).
+	// Scope: `deferred` or terminally `failed` runs. The duplicate guard is the
+	// atomic `claimRunOrThrow` (a conditional `deferred|failed → running` update):
+	// whichever caller flips the row wins, and a concurrent manual retry or the
+	// automatic pickup gets a CONFLICT — so two concurrent runs can't start.
 	//
-	// Cap-bypass covers the *entire* deferred window. `promoteRetryForRun` resets
-	// the promoted job's `rateLimitRetryAttempt` to 0 before firing, so a manual
-	// retry always gets a fresh budget — including a run whose next *automatic*
-	// attempt would itself have tripped `MAX_RATE_LIMIT_RETRIES`. Thus a run stays
-	// manually retryable for the whole time it is `deferred` (up to the automatic
-	// cap's worth of attempts × its 6-min–6-hour backoff), satisfying issue #136's
-	// "manual retry remains available after the [automatic] cap is reached".
+	// After claiming, three shapes reach the same end (a fresh run at delay 0):
 	//
-	// NOT covered: a run that has already terminally `failed` (every automatic
-	// attempt consumed *and* the last one ran). No pending job survives, and the
-	// `runs` row can't reconstruct one — a PR-driven phase's trigger needs event
-	// fields (headSha, reviewId, prBranch) the row doesn't store. Reconstructing
-	// it needs persisting the full originating SwarmJob, a schema change beyond
-	// this task's stated scope (build-on-`next_retry_at`, no migration). Deferred
-	// to a follow-up issue; see PR #151.
+	//  1. `deferred` with its pending retry still in Redis — the common case: one
+	//     delayed BullMQ job carries this `runId`; `promoteRetryForRun` promotes it
+	//     (delay → 0).
+	//  2. `deferred` but the pending job was lost — the re-enqueue never landed (the
+	//     fire-and-forget window on worker shutdown, or the completed job reaped
+	//     from Redis; see `reenqueueDeferred` in `src/worker/index.ts`). Promotion
+	//     finds nothing, so we reconstruct from the stored `jobPayload` and enqueue,
+	//     reusing the claim we already hold — instead of the dead-end CONFLICT this
+	//     used to return.
+	//  3. terminally `failed` (every automatic attempt consumed) — no pending job
+	//     ever survives; reconstruct from `jobPayload` and claim atomically.
 	//
-	// The `deferred`-only guard plus reusing that single pending job is also the
-	// duplicate guard: a run already picked up is `running` (rejected here), and
-	// there is only ever one job to promote, so a manual retry can't race the
-	// automatic one into two concurrent runs.
+	// Cap-bypass covers the *entire* deferred window: every path resets
+	// `rateLimitRetryAttempt` to 0 before firing, so a manual retry always gets a
+	// fresh budget — including a run whose next *automatic* attempt would itself
+	// have tripped `MAX_RATE_LIMIT_RETRIES`. Thus a run stays manually retryable
+	// for the whole time it is `deferred`, satisfying issue #136's "manual retry
+	// remains available after the [automatic] cap is reached".
+	//
+	// Only limit: reconstruction needs a stored `jobPayload`. A run recorded
+	// without one (older rows, or a create path that didn't persist it) can't be
+	// rebuilt and is rejected with a clear message.
 	retryNow: publicProcedure
 		.input(
 			z.object({
@@ -119,35 +145,46 @@ export const runsRouter = router({
 			}
 
 			if (run.status === 'deferred') {
+				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
+				// the automatic pickup already flipped it — the real duplicate guard.
 				await claimRunOrThrow(run.id, undefined, 'deferred');
+				// Common case: promote the pending delayed job in place (delay → 0).
 				const promoted = await promoteRetryForRun(input.runId, input.cli, input.model);
-				if (!promoted) {
-					throw new TRPCError({
-						code: 'CONFLICT',
-						message:
-							'No pending retry was found to promote — this run may already be retrying. Refresh and try again.',
-					});
+				if (promoted) {
+					return { runId: input.runId, status: 'retrying' as const };
 				}
-			} else {
+				// No pending job to promote — the re-enqueue was lost (the
+				// fire-and-forget window on worker shutdown, or the completed job reaped
+				// from Redis; see `reenqueueDeferred` in `src/worker/index.ts`). Fall
+				// through to reconstruct from the stored payload, exactly as the
+				// terminally-`failed` path does. We already hold the claim (the row is
+				// now `running`), so no second claim is needed — but a run with no stored
+				// payload can't be rebuilt.
 				if (!run.jobPayload) {
 					throw new TRPCError({
 						code: 'PRECONDITION_FAILED',
-						message: `Cannot retry failed run "${input.runId}" — it was created without a job payload.`,
+						message: `Cannot retry run "${input.runId}" — it was created without a job payload.`,
 					});
 				}
-				// Reconstruct job with overrides
-				const job = { ...run.jobPayload };
-				job.runId = run.id;
-				job.rateLimitRetryAttempt = 0;
-				if (input.cli) job.cliOverride = input.cli;
-				if (input.model) job.modelOverride = input.model;
-
-				// Reset the run row to running state first (so the UI updates immediately)
-				await claimRunOrThrow(run.id, job, 'failed');
-
-				// Enqueue the job with delay 0 (immediate)
+				const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
+				// Persist the reconstructed payload onto the already-claimed row, then
+				// enqueue at delay 0.
+				await resetRunToRunning(run.id, job);
 				await enqueueDelayedRetry(job, 0);
+				return { runId: input.runId, status: 'retrying' as const };
 			}
+
+			// Terminally `failed` — no pending job ever survives; reconstruct from the
+			// stored payload and claim atomically (failed → running).
+			if (!run.jobPayload) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Cannot retry failed run "${input.runId}" — it was created without a job payload.`,
+				});
+			}
+			const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
+			await claimRunOrThrow(run.id, job, 'failed');
+			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };
 		}),

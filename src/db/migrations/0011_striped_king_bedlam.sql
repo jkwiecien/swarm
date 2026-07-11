@@ -1,0 +1,1 @@
+ALTER TABLE "runs" ADD COLUMN "pr_title" text;

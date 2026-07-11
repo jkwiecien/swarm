@@ -479,6 +479,30 @@ async function tryResetCarriedRun(
  * the dashboard, not two. If that row no longer exists (pruned between the
  * deferral and the retry), this falls through to creating a fresh row.
  */
+/**
+ * Best-effort PR title for a PR-driven run's history row (review / respond-to-*),
+ * so the dashboard shows the human-readable title instead of the synthetic
+ * `<pr>-respond` taskId. Swallows+logs any error and returns `undefined` — a
+ * failed title lookup (transient API blip, missing token) must never fail the
+ * run, consistent with the "run tracking is best-effort" contract in this file.
+ */
+async function tryFetchPrTitle(
+	project: ProjectConfig,
+	prNumber: string,
+): Promise<string | undefined> {
+	try {
+		const title = await new GitHubSCMIntegration().getPullRequestTitle(project, Number(prNumber));
+		return title ?? undefined;
+	} catch (err) {
+		logger.debug('Failed to fetch PR title for run row (continuing without it)', {
+			projectId: project.id,
+			prNumber,
+			error: describeError(err),
+		});
+		return undefined;
+	}
+}
+
 async function tryCreateRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
@@ -502,6 +526,7 @@ async function tryCreateRun(
 			});
 		}
 	}
+	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
 		return await createRun({
 			projectId: project.id,
@@ -510,7 +535,8 @@ async function tryCreateRun(
 			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
 			workItemTitle: 'workItem' in trigger ? trigger.workItem.title : undefined,
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
-			prNumber: 'prNumber' in trigger ? trigger.prNumber : undefined,
+			prNumber,
+			prTitle: prNumber ? await tryFetchPrTitle(project, prNumber) : undefined,
 			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
 			jobPayload: job,
 		});

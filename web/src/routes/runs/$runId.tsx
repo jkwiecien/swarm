@@ -275,6 +275,11 @@ function GitHubReferences({ run, project }: GitHubReferencesProps) {
 
 	return (
 		<div className="flex flex-col gap-1.5">
+			{hasPR && run.prTitle && (
+				<span className="text-zinc-300" title={run.prTitle}>
+					{run.prTitle}
+				</span>
+			)}
 			{hasPR &&
 				(project?.repo ? (
 					<a

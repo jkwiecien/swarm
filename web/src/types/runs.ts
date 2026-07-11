@@ -20,6 +20,7 @@ export interface RunRow {
 	workItemTitle: string | null;
 	workItemUrl: string | null;
 	prNumber: string | null;
+	prTitle: string | null;
 	phase: string;
 	engine: string | null;
 	model: string | null;

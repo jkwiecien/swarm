@@ -78,6 +78,13 @@
       "when": 1783749395659,
       "tag": "0010_freezing_starhawk",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1783767050141,
+      "tag": "0011_striped_king_bedlam",
+      "breakpoints": true
     }
   ]
 }

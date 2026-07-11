@@ -24,6 +24,13 @@ export const runs = pgTable(
 		workItemTitle: text('work_item_title'),
 		workItemUrl: text('work_item_url'),
 		prNumber: text('pr_number'),
+		/**
+		 * PR title for PR-driven phases (review / respond-to-*), fetched
+		 * best-effort at run creation (`tryCreateRun`). Nullable: board-driven
+		 * phases (planning/implementation) carry a `workItemTitle` instead, and
+		 * pre-existing rows have none.
+		 */
+		prTitle: text('pr_title'),
 		phase: text('phase').notNull(),
 		engine: text('engine'),
 		model: text('model'),

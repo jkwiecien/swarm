@@ -13,7 +13,7 @@
 
 import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider.js';
 import type { ProjectConfig } from '../../../config/schema.js';
-import { postIssueComment, withGitHubToken } from './client.js';
+import { getPullRequestTitle, postIssueComment, withGitHubToken } from './client.js';
 import type { GitHubPersona } from './personas.js';
 
 export class GitHubSCMIntegration {
@@ -81,6 +81,23 @@ export class GitHubSCMIntegration {
 		const [owner, repo] = project.repo.split('/');
 		return this.withPersonaCredentials(project, persona, () =>
 			postIssueComment(owner, repo, prNumber, body),
+		);
+	}
+
+	/**
+	 * Resolve a PR's title for a run-history row (the worker's `tryCreateRun`).
+	 * Reads under the implementer persona (the PR's author, whose token is always
+	 * configured for a project that opens PRs); reading a title triggers no
+	 * pipeline phase, so the persona choice is immaterial to loop prevention.
+	 */
+	async getPullRequestTitle(
+		project: ProjectConfig,
+		prNumber: number,
+		persona: GitHubPersona = 'implementer',
+	): Promise<string | null> {
+		const [owner, repo] = project.repo.split('/');
+		return this.withPersonaCredentials(project, persona, () =>
+			getPullRequestTitle(owner, repo, prNumber),
 		);
 	}
 }
