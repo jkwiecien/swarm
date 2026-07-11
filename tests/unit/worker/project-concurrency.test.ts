@@ -1,11 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const incr = vi.fn<(key: string) => Promise<number>>();
-const decr = vi.fn<(key: string) => Promise<number>>();
+const evalScript =
+	vi.fn<(script: string, numKeys: number, ...args: unknown[]) => Promise<number>>();
 const del = vi.fn<(key: string) => Promise<number>>();
-const set = vi.fn<(key: string, value: string) => Promise<'OK'>>();
 const on = vi.fn();
-const redisClient = { incr, decr, del, set, on };
+const redisClient = { eval: evalScript, del, on };
 const RedisMock = vi.fn<(options: Record<string, unknown>) => typeof redisClient>(
 	() => redisClient,
 );
@@ -17,44 +16,57 @@ describe('project concurrency', () => {
 		vi.resetModules();
 		vi.clearAllMocks();
 		process.env.REDIS_URL = 'redis://localhost:6379';
-		incr.mockResolvedValue(1);
-		decr.mockResolvedValue(0);
+		evalScript.mockResolvedValue(1);
 		del.mockResolvedValue(1);
-		set.mockResolvedValue('OK');
 	});
 
 	it('acquires atomically below and at the limit using one fail-fast client', async () => {
 		const { acquireProjectSlot } = await import('@/worker/project-concurrency.js');
 
 		expect(await acquireProjectSlot('alpha', 2)).toEqual({ acquired: true, tracked: true });
-		incr.mockResolvedValueOnce(2);
+		evalScript.mockResolvedValueOnce(2);
 		expect(await acquireProjectSlot('alpha', 2)).toEqual({ acquired: true, tracked: true });
+		expect(evalScript).toHaveBeenCalledWith(
+			expect.stringContaining('INCR'),
+			1,
+			'swarm:project-slots:alpha',
+			2,
+		);
 		expect(RedisMock).toHaveBeenCalledOnce();
 		expect(RedisMock.mock.calls[0][0]).toMatchObject({ maxRetriesPerRequest: 1 });
 		expect(on).toHaveBeenCalledWith('error', expect.any(Function));
 	});
 
-	it('returns an over-limit increment before deferring', async () => {
-		incr.mockResolvedValue(3);
+	it('defers at the limit without ever incrementing over it', async () => {
+		evalScript.mockResolvedValue(-1);
 		const { acquireProjectSlot } = await import('@/worker/project-concurrency.js');
 
 		expect(await acquireProjectSlot('alpha', 2)).toEqual({ acquired: false });
-		expect(decr).toHaveBeenCalledWith('swarm:project-slots:alpha');
 	});
 
 	it('fails open when Redis cannot acquire', async () => {
-		incr.mockRejectedValue(new Error('down'));
+		evalScript.mockRejectedValue(new Error('down'));
 		const { acquireProjectSlot } = await import('@/worker/project-concurrency.js');
 
 		expect(await acquireProjectSlot('alpha', 2)).toEqual({ acquired: true, tracked: false });
 	});
 
-	it('releases slots and floors a stray negative count', async () => {
-		decr.mockResolvedValue(-1);
+	it('releases slots atomically via a single script call', async () => {
 		const { releaseProjectSlot } = await import('@/worker/project-concurrency.js');
 
 		await releaseProjectSlot('alpha');
-		expect(set).toHaveBeenCalledWith('swarm:project-slots:alpha', '0');
+		expect(evalScript).toHaveBeenCalledWith(
+			expect.stringContaining('DECR'),
+			1,
+			'swarm:project-slots:alpha',
+		);
+	});
+
+	it('swallows release failures', async () => {
+		evalScript.mockRejectedValueOnce(new Error('down'));
+		const { releaseProjectSlot } = await import('@/worker/project-concurrency.js');
+
+		await expect(releaseProjectSlot('alpha')).resolves.toBeUndefined();
 	});
 
 	it('resets a project counter and swallows reset failures', async () => {

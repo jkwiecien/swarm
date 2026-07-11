@@ -966,18 +966,19 @@ export async function processJob(
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 
-	// The global per-CLI default models (DB-backed app settings) — the fallback
-	// tier between the project's own defaults and the coded defaults. Loaded once
-	// per job, best-effort: a DB hiccup falls through to the coded defaults rather
-	// than failing the run.
-	const globalDefaults = await loadGlobalDefaults();
-
-	// Record a run-history row for this agent-CLI invocation. Everything here is
-	// best-effort (own try/catch inside the helpers, logged not thrown): the
-	// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-	const runId = await tryCreateRun(project, globalDefaults, trigger);
-
+	let runId: string | undefined;
 	try {
+		// The global per-CLI default models (DB-backed app settings) — the fallback
+		// tier between the project's own defaults and the coded defaults. Loaded once
+		// per job, best-effort: a DB hiccup falls through to the coded defaults rather
+		// than failing the run.
+		const globalDefaults = await loadGlobalDefaults();
+
+		// Record a run-history row for this agent-CLI invocation. Everything here is
+		// best-effort (own try/catch inside the helpers, logged not thrown): the
+		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
+		runId = await tryCreateRun(project, globalDefaults, trigger);
+
 		const result = await runPhase(trigger, project, globalDefaults, ctx.resumePmPhase, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
