@@ -81,8 +81,13 @@ npm run dev:worker            # start the worker on the host (or: npm run build 
 ```
 `swarm start`, `npm run dev:dashboard`, `npm run dev:worker`, and their production
 start variants apply pending committed migrations before serving requests or processing
-jobs. The explicit `npm run db:migrate` step remains useful for setup and maintenance,
-and is safe to run repeatedly.
+jobs. The worker also applies them **in-process on every (re)start** — the npm-script
+prefix runs only on the first invocation, but `tsx --watch` restarts the node process on
+each source change (frequent, since SWARM edits its own repo), so without the in-process
+step a restart onto newer schema-referencing code would run ahead of the DB and silently
+fail every run-history write (the phase runs but never appears in the dashboard). A
+schema-mismatched worker refuses to start. The explicit `npm run db:migrate` step remains
+useful for setup and maintenance, and is safe to run repeatedly.
 
 The dashboard can be run in two modes:
 

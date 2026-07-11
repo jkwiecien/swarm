@@ -100,6 +100,26 @@ export async function storeRunLogs(runId: string, stdout: string, stderr: string
 		.onConflictDoUpdate({ target: runLogs.runId, set: { stdout, stderr } });
 }
 
+/**
+ * Fail every run still marked `running` — called once at worker startup. A
+ * freshly-booted worker owns no in-flight run (the MVP runs a single worker,
+ * and this runs before it starts pulling jobs), so any `running` row is a
+ * zombie: a phase whose process died — a crash, or the frequent `tsx --watch`
+ * restart — before it wrote its terminal status. Left alone those rows show as
+ * "running" in the dashboard forever though nothing is running. Flip them to
+ * `failed` with an explanatory `error` and a `completedAt`, and return the
+ * count reconciled. Best-effort like the rest of run tracking: callers log and
+ * continue on error.
+ */
+export async function failOrphanedRunningRuns(reason: string): Promise<number> {
+	const rows = await getDb()
+		.update(runs)
+		.set({ status: 'failed', error: reason, completedAt: new Date() })
+		.where(eq(runs.status, 'running'))
+		.returning({ id: runs.id });
+	return rows.length;
+}
+
 export interface ListRunsFilter {
 	projectId?: string;
 	status?: RunStatus;

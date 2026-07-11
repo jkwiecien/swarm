@@ -34,6 +34,7 @@ import {
 import { DEFAULT_MODEL_PER_CLI } from '../harness/models.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
+import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
 import { phaseLabel } from '../pipeline/phase-label.js';
@@ -386,7 +387,7 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 		return (await getAppSettings()).agents?.defaults;
 	} catch (err) {
 		logger.error('Failed to load global agent defaults (using coded defaults)', {
-			error: err instanceof Error ? err.message : String(err),
+			error: describeError(err),
 		});
 		return undefined;
 	}
@@ -419,7 +420,7 @@ async function tryCreateRun(
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,
-			error: err instanceof Error ? err.message : String(err),
+			error: describeError(err),
 		});
 		return undefined;
 	}
@@ -444,7 +445,7 @@ async function finalizeRun(
 	} catch (err) {
 		logger.error('Failed to finalize run row (continuing)', {
 			runId,
-			error: err instanceof Error ? err.message : String(err),
+			error: describeError(err),
 		});
 	}
 }
