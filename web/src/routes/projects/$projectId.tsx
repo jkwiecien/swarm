@@ -9,7 +9,14 @@ import type { AgentCli } from '../../../../src/harness/agent-cli.js';
 import { AGENT_MODELS } from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
 
-const PHASES = ['planning', 'implementation', 'review', 'respondToReview', 'respondToCi'] as const;
+const PHASES = [
+	'planning',
+	'implementation',
+	'review',
+	'respondToReview',
+	'respondToCi',
+	'resolveConflicts',
+] as const;
 
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
 	planning: { label: 'Planning', code: 'planning' },
@@ -17,6 +24,7 @@ const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: strin
 	review: { label: 'Review', code: 'review' },
 	respondToReview: { label: 'Respond to Review', code: 'respondToReview' },
 	respondToCi: { label: 'Respond to CI', code: 'respondToCi' },
+	resolveConflicts: { label: 'Resolve Conflicts', code: 'resolveConflicts' },
 };
 
 function getModelDefaultLabel(
@@ -47,7 +55,11 @@ function getModelDefaultLabel(
 }
 
 function isPhaseConfigDirty(local: AgentConfig = {}, db: AgentConfig = {}): boolean {
-	return (local.cli ?? '') !== (db.cli ?? '') || (local.model ?? '') !== (db.model ?? '');
+	return (
+		(local.cli ?? '') !== (db.cli ?? '') ||
+		(local.model ?? '') !== (db.model ?? '') ||
+		(local.timeoutMs ?? '') !== (db.timeoutMs ?? '')
+	);
 }
 
 function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
@@ -58,15 +70,15 @@ function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 	for (const phase of PHASES) {
 		const phaseConfig = agents[phase];
 		if (!phaseConfig) continue;
-		const { cli, model } = phaseConfig;
-		if (cli || model) {
-			cleanAgents[phase] = {
-				...(cli ? { cli } : {}),
-				...(model ? { model } : {}),
-			};
-		}
+		const cleaned = cleanAgentConfig(phaseConfig);
+		if (cleaned) cleanAgents[phase] = cleaned;
 	}
 	return Object.keys(cleanAgents).length > 0 ? cleanAgents : undefined;
+}
+
+function cleanAgentConfig({ cli, model, timeoutMs }: AgentConfig): AgentConfig | undefined {
+	if (!cli && !model && !timeoutMs) return undefined;
+	return { cli, model, timeoutMs };
 }
 
 interface GeneralSettingsFormProps {
@@ -322,6 +334,7 @@ interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -335,6 +348,7 @@ function AgentConfigurationForm({
 	agents,
 	handleCliChange,
 	handleModelChange,
+	handleTimeoutChange,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -362,6 +376,7 @@ function AgentConfigurationForm({
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
+									<th className="px-4 py-3">Timeout (ms)</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
@@ -370,6 +385,7 @@ function AgentConfigurationForm({
 									const currentConfig = agents[phase] ?? {};
 									const selectedCli = currentConfig.cli;
 									const selectedModel = currentConfig.model;
+									const timeoutMs = currentConfig.timeoutMs;
 
 									const modelOptions = selectedCli ? AGENT_MODELS[selectedCli] : [];
 
@@ -412,6 +428,17 @@ function AgentConfigurationForm({
 														</option>
 													))}
 												</select>
+											</td>
+											<td className="px-4 py-3.5">
+												<input
+													type="number"
+													min="1"
+													value={timeoutMs ?? ''}
+													onChange={(e) => handleTimeoutChange(phase, e.target.value)}
+													disabled={isPending}
+													placeholder="No timeout"
+													className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
+												/>
 											</td>
 										</tr>
 									);
@@ -580,6 +607,14 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
+	const handleTimeoutChange = (phase: keyof AgentsConfig, value: string) => {
+		setAgents((prev) => ({
+			...prev,
+			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) : undefined },
+		}));
+		updateMutation.reset();
+	};
+
 	const handleAgentsReset = () => {
 		if (project) {
 			setAgents(project.agents ?? {});
@@ -736,6 +771,7 @@ function ProjectDetailRouteComponent() {
 					agents={agents}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
+					handleTimeoutChange={handleTimeoutChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}

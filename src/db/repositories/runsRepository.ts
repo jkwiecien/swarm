@@ -124,8 +124,8 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * dashboard then shows one run whose status flips, not two. Clears the terminal
  * columns a prior settle wrote (`completedAt`/`error`/`nextRetryAt`) and the
  * outcome columns (`engine`/`exitCode`/`timedOut`/`durationMs`/`usage`) so the
- * fresh attempt records its own; `model` is left as-is (the requested model
- * doesn't change on retry). Returns `true` when a row was updated, `false` when
+ * fresh attempt records its own; `model` can be updated if a new one is selected
+ * (otherwise left as-is). Returns `true` when a row was updated, `false` when
  * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
  * guard is supplied) — the caller then falls back to `createRun`. Best-effort
  * like the rest of run tracking: the worker swallows/logs any throw.
@@ -134,6 +134,7 @@ export async function resetRunToRunning(
 	runId: string,
 	jobPayload?: SwarmJob,
 	fromStatus?: RunStatus,
+	model?: string,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -148,6 +149,7 @@ export async function resetRunToRunning(
 			durationMs: null,
 			usage: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
+			...(model !== undefined ? { model } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });

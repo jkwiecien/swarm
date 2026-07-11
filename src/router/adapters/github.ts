@@ -118,6 +118,12 @@ export const GitHubParsedEventSchema = z.object({
 	 * (`getPullRequestAuthorLogin`).
 	 */
 	prAuthorLogin: z.string().optional(),
+	/** Base branch of a pull request, used by the conflict-resolution side-car. */
+	baseBranch: z.string().optional(),
+	/** Whether a closed pull request was actually merged. */
+	merged: z.boolean().optional(),
+	/** Candidate PR number on a synthetic conflict-mergeability recheck job. */
+	conflictPrNumber: z.string().optional(),
 });
 
 export type GitHubParsedEvent = z.infer<typeof GitHubParsedEventSchema>;
@@ -163,6 +169,8 @@ interface LifecycleFields {
 	checkConclusion?: string;
 	isDraft?: boolean;
 	prAuthorLogin?: string;
+	baseBranch?: string;
+	merged?: boolean;
 }
 
 function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
@@ -178,6 +186,8 @@ function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
 		isCrossRepo: headRepo != null && baseRepo != null ? headRepo !== baseRepo : undefined,
 		isDraft: typeof pr?.draft === 'boolean' ? pr.draft : undefined,
 		prAuthorLogin: (asRecord(pr?.user)?.login as string) ?? undefined,
+		baseBranch: (asRecord(pr?.base)?.ref as string) ?? undefined,
+		merged: typeof pr?.merged === 'boolean' ? pr.merged : undefined,
 	};
 }
 

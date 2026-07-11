@@ -54,6 +54,7 @@ Worker-spawned agents are scoped to exactly one phase. Their prompts explicitly 
 3. **Review** (Claude Code, reviewer persona) — PR opened / checks pass → the reviewer persona reviews the diff and posts a formal `gh pr review` (approve / request changes / comment).
 4. **Respond to Review** (Claude Code, implementer persona) — the reviewer submits a review with changes requested → the worker opens a worktree on the PR branch, the implementer persona processes the full batch of review comments (fix, or push back with a rationale) → replies posted to the review thread.
 5. **Respond to CI** (Claude Code, implementer persona) — a check suite on a SWARM-authored PR fails → the worker opens a worktree on the PR branch, the implementer persona inspects the failing checks and pushes a surgical fix (or reports that no code change was warranted). A per-PR attempt cap stops a fix that never turns CI green from looping forever.
+6. **Resolve Conflicts** (Claude Code, implementer persona) — a merged PR advances its base → SWARM rechecks open same-repository, SWARM-authored PRs targeting that base and dispatches only those GitHub confirms are unmergeable. The phase creates a normal merge commit, never rebases or force-pushes, and refuses to push if the PR branch changed while it was running.
 
 ## Security model
 
@@ -253,18 +254,22 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 
 **`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
 - **`defaults`** — optional map of `cli` -> default `model` override for the whole project. This is the tier above the **global** `agents.defaults` (see [Global settings](#global-settings-app_settings)).
-- **Phases** — `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`. Each is an object:
+- **Phases** — `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object:
   | Field | Purpose |
   | --- | --- |
   | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
   | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]`, then the global `defaults[cli]`, then the coded default. |
+  | `timeoutMs` | Positive run timeout in milliseconds. Omit for no phase timeout. |
 
-**`pipeline`** — controls whether a phase moves the board item itself on completion, and whether Planning may split a too-large task. Only `planning` and `implementation` are configurable (the other phases are SCM-event-driven and never move a card):
+**`pipeline`** — controls board movement/splitting for Planning and Implementation, and whether SCM-event-driven phases run. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. Always forced off for a spawned `swarm:split-child` item. |
 | `pipeline.planning.autoSplit` | `true` | If true, Planning may decompose a task it judges too large into smaller sibling items (the original becomes the first task; siblings are created in "Planning", labelled `swarm:split-child`, and never auto-advance). Set false to always plan an item as a single task. |
 | `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
+| `pipeline.review.enabled` | `true` | If false, Review events are skipped without dispatching the Review phase. |
+| `pipeline.respondToReview.enabled` | `true` | If false, submitted reviews are skipped without dispatching Respond-to-review. Requires Review to be enabled. |
+| `pipeline.respondToCi.enabled` | `true` | If false, failed-check events are skipped without dispatching Respond-to-CI. |
 
 ### Global settings (`app_settings`)
 
@@ -309,12 +314,13 @@ Early implementation. Summary by area:
 ### Worker & pipeline phases
 - The BullMQ job consumer (SWARM-17) resolves each dequeued job through a Cascade-style trigger registry (`src/triggers/`, SWARM-53) and dispatches the matched trigger to its pipeline phase; the consumer resolves the phase, hands off to the orchestrator, and maps its result to the job outcome.
 - Shared building blocks (`src/pipeline/`): per-task worktree lifecycle (`GitWorktreeManager`, `src/worker/git-worktree-manager.ts`, SWARM-14 — provisions an isolated worktree under `.swarm-workspaces/task-<id>/`, with a detached-HEAD mode for read-only phases), environment grafting (`graftEnvironment`, `src/worktree/graft.ts`, SWARM-15 — symlinks `node_modules`/`.env`/caches into it), and the agent-CLI execution engine (`src/harness/agent-cli.ts`, SWARM-16 — spawns `claude`/`antigravity`/`codex` with the worktree as CWD).
-- All five phases are wired into the trigger registry:
+- All six phases are wired into the trigger registry:
   - **Planning** (SWARM-18) — detached worktree → Claude Code writes `proposed_plan.md` → posted on the linked Issue → moves the item to "ToDo" itself only if `pipeline.planning.autoAdvance` is on (default off).
   - **Implementation** (SWARM-19) — task-branch worktree → Claude Code implements, pushes, opens the PR via `gh` → PR linked on the item → moves it to "In review" if `pipeline.implementation.autoAdvance` is on (default on). Either phase's agent CLI/model can be overridden per project via `swarm.config.json`'s `agents` block (`src/harness/models.ts`).
   - **Review** (SWARM-20) — detached worktree at the PR's head SHA → Claude Code as the *reviewer* persona (via `GH_TOKEN`) reads the diff and submits a formal `gh pr review`.
   - **Respond-to-review** (SWARM-21) — worktree on the PR's existing task branch → Claude Code as the implementer addresses the batched review point by point (fixing valid nits and pushing, or pushing back with a rationale), always replying — even a plain thank-you — so a human can see the response ran.
   - **Respond-to-CI** (SWARM-64) — worktree on that same task branch → Claude Code as the implementer fixes a *failing* check suite, pushing a surgical fix or reporting no change was warranted.
+  - **Resolve Conflicts** — worktree on a confirmed-conflicting PR branch → the implementer merges the current base, resolves conflicts, runs relevant checks, commits and pushes normally. Mergeability-null rechecks are coalesced and bounded; dispatch is deduplicated per PR/head/base state.
 - Dispatch: a single **status-change handler** (`src/triggers/handlers/pm-status.ts`) re-reads the board item authoritatively and starts Planning or Implementation by the card's Status; **PR-lifecycle handlers** start Review (on a non-draft, same-repo, SWARM-authored PR opening or its checks passing) and Respond-to-review (on the reviewer persona submitting any review — approve, comment, or changes-requested).
 - An author-persona gate reviews only PRs a SWARM persona opened (Cascade's default `authorMode='own'`), checked before the `check_suite` aggregate query so a PR we'd never review doesn't cost an Actions-API call.
 - On `check_suite` completion, the `pr-review` handler aggregates *every* check on the head SHA (via the Actions API) rather than trusting the single suite's own conclusion — reviewing, routing a failed suite to Respond-to-CI, or deferring with a coalesced ~30s recheck (`scheduleCoalescedJob`, #63) when the Actions API lags webhook delivery.

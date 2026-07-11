@@ -42,6 +42,7 @@ import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
 import { phaseLabel } from '../pipeline/phase-label.js';
 import { runPlanningPhase } from '../pipeline/planning.js';
+import { runResolveConflictsPhase } from '../pipeline/resolve-conflicts.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
@@ -334,6 +335,7 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
@@ -350,6 +352,7 @@ function runPhase(
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
 				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'review':
@@ -360,6 +363,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'respond-to-review':
@@ -372,6 +376,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'respond-to-ci':
@@ -383,6 +388,21 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
+				signal,
+			});
+		case 'resolve-conflicts':
+			return runResolveConflictsPhase({
+				project,
+				prNumber: trigger.prNumber,
+				prBranch: trigger.prBranch,
+				headSha: trigger.headSha,
+				baseBranch: trigger.baseBranch,
+				baseSha: trigger.baseSha,
+				taskId: trigger.taskId,
+				cli: overrides.cli,
+				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 	}
@@ -406,7 +426,7 @@ function agentOverrideFor(
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 	job?: SwarmJob,
-): { cli?: AgentCli; model?: string } {
+): { cli?: AgentCli; model?: string; timeoutMs?: number } {
 	const phaseConfig = (() => {
 		switch (phase) {
 			case 'planning':
@@ -419,11 +439,13 @@ function agentOverrideFor(
 				return project.agents?.respondToReview ?? {};
 			case 'respond-to-ci':
 				return project.agents?.respondToCi ?? {};
+			case 'resolve-conflicts':
+				return project.agents?.resolveConflicts ?? {};
 		}
 	})();
 	const cli = job?.cliOverride ?? phaseConfig.cli;
 	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
-	return { cli, model };
+	return { cli, model, timeoutMs: phaseConfig.timeoutMs };
 }
 
 /**
@@ -447,13 +469,20 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 
 async function tryReuseLatestRun(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
 	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
-	const claimed = await resetRunToRunning(prior.id, { ...job, runId: prior.id }, prior.status);
+	const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+	const claimed = await resetRunToRunning(
+		prior.id,
+		{ ...job, runId: prior.id },
+		prior.status,
+		model,
+	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
 	return prior.id;
@@ -461,13 +490,15 @@ async function tryReuseLatestRun(
 
 async function tryResetCarriedRun(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
 ): Promise<string | undefined> {
 	const runId = job.runId;
 	if (!runId) return undefined;
 	try {
-		return (await resetRunToRunning(runId, job)) ? runId : undefined;
+		const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+		return (await resetRunToRunning(runId, job, undefined, model)) ? runId : undefined;
 	} catch (err) {
 		logger.error('Failed to reset run row for retry (creating a new one)', {
 			projectId: project.id,
@@ -533,11 +564,11 @@ async function tryCreateRun(
 				error: describeError(err),
 			});
 		}
-		const reusedRunId = await tryResetCarriedRun(project, trigger, job);
+		const reusedRunId = await tryResetCarriedRun(project, globalDefaults, trigger, job);
 		if (reusedRunId) return reusedRunId;
 	} else {
 		try {
-			const reusedRunId = await tryReuseLatestRun(project, trigger, job);
+			const reusedRunId = await tryReuseLatestRun(project, globalDefaults, trigger, job);
 			if (reusedRunId) return reusedRunId;
 		} catch (err) {
 			logger.error('Failed to reuse terminal run row (creating a new one)', {
@@ -977,6 +1008,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				source: 'github',
 				event: job.event,
 			}
@@ -984,6 +1017,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				resumePmPhase: job.resumePmPhase,
 				source: 'github-projects',
 				event: job.event,

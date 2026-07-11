@@ -15,6 +15,7 @@ export const PHASE_LABELS: Record<TriggerPhase, string> = {
 	review: 'Review',
 	'respond-to-review': 'Respond-to-review',
 	'respond-to-ci': 'Respond-to-CI',
+	'resolve-conflicts': 'Resolve-conflicts',
 };
 
 /** The display label for a pipeline phase (e.g. `implementation` → `Implementation`). */

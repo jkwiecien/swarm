@@ -107,6 +107,23 @@ type ReviewDisposition =
 	| { kind: 'respond-to-ci'; failedChecks: string[] }
 	| { kind: 'none' };
 
+function isDispositionDisabled(
+	project: ProjectConfig,
+	disposition: Exclude<ReviewDisposition, { kind: 'none' }>,
+	prNumber?: string,
+	headSha?: string,
+): boolean {
+	if (disposition.kind === 'review' && project.pipeline?.review?.enabled === false) {
+		logger.debug('review: phase disabled — skipping', { prNumber, headSha });
+		return true;
+	}
+	if (disposition.kind === 'respond-to-ci' && project.pipeline?.respondToCi?.enabled === false) {
+		logger.debug('respond-to-ci: phase disabled — skipping', { prNumber, headSha });
+		return true;
+	}
+	return false;
+}
+
 /** How long to wait before re-querying check state when the Actions API looks stale. */
 const RECHECK_DELAY_MS = 30_000;
 
@@ -422,6 +439,51 @@ async function dispatchRespondToCi(
 	};
 }
 
+/**
+ * Validates a trigger context for the review handler, checking the source,
+ * event-level gates, and required fields (PR number, head SHA). Returns the
+ * narrowed GitHub event, project, prNumber, and headSha on success, or `null`
+ * when any guard short-circuits.
+ *
+ * Extracted from {@link createReviewTrigger}'s `handle` to keep its cognitive
+ * complexity within the configured lint threshold.
+ */
+function validateReviewEvent(ctx: TriggerContext): {
+	event: GitHubParsedEvent;
+	project: ProjectConfig;
+	prNumber: string;
+	headSha: string;
+} | null {
+	if (ctx.source !== 'github') return null;
+	const { event, project } = ctx;
+
+	if (event.eventType === 'pull_request' && isDispositionDisabled(project, { kind: 'review' })) {
+		return null;
+	}
+
+	const prNumber = event.workItemId;
+	if (!prNumber) {
+		// A check suite with no associated PR, or a PR event missing its number —
+		// nothing to review.
+		logger.debug('review: event carries no PR number — skipping', {
+			eventType: event.eventType,
+		});
+		return null;
+	}
+
+	if (!event.headSha) {
+		// The Review phase pins its checkout to the head SHA; without it there's
+		// nothing to review against.
+		logger.warn('review: event carries no head SHA — skipping', {
+			prNumber,
+			eventType: event.eventType,
+		});
+		return null;
+	}
+
+	return { event, project, prNumber, headSha: event.headSha };
+}
+
 export function createReviewTrigger(): TriggerHandler {
 	return {
 		name: 'pr-review',
@@ -430,28 +492,9 @@ export function createReviewTrigger(): TriggerHandler {
 		matches: matchesReviewShape,
 
 		async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
-			if (ctx.source !== 'github') return null;
-			const { event } = ctx;
-
-			const prNumber = event.workItemId;
-			if (!prNumber) {
-				// A check suite with no associated PR, or a PR event missing its number —
-				// nothing to review.
-				logger.debug('review: event carries no PR number — skipping', {
-					eventType: event.eventType,
-				});
-				return null;
-			}
-
-			if (!event.headSha) {
-				// The Review phase pins its checkout to the head SHA; without it there's
-				// nothing to review against.
-				logger.warn('review: event carries no head SHA — skipping', {
-					prNumber,
-					eventType: event.eventType,
-				});
-				return null;
-			}
+			const validated = validateReviewEvent(ctx);
+			if (!validated) return null;
+			const { event, project, prNumber, headSha } = validated;
 
 			const disposition = await resolveDisposition(
 				ctx.project,
@@ -459,9 +502,10 @@ export function createReviewTrigger(): TriggerHandler {
 				ctx.deliveryId,
 				ctx.recheckAttempt ?? 0,
 				prNumber,
-				event.headSha,
+				headSha,
 			);
 			if (disposition.kind === 'none') return null;
+			if (isDispositionDisabled(project, disposition, prNumber, headSha)) return null;
 
 			// Cross-process dedup: claim this PR+SHA before dispatching so a sibling
 			// event for the same commit (PR opened → check suite passed, or one
@@ -472,25 +516,19 @@ export function createReviewTrigger(): TriggerHandler {
 			// one failed), and each is only dispatched once every check has completed,
 			// so there is never a legitimate second dispatch for the same PR+SHA to
 			// contend for it.
-			const dispatchKey = buildReviewDispatchKey(ctx.project.repo, prNumber, event.headSha);
+			const dispatchKey = buildReviewDispatchKey(ctx.project.repo, prNumber, headSha);
 			const claimed = await claimReviewDispatch(dispatchKey, 'pr-review', {
 				prNumber,
-				headSha: event.headSha,
+				headSha,
 			});
 			if (!claimed) return null;
 
 			if (disposition.kind === 'respond-to-ci') {
-				return dispatchRespondToCi(
-					ctx.project,
-					event,
-					prNumber,
-					event.headSha,
-					disposition.failedChecks,
-				);
+				return dispatchRespondToCi(ctx.project, event, prNumber, headSha, disposition.failedChecks);
 			}
 
-			logger.debug('review: dispatching Review phase', { prNumber, headSha: event.headSha });
-			return { phase: 'review', taskId: prNumber, prNumber, headSha: event.headSha };
+			logger.debug('review: dispatching Review phase', { prNumber, headSha });
+			return { phase: 'review', taskId: prNumber, prNumber, headSha };
 		},
 	};
 }

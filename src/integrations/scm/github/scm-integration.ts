@@ -13,7 +13,13 @@
 
 import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider.js';
 import type { ProjectConfig } from '../../../config/schema.js';
-import { getPullRequestTitle, postIssueComment, withGitHubToken } from './client.js';
+import {
+	type ConflictCandidatePullRequest,
+	getPullRequestTitle,
+	listOpenPullRequestsForBase,
+	postIssueComment,
+	withGitHubToken,
+} from './client.js';
 import type { GitHubPersona } from './personas.js';
 
 export class GitHubSCMIntegration {
@@ -98,6 +104,17 @@ export class GitHubSCMIntegration {
 		const [owner, repo] = project.repo.split('/');
 		return this.withPersonaCredentials(project, persona, () =>
 			getPullRequestTitle(owner, repo, prNumber),
+		);
+	}
+
+	/** Provider seam for conflict detection after a base branch advances. */
+	async listConflictCandidates(
+		project: ProjectConfig,
+		baseBranch: string,
+	): Promise<ConflictCandidatePullRequest[]> {
+		const [owner, repo] = project.repo.split('/');
+		return this.withPersonaCredentials(project, 'implementer', () =>
+			listOpenPullRequestsForBase(owner, repo, baseBranch),
 		);
 	}
 }

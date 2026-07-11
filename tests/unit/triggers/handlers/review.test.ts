@@ -149,6 +149,28 @@ describe('review trigger', () => {
 			});
 		});
 
+		it('dispatches when no pipeline config is present', async () => {
+			const project = createMockProjectConfig({ pipeline: undefined });
+			const result = await handler.handle({
+				...ctx({ ...base, headSha: 'abc123', isDraft: false, isCrossRepo: false }),
+				project,
+			});
+			expect(result).toMatchObject({ phase: 'review', prNumber: '42' });
+		});
+
+		it('skips before author resolution when Review is disabled', async () => {
+			const project = createMockProjectConfig({
+				pipeline: { review: { enabled: false }, respondToReview: { enabled: false } },
+			});
+			expect(
+				await handler.handle({
+					...ctx({ ...base, headSha: 'abc123', isDraft: false, isCrossRepo: false }),
+					project,
+				}),
+			).toBeNull();
+			expect(resolvePersonaIdentities).not.toHaveBeenCalled();
+		});
+
 		it('skips a draft PR', async () => {
 			expect(await handler.handle(ctx({ ...base, headSha: 'abc', isDraft: true }))).toBeNull();
 		});
@@ -273,6 +295,19 @@ describe('review trigger', () => {
 				headSha: 'cafe',
 			});
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('skips Respond-to-CI when the phase is disabled', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			const project = createMockProjectConfig({ pipeline: { respondToCi: { enabled: false } } });
+			expect(
+				await handler.handle({
+					...ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' }),
+					project,
+				}),
+			).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(claimRespondToCiAttempt).not.toHaveBeenCalled();
 		});
 
 		it('does not dispatch Respond-to-CI when the PR+SHA slot is already claimed', async () => {

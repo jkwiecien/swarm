@@ -186,7 +186,7 @@ describe('runsRouter', () => {
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(resetRunToRunning).toHaveBeenCalledWith('run-1', undefined, 'deferred');
+			expect(resetRunToRunning).toHaveBeenCalledWith('run-1', undefined, 'deferred', undefined);
 			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined);
 		});
 
@@ -240,6 +240,7 @@ describe('runsRouter', () => {
 					runId: 'run-1',
 				}),
 				'failed',
+				'Gemini 3.5 Flash (High)',
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -321,6 +322,8 @@ describe('runsRouter', () => {
 			expect(resetRunToRunning).toHaveBeenCalledWith(
 				'run-1',
 				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
+				undefined,
+				undefined,
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({ runId: 'run-1' }),

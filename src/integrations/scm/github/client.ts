@@ -153,6 +153,46 @@ export async function getPullRequestTitle(
 	return data.title ?? null;
 }
 
+export interface ConflictCandidatePullRequest {
+	number: number;
+	headBranch: string;
+	headSha: string;
+	baseBranch: string;
+	baseSha: string;
+	mergeable: boolean | null;
+	authorLogin: string | null;
+}
+
+/** List open same-repository PRs targeting a base branch, including GitHub's asynchronous mergeability. */
+export async function listOpenPullRequestsForBase(
+	owner: string,
+	repo: string,
+	baseBranch: string,
+): Promise<ConflictCandidatePullRequest[]> {
+	const client = getScopedClient();
+	const pulls = await client.paginate(client.pulls.list, {
+		owner,
+		repo,
+		state: 'open',
+		base: baseBranch,
+		per_page: 100,
+	});
+	const details = await Promise.all(
+		pulls.map((pull) => client.pulls.get({ owner, repo, pull_number: pull.number })),
+	);
+	return details
+		.filter(({ data }) => data.head.repo?.full_name === data.base.repo.full_name)
+		.map(({ data }) => ({
+			number: data.number,
+			headBranch: data.head.ref,
+			headSha: data.head.sha,
+			baseBranch: data.base.ref,
+			baseSha: data.base.sha,
+			mergeable: data.mergeable,
+			authorLogin: data.user?.login ?? null,
+		}));
+}
+
 /**
  * Resolve the GitHub login a token authenticates as, or `null` if the token is
  * absent or the lookup fails. Used to map a persona's token to its bot identity
