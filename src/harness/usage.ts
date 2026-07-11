@@ -6,8 +6,9 @@
  *
  * Usage extraction is per-CLI (each CLI reports its own output shape, if any
  * — ai/RULES.md §6 "don't assume identical flag/output semantics"). Only
- * `claude` is implemented here; `antigravity`/`codex` are a follow-up task and
- * fall through to the graceful "usage unavailable" result.
+ * `claude` and `codex` are implemented here. Antigravity cannot emit
+ * structured usage, so it intentionally returns the graceful "usage
+ * unavailable" result.
  */
 
 import { z } from 'zod';
@@ -40,6 +41,49 @@ const ClaudeJsonResultSchema = z.object({
 		cache_creation_input_tokens: z.number().optional(),
 	}),
 });
+
+const CodexUsageSchema = z.object({
+	input_tokens: z.number(),
+	output_tokens: z.number(),
+	cached_input_tokens: z.number().optional(),
+	reasoning_output_tokens: z.number().optional(),
+});
+
+function parseJsonLine(line: string): Record<string, unknown> | undefined {
+	try {
+		const value: unknown = JSON.parse(line);
+		return value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function codexAgentMessage(event: Record<string, unknown>): string | undefined {
+	if (event.type !== 'item.completed' || !event.item || typeof event.item !== 'object') {
+		return undefined;
+	}
+	const item = event.item as Record<string, unknown>;
+	return item.type === 'agent_message' && typeof item.text === 'string' ? item.text : undefined;
+}
+
+function collectCodexEvents(stdout: string): {
+	rawUsage?: z.infer<typeof CodexUsageSchema>;
+	messages: string[];
+} {
+	let rawUsage: z.infer<typeof CodexUsageSchema> | undefined;
+	const messages: string[] = [];
+	for (const line of stdout.split('\n')) {
+		const event = parseJsonLine(line);
+		if (!event) continue;
+		if (event.type === 'turn.completed') {
+			const parsedUsage = CodexUsageSchema.safeParse(event.usage);
+			if (parsedUsage.success) rawUsage = parsedUsage.data;
+		}
+		const message = codexAgentMessage(event);
+		if (message !== undefined) messages.push(message);
+	}
+	return { rawUsage, messages };
+}
 
 export interface ParsedAgentOutput {
 	/** Normalized token usage, or absent when the CLI's output couldn't be read. */
@@ -81,18 +125,38 @@ function parseClaudeOutput(stdout: string): ParsedAgentOutput {
 	return { usage: usage.data, logText };
 }
 
+/** Parse the JSONL event stream emitted by `codex exec --json`. */
+function parseCodexOutput(stdout: string): ParsedAgentOutput {
+	const { rawUsage, messages } = collectCodexEvents(stdout);
+	const logText = messages.length > 0 ? messages.join('\n') : undefined;
+	if (!rawUsage) return logText === undefined ? {} : { logText };
+
+	// Codex input_tokens includes cached input; preserve both reported values
+	// independently rather than subtracting cached_input_tokens from the total.
+	const usage = AgentUsageSchema.safeParse({
+		inputTokens: rawUsage.input_tokens,
+		outputTokens: rawUsage.output_tokens,
+		cacheReadTokens: rawUsage.cached_input_tokens,
+		reasoningTokens: rawUsage.reasoning_output_tokens,
+	});
+	if (!usage.success) return logText === undefined ? {} : { logText };
+
+	return { usage: usage.data, ...(logText === undefined ? {} : { logText }) };
+}
+
 /**
  * Parse a completed CLI run's captured stdout into normalized usage plus the
- * human-readable text to keep in the run log. Dispatches per `cli`;
- * `antigravity`/`codex` return `{}` until a follow-up task implements their
- * parsers (their output shape hasn't been live-verified yet, ai/RULES.md §6).
+ * human-readable text to keep in the run log. Dispatches per `cli`.
  */
 export function parseAgentOutput(cli: AgentCli, stdout: string): ParsedAgentOutput {
 	switch (cli) {
 		case 'claude':
 			return parseClaudeOutput(stdout);
 		case 'antigravity':
-		case 'codex':
+			// agy has no structured/usage output flag (verified live, ai/RULES.md §6),
+			// so usage is unavailable by design.
 			return {};
+		case 'codex':
+			return parseCodexOutput(stdout);
 	}
 }

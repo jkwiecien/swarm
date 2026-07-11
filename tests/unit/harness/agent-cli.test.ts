@@ -85,7 +85,7 @@ describe('runAgentCli', () => {
 		);
 	});
 
-	it('requests JSON output only for claude, not antigravity or codex', async () => {
+	it('requests each supported structured output while leaving antigravity plain', async () => {
 		const claude = runAgentCli(createMockRunAgentCliOptions());
 		lastChild().emit('close', 0, null);
 		await claude;
@@ -95,11 +95,13 @@ describe('runAgentCli', () => {
 		lastChild().emit('close', 0, null);
 		await agy;
 		expect(spawnMock.mock.calls[1][1]).not.toContain('--output-format');
+		expect(spawnMock.mock.calls[1][1]).not.toContain('--json');
 
 		const codex = runAgentCli(createMockRunAgentCliOptions({ cli: 'codex' }));
 		lastChild().emit('close', 0, null);
 		await codex;
-		expect(spawnMock.mock.calls[2][1]).not.toContain('--output-format');
+		expect(spawnMock.mock.calls[2][1]).toContain('--json');
+		expect(spawnMock.mock.calls[2][1]?.[0]).toBe('exec');
 	});
 
 	it('spawns the agy binary for antigravity, with -p immediately before the prompt too', async () => {
@@ -133,7 +135,7 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'codex',
-			['exec', '--dangerously-bypass-approvals-and-sandbox', 'do the thing'],
+			['exec', '--dangerously-bypass-approvals-and-sandbox', '--json', 'do the thing'],
 			expect.anything(),
 		);
 	});
@@ -178,6 +180,7 @@ describe('runAgentCli', () => {
 				'--dangerously-bypass-approvals-and-sandbox',
 				'--model',
 				'gpt-5.6-sol',
+				'--json',
 				'implement the thing',
 			],
 			expect.anything(),
@@ -307,6 +310,28 @@ describe('runAgentCli', () => {
 			expect(result.stdout).toBe('All done, implemented the feature.');
 		});
 
+		it('parses Codex JSONL usage and swaps stdout for the agent message', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ cli: 'codex' }));
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				[
+					'{"type":"item.completed","item":{"type":"agent_message","text":"pong"}}',
+					'{"type":"turn.completed","usage":{"input_tokens":12201,"cached_input_tokens":9984,"output_tokens":5,"reasoning_output_tokens":0}}',
+				].join('\n'),
+			);
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.usage).toEqual({
+				inputTokens: 12201,
+				outputTokens: 5,
+				cacheReadTokens: 9984,
+				reasoningTokens: 0,
+			});
+			expect(result.stdout).toBe('pong');
+		});
+
 		it('leaves usage undefined and stdout raw for non-JSON stdout', async () => {
 			const promise = runAgentCli(createMockRunAgentCliOptions());
 			const child = lastChild();
@@ -324,6 +349,22 @@ describe('runAgentCli', () => {
 			// A truncated Claude JSON blob would otherwise fail to parse anyway, but
 			// the guard must skip parsing outright rather than rely on that.
 			child.stdout.emit('data', JSON.stringify({ result: 'x', usage: { input_tokens: 1 } }));
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.outputTruncated).toBe(true);
+			expect(result.usage).toBeUndefined();
+		});
+
+		it('skips Codex usage parsing when its JSONL stream was truncated', async () => {
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ cli: 'codex', maxOutputBytes: 10 }),
+			);
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}',
+			);
 			child.emit('close', 0, null);
 
 			const result = await promise;
