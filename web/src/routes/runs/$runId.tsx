@@ -1,17 +1,57 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { AlertTriangle, ExternalLink, Info, Terminal } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Info, RefreshCw, Terminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
-import { trpc } from '@/lib/trpc.js';
+import { retryButtonLabel } from '@/lib/run-retry.js';
+import { trpc, trpcClient } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { AgentUsage, RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
+
+/**
+ * "Retry now" for a deferred run (issue #136): promotes the run's pending
+ * scheduled retry so it fires immediately instead of after its delay. Follows
+ * the mutation→invalidate pattern in project-create-dialog.tsx — on success it
+ * invalidates this run's `getById` and the runs `list` so the status flip to
+ * `running` shows without a manual refresh (the detail page also polls while
+ * deferred/running). Disabled + "Retrying…" while pending; an actionable banner
+ * surfaces a rejected mutation (e.g. the run already left `deferred`).
+ */
+function RetryNowButton({ runId }: { runId: string }) {
+	const queryClient = useQueryClient();
+	const mutation = useMutation({
+		mutationFn: () => trpcClient.runs.retryNow.mutate({ runId }),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: trpc.runs.getById.queryKey({ id: runId }) });
+			queryClient.invalidateQueries({ queryKey: trpc.runs.list.queryKey() });
+		},
+	});
+
+	return (
+		<div className="mt-3">
+			<button
+				type="button"
+				onClick={() => mutation.mutate()}
+				disabled={mutation.isPending}
+				className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-50 disabled:cursor-not-allowed"
+			>
+				<RefreshCw className={`h-4 w-4 ${mutation.isPending ? 'animate-spin' : ''}`} />
+				{retryButtonLabel(mutation.isPending)}
+			</button>
+			{mutation.isError && (
+				<div className="mt-2 p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+					{mutation.error.message}
+				</div>
+			)}
+		</div>
+	);
+}
 
 interface RunDetailHeaderProps {
 	run: RunRow;
@@ -57,6 +97,7 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 						<p className="text-xs text-amber-200/70 mt-1 font-mono">
 							UTC: {new Date(run.nextRetryAt).toISOString()}
 						</p>
+						<RetryNowButton runId={run.id} />
 					</div>
 				</div>
 			)}

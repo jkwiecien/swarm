@@ -1,0 +1,28 @@
+import { describe, expect, it } from 'vitest';
+import { canRetryRun, retryButtonLabel } from './run-retry.js';
+
+describe('canRetryRun', () => {
+	it('allows retry only for a deferred run', () => {
+		expect(canRetryRun('deferred')).toBe(true);
+	});
+
+	it('disallows retry for running, completed, and failed runs', () => {
+		expect(canRetryRun('running')).toBe(false);
+		expect(canRetryRun('completed')).toBe(false);
+		expect(canRetryRun('failed')).toBe(false);
+	});
+
+	it('disallows retry for an unknown status', () => {
+		expect(canRetryRun('whatever')).toBe(false);
+	});
+});
+
+describe('retryButtonLabel', () => {
+	it('reads "Retrying…" while the mutation is pending', () => {
+		expect(retryButtonLabel(true)).toBe('Retrying…');
+	});
+
+	it('reads "Retry now" when idle', () => {
+		expect(retryButtonLabel(false)).toBe('Retry now');
+	});
+});

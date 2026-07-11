@@ -178,6 +178,11 @@ async function reenqueueDeferred(
 		const next: SwarmJob = {
 			...parsed,
 			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
+			// Carry the originating run row forward (issue #136) so the retry resets
+			// that same row instead of inserting a second one. `outcome.runId` wins
+			// over any stale value on `parsed` (they match on a retry; only the
+			// outcome knows the row a fresh webhook's first run just created).
+			...(outcome.runId ? { runId: outcome.runId } : {}),
 			...(parsed.type === 'github-projects' &&
 			(outcome.phase === 'planning' || outcome.phase === 'implementation')
 				? { resumePmPhase: outcome.phase }

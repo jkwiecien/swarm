@@ -48,6 +48,15 @@ const jobBase = z.object({
 	 * a phase-triggering status; this preserves the original dispatch intent.
 	 */
 	resumePmPhase: z.enum(['planning', 'implementation']).optional(),
+	/**
+	 * The `runs` row this job re-runs (issue #136). Absent on a fresh webhook;
+	 * set when a deferred run is re-enqueued (`reenqueueDeferred`
+	 * `src/worker/index.ts`, or a manual "Retry now") so the worker resets that
+	 * existing row to `running` instead of inserting a second one — a retry then
+	 * shows as one run on the dashboard, not two. When absent, the consumer
+	 * creates a fresh row as before.
+	 */
+	runId: z.string().min(1).optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

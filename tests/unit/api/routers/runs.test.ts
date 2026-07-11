@@ -6,6 +6,10 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	getRunLogsFromDb: vi.fn(),
 }));
 
+vi.mock('@/queue/producer.js', () => ({
+	promoteRetryForRun: vi.fn(),
+}));
+
 import { runsRouter } from '@/api/routers/runs.js';
 import {
 	getRunByIdFromDb,
@@ -13,6 +17,7 @@ import {
 	listRunsFromDb,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
+import { promoteRetryForRun } from '@/queue/producer.js';
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -50,6 +55,7 @@ describe('runsRouter', () => {
 		vi.mocked(listRunsFromDb).mockReset();
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
+		vi.mocked(promoteRetryForRun).mockReset();
 	});
 
 	describe('list', () => {
@@ -160,6 +166,57 @@ describe('runsRouter', () => {
 
 			const result = await caller.getLogs({ runId: 'run-1' });
 			expect(result).toBeNull();
+		});
+	});
+
+	describe('retryNow', () => {
+		it('promotes the pending retry and reports the run as retrying for a deferred run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+
+			const result = await caller.retryNow({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
+			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1');
+		});
+
+		it('throws NOT_FOUND for an unknown run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(undefined);
+
+			await expect(caller.retryNow({ runId: 'missing' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'NOT_FOUND' }),
+			);
+			expect(promoteRetryForRun).not.toHaveBeenCalled();
+		});
+
+		it('rejects a non-deferred run with PRECONDITION_FAILED (retryable-state guard)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'completed' }));
+
+			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
+			);
+			expect(promoteRetryForRun).not.toHaveBeenCalled();
+		});
+
+		it('retries even after the automatic budget was exhausted (bypasses the cap)', async () => {
+			// A run can defer at a high attempt and still be manually retryable — the
+			// router doesn't inspect the attempt count, it just promotes the pending
+			// job (which resets the counter). Guard: a deferred run always retries.
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+
+			await expect(caller.retryNow({ runId: 'run-1' })).resolves.toMatchObject({
+				status: 'retrying',
+			});
+		});
+
+		it('rejects with CONFLICT when no pending retry can be promoted (duplicate guard)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
+
+			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'CONFLICT' }),
+			);
 		});
 	});
 });

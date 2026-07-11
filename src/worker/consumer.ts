@@ -23,6 +23,7 @@ import {
 	type CompleteRunInput,
 	completeRun,
 	createRun,
+	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
 import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
@@ -80,6 +81,14 @@ export type JobOutcome =
 			reason: string;
 			/** The retry attempt count *before* this deferral (0 on the first). */
 			attempt: number;
+			/**
+			 * The `runs` row this deferral belongs to (issue #136), when one was
+			 * created/reused for this job. Carried onto the re-enqueued job so the
+			 * retry resets the same row instead of inserting a new one. Absent when
+			 * the deferral happened before any row existed (e.g. the concurrency-limit
+			 * deferral on a fresh webhook).
+			 */
+			runId?: string;
 	  };
 
 /**
@@ -139,6 +148,7 @@ function deferAgentRunError(
 	trigger: TriggerResult,
 	projectId: string,
 	error: string,
+	runId: string | undefined,
 ): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
 	const attempt = job.rateLimitRetryAttempt ?? 0;
 	if (attempt >= MAX_RATE_LIMIT_RETRIES) {
@@ -176,6 +186,7 @@ function deferAgentRunError(
 		retryDelayMs,
 		reason: error,
 		attempt,
+		runId,
 	};
 }
 
@@ -211,6 +222,10 @@ function deferForConcurrencyLimit(
 		retryDelayMs: MIN_RETRY_DELAY_MS,
 		reason,
 		attempt,
+		// A fresh webhook has no row yet (this defers before `tryCreateRun`); a
+		// retry carries its originating row's id, which must survive so the next
+		// re-enqueue keeps resetting the same row rather than orphaning it.
+		runId: job.runId,
 	};
 }
 
@@ -434,12 +449,33 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
  * a secondary, single-dev dashboard view (issue #102); a DB hiccup here must
  * never fail an actual pipeline run, so this swallows and logs any error and
  * returns `undefined` — the completion path then no-ops for a run with no id.
+ *
+ * When the job carries an `existingRunId` (a re-enqueued deferred run, or a
+ * manual "Retry now" — issue #136), the originating row is *reset* to `running`
+ * and reused rather than inserting a second one, so a retry shows as one run on
+ * the dashboard, not two. If that row no longer exists (pruned between the
+ * deferral and the retry), this falls through to creating a fresh row.
  */
 async function tryCreateRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
+	existingRunId?: string,
 ): Promise<string | undefined> {
+	if (existingRunId) {
+		try {
+			if (await resetRunToRunning(existingRunId)) return existingRunId;
+			// Row gone (pruned) — fall through to create a fresh one below.
+		} catch (err) {
+			logger.error('Failed to reset run row for retry (creating a new one)', {
+				projectId: project.id,
+				phase: trigger.phase,
+				taskId: trigger.taskId,
+				runId: existingRunId,
+				error: describeError(err),
+			});
+		}
+	}
 	try {
 		return await createRun({
 			projectId: project.id,
@@ -875,6 +911,7 @@ async function handlePhaseFailure(
 	job: SwarmJob,
 	trigger: TriggerResult,
 	project: ProjectConfig,
+	runId: string | undefined,
 ): Promise<JobOutcome> {
 	const error = err instanceof Error ? err.message : String(err);
 	const failureKind =
@@ -895,7 +932,7 @@ async function handlePhaseFailure(
 	if (isDeferrable) {
 		const failure: AgentFailure =
 			err instanceof AgentRunError ? err.failure : { kind: 'worktree-exists' };
-		const deferred = deferAgentRunError(failure, job, trigger, project.id, error);
+		const deferred = deferAgentRunError(failure, job, trigger, project.id, error, runId);
 		if (deferred) return deferred;
 	}
 
@@ -978,7 +1015,7 @@ export async function processJob(
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-		runId = await tryCreateRun(project, globalDefaults, trigger);
+		runId = await tryCreateRun(project, globalDefaults, trigger, job.runId);
 
 		const result = await runPhase(trigger, project, globalDefaults, ctx.resumePmPhase, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
@@ -1017,7 +1054,7 @@ export async function processJob(
 			durationMs: result.agent.durationMs,
 		};
 	} catch (err) {
-		const outcome = await handlePhaseFailure(err, job, trigger, project);
+		const outcome = await handlePhaseFailure(err, job, trigger, project, runId);
 		await finalizeFailedRun(runId, outcome, err);
 		return outcome;
 	} finally {
