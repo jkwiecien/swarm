@@ -54,6 +54,7 @@ function makeDeps() {
 	};
 	const worktrees = {
 		provision: vi.fn(async () => handle),
+		reuse: vi.fn(async () => handle),
 		cleanup: vi.fn(async () => {}),
 	};
 	const pm = {
@@ -319,6 +320,66 @@ describe('runPlanningPhase', () => {
 		// cleanup throw is swallowed-and-logged, not re-raised.
 		const result = await runPlanningPhase(deps);
 		expect(result).toMatchObject({ commentId: 'comment-1' });
+	});
+
+	it('threads sessionId (not resumeSessionId) and provisions a fresh detached checkout on a first run', async () => {
+		const deps = makeDeps();
+		await runPlanningPhase({ ...deps, sessionId: 'sess-18' });
+
+		expect(deps.worktrees.reuse).not.toHaveBeenCalled();
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
+		const runArgs = deps.runAgent.mock.calls[0][0];
+		expect(runArgs.sessionId).toBe('sess-18');
+		expect(runArgs.resumeSessionId).toBeUndefined();
+	});
+
+	it('resumes the Claude session in place: reuses the detached checkout and threads resumeSessionId, not sessionId', async () => {
+		const deps = makeDeps();
+		await runPlanningPhase({ ...deps, sessionId: 'sess-18', resumeSessionId: 'sess-18' });
+
+		expect(deps.worktrees.reuse).toHaveBeenCalledWith('18', 'main', true);
+		expect(deps.worktrees.provision).not.toHaveBeenCalled();
+		const runArgs = deps.runAgent.mock.calls[0][0];
+		expect(runArgs.resumeSessionId).toBe('sess-18');
+		expect(runArgs.sessionId).toBeUndefined();
+	});
+
+	it('falls back to a fresh detached provision when the session worktree is gone', async () => {
+		const deps = makeDeps();
+		vi.mocked(deps.worktrees.reuse).mockResolvedValueOnce(undefined);
+		await runPlanningPhase({ ...deps, sessionId: 'sess-18', resumeSessionId: 'sess-18' });
+
+		expect(deps.worktrees.reuse).toHaveBeenCalledWith('18', 'main', true);
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
+		const runArgs = deps.runAgent.mock.calls[0][0];
+		expect(runArgs.resumeSessionId).toBeUndefined();
+		expect(runArgs.sessionId).toBe('sess-18');
+	});
+
+	it('preserves the worktree (skips cleanup) when a claude session run fails on a rate limit', async () => {
+		const deps = makeDeps();
+		deps.runAgent = vi.fn(async () =>
+			agentResult({
+				exitCode: 1,
+				stdout: "You've hit your session limit · resets 1:40pm (Europe/Warsaw)\n",
+			}),
+		);
+		await expect(runPlanningPhase({ ...deps, sessionId: 'sess-18' })).rejects.toThrow(
+			/rate limited/,
+		);
+		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
+	});
+
+	it('still cleans up a rate-limited failure that had no session to resume', async () => {
+		const deps = makeDeps();
+		deps.runAgent = vi.fn(async () =>
+			agentResult({
+				exitCode: 1,
+				stdout: "You've hit your session limit · resets 1:40pm (Europe/Warsaw)\n",
+			}),
+		);
+		await expect(runPlanningPhase(deps)).rejects.toThrow(/rate limited/);
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 });
 

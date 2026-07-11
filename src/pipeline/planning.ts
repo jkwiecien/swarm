@@ -35,12 +35,12 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
-import { agentRunError } from '@/harness/agent-failure.js';
+import { type AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
-import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the planning agent is instructed to write its plan to, at the worktree root. */
@@ -435,6 +435,43 @@ async function applySplit(
  * "Error handling"), and the throw lets the worker mark the job failed. The
  * worktree is always removed, success or failure.
  */
+/**
+ * Acquire the read-only (detached-HEAD) checkout for the planning run. When
+ * resuming a Claude session (`resumeSessionId`) it reuses the existing worktree
+ * so the agent can `--resume` in place; if that worktree is gone (`reuse`
+ * returns undefined) it falls through to a fresh detached provision. `resumed`
+ * reports whether a session worktree was actually reused, so the caller only
+ * threads the resume session id through when its checkout is really in place.
+ */
+async function acquirePlanningWorktree(
+	worktrees: GitWorktreeManager,
+	taskId: string,
+	baseBranch: string,
+	resumeSessionId: string | undefined,
+): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
+	const resumedHandle = resumeSessionId
+		? await worktrees.reuse(taskId, baseBranch, true)
+		: undefined;
+	if (resumedHandle) return { handle: resumedHandle, resumed: true };
+	return { handle: await worktrees.provision(taskId, { detach: true }), resumed: false };
+}
+
+/**
+ * Whether a failed planning run's worktree should be kept for a Claude
+ * `--resume` retry: only a `claude` run that carried (or reused) a session and
+ * failed on a rate limit — anything else cleans up as usual.
+ */
+function shouldPreserveForResume(
+	cli: AgentCli,
+	sessionId: string | undefined,
+	resumed: boolean,
+	error: AgentRunError,
+): boolean {
+	return (
+		cli === 'claude' && (sessionId !== undefined || resumed) && error.failure.kind === 'rate-limit'
+	);
+}
+
 export async function runPlanningPhase(
 	options: RunPlanningPhaseOptions,
 ): Promise<PlanningPhaseResult> {
@@ -472,10 +509,12 @@ export async function runPlanningPhase(
 	// Read-only checkout: detached HEAD, no task branch (see ProvisionOptions.detach).
 	// Claude 2.1.207 also reattaches after recreating this exact path, but a missing
 	// checkout intentionally takes the safer from-scratch path requested by #155.
-	const resumedHandle = resumeSessionId
-		? await worktrees.reuse(taskId, project.baseBranch, true)
-		: undefined;
-	const handle = resumedHandle ?? (await worktrees.provision(taskId, { detach: true }));
+	const { handle, resumed } = await acquirePlanningWorktree(
+		worktrees,
+		taskId,
+		project.baseBranch,
+		resumeSessionId,
+	);
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
@@ -483,8 +522,8 @@ export async function runPlanningPhase(
 		const agent = await runAgent({
 			cli,
 			model,
-			sessionId: resumedHandle ? undefined : sessionId,
-			resumeSessionId: resumedHandle ? resumeSessionId : undefined,
+			sessionId: resumed ? undefined : sessionId,
+			resumeSessionId: resumed ? resumeSessionId : undefined,
 			cwd: handle.path,
 			args: [buildPlanningPrompt(workItem, autoSplit)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
@@ -500,10 +539,7 @@ export async function runPlanningPhase(
 				`Planning agent (${cli}) exited with code ${agent.exitCode}`,
 				` for task '${taskId}'`,
 			);
-			preserveForResume =
-				cli === 'claude' &&
-				(sessionId !== undefined || resumedHandle !== undefined) &&
-				error.failure.kind === 'rate-limit';
+			preserveForResume = shouldPreserveForResume(cli, sessionId, resumed, error);
 			throw error;
 		}
 

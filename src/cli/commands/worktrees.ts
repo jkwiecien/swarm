@@ -19,6 +19,21 @@ Requires DATABASE_URL (project config) and REDIS_URL (in-flight check) in the
 environment — run via \`npm run worktrees:prune\` (loads .env) or export them
 yourself first.`;
 
+/**
+ * Print a labelled `<label>: <count>` line followed by each entry, or nothing
+ * when the list is empty. `render` formats each entry line (defaults to
+ * `out.info`) so the "dirty" category can warn with its clean-up hint.
+ */
+function reportList(
+	label: string,
+	items: string[],
+	render: (line: string) => void = out.info,
+): void {
+	if (items.length === 0) return;
+	out.info(`  ${label}: ${items.length}`);
+	for (const p of items) render(`    - ${p}`);
+}
+
 async function sweepProject(project: ProjectConfig, dryRun: boolean): Promise<void> {
 	out.step(`sweeping project '${project.name}' (${project.id})…`);
 	const result = await pruneStaleWorktrees(project, { dryRun });
@@ -26,28 +41,15 @@ async function sweepProject(project: ProjectConfig, dryRun: boolean): Promise<vo
 	out.info(`  kept: ${result.kept.length}`);
 	if (result.pruned.length > 0) {
 		out.info(`  ${dryRun ? 'would prune' : 'pruned'}: ${result.pruned.length} worktree(s)`);
-		for (const p of result.pruned) {
-			out.info(`    - ${p}`);
-		}
+		for (const p of result.pruned) out.info(`    - ${p}`);
 	} else {
 		out.info('  pruned: 0');
 	}
-	if (result.skippedInFlight.length > 0) {
-		out.info(`  skipped (in-flight): ${result.skippedInFlight.length}`);
-		for (const p of result.skippedInFlight) {
-			out.info(`    - ${p}`);
-		}
-	}
-	if (result.skippedDirty.length > 0) {
-		out.info(`  skipped (dirty): ${result.skippedDirty.length}`);
-		for (const p of result.skippedDirty) {
-			out.warn(`    - ${p} (has uncommitted changes — clean up manually if it's no longer needed)`);
-		}
-	}
-	if (result.skippedDeferred.length > 0) {
-		out.info(`  skipped (deferred session): ${result.skippedDeferred.length}`);
-		for (const p of result.skippedDeferred) out.info(`    - ${p}`);
-	}
+	reportList('skipped (in-flight)', result.skippedInFlight);
+	reportList('skipped (dirty)', result.skippedDirty, (line) =>
+		out.warn(`${line} (has uncommitted changes — clean up manually if it's no longer needed)`),
+	);
+	reportList('skipped (deferred session)', result.skippedDeferred);
 	if (result.ignored.length > 0) {
 		out.info(`  ignored: ${result.ignored.length}`);
 	}

@@ -177,7 +177,6 @@ async function reenqueueDeferred(
 		const parsed = SwarmJobSchema.parse(data);
 		const next: SwarmJob = {
 			...parsed,
-			agentSessionId: outcome.resumable ? parsed.agentSessionId : undefined,
 			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
 			// Carry the originating run row forward (issue #136) so the retry resets
 			// that same row instead of inserting a second one. `outcome.runId` wins

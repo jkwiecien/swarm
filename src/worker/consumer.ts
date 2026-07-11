@@ -547,7 +547,16 @@ async function tryFetchPrTitle(
 	}
 }
 
-async function tryCreateRun(
+/**
+ * Reuse an existing `runs` row for this job rather than inserting a new one:
+ * the carried row when the job names one (a re-enqueued deferral or manual
+ * retry — issue #136), otherwise the latest terminal row for the task. Returns
+ * the reused row's id, or `undefined` when there's nothing to reuse (the caller
+ * then creates a fresh row). Restores a resumable Claude session id from the
+ * carried row onto the job before resetting it, so a resumed retry threads the
+ * session through to the phase.
+ */
+async function reuseRunRow(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
@@ -564,21 +573,29 @@ async function tryCreateRun(
 				error: describeError(err),
 			});
 		}
-		const reusedRunId = await tryResetCarriedRun(project, globalDefaults, trigger, job);
-		if (reusedRunId) return reusedRunId;
-	} else {
-		try {
-			const reusedRunId = await tryReuseLatestRun(project, globalDefaults, trigger, job);
-			if (reusedRunId) return reusedRunId;
-		} catch (err) {
-			logger.error('Failed to reuse terminal run row (creating a new one)', {
-				projectId: project.id,
-				phase: trigger.phase,
-				taskId: trigger.taskId,
-				error: describeError(err),
-			});
-		}
+		return tryResetCarriedRun(project, globalDefaults, trigger, job);
 	}
+	try {
+		return await tryReuseLatestRun(project, globalDefaults, trigger, job);
+	} catch (err) {
+		logger.error('Failed to reuse terminal run row (creating a new one)', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			error: describeError(err),
+		});
+		return undefined;
+	}
+}
+
+async function tryCreateRun(
+	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
+	trigger: TriggerResult,
+	job: SwarmJob,
+): Promise<string | undefined> {
+	const reusedRunId = await reuseRunRow(project, globalDefaults, trigger, job);
+	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
 		const runId = await createRun({
