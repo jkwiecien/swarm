@@ -178,16 +178,19 @@ describe('runsRouter', () => {
 	describe('retryNow', () => {
 		it('promotes the pending retry and reports the run as retrying for a deferred run', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
 
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
+			expect(resetRunToRunning).toHaveBeenCalledWith('run-1', undefined, 'deferred');
 			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined);
 		});
 
 		it('promotes the pending retry with cli and model overrides for a deferred run', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
 
 			const result = await caller.retryNow({
@@ -234,6 +237,7 @@ describe('runsRouter', () => {
 					modelOverride: 'Gemini 3.5 Flash (High)',
 					runId: 'run-1',
 				}),
+				'failed',
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -279,6 +283,7 @@ describe('runsRouter', () => {
 			// router doesn't inspect the attempt count, it just promotes the pending
 			// job (which resets the counter). Guard: a deferred run always retries.
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).resolves.toMatchObject({
@@ -288,11 +293,37 @@ describe('runsRouter', () => {
 
 		it('rejects with CONFLICT when no pending retry can be promoted (duplicate guard)', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'CONFLICT' }),
 			);
+		});
+
+		it('rejects a deferred retry when another caller already claimed the row', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(false);
+
+			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'CONFLICT' }),
+			);
+			expect(promoteRetryForRun).not.toHaveBeenCalled();
+		});
+
+		it('rejects a failed retry when another caller already claimed the row', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({
+					status: 'failed',
+					jobPayload: { type: 'github', projectId: 'p1', event: {} } as never,
+				}),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(false);
+
+			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'CONFLICT' }),
+			);
+			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
 		});
 	});
 });

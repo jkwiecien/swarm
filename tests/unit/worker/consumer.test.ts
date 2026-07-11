@@ -71,12 +71,18 @@ vi.mock('@/queue/producer.js', () => ({
 const createRun = vi.fn(async (_input: unknown) => 'run-1');
 const completeRun = vi.fn(async (_id: string, _input: unknown) => {});
 const storeRunLogs = vi.fn(async (_id: string, _stdout: string, _stderr: string) => {});
-const resetRunToRunning = vi.fn(async (_id: string) => true);
+const getLatestRunForTask = vi.fn(
+	async (_projectId: string, _taskId: string, _phase: string) => undefined,
+);
+const resetRunToRunning = vi.fn(async (_id: string, _job?: unknown, _fromStatus?: string) => true);
 vi.mock('@/db/repositories/runsRepository.js', () => ({
 	createRun: (input: unknown) => createRun(input),
 	completeRun: (id: string, input: unknown) => completeRun(id, input),
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
-	resetRunToRunning: (id: string) => resetRunToRunning(id),
+	getLatestRunForTask: (projectId: string, taskId: string, phase: string) =>
+		getLatestRunForTask(projectId, taskId, phase),
+	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
+		resetRunToRunning(id, job, fromStatus),
 }));
 
 // Global (app-wide) settings are loaded once per job for the default-model tier
@@ -167,6 +173,8 @@ describe('processJob', () => {
 		storeRunLogs.mockResolvedValue(undefined);
 		resetRunToRunning.mockClear();
 		resetRunToRunning.mockResolvedValue(true);
+		getLatestRunForTask.mockClear();
+		getLatestRunForTask.mockResolvedValue(undefined);
 		getAppSettings.mockClear();
 		getAppSettings.mockResolvedValue({});
 		acquireProjectSlot.mockClear();
@@ -1129,7 +1137,11 @@ describe('processJob', () => {
 
 			expect(outcome.status).toBe('phase-succeeded');
 			// The retry resets the originating row rather than inserting a second one.
-			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith('run-1');
+			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ runId: 'run-1' }),
+				undefined,
+			);
 			expect(createRun).not.toHaveBeenCalled();
 			// The reused id is what gets finalized on completion.
 			expect(completeRun).toHaveBeenCalledWith(
@@ -1147,7 +1159,11 @@ describe('processJob', () => {
 			);
 
 			expect(outcome.status).toBe('phase-succeeded');
-			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith('run-gone');
+			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith(
+				'run-gone',
+				expect.objectContaining({ runId: 'run-gone' }),
+				undefined,
+			);
 			expect(createRun).toHaveBeenCalledOnce();
 		});
 
@@ -1156,6 +1172,53 @@ describe('processJob', () => {
 
 			expect(resetRunToRunning).not.toHaveBeenCalled();
 			expect(createRun).toHaveBeenCalledOnce();
+		});
+
+		it.each([
+			'failed',
+			'deferred',
+		] as const)('reuses the latest %s row for a fresh webhook', async (status) => {
+			getLatestRunForTask.mockResolvedValueOnce({ id: `run-${status}`, status } as never);
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(getLatestRunForTask).toHaveBeenCalledWith(PROJECT.id, '17', 'review');
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				`run-${status}`,
+				expect.objectContaining({ runId: `run-${status}` }),
+				status,
+			);
+			expect(createRun).not.toHaveBeenCalled();
+			expect(completeRun).toHaveBeenCalledWith(
+				`run-${status}`,
+				expect.objectContaining({ status: 'completed' }),
+			);
+		});
+
+		it('creates a fresh row when the latest row is completed', async () => {
+			getLatestRunForTask.mockResolvedValueOnce({
+				id: 'run-completed',
+				status: 'completed',
+			} as never);
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(resetRunToRunning).not.toHaveBeenCalled();
+			expect(createRun).toHaveBeenCalledOnce();
+		});
+
+		it('creates a fresh row when another retry wins the terminal-row claim', async () => {
+			getLatestRunForTask.mockResolvedValueOnce({ id: 'run-failed', status: 'failed' } as never);
+			resetRunToRunning.mockResolvedValueOnce(false);
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(createRun).toHaveBeenCalledOnce();
+			expect(createRun).toHaveBeenCalledWith(
+				expect.objectContaining({
+					jobPayload: expect.not.objectContaining({ runId: 'run-failed' }),
+				}),
+			);
 		});
 
 		it('forwards the agent-reported token usage into completeRun on success', async () => {

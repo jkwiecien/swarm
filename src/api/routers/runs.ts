@@ -31,6 +31,18 @@ const ListRunsInputSchema = z.object({
 	offset: z.number().int().nonnegative().default(0),
 });
 
+async function claimRunOrThrow(
+	runId: string,
+	jobPayload: Parameters<typeof resetRunToRunning>[1],
+	fromStatus: 'deferred' | 'failed',
+): Promise<void> {
+	if (await resetRunToRunning(runId, jobPayload, fromStatus)) return;
+	throw new TRPCError({
+		code: 'CONFLICT',
+		message: 'This run is already retrying. Refresh to see its current status.',
+	});
+}
+
 export const runsRouter = router({
 	// Paginated, filtered list; returns { data, total } straight from the repo.
 	list: publicProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
@@ -107,6 +119,7 @@ export const runsRouter = router({
 			}
 
 			if (run.status === 'deferred') {
+				await claimRunOrThrow(run.id, undefined, 'deferred');
 				const promoted = await promoteRetryForRun(input.runId, input.cli, input.model);
 				if (!promoted) {
 					throw new TRPCError({
@@ -130,7 +143,7 @@ export const runsRouter = router({
 				if (input.model) job.modelOverride = input.model;
 
 				// Reset the run row to running state first (so the UI updates immediately)
-				await resetRunToRunning(run.id, job);
+				await claimRunOrThrow(run.id, job, 'failed');
 
 				// Enqueue the job with delay 0 (immediate)
 				await enqueueDelayedRetry(job, 0);
