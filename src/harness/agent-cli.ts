@@ -120,14 +120,16 @@ const PRINT_FLAG: Record<AgentCli, string> = {
  * token usage (`.usage`), so switching Claude to JSON output is invisible to
  * the log viewer.
  *
- * `antigravity`/`codex` get no flag yet — their output-format flags (if any)
- * haven't been live-verified (ai/RULES.md §6), so `parseAgentOutput` is a
- * no-op for them until a follow-up task adds their parsers.
+ * `codex exec --json` emits JSONL events; `./usage.js` extracts the final
+ * `turn.completed` usage and readable agent-message text. Antigravity has no
+ * structured-output or usage flag (verified via `agy --help` and a live run),
+ * so it stays on the graceful-unavailable path. Its empty entry also preserves
+ * the load-bearing `-p`-immediately-before-prompt order described above.
  */
 const OUTPUT_FORMAT_ARGS: Record<AgentCli, string[]> = {
 	claude: ['--output-format', 'json'],
 	antigravity: [],
-	codex: [],
+	codex: ['--json'],
 };
 
 /**
@@ -231,7 +233,7 @@ export interface AgentCliResult {
 	/**
 	 * Normalized token usage extracted from this run's stdout (`./usage.js`),
 	 * or `undefined` when the CLI/output didn't yield any — an unsupported CLI
-	 * (`antigravity`/`codex`, until a follow-up task), malformed/truncated
+	 * (Antigravity cannot report it), malformed/truncated
 	 * output, or a run that never produced output at all.
 	 */
 	usage?: AgentUsage;
