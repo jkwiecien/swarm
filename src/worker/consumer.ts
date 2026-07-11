@@ -435,12 +435,19 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 
 async function tryReuseLatestRun(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
-	const claimed = await resetRunToRunning(prior.id, { ...job, runId: prior.id }, prior.status);
+	const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+	const claimed = await resetRunToRunning(
+		prior.id,
+		{ ...job, runId: prior.id },
+		prior.status,
+		model,
+	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
 	return prior.id;
@@ -448,13 +455,15 @@ async function tryReuseLatestRun(
 
 async function tryResetCarriedRun(
 	project: ProjectConfig,
+	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
 ): Promise<string | undefined> {
 	const runId = job.runId;
 	if (!runId) return undefined;
 	try {
-		return (await resetRunToRunning(runId, job)) ? runId : undefined;
+		const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+		return (await resetRunToRunning(runId, job, undefined, model)) ? runId : undefined;
 	} catch (err) {
 		logger.error('Failed to reset run row for retry (creating a new one)', {
 			projectId: project.id,
@@ -511,11 +520,11 @@ async function tryCreateRun(
 ): Promise<string | undefined> {
 	const existingRunId = job.runId;
 	if (existingRunId) {
-		const reusedRunId = await tryResetCarriedRun(project, trigger, job);
+		const reusedRunId = await tryResetCarriedRun(project, globalDefaults, trigger, job);
 		if (reusedRunId) return reusedRunId;
 	} else {
 		try {
-			const reusedRunId = await tryReuseLatestRun(project, trigger, job);
+			const reusedRunId = await tryReuseLatestRun(project, globalDefaults, trigger, job);
 			if (reusedRunId) return reusedRunId;
 		} catch (err) {
 			logger.error('Failed to reuse terminal run row (creating a new one)', {

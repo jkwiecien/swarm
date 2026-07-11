@@ -35,8 +35,9 @@ async function claimRunOrThrow(
 	runId: string,
 	jobPayload: Parameters<typeof resetRunToRunning>[1],
 	fromStatus: 'deferred' | 'failed',
+	model?: string,
 ): Promise<void> {
-	if (await resetRunToRunning(runId, jobPayload, fromStatus)) return;
+	if (await resetRunToRunning(runId, jobPayload, fromStatus, model)) return;
 	throw new TRPCError({
 		code: 'CONFLICT',
 		message: 'This run is already retrying. Refresh to see its current status.',
@@ -147,7 +148,7 @@ export const runsRouter = router({
 			if (run.status === 'deferred') {
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
-				await claimRunOrThrow(run.id, undefined, 'deferred');
+				await claimRunOrThrow(run.id, undefined, 'deferred', input.model);
 				// Common case: promote the pending delayed job in place (delay → 0).
 				const promoted = await promoteRetryForRun(input.runId, input.cli, input.model);
 				if (promoted) {
@@ -169,7 +170,7 @@ export const runsRouter = router({
 				const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
 				// Persist the reconstructed payload onto the already-claimed row, then
 				// enqueue at delay 0.
-				await resetRunToRunning(run.id, job);
+				await resetRunToRunning(run.id, job, undefined, input.model);
 				await enqueueDelayedRetry(job, 0);
 				return { runId: input.runId, status: 'retrying' as const };
 			}
@@ -183,7 +184,7 @@ export const runsRouter = router({
 				});
 			}
 			const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
-			await claimRunOrThrow(run.id, job, 'failed');
+			await claimRunOrThrow(run.id, job, 'failed', input.model);
 			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };
