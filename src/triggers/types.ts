@@ -51,7 +51,8 @@ export type TriggerPhase =
 	| 'implementation'
 	| 'review'
 	| 'respond-to-review'
-	| 'respond-to-ci';
+	| 'respond-to-ci'
+	| 'resolve-conflicts';
 
 /**
  * The `taskId` every result carries — the identifier the phase's worktree is
@@ -96,6 +97,14 @@ export type TriggerResult =
 			prBranch: string;
 			/** The head commit whose checks failed — pins the fix to the commit CI ran against. */
 			headSha: string;
+	  })
+	| (TriggerResultBase & {
+			phase: 'resolve-conflicts';
+			prNumber: string;
+			prBranch: string;
+			headSha: string;
+			baseBranch: string;
+			baseSha: string;
 	  });
 
 export interface TriggerHandler {

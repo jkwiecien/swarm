@@ -15,7 +15,14 @@ const runsSearchSchema = z.object({
 	projectId: z.string().optional(),
 	status: z.enum(['running', 'completed', 'failed', 'deferred']).optional(),
 	phase: z
-		.enum(['planning', 'implementation', 'review', 'respond-to-review', 'respond-to-ci'])
+		.enum([
+			'planning',
+			'implementation',
+			'review',
+			'respond-to-review',
+			'respond-to-ci',
+			'resolve-conflicts',
+		])
 		.optional(),
 	page: z.number().int().positive().optional(),
 });

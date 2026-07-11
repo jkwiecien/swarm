@@ -67,6 +67,7 @@ export const AgentConfigSchema = z
 	.object({
 		cli: AgentCliSchema.optional(),
 		model: z.string().min(1).optional(),
+		timeoutMs: z.number().int().positive().optional(),
 	})
 	.refine(
 		(agent) => {
@@ -129,6 +130,7 @@ export const AgentsConfigSchema = z
 		review: AgentConfigSchema.optional(),
 		respondToReview: AgentConfigSchema.optional(),
 		respondToCi: AgentConfigSchema.optional(),
+		resolveConflicts: AgentConfigSchema.optional(),
 	})
 	.describe('Per-phase agent CLI/model overrides — omit any phase to keep its coded default');
 

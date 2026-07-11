@@ -158,6 +158,15 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.prAuthorLogin).toBe('swarm-impl');
 		});
 
+		it('extracts merged and base branch fields from a closed pull_request event', () => {
+			const parsed = adapter.parseWebhook('pull_request', {
+				action: 'closed',
+				repository: repo(),
+				pull_request: { number: 42, merged: true, base: { ref: 'main' } },
+			});
+			expect(parsed).toMatchObject({ merged: true, baseBranch: 'main' });
+		});
+
 		it('leaves prAuthorLogin undefined when the pull_request has no user', () => {
 			const parsed = adapter.parseWebhook('pull_request', {
 				action: 'opened',

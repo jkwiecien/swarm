@@ -23,12 +23,14 @@
  */
 
 import { createPmStatusTrigger } from './handlers/pm-status.js';
+import { createResolveConflictsTrigger } from './handlers/resolve-conflicts.js';
 import { createRespondToReviewTrigger } from './handlers/respond-to-review.js';
 import { createReviewTrigger } from './handlers/review.js';
 import type { TriggerRegistry } from './registry.js';
 
 export function registerBuiltInTriggers(registry: TriggerRegistry): void {
 	registry.register(createReviewTrigger());
+	registry.register(createResolveConflictsTrigger());
 	registry.register(createRespondToReviewTrigger());
 	registry.register(createPmStatusTrigger());
 }
