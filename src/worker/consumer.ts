@@ -428,8 +428,10 @@ async function tryReuseLatestRun(
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
+	const claimed = await resetRunToRunning(prior.id, { ...job, runId: prior.id }, prior.status);
+	if (!claimed) return undefined;
 	job.runId = prior.id;
-	return (await resetRunToRunning(prior.id, job, prior.status)) ? prior.id : undefined;
+	return prior.id;
 }
 
 async function tryResetCarriedRun(

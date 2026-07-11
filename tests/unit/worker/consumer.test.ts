@@ -1214,6 +1214,11 @@ describe('processJob', () => {
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
 			expect(createRun).toHaveBeenCalledOnce();
+			expect(createRun).toHaveBeenCalledWith(
+				expect.objectContaining({
+					jobPayload: expect.not.objectContaining({ runId: 'run-failed' }),
+				}),
+			);
 		});
 
 		it('forwards the agent-reported token usage into completeRun on success', async () => {
