@@ -974,6 +974,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				source: 'github',
 				event: job.event,
 			}
@@ -981,6 +983,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				resumePmPhase: job.resumePmPhase,
 				source: 'github-projects',
 				event: job.event,

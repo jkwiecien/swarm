@@ -108,4 +108,18 @@ describe('resolve-conflicts trigger', () => {
 		expect(result).toBeNull();
 		expect(scheduleCoalescedJob).toHaveBeenCalledOnce();
 	});
+
+	it('bypasses conflict resolution claim on retry (when runId is present)', async () => {
+		const result = await createResolveConflictsTrigger().handle({
+			...mergedEvent,
+			runId: 'existing-run-id',
+			event: { ...mergedEvent.event, conflictPrNumber: '42' },
+		});
+		expect(claimConflictResolution).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			phase: 'resolve-conflicts',
+			prNumber: '42',
+			taskId: '42-conflicts',
+		});
+	});
 });

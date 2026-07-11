@@ -38,6 +38,14 @@ export type TriggerContext = {
 	recheckAttempt?: number;
 	/** A deferred PM phase that must resume even though its card is now In progress. */
 	resumePmPhase?: Extract<TriggerPhase, 'planning' | 'implementation'>;
+	/**
+	 * How many times this job has already been re-enqueued as a deferred retry.
+	 */
+	rateLimitRetryAttempt?: number;
+	/**
+	 * The `runs` row this job re-runs (issue #136).
+	 */
+	runId?: string;
 } & (
 	| { source: 'github'; event: GitHubParsedEvent }
 	| { source: 'github-projects'; event: GitHubProjectsParsedEvent }

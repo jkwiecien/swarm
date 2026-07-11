@@ -57,7 +57,7 @@ export function createResolveConflictsTrigger(): TriggerHandler {
 			if (candidate.mergeable) return null;
 
 			const stateKey = `${ctx.project.repo}:${candidate.number}:${candidate.headSha}:${candidate.baseSha}`;
-			if (!(await claimConflictResolution(stateKey))) return null;
+			if (!ctx.runId && !(await claimConflictResolution(stateKey))) return null;
 			return {
 				phase: 'resolve-conflicts',
 				taskId: `${candidate.number}-conflicts`,

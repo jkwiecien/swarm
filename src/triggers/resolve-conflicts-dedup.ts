@@ -5,10 +5,12 @@ import { parseRedisUrl } from '../lib/redis.js';
 
 let redis: Redis | undefined;
 function client(): Redis {
-	redis ??= new Redis({ ...parseRedisUrl(requireEnv('REDIS_URL')), maxRetriesPerRequest: 1 });
-	redis.on('error', (error) =>
-		logger.warn('resolve-conflicts dedup: Redis error', { error: String(error) }),
-	);
+	if (!redis) {
+		redis = new Redis({ ...parseRedisUrl(requireEnv('REDIS_URL')), maxRetriesPerRequest: 1 });
+		redis.on('error', (error) =>
+			logger.warn('resolve-conflicts dedup: Redis error', { error: String(error) }),
+		);
+	}
 	return redis;
 }
 
