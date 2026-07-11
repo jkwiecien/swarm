@@ -3,12 +3,17 @@ import { registerBuiltInTriggers } from '@/triggers/builtins.js';
 import { createTriggerRegistry } from '@/triggers/registry.js';
 
 describe('registerBuiltInTriggers', () => {
-	it('registers the three pipeline-phase handlers', () => {
+	it('registers all pipeline-phase handlers', () => {
 		const registry = createTriggerRegistry();
 		registerBuiltInTriggers(registry);
 
 		const names = registry.getHandlers().map((h) => h.name);
-		expect(names).toEqual(['pr-review', 'pr-review-submitted', 'pm-status-changed']);
+		expect(names).toEqual([
+			'pr-review',
+			'resolve-conflicts',
+			'pr-review-submitted',
+			'pm-status-changed',
+		]);
 	});
 
 	it('registers every handler with a description', () => {

@@ -41,6 +41,7 @@ import { logger } from '../lib/logger.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
 import { phaseLabel } from '../pipeline/phase-label.js';
 import { runPlanningPhase } from '../pipeline/planning.js';
+import { runResolveConflictsPhase } from '../pipeline/resolve-conflicts.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
@@ -326,6 +327,7 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'implementation':
@@ -338,6 +340,7 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'review':
@@ -348,6 +351,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'respond-to-review':
@@ -360,6 +364,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 		case 'respond-to-ci':
@@ -371,6 +376,21 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
+				signal,
+			});
+		case 'resolve-conflicts':
+			return runResolveConflictsPhase({
+				project,
+				prNumber: trigger.prNumber,
+				prBranch: trigger.prBranch,
+				headSha: trigger.headSha,
+				baseBranch: trigger.baseBranch,
+				baseSha: trigger.baseSha,
+				taskId: trigger.taskId,
+				cli: overrides.cli,
+				model: overrides.model,
+				timeoutMs: overrides.timeoutMs,
 				signal,
 			});
 	}
@@ -394,7 +414,7 @@ function agentOverrideFor(
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 	job?: SwarmJob,
-): { cli?: AgentCli; model?: string } {
+): { cli?: AgentCli; model?: string; timeoutMs?: number } {
 	const phaseConfig = (() => {
 		switch (phase) {
 			case 'planning':
@@ -407,11 +427,13 @@ function agentOverrideFor(
 				return project.agents?.respondToReview ?? {};
 			case 'respond-to-ci':
 				return project.agents?.respondToCi ?? {};
+			case 'resolve-conflicts':
+				return project.agents?.resolveConflicts ?? {};
 		}
 	})();
 	const cli = job?.cliOverride ?? phaseConfig.cli;
 	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
-	return { cli, model };
+	return { cli, model, timeoutMs: phaseConfig.timeoutMs };
 }
 
 /**
@@ -961,6 +983,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				source: 'github',
 				event: job.event,
 			}
@@ -968,6 +992,8 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				project,
 				deliveryId: job.deliveryId,
 				recheckAttempt: job.recheckAttempt,
+				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
+				runId: job.runId,
 				resumePmPhase: job.resumePmPhase,
 				source: 'github-projects',
 				event: job.event,

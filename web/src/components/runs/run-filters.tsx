@@ -80,6 +80,7 @@ export function RunFilters({
 					<option value="review">Review</option>
 					<option value="respond-to-review">Respond to Review</option>
 					<option value="respond-to-ci">Respond to CI</option>
+					<option value="resolve-conflicts">Resolve Conflicts</option>
 				</select>
 			</div>
 

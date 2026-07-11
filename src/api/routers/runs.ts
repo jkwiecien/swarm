@@ -21,6 +21,7 @@ const RunPhaseEnum = z.enum([
 	'review',
 	'respond-to-review',
 	'respond-to-ci',
+	'resolve-conflicts',
 ]);
 
 const ListRunsInputSchema = z.object({

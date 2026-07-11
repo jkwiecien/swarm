@@ -38,6 +38,14 @@ export type TriggerContext = {
 	recheckAttempt?: number;
 	/** A deferred PM phase that must resume even though its card is now In progress. */
 	resumePmPhase?: Extract<TriggerPhase, 'planning' | 'implementation'>;
+	/**
+	 * How many times this job has already been re-enqueued as a deferred retry.
+	 */
+	rateLimitRetryAttempt?: number;
+	/**
+	 * The `runs` row this job re-runs (issue #136).
+	 */
+	runId?: string;
 } & (
 	| { source: 'github'; event: GitHubParsedEvent }
 	| { source: 'github-projects'; event: GitHubProjectsParsedEvent }
@@ -51,7 +59,8 @@ export type TriggerPhase =
 	| 'implementation'
 	| 'review'
 	| 'respond-to-review'
-	| 'respond-to-ci';
+	| 'respond-to-ci'
+	| 'resolve-conflicts';
 
 /**
  * The `taskId` every result carries — the identifier the phase's worktree is
@@ -96,6 +105,14 @@ export type TriggerResult =
 			prBranch: string;
 			/** The head commit whose checks failed — pins the fix to the commit CI ran against. */
 			headSha: string;
+	  })
+	| (TriggerResultBase & {
+			phase: 'resolve-conflicts';
+			prNumber: string;
+			prBranch: string;
+			headSha: string;
+			baseBranch: string;
+			baseSha: string;
 	  });
 
 export interface TriggerHandler {
