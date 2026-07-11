@@ -1331,6 +1331,7 @@ describe('processJob', () => {
 			expect(outcome.status).toBe('phase-failed');
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
 				status: 'failed',
+				agentSessionId: null,
 				error: 'review agent exited with code 1',
 				engine: 'claude',
 				exitCode: 1,

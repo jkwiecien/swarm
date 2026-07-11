@@ -85,6 +85,37 @@ describe('runAgentCli', () => {
 		);
 	});
 
+	it('assigns and resumes Claude sessions before -p without affecting other CLIs', async () => {
+		const fresh = runAgentCli(
+			createMockRunAgentCliOptions({
+				sessionId: '11111111-1111-4111-8111-111111111111',
+				args: ['go'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await fresh;
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'--dangerously-skip-permissions',
+			'--output-format',
+			'json',
+			'--session-id',
+			'11111111-1111-4111-8111-111111111111',
+			'-p',
+			'go',
+		]);
+
+		const resumed = runAgentCli(
+			createMockRunAgentCliOptions({
+				resumeSessionId: '11111111-1111-4111-8111-111111111111',
+				args: ['continue'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await resumed;
+		expect(spawnMock.mock.calls[1][1]).toContain('--resume');
+		expect(spawnMock.mock.calls[1][1].slice(-2)).toEqual(['-p', 'continue']);
+	});
+
 	it('requests each supported structured output while leaving antigravity plain', async () => {
 		const claude = runAgentCli(createMockRunAgentCliOptions());
 		lastChild().emit('close', 0, null);

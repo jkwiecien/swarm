@@ -24,6 +24,7 @@ import {
 	completeRun,
 	createRun,
 	getLatestRunForTask,
+	getRunByIdFromDb,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
@@ -82,6 +83,8 @@ export type JobOutcome =
 			reason: string;
 			/** The retry attempt count *before* this deferral (0 on the first). */
 			attempt: number;
+			/** True only for a Claude rate-limit deferral in a PM phase. */
+			resumable: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
 			 * created/reused for this job. Carried onto the re-enqueued job so the
@@ -200,6 +203,10 @@ function deferAgentRunError(
 		reason: error,
 		attempt,
 		runId,
+		resumable:
+			failure.kind === 'rate-limit' &&
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
 	};
 }
 
@@ -235,6 +242,7 @@ function deferForConcurrencyLimit(
 		retryDelayMs: MIN_RETRY_DELAY_MS,
 		reason,
 		attempt,
+		resumable: false,
 		// A fresh webhook has no row yet (this defers before `tryCreateRun`); a
 		// retry carries its originating row's id, which must survive so the next
 		// re-enqueue keeps resetting the same row rather than orphaning it.
@@ -327,6 +335,8 @@ function runPhase(
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				signal,
+				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
+				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 			});
 		case 'implementation':
 			return runImplementationPhase({
@@ -338,6 +348,8 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
+				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
+				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 				signal,
 			});
 		case 'review':
@@ -440,6 +452,7 @@ async function tryReuseLatestRun(
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
+	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
 	const claimed = await resetRunToRunning(prior.id, { ...job, runId: prior.id }, prior.status);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -511,6 +524,15 @@ async function tryCreateRun(
 ): Promise<string | undefined> {
 	const existingRunId = job.runId;
 	if (existingRunId) {
+		try {
+			const existing = await getRunByIdFromDb(existingRunId);
+			if (existing?.agentSessionId) job.agentSessionId = existing.agentSessionId;
+		} catch (err) {
+			logger.debug('Failed to load resumable agent session (retrying from scratch)', {
+				runId: existingRunId,
+				error: describeError(err),
+			});
+		}
 		const reusedRunId = await tryResetCarriedRun(project, trigger, job);
 		if (reusedRunId) return reusedRunId;
 	} else {
@@ -528,7 +550,7 @@ async function tryCreateRun(
 	}
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
-		return await createRun({
+		const runId = await createRun({
 			projectId: project.id,
 			taskId: trigger.taskId,
 			phase: trigger.phase,
@@ -540,6 +562,8 @@ async function tryCreateRun(
 			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
 			jobPayload: job,
 		});
+		job.agentSessionId = runId;
+		return runId;
 	} catch (err) {
 		logger.error('Failed to create run row (continuing)', {
 			projectId: project.id,
@@ -597,13 +621,14 @@ async function finalizeFailedRun(
 				error: outcome.reason,
 				nextRetryAt: new Date(Date.now() + outcome.retryDelayMs),
 				...agentColumns(agent),
+				agentSessionId: outcome.resumable ? undefined : null,
 			},
 			agent,
 		);
 	} else if (outcome.status === 'phase-failed') {
 		await finalizeRun(
 			runId,
-			{ status: 'failed', error: outcome.error, ...agentColumns(agent) },
+			{ status: 'failed', error: outcome.error, agentSessionId: null, ...agentColumns(agent) },
 			agent,
 		);
 	}

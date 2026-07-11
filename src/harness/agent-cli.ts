@@ -153,6 +153,10 @@ export interface RunAgentCliOptions {
 	 * fixed list, since the two CLIs' model names don't overlap.
 	 */
 	model?: string;
+	/** Claude session UUID to assign to a fresh run. Ignored by other CLIs. */
+	sessionId?: string;
+	/** Existing Claude session UUID to resume. Ignored by other CLIs. */
+	resumeSessionId?: string;
 	/** Extra env vars, merged over (and overriding) the parent process env. */
 	env?: Record<string, string>;
 	/** Override the binary to launch — mainly for tests/deployment. Defaults per `cli`. */
@@ -306,11 +310,20 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
 	const modelArgs = options.model ? ['--model', options.model] : [];
+	const sessionArgs =
+		cli !== 'claude'
+			? []
+			: options.resumeSessionId
+				? ['--resume', options.resumeSessionId]
+				: options.sessionId
+					? ['--session-id', options.sessionId]
+					: [];
 	const printFlag = PRINT_FLAG[cli];
 	const args = [
 		...DEFAULT_ARGS[cli],
 		...modelArgs,
 		...OUTPUT_FORMAT_ARGS[cli],
+		...sessionArgs,
 		...(printFlag ? [printFlag] : []),
 		...(options.args ?? []),
 	];

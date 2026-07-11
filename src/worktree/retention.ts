@@ -2,6 +2,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
 import type { ProjectConfig } from '../config/schema.js';
 import { PROJECT_DEFAULTS } from '../config/schema.js';
+import { hasResumableDeferredRun } from '../db/repositories/runsRepository.js';
 import { logger } from '../lib/logger.js';
 import { GitWorktreeManager } from '../worker/git-worktree-manager.js';
 import { isWorktreeLeased } from './worktree-lease.js';
@@ -11,6 +12,8 @@ export interface PruneStaleWorktreesOptions {
 	worktrees?: GitWorktreeManager;
 	/** Report what would happen without actually removing anything. */
 	dryRun?: boolean;
+	/** Injectable deferred-session pin lookup for tests. */
+	isDeferredPinned?: (projectId: string, taskId: string) => Promise<boolean>;
 }
 
 export interface PruneStaleWorktreesResult {
@@ -18,6 +21,7 @@ export interface PruneStaleWorktreesResult {
 	pruned: string[];
 	skippedInFlight: string[];
 	skippedDirty: string[];
+	skippedDeferred: string[];
 	/** Worktrees under worktreeRoot that don't match `task-<id>` — left alone entirely (see plan's scope note on legacy worktrees). */
 	ignored: string[];
 }
@@ -82,11 +86,17 @@ async function processCandidateEntries(
 	pruned: string[],
 	skippedInFlight: string[],
 	skippedDirty: string[],
+	skippedDeferred: string[],
 ): Promise<void> {
 	for (const candidate of candidates) {
 		const { path, taskId } = candidate;
 		if (await isWorktreeLeased(project.id, taskId)) {
 			skippedInFlight.push(path);
+			continue;
+		}
+		const isDeferredPinned = options.isDeferredPinned ?? hasResumableDeferredRun;
+		if (await isDeferredPinned(project.id, taskId)) {
+			skippedDeferred.push(path);
 			continue;
 		}
 		if (!(await worktrees.isClean(taskId))) {
@@ -111,6 +121,7 @@ export async function pruneStaleWorktrees(
 	const pruned: string[] = [];
 	const skippedInFlight: string[] = [];
 	const skippedDirty: string[] = [];
+	const skippedDeferred: string[] = [];
 	const ignored: string[] = [];
 
 	const worktreeRootCanonical = canonicalize(resolve(project.repoRoot, project.worktreeRoot));
@@ -140,6 +151,7 @@ export async function pruneStaleWorktrees(
 		pruned,
 		skippedInFlight,
 		skippedDirty,
+		skippedDeferred,
 	);
 
 	logger.debug('worktree retention sweep complete', {
@@ -148,6 +160,7 @@ export async function pruneStaleWorktrees(
 		pruned: pruned.length,
 		skippedInFlight: skippedInFlight.length,
 		skippedDirty: skippedDirty.length,
+		skippedDeferred: skippedDeferred.length,
 		ignored: ignored.length,
 	});
 
@@ -163,6 +176,7 @@ export async function pruneStaleWorktrees(
 		pruned,
 		skippedInFlight,
 		skippedDirty,
+		skippedDeferred,
 		ignored,
 	};
 }

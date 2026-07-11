@@ -112,6 +112,18 @@ export class GitWorktreeManager {
 		return resolve(this.project.repoRoot, this.project.worktreeRoot, `task-${taskId}`);
 	}
 
+	/** Reclaim an existing preserved checkout, or return undefined when it is gone. */
+	async reuse(
+		taskId: string,
+		branch: string,
+		detached: boolean,
+	): Promise<WorktreeHandle | undefined> {
+		const path = this.worktreePath(taskId);
+		if (!existsSync(path)) return undefined;
+		await claimWorktreeLease(this.project.id, taskId);
+		return { taskId, path, branch, detached };
+	}
+
 	/**
 	 * Provision an isolated worktree for `taskId` and return its handle.
 	 *

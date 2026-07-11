@@ -119,6 +119,10 @@ export interface RunImplementationPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/** Deterministic Claude session handle assigned by the run row. */
+	sessionId?: string;
+	/** Resume this Claude session when its preserved worktree still exists. */
+	resumeSessionId?: string;
 	/**
 	 * Whether to move the item to "In review" once the PR is opened. Defaults
 	 * to `true`. The pickup move to "In progress" at the start of this phase is
@@ -282,6 +286,8 @@ export async function runImplementationPhase(
 		pm,
 		cli = DEFAULT_IMPLEMENTATION_CLI,
 		model,
+		sessionId,
+		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		resumeExistingBranch = false,
 		timeoutMs,
@@ -311,18 +317,26 @@ export async function runImplementationPhase(
 
 	// Task-branch checkout (createBranch defaults to true): the agent commits and
 	// pushes here, so — unlike Planning — this is not a detached, throwaway HEAD.
-	const handle = resumeExistingBranch
-		? await worktrees.provision(taskId, {
-				createBranch: false,
-				branch: `${project.branchPrefix}${taskId}`,
-			})
-		: await worktrees.provision(taskId);
+	const resumedHandle = resumeSessionId
+		? await worktrees.reuse(taskId, `${project.branchPrefix}${taskId}`, false)
+		: undefined;
+	const handle =
+		resumedHandle ??
+		(resumeExistingBranch
+			? await worktrees.provision(taskId, {
+					createBranch: false,
+					branch: `${project.branchPrefix}${taskId}`,
+				})
+			: await worktrees.provision(taskId));
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
 		const agent = await runAgent({
 			cli,
 			model,
+			sessionId: resumedHandle ? undefined : sessionId,
+			resumeSessionId: resumedHandle ? resumeSessionId : undefined,
 			cwd: handle.path,
 			args: [
 				buildImplementationPrompt(workItem, {
@@ -344,11 +358,16 @@ export async function runImplementationPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, workItem.id, agent);
-			throw agentRunError(
+			const error = agentRunError(
 				agent,
 				`Implementation agent (${cli}) exited with code ${agent.exitCode}`,
 				` for task '${taskId}'`,
 			);
+			preserveForResume =
+				cli === 'claude' &&
+				(sessionId !== undefined || resumedHandle !== undefined) &&
+				error.failure.kind === 'rate-limit';
+			throw error;
 		}
 
 		const prUrlPath = join(handle.path, OPENED_PR_FILENAME);
@@ -398,7 +417,13 @@ export async function runImplementationPhase(
 		// (a successful phase turning into a reported failure, or a genuine
 		// error being replaced by the cleanup error).
 		try {
-			await worktrees.cleanup(taskId);
+			if (preserveForResume) {
+				logger.debug('implementation phase: preserving worktree for Claude session resume', {
+					taskId,
+				});
+			} else {
+				await worktrees.cleanup(taskId);
+			}
 		} catch (error) {
 			logger.error('implementation phase: worktree cleanup failed', {
 				taskId,

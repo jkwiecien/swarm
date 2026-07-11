@@ -44,6 +44,10 @@ async function sweepProject(project: ProjectConfig, dryRun: boolean): Promise<vo
 			out.warn(`    - ${p} (has uncommitted changes — clean up manually if it's no longer needed)`);
 		}
 	}
+	if (result.skippedDeferred.length > 0) {
+		out.info(`  skipped (deferred session): ${result.skippedDeferred.length}`);
+		for (const p of result.skippedDeferred) out.info(`    - ${p}`);
+	}
 	if (result.ignored.length > 0) {
 		out.info(`  ignored: ${result.ignored.length}`);
 	}

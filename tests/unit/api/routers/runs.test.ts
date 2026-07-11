@@ -49,6 +49,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		durationMs: 60000,
 		usage: null,
 		jobPayload: null,
+		agentSessionId: null,
 		...overrides,
 	};
 }
