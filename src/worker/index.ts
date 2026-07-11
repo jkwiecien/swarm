@@ -11,8 +11,11 @@
 import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
+import { runMigrations } from '../db/migrate.js';
 import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
+import { failOrphanedRunningRuns } from '../db/repositories/runsRepository.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
+import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
@@ -71,6 +74,40 @@ if (!Number.isInteger(sweepIntervalMs) || sweepIntervalMs < 1) {
 
 const registry = createTriggerRegistry();
 registerBuiltInTriggers(registry);
+
+// Bring the DB schema up to date before serving any job. The `db:migrate` npm
+// prefix runs only on the first `dev:worker` invocation; `tsx --watch` restarts
+// (frequent — SWARM edits its own repo) skip it, so without this a restart onto
+// newer schema-referencing code runs ahead of the DB and every `runs` write/read
+// fails silently (run tracking is best-effort) — the phase runs but never shows
+// in the dashboard. Fatal on failure: a schema-mismatched worker is the exact
+// bug this guards against, so crash loudly rather than serve jobs blind.
+try {
+	await runMigrations();
+} catch (err) {
+	logger.error('Failed to apply database migrations — refusing to start', {
+		error: describeError(err),
+	});
+	process.exit(1);
+}
+
+// Reconcile zombie runs left `running` by a prior crash or watch restart that
+// killed the process before it wrote a terminal status — otherwise they show as
+// "running" in the dashboard forever. Safe here (before the Worker pulls any
+// job) because a fresh worker owns no in-flight run. Best-effort: a hiccup must
+// not stop the worker from serving jobs.
+try {
+	const reconciled = await failOrphanedRunningRuns(
+		'Worker restarted while this run was in progress',
+	);
+	if (reconciled > 0) {
+		logger.debug('Reconciled orphaned running runs at startup', { count: reconciled });
+	}
+} catch (err) {
+	logger.error('Failed to reconcile orphaned running runs at startup', {
+		error: describeError(err),
+	});
+}
 
 // Aborted on SIGTERM/SIGINT so an in-flight agent run is killed (SIGTERM→SIGKILL
 // via `runAgentCli`'s signal option) instead of outliving the stop grace period.
@@ -199,7 +236,7 @@ async function runWorktreeSweep(): Promise<void> {
 		}
 	} catch (err) {
 		logger.error('Failed to list projects for worktree retention sweep', {
-			error: err instanceof Error ? err.message : String(err),
+			error: describeError(err),
 		});
 	}
 }

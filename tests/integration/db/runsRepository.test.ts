@@ -6,6 +6,7 @@ import { deleteProjectFromDb } from '../../../src/db/repositories/projectsReposi
 import {
 	completeRun,
 	createRun,
+	failOrphanedRunningRuns,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
@@ -264,6 +265,37 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			await getDb().delete(runs).where(eq(runs.id, id));
 
 			expect(await getRunLogsFromDb(id)).toBeUndefined();
+		});
+	});
+
+	describe('failOrphanedRunningRuns', () => {
+		it('flips leftover running rows to failed and leaves settled ones untouched', async () => {
+			const orphanA = await createRun({ projectId: PROJECT_ID, taskId: '1', phase: 'review' });
+			const orphanB = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '2',
+				phase: 'implementation',
+			});
+			const settled = await createRun({ projectId: PROJECT_ID, taskId: '3', phase: 'planning' });
+			await completeRun(settled, { status: 'completed' });
+
+			const count = await failOrphanedRunningRuns('interrupted by restart');
+
+			expect(count).toBe(2);
+			for (const id of [orphanA, orphanB]) {
+				const row = await getRunByIdFromDb(id);
+				expect(row?.status).toBe('failed');
+				expect(row?.error).toBe('interrupted by restart');
+				expect(row?.completedAt).toBeInstanceOf(Date);
+			}
+			// A run that already reached a terminal status is not rewritten.
+			const settledRow = await getRunByIdFromDb(settled);
+			expect(settledRow?.status).toBe('completed');
+			expect(settledRow?.error).toBeNull();
+		});
+
+		it('returns 0 when there are no running rows', async () => {
+			expect(await failOrphanedRunningRuns('nothing to do')).toBe(0);
 		});
 	});
 });
