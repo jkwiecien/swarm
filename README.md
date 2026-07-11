@@ -283,7 +283,7 @@ The worker resolves the model for a phase through a four-tier fallback chain, mo
 Today the web dashboard exposes a **subset** of settings:
 
 - **Projects** — create a project (`id`, `name`, `repo`, `repoRoot`) and delete one, plus per-project **General Settings** (`repo`, `repoRoot`, `worktreeRoot`, `baseBranch`, `branchPrefix`) and **Agent Configuration** (per-phase `cli`/`model` and the project-level `agents.defaults`).
-- **Settings** — a top-level, app-wide **Settings** screen (sidebar → *System → Settings*) for [global settings](#global-settings-app_settings). Its only section today is **Default Agent Models** — the global per-CLI default model for Claude / Antigravity / Codex (writes `agents.defaults` via the `settings` tRPC router); leaving a CLI on its default option clears the global default so the coded default applies.
+- **Settings** — a top-level, app-wide **Settings** screen (sidebar → *Settings → General*) for [global settings](#global-settings-app_settings). Its only section today is **Default Agent Models** — the global per-CLI default model for Claude / Antigravity / Codex (writes `agents.defaults` via the `settings` tRPC router); leaving a CLI on its default option clears the global default so the coded default applies.
 
 The board mapping (`githubProjects`), `credentials`, `pipeline`, and all general/env settings are **not** yet editable in the UI — change those in `swarm.config.json` / `.env` and re-apply. Credentials management and further global-settings sections are on the phase-6 backlog (see [Status](#status)).
 
