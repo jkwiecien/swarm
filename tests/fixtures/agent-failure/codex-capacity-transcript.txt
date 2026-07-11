@@ -1,0 +1,9 @@
+Implementing rate-limit handling from the issue description.
+The test fixture says HTTP 429 Too Many Requests and resets 1:40pm (Europe/Warsaw).
+Running tests/unit/harness/agent-failure.test.ts
+✓ does not classify a bare rate-limit string
+✓ preserves the reset hint for genuine provider banners
+Lint passed.
+Type-check passed.
+Preparing final hand-off.
+ERROR: Selected model is at capacity. Please try a different model.

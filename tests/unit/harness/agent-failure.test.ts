@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError, agentRunError, classifyAgentFailure } from '@/harness/agent-failure.js';
@@ -20,6 +21,10 @@ function result(overrides: Partial<AgentCliResult> = {}): AgentCliResult {
 // A fixed reference instant so the reset-time parse is deterministic. This is
 // 2026-07-07T10:00:00Z, i.e. 12:00 in Europe/Warsaw (UTC+2 in July).
 const NOW = new Date('2026-07-07T10:00:00Z');
+const CAPACITY_TRANSCRIPT = readFileSync(
+	new URL('../../fixtures/agent-failure/codex-capacity-transcript.txt', import.meta.url),
+	'utf8',
+);
 
 describe('classifyAgentFailure', () => {
 	it('classifies the observed Claude session-limit banner as rate-limit', () => {
@@ -114,6 +119,31 @@ describe('classifyAgentFailure', () => {
 			NOW,
 		);
 		expect(failure.kind).toBe('error');
+	});
+
+	it('classifies a terminal Codex capacity error despite borrowed rate-limit text', () => {
+		const failure = classifyAgentFailure(
+			result({ cli: 'codex', stdout: CAPACITY_TRANSCRIPT }),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('ignores borrowed limit and reset signals outside the terminal window', () => {
+		const body = ['usage limit reached — resets 1:40pm (Europe/Warsaw)', ...Array(16).fill('work')];
+		const failure = classifyAgentFailure(
+			result({ stdout: `${body.join('\n')}\nTypeError: boom` }),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
+	});
+
+	it('prioritizes a capacity banner over rate-limit wording in the terminal window', () => {
+		const failure = classifyAgentFailure(
+			result({ stderr: 'usage limit resets 1:40pm\nSelected model is at capacity' }),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
 	});
 
 	it('treats a timed-out run as a timeout regardless of its output', () => {
@@ -213,6 +243,19 @@ describe('agentRunError', () => {
 		const err = agentRunError(result({ aborted: true }), 'x exited', ' for y', NOW);
 		expect(err.message).toBe('x exited (aborted) for y');
 		expect(err.failure.kind).toBe('aborted');
+	});
+
+	it('notes model capacity', () => {
+		const err = agentRunError(
+			result({ cli: 'codex', stderr: 'ERROR: Selected model is at capacity.' }),
+			'Implementation agent (codex) exited with code 1',
+			' for task 136',
+			NOW,
+		);
+		expect(err.message).toBe(
+			'Implementation agent (codex) exited with code 1 (model at capacity) for task 136',
+		);
+		expect(err.failure).toEqual({ kind: 'capacity' });
 	});
 
 	it('notes a stall', () => {

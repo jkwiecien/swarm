@@ -22,6 +22,7 @@ import type { AgentCliResult } from './agent-cli.js';
 /** Why an agent run failed, from the worker's point of view. */
 export type AgentFailureKind =
 	| 'rate-limit'
+	| 'capacity'
 	| 'timeout'
 	| 'aborted'
 	| 'stalled'
@@ -74,19 +75,31 @@ export class AgentRunError extends Error {
 // itself being limited. Only the literal "you've hit your … limit" phrasing
 // stands on its own; the softer signals — a bare "usage limit" mention, or an
 // HTTP `429`/"too many requests" — fire only when a "resets …" line co-occurs.
-// This matters because classification scans the agent's *full output* on any
-// non-zero exit (see runAgentCli, which already filters successes): the
-// respond-to-ci phase feeds the agent CI logs that routinely contain e.g. Docker
-// Hub's `429 Too Many Requests` / pull-rate-limit text, and reviewing code that
-// handles HTTP 429 is similar. A standalone 429 in that borrowed text must not
-// be misread as the CLI itself being rate-limited (and retried up to 6×).
+// Classification only trusts the terminal output window, and the softer
+// signals retain this co-occurrence gate as an additional guard against CI logs
+// or reviewed code that discusses HTTP 429 handling.
 const LIMIT_BANNER_RE = /(?:you've|you have)\s+hit\s+your\s+(?:session|usage|rate)\s+limit/i;
 const USAGE_LIMIT_RE = /\b(?:session|usage|rate)[\s-]?limit\b/i;
 const RATE_HTTP_RE = /\b(?:429|too many requests)\b/i;
 const RESET_RE = /resets?\s+([^\n]+)/i;
+// Codex reports selected-model saturation separately from account quota.
+const CAPACITY_RE = /selected model is at capacity/i;
+// Provider errors are terminal output; borrowed task/code/CI text lives earlier
+// in the transcript. Fifteen non-empty lines comfortably contain real banners
+// while keeping those unrelated body matches out of classification.
+const TERMINAL_TAIL_LINES = 15;
 // A clock time optionally followed by a parenthesised IANA timezone, e.g.
 // `1:40pm (Europe/Warsaw)` or `13:40 (Europe/Warsaw)`.
 const RESET_TIME_RE = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b(?:[^\n(]*\(([^)]+)\))?/i;
+
+function terminalTail(output: string): string {
+	return output
+		.split('\n')
+		.map((line) => line.trim())
+		.filter(Boolean)
+		.slice(-TERMINAL_TAIL_LINES)
+		.join('\n');
+}
 
 /** Compute a timezone's UTC offset (ms) at a given instant via the Intl trick. */
 function tzOffsetMs(instant: Date, timeZone: string): number {
@@ -183,8 +196,9 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * output and `signal: null`, since it trapped SIGTERM and called `process.exit`
  * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
  * exists precisely because `result.signal` can't be trusted to reflect this).
- * Otherwise a stalled run is classified as `stalled`. Next, a recognisable limit
- * banner makes it a `rate-limit`, and everything else is a plain `error`.
+ * Otherwise a stalled run is classified as `stalled`. Next, a terminal Codex
+ * capacity banner is `capacity`, a recognisable terminal limit banner is a
+ * `rate-limit`, and everything else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
 	if (result.timedOut) return { kind: 'timeout' };
@@ -201,10 +215,13 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 		return { kind: 'stalled' };
 	}
 
-	const resetMatch = RESET_RE.exec(output);
+	const tail = terminalTail(output);
+	if (CAPACITY_RE.test(tail)) return { kind: 'capacity' };
+
+	const resetMatch = RESET_RE.exec(tail);
 	const isRateLimited =
-		LIMIT_BANNER_RE.test(output) ||
-		((USAGE_LIMIT_RE.test(output) || RATE_HTTP_RE.test(output)) && resetMatch !== null);
+		LIMIT_BANNER_RE.test(tail) ||
+		((USAGE_LIMIT_RE.test(tail) || RATE_HTTP_RE.test(tail)) && resetMatch !== null);
 
 	if (!isRateLimited) return { kind: 'error' };
 
@@ -235,10 +252,12 @@ export function agentRunError(
 			? ' (timed out)'
 			: failure.kind === 'rate-limit'
 				? ' (rate limited)'
-				: failure.kind === 'aborted'
-					? ' (aborted)'
-					: failure.kind === 'stalled'
-						? ' (stalled)'
-						: '';
+				: failure.kind === 'capacity'
+					? ' (model at capacity)'
+					: failure.kind === 'aborted'
+						? ' (aborted)'
+						: failure.kind === 'stalled'
+							? ' (stalled)'
+							: '';
 	return new AgentRunError(`${prefix}${reason}${tail}`, failure, result);
 }
