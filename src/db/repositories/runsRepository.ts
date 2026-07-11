@@ -16,6 +16,7 @@
 import { and, count, desc, eq, type SQL } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
+import type { AgentUsage } from '../../harness/usage.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
 import { runLogs, runs } from '../schema/runs.js';
@@ -62,6 +63,7 @@ export interface CompleteRunInput {
 	error?: string;
 	durationMs?: number;
 	nextRetryAt?: Date | null;
+	usage?: AgentUsage;
 }
 
 /**
@@ -80,6 +82,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			error: input.error,
 			durationMs: input.durationMs,
 			nextRetryAt: input.nextRetryAt,
+			usage: input.usage,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));

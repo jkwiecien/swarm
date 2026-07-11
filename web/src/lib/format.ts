@@ -1,3 +1,5 @@
+import type { AgentUsage } from '@/types/runs.js';
+
 export function formatDuration(ms: number | null): string {
 	if (ms === null || ms === undefined) return '—';
 	const sec = Math.round(ms / 1000);
@@ -34,4 +36,23 @@ export function formatTimeUntil(dateString: string): string {
 
 export function formatPhase(phase: string): string {
 	return phase.replace(/-/g, ' ');
+}
+
+/** Strip trailing zeros left by `toFixed`, e.g. "1.0" → "1", "1.20" → "1.2". */
+function trimTrailingZero(s: string): string {
+	if (!s.includes('.')) return s;
+	return s.replace(/0+$/, '').replace(/\.$/, '');
+}
+
+/** Compact token count for a dense table cell: `1234` → `1.2k`, `1050000` → `1.05M`. */
+export function formatTokenCount(n: number): string {
+	if (n < 1000) return String(n);
+	if (n < 1_000_000) return `${trimTrailingZero((n / 1000).toFixed(1))}k`;
+	return `${trimTrailingZero((n / 1_000_000).toFixed(2))}M`;
+}
+
+/** `"12.3k / 4.1k"` (input / output tokens), or `'—'` when usage wasn't reported. */
+export function formatTokensCompact(usage: AgentUsage | null): string {
+	if (!usage) return '—';
+	return `${formatTokenCount(usage.inputTokens)} / ${formatTokenCount(usage.outputTokens)}`;
 }

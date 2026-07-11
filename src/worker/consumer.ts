@@ -490,6 +490,7 @@ function agentColumns(agent: AgentCliResult | undefined): Partial<CompleteRunInp
 		exitCode: agent?.exitCode,
 		timedOut: agent?.timedOut,
 		durationMs: agent?.durationMs,
+		usage: agent?.usage,
 	};
 }
 
@@ -948,6 +949,7 @@ export async function processJob(
 				exitCode: result.agent.exitCode,
 				timedOut: result.agent.timedOut,
 				durationMs: result.agent.durationMs,
+				usage: result.agent.usage,
 			},
 			result.agent,
 		);

@@ -1013,8 +1013,22 @@ describe('processJob', () => {
 				exitCode: 0,
 				timedOut: false,
 				durationMs: 1234,
+				usage: undefined,
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'o', 'e');
+		});
+
+		it('forwards the agent-reported token usage into completeRun on success', async () => {
+			phaseImpl = async () => ({
+				agent: agentResult({ usage: { inputTokens: 100, outputTokens: 50 } }),
+			});
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ usage: { inputTokens: 100, outputTokens: 50 } }),
+			);
 		});
 
 		it('records the work item metadata and requested model for a PM-driven phase', async () => {
@@ -1083,8 +1097,26 @@ describe('processJob', () => {
 				exitCode: 1,
 				timedOut: false,
 				durationMs: 42,
+				usage: undefined,
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'so', 'se');
+		});
+
+		it('records the agent-reported usage on a terminal failure that still produced one', async () => {
+			phaseImpl = async () => {
+				throw new AgentRunError(
+					'review agent exited with code 1',
+					{ kind: 'error' },
+					agentResult({ exitCode: 1, usage: { inputTokens: 30, outputTokens: 15 } }),
+				);
+			};
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ usage: { inputTokens: 30, outputTokens: 15 } }),
+			);
 		});
 
 		it('finalizes the run deferred (not failed) for a rate-limited AgentRunError', async () => {

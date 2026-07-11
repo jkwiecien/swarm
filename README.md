@@ -333,6 +333,7 @@ Early implementation. Summary by area:
 - Host-run, same model as the worker. API scaffold in place: Hono + tRPC entrypoint (`src/dashboard.ts`, SWARM-75) and its localhost-bound bearer-token auth guard (SWARM-76).
 - `projectsRepository` has full CRUD primitives (SWARM-77); a `projects` tRPC router (list/getById/create/update/delete, SWARM-78) is implemented and up for review, not yet merged into `appRouter`.
 - `runsRepository` has full CRUD, upsert, and pagination primitives for agent-run history (SWARM-102), ready for future dashboard API/UI integration.
+- Runs now record per-phase token usage where the agent CLI reports it (issue #138): a nullable `runs.usage` column, populated from `claude -p --output-format json`'s `usage` block (`src/harness/usage.ts`) and shown on the runs table and run-detail page. `antigravity`/`codex` runs and every pre-existing run render a graceful "not reported" state until a follow-up task adds their parsers.
 - A `web/` scaffold (Vite + React, TanStack Router/Query, a tRPC client, Tailwind and the `ai/DESIGN_SYSTEM.md` tokens, SWARM-81) is merged; the first real screen (projects list + create dialog, SWARM-82) is implemented.
 - The `credentials` tRPC sub-router (list/set/delete, SWARM-79) is implemented under `projectsRouter`, exposing `credentialsRepository` database primitives over the dashboard API.
 - Still backlog: credentials token verification (SWARM-80), credentials dashboard UI (part of SWARM-85), and the remaining per-project settings screens (SWARM-83–87).

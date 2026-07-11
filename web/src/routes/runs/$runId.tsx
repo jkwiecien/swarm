@@ -4,11 +4,11 @@ import { AlertTriangle, ExternalLink, Info, Terminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
-import { formatDuration, formatPhase, formatTimeUntil } from '@/lib/format.js';
+import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
-import type { RunRow } from '@/types/runs.js';
+import type { AgentUsage, RunRow } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
@@ -124,6 +124,57 @@ function GitHubReferences({ run, project }: GitHubReferencesProps) {
 			) : hasWorkItem ? (
 				<span className="text-zinc-400 font-mono">Issue: #{run.taskId}</span>
 			) : null}
+		</div>
+	);
+}
+
+interface TokenUsageFieldProps {
+	label: string;
+	value: number;
+}
+
+function TokenUsageField({ label, value }: TokenUsageFieldProps) {
+	return (
+		<div>
+			<span className="block text-xs font-medium text-zinc-400">{label}</span>
+			<span className="text-sm text-zinc-200 mt-1 block font-mono">
+				{value.toLocaleString()}{' '}
+				<span className="text-xs text-zinc-500">({formatTokenCount(value)})</span>
+			</span>
+		</div>
+	);
+}
+
+interface TokenUsageSectionProps {
+	usage: AgentUsage | null;
+}
+
+function TokenUsageSection({ usage }: TokenUsageSectionProps) {
+	return (
+		<div>
+			<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+				Token Usage
+			</h2>
+			{usage ? (
+				<div className="grid grid-cols-1 md:grid-cols-2 gap-y-4 gap-x-8">
+					<TokenUsageField label="Input" value={usage.inputTokens} />
+					<TokenUsageField label="Output" value={usage.outputTokens} />
+					{usage.cacheReadTokens !== undefined && (
+						<TokenUsageField label="Cache read" value={usage.cacheReadTokens} />
+					)}
+					{usage.cacheCreationTokens !== undefined && (
+						<TokenUsageField label="Cache creation" value={usage.cacheCreationTokens} />
+					)}
+					{usage.reasoningTokens !== undefined && (
+						<TokenUsageField label="Reasoning" value={usage.reasoningTokens} />
+					)}
+					{usage.totalTokens !== undefined && (
+						<TokenUsageField label="Total" value={usage.totalTokens} />
+					)}
+				</div>
+			) : (
+				<p className="text-sm text-zinc-500">Not reported by this run's CLI.</p>
+			)}
 		</div>
 	);
 }
@@ -254,6 +305,8 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					)}
 				</div>
 			</div>
+
+			<TokenUsageSection usage={run.usage} />
 		</div>
 	);
 }

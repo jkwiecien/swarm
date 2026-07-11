@@ -1,4 +1,14 @@
-import { boolean, index, integer, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+	boolean,
+	index,
+	integer,
+	jsonb,
+	pgTable,
+	text,
+	timestamp,
+	uuid,
+} from 'drizzle-orm/pg-core';
+import type { AgentUsage } from '../../harness/usage.js';
 import { projects } from './projects.js';
 
 export const runs = pgTable(
@@ -24,6 +34,12 @@ export const runs = pgTable(
 		completedAt: timestamp('completed_at'),
 		nextRetryAt: timestamp('next_retry_at'),
 		durationMs: integer('duration_ms'),
+		/**
+		 * Per-run token usage (issue #138), reported by the agent CLI where it
+		 * exposes one — nullable: unsupported CLIs (`antigravity`/`codex`, until a
+		 * follow-up task) and every pre-existing run have none.
+		 */
+		usage: jsonb('usage').$type<AgentUsage>(),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),

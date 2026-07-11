@@ -98,6 +98,29 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.exitCode).toBe(1);
 		});
 
+		it('round-trips reported token usage', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '4', phase: 'implementation' });
+
+			await completeRun(id, {
+				status: 'completed',
+				engine: 'claude',
+				exitCode: 0,
+				usage: { inputTokens: 1234, outputTokens: 567, cacheReadTokens: 89 },
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.usage).toEqual({ inputTokens: 1234, outputTokens: 567, cacheReadTokens: 89 });
+		});
+
+		it('leaves usage null when omitted', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '5', phase: 'implementation' });
+
+			await completeRun(id, { status: 'completed', engine: 'claude', exitCode: 0 });
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.usage).toBeNull();
+		});
+
 		it('records a deferred run without treating it as an error', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '3', phase: 'review' });
 			const nextRetryAt = new Date('2026-07-10T12:30:00.000Z');
