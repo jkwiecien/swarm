@@ -21,6 +21,62 @@ interface RunsTableProps {
 	onPageChange: (page: number) => void;
 }
 
+const PR_DRIVEN_PHASES = new Set([
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+]);
+
+function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
+	const hasWorkItem = !!run.workItemId;
+	const hasPR = !!run.prNumber;
+	const workItemRef = parseWorkItemRef(run.workItemUrl);
+	const isPrDriven = PR_DRIVEN_PHASES.has(run.phase);
+	const title = isPrDriven ? run.prTitle : run.workItemTitle;
+
+	if (!repo || (!hasWorkItem && !hasPR)) {
+		return <span className="text-zinc-500 font-mono">—</span>;
+	}
+
+	const stopPropagation = (event: React.MouseEvent) => event.stopPropagation();
+
+	return (
+		<div className="flex w-full min-w-0 flex-col gap-1 text-xs">
+			{title && (
+				<span className="block w-full truncate text-zinc-200" title={title}>
+					{title}
+				</span>
+			)}
+			{isPrDriven && hasPR ? (
+				<a
+					href={`https://github.com/${repo}/pull/${run.prNumber}`}
+					target="_blank"
+					rel="noopener noreferrer"
+					onClick={stopPropagation}
+					className="inline-flex items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline"
+				>
+					PR #{run.prNumber}
+					<ExternalLink className="h-3 w-3" />
+				</a>
+			) : hasWorkItem && workItemRef ? (
+				<a
+					href={run.workItemUrl ?? undefined}
+					target="_blank"
+					rel="noopener noreferrer"
+					onClick={stopPropagation}
+					className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
+				>
+					{workItemLabel(workItemRef)}
+					<ExternalLink className="h-3 w-3" />
+				</a>
+			) : hasWorkItem ? (
+				<span className="text-zinc-400 font-mono">Issue: #{run.taskId}</span>
+			) : null}
+		</div>
+	);
+}
+
 export function RunsTable({
 	runs,
 	totalCount,
@@ -39,55 +95,6 @@ export function RunsTable({
 
 	const handleRowClick = (runId: string) => {
 		navigate({ to: `/runs/${runId}` });
-	};
-
-	const renderWorkItemCell = (run: RunRow) => {
-		const project = projectsMap.get(run.projectId);
-		const hasWorkItem = !!run.workItemId;
-		const hasPR = !!run.prNumber;
-		const workItemRef = parseWorkItemRef(run.workItemUrl);
-
-		if (!project || (!hasWorkItem && !hasPR)) {
-			return <span className="text-zinc-500 font-mono">—</span>;
-		}
-
-		const stopPropagation = (e: React.MouseEvent) => e.stopPropagation();
-
-		return (
-			<div className="flex w-full min-w-0 flex-col gap-1 text-xs">
-				{hasPR && (
-					<a
-						href={`https://github.com/${project.repo}/pull/${run.prNumber}`}
-						target="_blank"
-						rel="noopener noreferrer"
-						onClick={stopPropagation}
-						className="inline-flex items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline"
-					>
-						PR #{run.prNumber}
-						<ExternalLink className="h-3 w-3" />
-					</a>
-				)}
-				{hasWorkItem && run.workItemTitle && workItemRef ? (
-					<>
-						<span className="block w-full truncate text-zinc-300" title={run.workItemTitle}>
-							{run.workItemTitle}
-						</span>
-						<a
-							href={run.workItemUrl ?? undefined}
-							target="_blank"
-							rel="noopener noreferrer"
-							onClick={stopPropagation}
-							className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
-						>
-							{workItemLabel(workItemRef)}
-							<ExternalLink className="h-3 w-3" />
-						</a>
-					</>
-				) : hasWorkItem ? (
-					<span className="text-zinc-400 font-mono">Issue: #{run.taskId}</span>
-				) : null}
-			</div>
-		);
 	};
 
 	return (
@@ -136,26 +143,7 @@ export function RunsTable({
 									{projectsMap.get(run.projectId)?.name || run.projectId}
 								</td>
 								<td className="w-[30%] px-2 py-3 text-sm">
-									<div className="flex w-full min-w-0 flex-col gap-1">
-										{run.prTitle ? (
-											// PR-driven phases (review / respond-to-*): show the human-readable
-											// PR title rather than the synthetic `<pr>-respond` taskId.
-											<span
-												className="block w-full truncate text-xs text-zinc-200"
-												title={run.prTitle}
-											>
-												{run.prTitle}
-											</span>
-										) : (
-											<span
-												className="block w-full truncate font-mono text-xs text-zinc-300"
-												title={run.taskId}
-											>
-												{run.taskId}
-											</span>
-										)}
-										{renderWorkItemCell(run)}
-									</div>
+									<WorkItemCell run={run} repo={projectsMap.get(run.projectId)?.repo} />
 								</td>
 								<td className="px-2 py-3 text-sm">
 									<RunStatusBadge
