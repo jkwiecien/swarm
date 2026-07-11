@@ -9,7 +9,7 @@
  * enqueue seams share one connection, plus a single `add()` helper they call.
  */
 
-import { Queue } from 'bullmq';
+import { type Job, Queue } from 'bullmq';
 import { requireEnv } from '../lib/env.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob } from './jobs.js';
@@ -166,6 +166,58 @@ export async function enqueueDelayedRetry(
 		...(priority !== undefined ? { priority } : {}),
 	});
 	return added.id;
+}
+
+/**
+ * Fire a deferred run's pending retry *now* — the immediate-retry primitive
+ * behind the `runs.retryNow` tRPC mutation ("Retry now", issue #136).
+ *
+ * A deferred run always has exactly one pending BullMQ retry job sitting delayed
+ * in Redis (`enqueueDelayedRetry` re-enqueued it), and — since issue #136 — that
+ * job carries the originating `runId` in its data. We locate it by that id and
+ * `promote()` it, which BullMQ moves straight from `delayed` to `waiting` so the
+ * worker picks it up on its next free slot instead of after the remaining delay.
+ * Operating on that single pending job (rather than enqueuing a fresh one) is
+ * what keeps a manual retry from racing the automatic one into two concurrent
+ * runs — there is only ever the one job.
+ *
+ * Its `rateLimitRetryAttempt` is reset to 0 before promoting so the manual retry
+ * bypasses the automatic `MAX_RATE_LIMIT_RETRIES` cap (`src/worker/consumer.ts`)
+ * — a human asking to retry gets a fresh budget rather than being re-capped the
+ * instant the job runs.
+ *
+ * Returns `true` when a pending job was found and promoted, `false` when none
+ * matched — the run is no longer in a promotable state (already picked up and
+ * running, or its pending job was reaped). The caller turns `false` into an
+ * actionable error rather than enqueuing a fresh job it can't reconstruct from a
+ * run row alone.
+ */
+export async function promoteRetryForRun(runId: string): Promise<boolean> {
+	const q = getQueue();
+	// A promotable retry is always `delayed` (it was scheduled with a delay).
+	// `getWaiting()` is scanned too so a retry whose delay already elapsed but
+	// hasn't been picked up yet still counts as "already retrying" and is left
+	// alone rather than mistaken for absent.
+	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
+	const matches = (job: { data?: { runId?: string } }) => job.data?.runId === runId;
+
+	const pendingDelayed = delayed.find(matches);
+	if (pendingDelayed) {
+		// `getDelayed()`'s element type distributes the SwarmJob union into
+		// `Job<github> | Job<github-projects>`, whose `updateData` collapses to an
+		// uncallable never-parameter; re-view it as the non-distributed
+		// `Job<SwarmJob>` so the (union-typed) data round-trips through updateData.
+		const job = pendingDelayed as Job<SwarmJob>;
+		// Reset the attempt counter in place (a spread would widen the discriminated
+		// union past itself), then persist the same object.
+		job.data.rateLimitRetryAttempt = 0;
+		await job.updateData(job.data);
+		await job.promote();
+		return true;
+	}
+	// Already waiting → it will run imminently on its own; treat as promoted so
+	// the caller reports success rather than a spurious "nothing to retry".
+	return waiting.some(matches);
 }
 
 /**

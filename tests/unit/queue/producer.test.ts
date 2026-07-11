@@ -20,8 +20,18 @@ const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
 			) => Promise<unknown>
 		>();
 	const close = vi.fn();
-	const getDelayed = vi.fn<() => Promise<Array<{ name: string; remove: () => Promise<void> }>>>();
-	const getWaiting = vi.fn<() => Promise<Array<{ name: string; remove: () => Promise<void> }>>>();
+	// Job shape covers both what `scheduleCoalescedJob` uses (`name`/`remove`) and
+	// what `promoteRetryForRun` uses (`data`/`updateData`/`promote`); all optional
+	// so a test supplies only the fields its assertion touches.
+	type MockJob = {
+		name?: string;
+		remove?: () => Promise<void>;
+		data?: { runId?: string; rateLimitRetryAttempt?: number };
+		updateData?: (data: unknown) => Promise<void>;
+		promote?: () => Promise<void>;
+	};
+	const getDelayed = vi.fn<() => Promise<MockJob[]>>();
+	const getWaiting = vi.fn<() => Promise<MockJob[]>>();
 	// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
 	// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
 	// `calls[0]` fails to typecheck.
@@ -292,6 +302,46 @@ describe('enqueueDelayedRetry', () => {
 
 		const [, , opts] = add.mock.calls[0];
 		expect(opts).toMatchObject({ priority: 10 });
+	});
+});
+
+describe('promoteRetryForRun', () => {
+	it('promotes the delayed retry whose data carries the runId, resetting its attempt counter', async () => {
+		const updateData = vi.fn().mockResolvedValue(undefined);
+		const promote = vi.fn().mockResolvedValue(undefined);
+		const match = { data: { runId: 'run-42', rateLimitRetryAttempt: 4 }, updateData, promote };
+		getDelayed.mockResolvedValue([
+			{ data: { runId: 'other' }, updateData: vi.fn(), promote: vi.fn() },
+			match,
+		]);
+		const { promoteRetryForRun } = await import('@/queue/producer.js');
+
+		const result = await promoteRetryForRun('run-42');
+
+		expect(result).toBe(true);
+		// Attempt counter reset to 0 so the manual retry bypasses MAX_RATE_LIMIT_RETRIES.
+		expect(match.data.rateLimitRetryAttempt).toBe(0);
+		expect(updateData).toHaveBeenCalledOnce();
+		expect(updateData).toHaveBeenCalledWith(match.data);
+		expect(promote).toHaveBeenCalledOnce();
+	});
+
+	it('returns true without promoting when the retry is already waiting (delay elapsed)', async () => {
+		// A retry whose delay already elapsed sits in `waiting`, about to run on its
+		// own — treated as already-retrying, not absent, so no double-fire.
+		getDelayed.mockResolvedValue([]);
+		getWaiting.mockResolvedValue([{ data: { runId: 'run-7' } }]);
+		const { promoteRetryForRun } = await import('@/queue/producer.js');
+
+		expect(await promoteRetryForRun('run-7')).toBe(true);
+	});
+
+	it('returns false when no pending job carries the runId', async () => {
+		getDelayed.mockResolvedValue([{ data: { runId: 'someone-else' }, promote: vi.fn() }]);
+		getWaiting.mockResolvedValue([]);
+		const { promoteRetryForRun } = await import('@/queue/producer.js');
+
+		expect(await promoteRetryForRun('run-42')).toBe(false);
 	});
 });
 

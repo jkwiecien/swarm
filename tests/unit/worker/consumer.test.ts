@@ -71,10 +71,12 @@ vi.mock('@/queue/producer.js', () => ({
 const createRun = vi.fn(async (_input: unknown) => 'run-1');
 const completeRun = vi.fn(async (_id: string, _input: unknown) => {});
 const storeRunLogs = vi.fn(async (_id: string, _stdout: string, _stderr: string) => {});
+const resetRunToRunning = vi.fn(async (_id: string) => true);
 vi.mock('@/db/repositories/runsRepository.js', () => ({
 	createRun: (input: unknown) => createRun(input),
 	completeRun: (id: string, input: unknown) => completeRun(id, input),
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
+	resetRunToRunning: (id: string) => resetRunToRunning(id),
 }));
 
 // Global (app-wide) settings are loaded once per job for the default-model tier
@@ -163,6 +165,8 @@ describe('processJob', () => {
 		completeRun.mockResolvedValue(undefined);
 		storeRunLogs.mockClear();
 		storeRunLogs.mockResolvedValue(undefined);
+		resetRunToRunning.mockClear();
+		resetRunToRunning.mockResolvedValue(true);
 		getAppSettings.mockClear();
 		getAppSettings.mockResolvedValue({});
 		acquireProjectSlot.mockClear();
@@ -831,6 +835,23 @@ describe('processJob', () => {
 		expect(outcome.retryDelayMs).toBe(30 * 60 * 1000);
 	});
 
+	it('carries the created run row id on the deferred outcome so the retry reuses it', async () => {
+		// createRun resolves 'run-1' (see the top-level mock); a deferral must
+		// surface that id so `reenqueueDeferred` threads it onto the retry job and
+		// the retry resets this same row instead of inserting a new one (issue #136).
+		phaseImpl = async () => {
+			throw new AgentRunError('rate limited', { kind: 'rate-limit' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
+		expect(outcome.runId).toBe('run-1');
+	});
+
 	it('fails a rate-limited phase once the retry budget is exhausted', async () => {
 		phaseImpl = async () => {
 			throw new AgentRunError('Review agent (claude) exited with code 1 (rate limited)', {
@@ -1097,6 +1118,43 @@ describe('processJob', () => {
 				usage: undefined,
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'o', 'e');
+		});
+
+		it('reuses and resets the existing run row when the job carries a runId (no new row)', async () => {
+			const outcome = await processJob(
+				createMockGitHubWebhookJob({ runId: 'run-1' }),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			// The retry resets the originating row rather than inserting a second one.
+			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith('run-1');
+			expect(createRun).not.toHaveBeenCalled();
+			// The reused id is what gets finalized on completion.
+			expect(completeRun).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ status: 'completed' }),
+			);
+		});
+
+		it('falls back to creating a fresh row when the carried runId no longer exists', async () => {
+			resetRunToRunning.mockResolvedValueOnce(false); // row was pruned
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob({ runId: 'run-gone' }),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(resetRunToRunning).toHaveBeenCalledExactlyOnceWith('run-gone');
+			expect(createRun).toHaveBeenCalledOnce();
+		});
+
+		it('inserts a fresh row (no reset) for a job without a runId', async () => {
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(resetRunToRunning).not.toHaveBeenCalled();
+			expect(createRun).toHaveBeenCalledOnce();
 		});
 
 		it('forwards the agent-reported token usage into completeRun on success', async () => {

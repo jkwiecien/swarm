@@ -10,6 +10,7 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
+	resetRunToRunning,
 	storeRunLogs,
 } from '../../../src/db/repositories/runsRepository.js';
 import { runLogs, runs } from '../../../src/db/schema/runs.js';
@@ -132,6 +133,40 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.status).toBe('deferred');
 			expect(row?.completedAt).toBeInstanceOf(Date);
 			expect(row?.nextRetryAt).toEqual(nextRetryAt);
+		});
+	});
+
+	describe('resetRunToRunning', () => {
+		it('flips a deferred run back to running and clears its terminal columns', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9', phase: 'review' });
+			await completeRun(id, {
+				status: 'deferred',
+				engine: 'claude',
+				exitCode: 1,
+				timedOut: true,
+				error: 'rate limited',
+				durationMs: 4200,
+				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
+				usage: { inputTokens: 10, outputTokens: 5 },
+			});
+
+			const reset = await resetRunToRunning(id);
+
+			expect(reset).toBe(true);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('running');
+			expect(row?.completedAt).toBeNull();
+			expect(row?.error).toBeNull();
+			expect(row?.nextRetryAt).toBeNull();
+			expect(row?.engine).toBeNull();
+			expect(row?.exitCode).toBeNull();
+			expect(row?.timedOut).toBe(false);
+			expect(row?.durationMs).toBeNull();
+			expect(row?.usage).toBeNull();
+		});
+
+		it('returns false when no row matches the id (pruned between defer and retry)', async () => {
+			expect(await resetRunToRunning('00000000-0000-0000-0000-000000000000')).toBe(false);
 		});
 	});
 

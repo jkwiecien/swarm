@@ -89,6 +89,36 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 }
 
 /**
+ * Reset an existing run row back to `running` for a retry (issue #136), so a
+ * re-run reuses its original row rather than inserting a second one — the
+ * dashboard then shows one run whose status flips, not two. Clears the terminal
+ * columns a prior settle wrote (`completedAt`/`error`/`nextRetryAt`) and the
+ * outcome columns (`engine`/`exitCode`/`timedOut`/`durationMs`/`usage`) so the
+ * fresh attempt records its own; `model` is left as-is (the requested model
+ * doesn't change on retry). Returns `true` when a row was updated, `false` when
+ * no row matched (it was pruned) — the caller then falls back to `createRun`.
+ * Best-effort like the rest of run tracking: the worker swallows/logs any throw.
+ */
+export async function resetRunToRunning(runId: string): Promise<boolean> {
+	const rows = await getDb()
+		.update(runs)
+		.set({
+			status: 'running',
+			completedAt: null,
+			error: null,
+			nextRetryAt: null,
+			engine: null,
+			exitCode: null,
+			timedOut: false,
+			durationMs: null,
+			usage: null,
+		})
+		.where(eq(runs.id, runId))
+		.returning({ id: runs.id });
+	return rows.length > 0;
+}
+
+/**
  * Upsert the run's captured stdout/stderr. `run_logs.run_id` is unique (one log
  * row per run), so a retry path that re-stores overwrites rather than
  * duplicates — the write stays idempotent.
