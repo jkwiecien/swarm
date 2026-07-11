@@ -15,6 +15,7 @@
  */
 
 import { z } from 'zod';
+import { AgentCliSchema } from '../harness/agent-cli.js';
 import { GitHubParsedEventSchema } from '../router/adapters/github.js';
 import { GitHubProjectsParsedEventSchema } from '../router/adapters/github-projects.js';
 
@@ -57,6 +58,9 @@ const jobBase = z.object({
 	 * creates a fresh row as before.
 	 */
 	runId: z.string().min(1).optional(),
+	/** Optional overrides for retrying/running with a specific agent CLI and model. */
+	cliOverride: AgentCliSchema.optional(),
+	modelOverride: z.string().min(1).optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

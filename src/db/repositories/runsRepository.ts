@@ -17,6 +17,7 @@ import { and, count, desc, eq, type SQL } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
 import { runLogs, runs } from '../schema/runs.js';
@@ -35,6 +36,7 @@ export interface CreateRunInput {
 	workItemUrl?: string;
 	prNumber?: string;
 	model?: string;
+	jobPayload?: SwarmJob;
 }
 
 /** Insert a `running` row (the default status); returns the new row's id. */
@@ -50,6 +52,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			workItemUrl: input.workItemUrl,
 			prNumber: input.prNumber,
 			model: input.model,
+			jobPayload: input.jobPayload,
 		})
 		.returning({ id: runs.id });
 	return rows[0].id;
@@ -99,7 +102,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * no row matched (it was pruned) — the caller then falls back to `createRun`.
  * Best-effort like the rest of run tracking: the worker swallows/logs any throw.
  */
-export async function resetRunToRunning(runId: string): Promise<boolean> {
+export async function resetRunToRunning(runId: string, jobPayload?: SwarmJob): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
 		.set({
@@ -112,6 +115,7 @@ export async function resetRunToRunning(runId: string): Promise<boolean> {
 			timedOut: false,
 			durationMs: null,
 			usage: null,
+			...(jobPayload !== undefined ? { jobPayload } : {}),
 		})
 		.where(eq(runs.id, runId))
 		.returning({ id: runs.id });

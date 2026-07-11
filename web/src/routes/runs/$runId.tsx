@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { AlertTriangle, ExternalLink, Info, RefreshCw, Terminal } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ExternalLink, Info, RefreshCw, Terminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
@@ -14,36 +14,177 @@ import { rootRoute } from '../__root.js';
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
 
+const RUN_AGENTS = ['claude', 'antigravity', 'codex'] as const;
+type RunAgent = (typeof RUN_AGENTS)[number];
+
+const AGENT_MODELS: Record<RunAgent, readonly string[]> = {
+	claude: ['sonnet', 'fable', 'opus', 'haiku'],
+	antigravity: [
+		'Gemini 3.5 Flash (Low)',
+		'Gemini 3.5 Flash (Medium)',
+		'Gemini 3.5 Flash (High)',
+		'Gemini 3.1 Pro (Low)',
+		'Gemini 3.1 Pro (High)',
+		'Claude Sonnet 4.6 (Thinking)',
+		'Claude Opus 4.6 (Thinking)',
+		'GPT-OSS 120B (Medium)',
+	],
+	codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+};
+
 /**
- * "Retry now" for a deferred run (issue #136): promotes the run's pending
- * scheduled retry so it fires immediately instead of after its delay. Follows
- * the mutation→invalidate pattern in project-create-dialog.tsx — on success it
- * invalidates this run's `getById` and the runs `list` so the status flip to
- * `running` shows without a manual refresh (the detail page also polls while
- * deferred/running). Disabled + "Retrying…" while pending; an actionable banner
- * surfaces a rejected mutation (e.g. the run already left `deferred`).
+ * Split "Retry" button (issue #153): clicking the main left button retries the run
+ * with its existing/preselected settings; clicking the chevron right button opens
+ * a popup allowing overrides for the agent CLI and model.
  */
-function RetryNowButton({ runId }: { runId: string }) {
+function RetryNowButton({ run }: { run: RunRow }) {
 	const queryClient = useQueryClient();
 	const mutation = useMutation({
-		mutationFn: () => trpcClient.runs.retryNow.mutate({ runId }),
+		mutationFn: (overrides: { cli?: RunAgent; model?: string }) =>
+			trpcClient.runs.retryNow.mutate({
+				runId: run.id,
+				cli: overrides.cli,
+				model: overrides.model,
+			}),
 		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: trpc.runs.getById.queryKey({ id: runId }) });
+			queryClient.invalidateQueries({ queryKey: trpc.runs.getById.queryKey({ id: run.id }) });
 			queryClient.invalidateQueries({ queryKey: trpc.runs.list.queryKey() });
 		},
 	});
 
+	const currentCli = (
+		run.engine && (RUN_AGENTS as readonly string[]).includes(run.engine)
+			? (run.engine as RunAgent)
+			: 'claude'
+	) as RunAgent;
+
+	const currentModel =
+		run.model && AGENT_MODELS[currentCli].includes(run.model)
+			? run.model
+			: AGENT_MODELS[currentCli][0];
+
+	const [isOpen, setIsOpen] = useState(false);
+	const [selectedCli, setSelectedCli] = useState<RunAgent>(currentCli);
+	const [selectedModel, setSelectedModel] = useState<string>(currentModel);
+
+	useEffect(() => {
+		setSelectedCli(currentCli);
+		setSelectedModel(currentModel);
+	}, [currentCli, currentModel]);
+
 	return (
 		<div className="mt-3">
-			<button
-				type="button"
-				onClick={() => mutation.mutate()}
-				disabled={mutation.isPending}
-				className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-50 disabled:cursor-not-allowed"
-			>
-				<RefreshCw className={`h-4 w-4 ${mutation.isPending ? 'animate-spin' : ''}`} />
-				{retryButtonLabel(mutation.isPending)}
-			</button>
+			<div className="relative inline-flex items-stretch rounded-md shadow-lg shadow-violet-950/10">
+				{/* Main Button */}
+				<button
+					type="button"
+					onClick={() => mutation.mutate({})}
+					disabled={mutation.isPending}
+					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-l-md hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-violet-700/50 cursor-pointer"
+				>
+					<RefreshCw className={`h-4 w-4 ${mutation.isPending ? 'animate-spin' : ''}`} />
+					{retryButtonLabel(mutation.isPending)}
+				</button>
+
+				{/* Chevron button (the separate right part) */}
+				<button
+					type="button"
+					onClick={() => setIsOpen(!isOpen)}
+					disabled={mutation.isPending}
+					className="inline-flex items-center px-2 py-2 text-sm font-semibold text-white bg-violet-600 rounded-r-md hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+					title="Retry with different model/agent"
+				>
+					<ChevronDown className="h-4 w-4" />
+				</button>
+
+				{/* Popup */}
+				{isOpen && (
+					<>
+						{/* Click-outside backdrop */}
+						<button
+							type="button"
+							className="fixed inset-0 z-40 cursor-default focus:outline-none"
+							onClick={() => setIsOpen(false)}
+							aria-label="Close options"
+						/>
+
+						{/* The actual popover */}
+						<div className="absolute left-0 top-full mt-2 z-50 w-72 bg-zinc-900 border border-zinc-850 rounded-lg shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-150">
+							<h4 className="text-xs font-semibold text-zinc-300 mb-3 tracking-wide uppercase">
+								Retry Options
+							</h4>
+
+							<div className="space-y-3 text-left">
+								<div>
+									<label
+										htmlFor="agent-cli-select"
+										className="block text-xs font-medium text-zinc-400 mb-1 select-none"
+									>
+										Agent CLI
+									</label>
+									<select
+										id="agent-cli-select"
+										value={selectedCli}
+										onChange={(e) => {
+											const newCli = e.target.value as RunAgent;
+											setSelectedCli(newCli);
+											setSelectedModel(AGENT_MODELS[newCli][0]);
+										}}
+										className="w-full bg-zinc-950 border border-zinc-850 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500"
+									>
+										{RUN_AGENTS.map((cli) => (
+											<option key={cli} value={cli}>
+												{cli}
+											</option>
+										))}
+									</select>
+								</div>
+
+								<div>
+									<label
+										htmlFor="model-select"
+										className="block text-xs font-medium text-zinc-400 mb-1 select-none"
+									>
+										Model
+									</label>
+									<select
+										id="model-select"
+										value={selectedModel}
+										onChange={(e) => setSelectedModel(e.target.value)}
+										className="w-full bg-zinc-950 border border-zinc-850 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500"
+									>
+										{AGENT_MODELS[selectedCli].map((m) => (
+											<option key={m} value={m}>
+												{m}
+											</option>
+										))}
+									</select>
+								</div>
+
+								<div className="pt-2 flex justify-end gap-2">
+									<button
+										type="button"
+										onClick={() => setIsOpen(false)}
+										className="px-2.5 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition-colors cursor-pointer"
+									>
+										Cancel
+									</button>
+									<button
+										type="button"
+										onClick={() => {
+											mutation.mutate({ cli: selectedCli, model: selectedModel });
+											setIsOpen(false);
+										}}
+										className="px-3 py-1.5 text-xs font-semibold text-white bg-violet-600 rounded hover:bg-violet-500 transition-colors cursor-pointer"
+									>
+										Retry Now
+									</button>
+								</div>
+							</div>
+						</div>
+					</>
+				)}
+			</div>
 			{mutation.isError && (
 				<div className="mt-2 p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
 					{mutation.error.message}
@@ -97,7 +238,7 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 						<p className="text-xs text-amber-200/70 mt-1 font-mono">
 							UTC: {new Date(run.nextRetryAt).toISOString()}
 						</p>
-						{canRetryRun(run.status) && <RetryNowButton runId={run.id} />}
+						{canRetryRun(run.status) && <RetryNowButton run={run} />}
 					</div>
 				</div>
 			)}
@@ -110,6 +251,7 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 						<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
 							{run.error}
 						</p>
+						{canRetryRun(run.status) && <RetryNowButton run={run} />}
 					</div>
 				</div>
 			)}

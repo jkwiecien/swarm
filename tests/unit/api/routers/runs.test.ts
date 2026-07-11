@@ -4,10 +4,12 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	listRunsFromDb: vi.fn(),
 	getRunByIdFromDb: vi.fn(),
 	getRunLogsFromDb: vi.fn(),
+	resetRunToRunning: vi.fn(),
 }));
 
 vi.mock('@/queue/producer.js', () => ({
 	promoteRetryForRun: vi.fn(),
+	enqueueDelayedRetry: vi.fn(),
 }));
 
 import { runsRouter } from '@/api/routers/runs.js';
@@ -15,9 +17,10 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
+	resetRunToRunning,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
-import { promoteRetryForRun } from '@/queue/producer.js';
+import { enqueueDelayedRetry, promoteRetryForRun } from '@/queue/producer.js';
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -44,6 +47,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		nextRetryAt: null,
 		durationMs: 60000,
 		usage: null,
+		jobPayload: null,
 		...overrides,
 	};
 }
@@ -56,6 +60,8 @@ describe('runsRouter', () => {
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
 		vi.mocked(promoteRetryForRun).mockReset();
+		vi.mocked(resetRunToRunning).mockReset();
+		vi.mocked(enqueueDelayedRetry).mockReset();
 	});
 
 	describe('list', () => {
@@ -177,7 +183,77 @@ describe('runsRouter', () => {
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1');
+			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined);
+		});
+
+		it('promotes the pending retry with cli and model overrides for a deferred run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+
+			const result = await caller.retryNow({
+				runId: 'run-1',
+				cli: 'antigravity',
+				model: 'Gemini 3.5 Flash (High)',
+			});
+
+			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
+			expect(promoteRetryForRun).toHaveBeenCalledWith(
+				'run-1',
+				'antigravity',
+				'Gemini 3.5 Flash (High)',
+			);
+		});
+
+		it('enqueues a fresh job with overrides for a failed run if jobPayload is present', async () => {
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			const result = await caller.retryNow({
+				runId: 'run-1',
+				cli: 'antigravity',
+				model: 'Gemini 3.5 Flash (High)',
+			});
+
+			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({
+					cliOverride: 'antigravity',
+					modelOverride: 'Gemini 3.5 Flash (High)',
+					runId: 'run-1',
+				}),
+			);
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.objectContaining({
+					cliOverride: 'antigravity',
+					modelOverride: 'Gemini 3.5 Flash (High)',
+					runId: 'run-1',
+				}),
+				0,
+			);
+		});
+
+		it('rejects a failed run if jobPayload is missing', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: null }),
+			);
+
+			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
+			);
+			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
 		});
 
 		it('throws NOT_FOUND for an unknown run', async () => {
@@ -189,7 +265,7 @@ describe('runsRouter', () => {
 			expect(promoteRetryForRun).not.toHaveBeenCalled();
 		});
 
-		it('rejects a non-deferred run with PRECONDITION_FAILED (retryable-state guard)', async () => {
+		it('rejects a non-deferred non-failed run with PRECONDITION_FAILED (retryable-state guard)', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'completed' }));
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(

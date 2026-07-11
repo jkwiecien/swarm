@@ -294,13 +294,14 @@ function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
-	resumePmPhase: TriggerContext['resumePmPhase'],
+	job: SwarmJob,
 	signal?: AbortSignal,
 ): Promise<{
 	agent: AgentCliResult;
 	movedTo?: PmStatusKey;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 }> {
+	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -308,13 +309,8 @@ function runPhase(
 				workItem: trigger.workItem,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
-				cli: project.agents?.planning?.cli,
-				model: resolveModel(
-					project,
-					globalDefaults,
-					project.agents?.planning?.cli,
-					project.agents?.planning?.model,
-				),
+				cli: overrides.cli,
+				model: overrides.model,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				signal,
@@ -325,15 +321,10 @@ function runPhase(
 				workItem: trigger.workItem,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
-				cli: project.agents?.implementation?.cli,
-				model: resolveModel(
-					project,
-					globalDefaults,
-					project.agents?.implementation?.cli,
-					project.agents?.implementation?.model,
-				),
+				cli: overrides.cli,
+				model: overrides.model,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
-				resumeExistingBranch: resumePmPhase === 'implementation',
+				resumeExistingBranch: job.resumePmPhase === 'implementation',
 				signal,
 			});
 		case 'review':
@@ -342,13 +333,8 @@ function runPhase(
 				prNumber: trigger.prNumber,
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
-				cli: project.agents?.review?.cli,
-				model: resolveModel(
-					project,
-					globalDefaults,
-					project.agents?.review?.cli,
-					project.agents?.review?.model,
-				),
+				cli: overrides.cli,
+				model: overrides.model,
 				signal,
 			});
 		case 'respond-to-review':
@@ -359,13 +345,8 @@ function runPhase(
 				reviewId: trigger.reviewId,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
-				cli: project.agents?.respondToReview?.cli,
-				model: resolveModel(
-					project,
-					globalDefaults,
-					project.agents?.respondToReview?.cli,
-					project.agents?.respondToReview?.model,
-				),
+				cli: overrides.cli,
+				model: overrides.model,
 				signal,
 			});
 		case 'respond-to-ci':
@@ -375,13 +356,8 @@ function runPhase(
 				prBranch: trigger.prBranch,
 				headSha: trigger.headSha,
 				taskId: trigger.taskId,
-				cli: project.agents?.respondToCi?.cli,
-				model: resolveModel(
-					project,
-					globalDefaults,
-					project.agents?.respondToCi?.cli,
-					project.agents?.respondToCi?.model,
-				),
+				cli: overrides.cli,
+				model: overrides.model,
 				signal,
 			});
 	}
@@ -404,6 +380,7 @@ function agentOverrideFor(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
+	job?: SwarmJob,
 ): { cli?: AgentCli; model?: string } {
 	const phaseConfig = (() => {
 		switch (phase) {
@@ -419,10 +396,9 @@ function agentOverrideFor(
 				return project.agents?.respondToCi ?? {};
 		}
 	})();
-	return {
-		cli: phaseConfig.cli,
-		model: resolveModel(project, globalDefaults, phaseConfig.cli, phaseConfig.model),
-	};
+	const cli = job?.cliOverride ?? phaseConfig.cli;
+	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
+	return { cli, model };
 }
 
 /**
@@ -460,11 +436,12 @@ async function tryCreateRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
-	existingRunId?: string,
+	job: SwarmJob,
 ): Promise<string | undefined> {
+	const existingRunId = job.runId;
 	if (existingRunId) {
 		try {
-			if (await resetRunToRunning(existingRunId)) return existingRunId;
+			if (await resetRunToRunning(existingRunId, job)) return existingRunId;
 			// Row gone (pruned) — fall through to create a fresh one below.
 		} catch (err) {
 			logger.error('Failed to reset run row for retry (creating a new one)', {
@@ -485,7 +462,8 @@ async function tryCreateRun(
 			workItemTitle: 'workItem' in trigger ? trigger.workItem.title : undefined,
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
 			prNumber: 'prNumber' in trigger ? trigger.prNumber : undefined,
-			model: agentOverrideFor(project, globalDefaults, trigger.phase).model,
+			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
+			jobPayload: job,
 		});
 	} catch (err) {
 		logger.error('Failed to create run row (continuing)', {
@@ -1028,9 +1006,9 @@ export async function processJob(
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-		runId = await tryCreateRun(project, globalDefaults, trigger, job.runId);
+		runId = await tryCreateRun(project, globalDefaults, trigger, job);
 
-		const result = await runPhase(trigger, project, globalDefaults, ctx.resumePmPhase, signal);
+		const result = await runPhase(trigger, project, globalDefaults, job, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
 		// orchestration-level echo, kept at debug so success shows one finish line.

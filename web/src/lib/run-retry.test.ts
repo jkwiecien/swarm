@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { canRetryRun, retryButtonLabel } from './run-retry.js';
 
 describe('canRetryRun', () => {
-	it('allows retry only for a deferred run', () => {
+	it('allows retry for a deferred or failed run', () => {
 		expect(canRetryRun('deferred')).toBe(true);
+		expect(canRetryRun('failed')).toBe(true);
 	});
 
-	it('disallows retry for running, completed, and failed runs', () => {
+	it('disallows retry for running and completed runs', () => {
 		expect(canRetryRun('running')).toBe(false);
 		expect(canRetryRun('completed')).toBe(false);
-		expect(canRetryRun('failed')).toBe(false);
 	});
 
 	it('disallows retry for an unknown status', () => {

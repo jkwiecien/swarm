@@ -10,6 +10,7 @@
  */
 
 import { type Job, Queue } from 'bullmq';
+import type { AgentCli } from '../harness/agent-cli.js';
 import { requireEnv } from '../lib/env.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob } from './jobs.js';
@@ -192,7 +193,11 @@ export async function enqueueDelayedRetry(
  * actionable error rather than enqueuing a fresh job it can't reconstruct from a
  * run row alone.
  */
-export async function promoteRetryForRun(runId: string): Promise<boolean> {
+export async function promoteRetryForRun(
+	runId: string,
+	cli?: AgentCli,
+	model?: string,
+): Promise<boolean> {
 	const q = getQueue();
 	// A promotable retry is always `delayed` (it was scheduled with a delay).
 	// `getWaiting()` is scanned too so a retry whose delay already elapsed but
@@ -211,6 +216,8 @@ export async function promoteRetryForRun(runId: string): Promise<boolean> {
 		// Reset the attempt counter in place (a spread would widen the discriminated
 		// union past itself), then persist the same object.
 		job.data.rateLimitRetryAttempt = 0;
+		if (cli) job.data.cliOverride = cli;
+		if (model) job.data.modelOverride = model;
 		await job.updateData(job.data);
 		await job.promote();
 		return true;

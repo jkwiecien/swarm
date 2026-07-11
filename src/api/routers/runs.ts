@@ -5,8 +5,10 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
+	resetRunToRunning,
 } from '../../db/repositories/runsRepository.js';
-import { promoteRetryForRun } from '../../queue/producer.js';
+import { AgentCliSchema } from '../../harness/agent-cli.js';
+import { enqueueDelayedRetry, promoteRetryForRun } from '../../queue/producer.js';
 import { publicProcedure, router } from '../trpc.js';
 
 // `RunStatus`/`RunRow` are local (non-exported) types in the repository, so the
@@ -82,7 +84,13 @@ export const runsRouter = router({
 	// there is only ever one job to promote, so a manual retry can't race the
 	// automatic one into two concurrent runs.
 	retryNow: publicProcedure
-		.input(z.object({ runId: z.string().min(1) }))
+		.input(
+			z.object({
+				runId: z.string().min(1),
+				cli: AgentCliSchema.optional(),
+				model: z.string().min(1).optional(),
+			}),
+		)
 		.mutation(async ({ input }) => {
 			const run = await getRunByIdFromDb(input.runId);
 			if (!run) {
@@ -91,21 +99,43 @@ export const runsRouter = router({
 					message: `Run with ID "${input.runId}" not found`,
 				});
 			}
-			if (run.status !== 'deferred') {
+			if (run.status !== 'deferred' && run.status !== 'failed') {
 				throw new TRPCError({
 					code: 'PRECONDITION_FAILED',
-					message: `Only a deferred run can be retried now; run "${input.runId}" is ${run.status}.`,
+					message: `Only a deferred or failed run can be retried; run "${input.runId}" is ${run.status}.`,
 				});
 			}
 
-			const promoted = await promoteRetryForRun(input.runId);
-			if (!promoted) {
-				throw new TRPCError({
-					code: 'CONFLICT',
-					message:
-						'No pending retry was found to promote — this run may already be retrying. Refresh and try again.',
-				});
+			if (run.status === 'deferred') {
+				const promoted = await promoteRetryForRun(input.runId, input.cli, input.model);
+				if (!promoted) {
+					throw new TRPCError({
+						code: 'CONFLICT',
+						message:
+							'No pending retry was found to promote — this run may already be retrying. Refresh and try again.',
+					});
+				}
+			} else {
+				if (!run.jobPayload) {
+					throw new TRPCError({
+						code: 'PRECONDITION_FAILED',
+						message: `Cannot retry failed run "${input.runId}" — it was created without a job payload.`,
+					});
+				}
+				// Reconstruct job with overrides
+				const job = { ...run.jobPayload };
+				job.runId = run.id;
+				job.rateLimitRetryAttempt = 0;
+				if (input.cli) job.cliOverride = input.cli;
+				if (input.model) job.modelOverride = input.model;
+
+				// Reset the run row to running state first (so the UI updates immediately)
+				await resetRunToRunning(run.id, job);
+
+				// Enqueue the job with delay 0 (immediate)
+				await enqueueDelayedRetry(job, 0);
 			}
+
 			return { runId: input.runId, status: 'retrying' as const };
 		}),
 });

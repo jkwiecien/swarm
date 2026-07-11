@@ -32,4 +32,5 @@ export interface RunRow {
 	nextRetryAt: string | null;
 	durationMs: number | null;
 	usage: AgentUsage | null;
+	jobPayload: unknown | null;
 }

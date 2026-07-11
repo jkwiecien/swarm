@@ -1108,6 +1108,7 @@ describe('processJob', () => {
 				workItemUrl: undefined,
 				prNumber: '17',
 				model: 'sonnet',
+				jobPayload: expect.any(Object),
 			});
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
 				status: 'completed',
@@ -1191,6 +1192,7 @@ describe('processJob', () => {
 				workItemUrl: workItem.url,
 				prNumber: undefined,
 				model: 'Gemini 3.5 Flash (High)',
+				jobPayload: expect.any(Object),
 			});
 		});
 

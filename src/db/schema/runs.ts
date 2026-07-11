@@ -9,6 +9,7 @@ import {
 	uuid,
 } from 'drizzle-orm/pg-core';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { SwarmJob } from '../../queue/jobs.js';
 import { projects } from './projects.js';
 
 export const runs = pgTable(
@@ -40,6 +41,11 @@ export const runs = pgTable(
 		 * follow-up task) and every pre-existing run have none.
 		 */
 		usage: jsonb('usage').$type<AgentUsage>(),
+		/**
+		 * Persisted SwarmJob payload (issue #152) to allow retrying terminally
+		 * failed runs. Nullable for backward compatibility.
+		 */
+		jobPayload: jsonb('job_payload').$type<SwarmJob>(),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),

@@ -12,7 +12,7 @@
  * `deferred`-only guard so the button never offers an action the server rejects.
  */
 export function canRetryRun(status: string): boolean {
-	return status === 'deferred';
+	return status === 'deferred' || status === 'failed';
 }
 
 /** Button label: the in-flight state reads "Retrying…", otherwise "Retry now". */
