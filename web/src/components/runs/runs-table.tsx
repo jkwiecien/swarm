@@ -21,7 +21,12 @@ interface RunsTableProps {
 	onPageChange: (page: number) => void;
 }
 
-const PR_DRIVEN_PHASES = new Set(['review', 'respond-to-review', 'respond-to-ci']);
+const PR_DRIVEN_PHASES = new Set([
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+]);
 
 function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
 	const hasWorkItem = !!run.workItemId;
