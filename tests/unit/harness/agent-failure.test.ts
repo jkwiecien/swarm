@@ -140,10 +140,24 @@ describe('classifyAgentFailure', () => {
 
 	it('prioritizes a capacity banner over rate-limit wording in the terminal window', () => {
 		const failure = classifyAgentFailure(
-			result({ stderr: 'usage limit resets 1:40pm\nSelected model is at capacity' }),
+			result({ cli: 'codex', stderr: 'usage limit resets 1:40pm\nSelected model is at capacity' }),
 			NOW,
 		);
 		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('does not classify a non-Codex run as capacity even when the phrase appears in output', () => {
+		// A Claude/Antigravity run can quote or discuss the Codex capacity phrase
+		// in code, test fixtures, or review text. Without the cli gate this would
+		// be misclassified as 'capacity', deferring the job and ultimately telling
+		// the user to change their model instead of reporting the real failure.
+		for (const cli of ['claude', 'antigravity'] as const) {
+			const failure = classifyAgentFailure(
+				result({ cli, stderr: 'ERROR: Selected model is at capacity.' }),
+				NOW,
+			);
+			expect(failure.kind).toBe('error');
+		}
 	});
 
 	it('treats a timed-out run as a timeout regardless of its output', () => {

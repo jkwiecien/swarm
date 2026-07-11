@@ -197,7 +197,10 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
  * exists precisely because `result.signal` can't be trusted to reflect this).
  * Otherwise a stalled run is classified as `stalled`. Next, a terminal Codex
- * capacity banner is `capacity`, a recognisable terminal limit banner is a
+ * capacity banner is `capacity` (gated on `result.cli === 'codex'` — the phrase
+ * is a Codex provider error, not something Claude/Antigravity would emit as
+ * their own status, so non-Codex runs that merely quote or discuss the text must
+ * not be misclassified), a recognisable terminal limit banner is a
  * `rate-limit`, and everything else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
@@ -216,7 +219,7 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	}
 
 	const tail = terminalTail(output);
-	if (CAPACITY_RE.test(tail)) return { kind: 'capacity' };
+	if (result.cli === 'codex' && CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
 	const resetMatch = RESET_RE.exec(tail);
 	const isRateLimited =
