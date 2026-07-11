@@ -95,6 +95,16 @@ vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	},
 }));
 
+type SlotAcquisition = { acquired: false } | { acquired: true; tracked: boolean };
+const acquireProjectSlot = vi.fn<(projectId: string, limit: number) => Promise<SlotAcquisition>>(
+	async () => ({ acquired: true, tracked: true }),
+);
+const releaseProjectSlot = vi.fn(async (_projectId: string) => {});
+vi.mock('@/worker/project-concurrency.js', () => ({
+	acquireProjectSlot: (projectId: string, limit: number) => acquireProjectSlot(projectId, limit),
+	releaseProjectSlot: (projectId: string) => releaseProjectSlot(projectId),
+}));
+
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
 import { processJob, reportInterruptedJobToBoard } from '@/worker/consumer.js';
@@ -155,6 +165,77 @@ describe('processJob', () => {
 		storeRunLogs.mockResolvedValue(undefined);
 		getAppSettings.mockClear();
 		getAppSettings.mockResolvedValue({});
+		acquireProjectSlot.mockClear();
+		acquireProjectSlot.mockResolvedValue({ acquired: true, tracked: true });
+		releaseProjectSlot.mockClear();
+	});
+
+	it('runs under the project limit and releases the slot on success', async () => {
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-succeeded');
+		expect(acquireProjectSlot).toHaveBeenCalledWith(PROJECT.id, PROJECT.maxConcurrentJobs);
+		expect(releaseProjectSlot).toHaveBeenCalledOnce();
+		expect(releaseProjectSlot).toHaveBeenCalledWith(PROJECT.id);
+	});
+
+	it('defers at the project limit without running or releasing an unacquired slot', async () => {
+		acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '17',
+			attempt: 0,
+			retryDelayMs: 6 * 60 * 1000,
+		});
+		expect(phaseCalls).toEqual([]);
+		expect(releaseProjectSlot).not.toHaveBeenCalled();
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+		expect(phaseCalls).toHaveLength(1);
+	});
+
+	it('fails an at-limit job after its shared retry budget is exhausted', async () => {
+		acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(commentOnPullRequest).toHaveBeenCalledOnce();
+		expect(phaseCalls).toEqual([]);
+	});
+
+	it('releases a tracked slot after failure and abort, but not a fail-open slot', async () => {
+		phaseImpl = async () => {
+			throw new Error('failed');
+		};
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+		expect(releaseProjectSlot).toHaveBeenCalledTimes(1);
+
+		releaseProjectSlot.mockClear();
+		phaseImpl = async () => {
+			throw new AgentRunError('aborted', { kind: 'aborted' });
+		};
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+		expect(releaseProjectSlot).toHaveBeenCalledTimes(1);
+
+		releaseProjectSlot.mockClear();
+		acquireProjectSlot.mockResolvedValueOnce({ acquired: true, tracked: false });
+		phaseImpl = async () => ({ agent: agentResult() });
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+		expect(releaseProjectSlot).not.toHaveBeenCalled();
 	});
 
 	it('throws for a job referencing an unknown project', async () => {

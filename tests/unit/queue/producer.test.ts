@@ -230,6 +230,15 @@ describe('scheduleCoalescedJob', () => {
 });
 
 describe('enqueueDelayedRetry', () => {
+	it('keeps a deferred review-lifecycle job at BullMQ top priority', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+
+		await enqueueDelayedRetry(createMockGitHubWebhookJob(), 6 * 60 * 1000);
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts).not.toHaveProperty('priority');
+	});
+
 	it('adds a delayed job with a colon-free id keyed on (deliveryId, attempt), not the bare deliveryId', async () => {
 		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
 		const job = createMockGitHubWebhookJob({ rateLimitRetryAttempt: 1 });

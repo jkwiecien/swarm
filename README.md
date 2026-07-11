@@ -34,7 +34,7 @@ Dashboard  (Hono + tRPC, host process, 127.0.0.1-only)
 ```
 
 - **Router**: Node.js/TypeScript, Hono — verifies GitHub webhook signatures, resolves the project, enqueues jobs.
-- **Queue**: BullMQ on Redis — retries, backoff, and a configurable worker concurrency (`SWARM_WORKER_CONCURRENCY`, default 1). PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always queue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation) regardless of that setting, so a review never sits behind a multi-minute implementation run (`src/queue/producer.ts`'s `priorityFor`).
+- **Queue**: BullMQ on Redis — retries, backoff, configurable worker-global concurrency (`SWARM_WORKER_CONCURRENCY`, default 1), and a per-project `maxConcurrentJobs` cap. Over-limit jobs are deferred. PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always queue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation) regardless of those limits, so a review never sits behind a multi-minute implementation run (`src/queue/producer.ts`'s `priorityFor`).
 - **Worker**: drives the worktree + harness lifecycle, invokes `claude` / `antigravity` / `codex`, streams their stdout/stderr, pushes and opens PRs. Runs on the host (not containerized) so the agent CLIs have the developer's PATH/auth/config.
 - **Dashboard**: self-hosted config/credentials API, also host-run — see "Running the stack" below.
 - **Postgres**: project config, credentials, run history.
@@ -163,7 +163,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
-| `SWARM_WORKER_CONCURRENCY` | `1` | How many jobs the worker runs at once (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_WORKER_CONCURRENCY` | `1` | Worker-global maximum number of jobs running at once (`src/worker/index.ts`). Must be a positive integer or startup throws. Each project's `maxConcurrentJobs` additionally caps that project's in-flight jobs, so its effective limit is the smaller of the two values. |
 | `SWARM_WORKER_LOCK_DURATION_MS` | `300000` (5m) | BullMQ job-lock duration (`src/worker/index.ts`). The lock is renewed at ~half this interval while a phase runs, so it only has to exceed the worst-case event-loop stall between renewals — well above BullMQ's 30s default, so a brief CPU/GC/Redis hiccup can't get an in-flight run reclaimed as stalled (and, with `maxStalledCount: 0`, failed with no retry). Must be a positive integer or startup throws. |
 | `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
 
@@ -222,7 +222,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `worktreeRoot` | `.swarm-workspaces` | Directory under `repoRoot` for per-task git worktrees. |
 | `baseBranch` | `main` | Branch worktrees are cut from and PRs target. |
 | `branchPrefix` | `issue-` | Prefix for task branch names (`issue-<n>-<slug>`). |
-| `maxConcurrentJobs` | `1` | Maximum jobs this project may run concurrently (positive integer). Mirrors the `SWARM_WORKER_CONCURRENCY` default; per-project runtime enforcement is a follow-up. |
+| `maxConcurrentJobs` | `1` | Maximum jobs this project may run concurrently (positive integer). The worker enforces it at runtime and defers over-limit jobs through the bounded `phase-deferred` retry path. Its effective limit is `min(SWARM_WORKER_CONCURRENCY, maxConcurrentJobs)`. |
 | `pm` | `{ type: "github-projects" }` | PM provider discriminator (only `github-projects` exists today). |
 | `githubProjects` | **required** | GitHub Projects board mapping (below). |
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
@@ -323,7 +323,7 @@ Early implementation. Summary by area:
 - That same defer-and-retry path also covers a run the *worker itself* killed (a dev `--watch` restart, a deploy, a graceful shutdown mid-phase) — previously indistinguishable from an unexplained agent crash, since an aborted `claude`/`agy` process can exit with empty output and no OS-reported signal. Both cases share one capped retry budget, with the retry delay floored above the review-dispatch-dedup TTL so it can't collide with a claim the interrupted run may have already taken.
 - Agent runs that stall (`stalled` kind, e.g. "timeout waiting for response") or timeout are terminal failures. For PM-driven phases (planning/implementation), `reportPhaseFailureToBoard` appends a splitting suggestion to the failure comment, advising that the task's scope may be too large and should be split by hand.
 - Job-priority split: PR review-lifecycle jobs (`pull_request`/`pull_request_review`/`check_suite`) always dequeue ahead of PM-board jobs (`projects_v2_item`, which drive Planning/Implementation), via `src/queue/producer.ts`'s `priorityFor`.
-- Worker concurrency is configurable (`SWARM_WORKER_CONCURRENCY`, default 1) instead of hardcoded to one job at a time.
+- Worker-global concurrency is configurable (`SWARM_WORKER_CONCURRENCY`, default 1), with an enforced per-project `maxConcurrentJobs` cap layered on top.
 
 ### Cross-cutting
 - One shared structured logger (`src/lib/logger.ts`, SWARM-23) emits JSON log lines (level, ISO timestamp, message, context) for machine parsing, with a `pretty` mode for local dev and a `SWARM_LOG_LEVEL` filter; the router and worker each tag their lines with a `component`.

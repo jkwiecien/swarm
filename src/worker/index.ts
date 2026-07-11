@@ -20,6 +20,7 @@ import { enqueueDelayedRetry } from '../queue/producer.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
 import { type JobOutcome, processJob, reportInterruptedJobToBoard } from './consumer.js';
+import { resetProjectSlot } from './project-concurrency.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -74,6 +75,19 @@ registerBuiltInTriggers(registry);
 // Aborted on SIGTERM/SIGINT so an in-flight agent run is killed (SIGTERM→SIGKILL
 // via `runAgentCli`'s signal option) instead of outliving the stop grace period.
 const shutdown = new AbortController();
+
+async function resetProjectSlots(): Promise<void> {
+	try {
+		const projects = await listAllProjectsFromDb();
+		await Promise.all(projects.map((project) => resetProjectSlot(project.id)));
+	} catch (err) {
+		logger.error('Failed to reset project concurrency counters at startup', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+await resetProjectSlots();
 
 const worker = new Worker(
 	QUEUE_NAME,
