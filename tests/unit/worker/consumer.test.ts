@@ -757,6 +757,41 @@ describe('processJob', () => {
 		expect(addComment).not.toHaveBeenCalled();
 	});
 
+	it('defers a capacity failure briefly without posting a failure comment', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('model at capacity', { kind: 'capacity' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome).toMatchObject({ status: 'phase-deferred', retryDelayMs: 6 * 60 * 1000 });
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('fails capacity after two retries and suggests configuring a different model', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new AgentRunError('Implementation agent (codex) exited (model at capacity)', {
+				kind: 'capacity',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 2 }),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledOnce();
+		const [, body] = addComment.mock.calls[0];
+		expect(body).toContain('**at capacity**');
+		expect(body).toContain('different model');
+	});
+
 	it('does not comment for a PR-driven phase failure (no backing work item)', async () => {
 		phaseImpl = async () => {
 			throw new Error('review agent exited with code 3');
