@@ -1,12 +1,16 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useRouterState } from '@tanstack/react-router';
-import { FolderGit2, Play, Settings } from 'lucide-react';
+import { FolderGit2, Play, Plus, Settings } from 'lucide-react';
+import { useState } from 'react';
+import { ProjectCreateDialog } from '@/components/projects/project-create-dialog.js';
 import { trpc } from '@/lib/trpc.js';
 import { version } from '../../../../package.json';
 
 export function Sidebar() {
 	const currentPath = useRouterState({ select: (s) => s.location.pathname });
 	const pingQuery = useQuery(trpc.ping.ping.queryOptions());
+	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
+	const [createOpen, setCreateOpen] = useState(false);
 
 	return (
 		<div className="flex w-full md:w-64 flex-col justify-between border-r border-zinc-800 bg-[#0F0F11]">
@@ -18,20 +22,6 @@ export function Sidebar() {
 					</span>
 				</div>
 				<nav className="space-y-1 p-2">
-					<div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-						Workspace
-					</div>
-					<Link
-						to="/projects"
-						className={
-							currentPath.startsWith('/projects')
-								? 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium bg-zinc-800/40 text-zinc-100'
-								: 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800/40'
-						}
-					>
-						<FolderGit2 className="h-4 w-4" />
-						Projects
-					</Link>
 					<Link
 						to="/runs"
 						className={
@@ -43,8 +33,56 @@ export function Sidebar() {
 						<Play className="h-4 w-4" />
 						Runs
 					</Link>
+
+					<div className="flex items-center justify-between px-3 pt-4 pb-1">
+						<span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+							Projects
+						</span>
+						<button
+							type="button"
+							onClick={() => setCreateOpen(true)}
+							className="flex h-5 w-5 items-center justify-center rounded text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-100 transition-colors"
+							title="New Project"
+						>
+							<Plus className="h-3.5 w-3.5" />
+						</button>
+					</div>
+
+					<div className="flex flex-col gap-0.5">
+						{projectsQuery.isLoading ? (
+							<div className="px-3 py-2 text-xs text-zinc-500">Loading…</div>
+						) : projectsQuery.isError ? (
+							<div className="px-3 py-2 text-xs text-red-400">Error loading projects</div>
+						) : projectsQuery.data && projectsQuery.data.length > 0 ? (
+							projectsQuery.data.map((project) => (
+								<Link
+									key={project.id}
+									to="/projects/$projectId"
+									params={{ projectId: project.id }}
+									className={
+										currentPath === `/projects/${project.id}`
+											? 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium bg-zinc-800/40 text-zinc-100'
+											: 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800/40'
+									}
+								>
+									<FolderGit2 className="h-4 w-4 shrink-0 text-zinc-400" />
+									<span className="truncate">{project.name}</span>
+								</Link>
+							))
+						) : (
+							<button
+								type="button"
+								onClick={() => setCreateOpen(true)}
+								className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-300 text-left transition-colors"
+							>
+								<Plus className="h-4 w-4" />
+								Create a project
+							</button>
+						)}
+					</div>
+
 					<div className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
-						System
+						Settings
 					</div>
 					<Link
 						to="/settings"
@@ -55,7 +93,7 @@ export function Sidebar() {
 						}
 					>
 						<Settings className="h-4 w-4" />
-						Settings
+						General
 					</Link>
 				</nav>
 			</div>
@@ -73,6 +111,7 @@ export function Sidebar() {
 					{pingQuery.isSuccess ? 'Connected' : pingQuery.isError ? 'Disconnected' : 'Connecting…'}
 				</span>
 			</div>
+			<ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
 		</div>
 	);
 }

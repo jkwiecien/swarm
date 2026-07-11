@@ -5,6 +5,6 @@ export const indexRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/',
 	beforeLoad: () => {
-		throw redirect({ to: '/projects' });
+		throw redirect({ to: '/runs' });
 	},
 });
