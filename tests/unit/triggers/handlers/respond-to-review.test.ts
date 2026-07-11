@@ -68,6 +68,18 @@ describe('respond-to-review trigger', () => {
 			});
 		});
 
+		it('dispatches when no pipeline config is present', async () => {
+			const result = await handler.handle({ ...ctx(), project: createMockProjectConfig() });
+			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
+		});
+
+		it('skips when Respond-to-review is disabled', async () => {
+			const project = createMockProjectConfig({
+				pipeline: { respondToReview: { enabled: false } },
+			});
+			expect(await handler.handle({ ...ctx(), project })).toBeNull();
+		});
+
 		it('also dispatches for an approved reviewer-persona review', async () => {
 			const result = await handler.handle(ctx({ reviewState: 'approved' }));
 			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });

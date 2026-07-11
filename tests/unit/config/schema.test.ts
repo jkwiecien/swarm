@@ -250,6 +250,26 @@ describe('PipelineConfigSchema', () => {
 			false,
 		);
 	});
+
+	it('allows SCM-event-driven phases to be disabled independently', () => {
+		expect(
+			PipelineConfigSchema.safeParse({
+				review: { enabled: false },
+				respondToReview: { enabled: false },
+				respondToCi: { enabled: false },
+			}).success,
+		).toBe(true);
+	});
+
+	it('rejects Respond-to-review enabled while Review is disabled', () => {
+		expect(
+			PipelineConfigSchema.safeParse({
+				review: { enabled: false },
+				respondToReview: { enabled: true },
+			}).success,
+		).toBe(false);
+		expect(PipelineConfigSchema.safeParse({ review: { enabled: false } }).success).toBe(false);
+	});
 });
 
 describe('validateConfig', () => {

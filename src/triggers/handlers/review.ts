@@ -107,6 +107,23 @@ type ReviewDisposition =
 	| { kind: 'respond-to-ci'; failedChecks: string[] }
 	| { kind: 'none' };
 
+function isDispositionDisabled(
+	project: ProjectConfig,
+	disposition: Exclude<ReviewDisposition, { kind: 'none' }>,
+	prNumber?: string,
+	headSha?: string,
+): boolean {
+	if (disposition.kind === 'review' && project.pipeline?.review?.enabled === false) {
+		logger.debug('review: phase disabled — skipping', { prNumber, headSha });
+		return true;
+	}
+	if (disposition.kind === 'respond-to-ci' && project.pipeline?.respondToCi?.enabled === false) {
+		logger.debug('respond-to-ci: phase disabled — skipping', { prNumber, headSha });
+		return true;
+	}
+	return false;
+}
+
 /** How long to wait before re-querying check state when the Actions API looks stale. */
 const RECHECK_DELAY_MS = 30_000;
 
@@ -431,7 +448,14 @@ export function createReviewTrigger(): TriggerHandler {
 
 		async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
 			if (ctx.source !== 'github') return null;
-			const { event } = ctx;
+			const { event, project } = ctx;
+
+			if (
+				event.eventType === 'pull_request' &&
+				isDispositionDisabled(project, { kind: 'review' })
+			) {
+				return null;
+			}
 
 			const prNumber = event.workItemId;
 			if (!prNumber) {
@@ -462,6 +486,7 @@ export function createReviewTrigger(): TriggerHandler {
 				event.headSha,
 			);
 			if (disposition.kind === 'none') return null;
+			if (isDispositionDisabled(project, disposition, prNumber, event.headSha)) return null;
 
 			// Cross-process dedup: claim this PR+SHA before dispatching so a sibling
 			// event for the same commit (PR opened → check suite passed, or one
