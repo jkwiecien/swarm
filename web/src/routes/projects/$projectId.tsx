@@ -376,7 +376,7 @@ function AgentConfigurationForm({
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
-									<th className="px-4 py-3">Timeout (ms)</th>
+									<th className="px-4 py-3">Timeout (s)</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
@@ -385,7 +385,11 @@ function AgentConfigurationForm({
 									const currentConfig = agents[phase] ?? {};
 									const selectedCli = currentConfig.cli;
 									const selectedModel = currentConfig.model;
-									const timeoutMs = currentConfig.timeoutMs;
+									// Stored in ms (the `timeoutMs` config field); shown/edited in whole
+									// seconds — the ms precision was never meaningful for a multi-minute
+									// agent run and read as an intimidating six-digit number (issue #165).
+									const timeoutSeconds =
+										currentConfig.timeoutMs != null ? currentConfig.timeoutMs / 1000 : '';
 
 									const modelOptions = selectedCli ? AGENT_MODELS[selectedCli] : [];
 
@@ -433,10 +437,10 @@ function AgentConfigurationForm({
 												<input
 													type="number"
 													min="1"
-													value={timeoutMs ?? ''}
+													value={timeoutSeconds}
 													onChange={(e) => handleTimeoutChange(phase, e.target.value)}
 													disabled={isPending}
-													placeholder="No timeout"
+													placeholder="Default"
 													className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
 												/>
 											</td>
@@ -608,9 +612,10 @@ function ProjectDetailRouteComponent() {
 	};
 
 	const handleTimeoutChange = (phase: keyof AgentsConfig, value: string) => {
+		// The field edits whole seconds; the config stores ms (issue #165).
 		setAgents((prev) => ({
 			...prev,
-			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) : undefined },
+			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) * 1000 : undefined },
 		}));
 		updateMutation.reset();
 	};
