@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -40,13 +40,13 @@ describe('antigravity-session', () => {
 		expect(detectNewConversationId(before, dir)).toBeUndefined();
 	});
 
-	it('disambiguates concurrent new conversations by most-recent mtime', () => {
+	it('returns undefined when multiple new conversations are ambiguous (never guesses)', () => {
+		// Under SWARM_WORKER_CONCURRENCY > 1 a concurrent agy run can create its own
+		// conversation in the window; guessing would risk resuming a sibling task's
+		// session, so capture is skipped and the retry starts fresh instead.
 		const before = snapshotConversationIds(dir);
-		touch('older.db');
-		touch('newer.db');
-		// Make `older.db` unambiguously the earlier-modified of the two.
-		const past = new Date(Date.now() - 60_000);
-		utimesSync(path.join(dir, 'older.db'), past, past);
-		expect(detectNewConversationId(before, dir)).toBe('newer');
+		touch('conv-a.db');
+		touch('conv-b.db');
+		expect(detectNewConversationId(before, dir)).toBeUndefined();
 	});
 });

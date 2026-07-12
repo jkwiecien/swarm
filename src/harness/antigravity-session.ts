@@ -17,7 +17,7 @@
  * the caller falls back to a from-scratch retry, never a failure.
  */
 
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { logger } from '../lib/logger.js';
@@ -68,11 +68,18 @@ export function snapshotConversationIds(dir = conversationsDir()): Set<string> {
 
 /**
  * Diff the conversation store against a {@link snapshotConversationIds} taken
- * before the run, returning the id of the conversation this run created. Exactly
- * one new id is the normal case. If several appeared (a concurrent `agy` run
- * finished in the same window), the newest `.db` by modification time is this
- * run's — its file was written last, at this run's close. Returns `undefined`
- * when nothing new appeared or the store can't be read (run not resumable).
+ * before the run, returning the id of the conversation this run created — the one
+ * id that appeared since the snapshot. Returns `undefined` when nothing new
+ * appeared, the store can't be read, or the result is **ambiguous**.
+ *
+ * Ambiguity (more than one new `.db`) only arises at
+ * `SWARM_WORKER_CONCURRENCY > 1`, when a concurrent `agy` run created its own
+ * conversation in the same window. We deliberately give up rather than guess: an
+ * `agy` `.db` is written throughout its run (not only at close), so "newest
+ * mtime" does not reliably identify *this* run's conversation, and picking a
+ * sibling task's id would resume the wrong session's context into this worktree.
+ * Returning `undefined` degrades safely — the run simply isn't resumable and the
+ * retry starts fresh, which is strictly better than resuming the wrong session.
  */
 export function detectNewConversationId(
 	before: Set<string>,
@@ -89,27 +96,11 @@ export function detectNewConversationId(
 		const id = conversationIdFromEntry(entry);
 		if (id && !before.has(id)) fresh.push(id);
 	}
-	if (fresh.length === 0) return undefined;
 	if (fresh.length === 1) return fresh[0];
-
-	// Ambiguous: pick the most-recently-written `.db`. Under SWARM's default
-	// single worker this branch is never hit; it only matters at
-	// SWARM_WORKER_CONCURRENCY > 1, where mtime disambiguates.
-	logger.debug('antigravity-session: multiple new conversations, disambiguating by mtime', {
-		count: fresh.length,
-	});
-	let newestId: string | undefined;
-	let newestMs = Number.NEGATIVE_INFINITY;
-	for (const id of fresh) {
-		try {
-			const { mtimeMs } = statSync(path.join(dir, `${id}.db`));
-			if (mtimeMs > newestMs) {
-				newestMs = mtimeMs;
-				newestId = id;
-			}
-		} catch {
-			// Ignore an id whose file vanished between readdir and stat.
-		}
+	if (fresh.length > 1) {
+		logger.debug('antigravity-session: ambiguous new conversations, skipping capture', {
+			count: fresh.length,
+		});
 	}
-	return newestId;
+	return undefined;
 }

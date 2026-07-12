@@ -403,6 +403,21 @@ describe('processJob', () => {
 		expect(phaseCalls[0].args.sessionId).toBeUndefined();
 	});
 
+	it('threads the restored session as resumeSessionId on a resumed non-PM (review) run', async () => {
+		getRunByIdFromDb.mockResolvedValue({ agentSessionId: 'sess-review' });
+
+		await processJob(
+			createMockGitHubWebhookJob({ resumeSession: true, runId: 'run-1' }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		// Review is a github (PR) job with no resumePmPhase — session continuation is
+		// driven purely by the generic resumeSession flag, uniform across phases.
+		expect(phaseCalls[0].phase).toBe('review');
+		expect(phaseCalls[0].args.resumeSessionId).toBe('sess-review');
+		expect(phaseCalls[0].args.sessionId).toBeUndefined();
+	});
+
 	it('discriminates the context source for a projects job', async () => {
 		const seen: TriggerContext[] = [];
 		const job = createMockGitHubProjectsWebhookJob();
@@ -828,7 +843,12 @@ describe('processJob', () => {
 	it('defers a timeout agent run for a resume retry instead of failing it', async () => {
 		const workItem = createMockWorkItem({ statusId: '61e4505c' });
 		phaseImpl = async () => {
-			throw new AgentRunError('timeout', { kind: 'timeout' });
+			// A genuinely-killed timeout always carries an agent result (exit null).
+			throw new AgentRunError(
+				'timeout',
+				{ kind: 'timeout' },
+				agentResult({ exitCode: null, timedOut: true, sessionId: 'sess-100' }),
+			);
 		};
 
 		const outcome = await processJob(

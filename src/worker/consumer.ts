@@ -97,7 +97,12 @@ export type JobOutcome =
 			reason: string;
 			/** The retry attempt count *before* this deferral (0 on the first). */
 			attempt: number;
-			/** True only for a Claude rate-limit deferral in a PM phase. */
+			/**
+			 * True for a rate-limit or genuinely-interrupted-timeout deferral (any
+			 * phase, any CLI): the retry should resume the preserved session rather
+			 * than start fresh. Drives `resumeSession` on the re-enqueued job and
+			 * whether the captured `agentSessionId` is kept on the deferred row.
+			 */
 			resumable: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
@@ -1228,12 +1233,13 @@ async function handlePhaseFailure(
 			(err.failure.kind === 'rate-limit' ||
 				err.failure.kind === 'capacity' ||
 				err.failure.kind === 'aborted' ||
-				// A timeout resumes only when the run was genuinely interrupted
-				// (non-zero/null exit — the phase threw and preserved its worktree). A
-				// run that trapped SIGTERM and still exited 0 (issue #165's clean-exit
-				// case) already finished and cleaned up its worktree, so it stays a
-				// terminal failure rather than deferring onto a checkout that's gone.
-				(err.failure.kind === 'timeout' && err.agent?.exitCode !== 0))) ||
+				// A timeout resumes only when the run was genuinely interrupted: it
+				// carries an agent result whose exit was non-zero/null (the phase threw
+				// and preserved its worktree). A run that trapped SIGTERM and still
+				// exited 0 (issue #165's clean-exit case) already finished and cleaned up
+				// its worktree, so it stays a terminal failure rather than deferring onto
+				// a checkout that's gone.
+				(err.failure.kind === 'timeout' && err.agent !== undefined && err.agent.exitCode !== 0))) ||
 		err instanceof WorktreeAlreadyExistsError;
 	if (isDeferrable) {
 		const failure: AgentFailure =
