@@ -67,7 +67,13 @@ export const AgentConfigSchema = z
 	.object({
 		cli: AgentCliSchema.optional(),
 		model: z.string().min(1).optional(),
-		timeoutMs: z.number().int().positive().optional(),
+		/** A bounded per-phase timeout: 5–45 minutes, stored in milliseconds. */
+		timeoutMs: z
+			.number()
+			.int()
+			.min(5 * 60 * 1000)
+			.max(45 * 60 * 1000)
+			.optional(),
 	})
 	.refine(
 		(agent) => {
@@ -171,7 +177,12 @@ export const PipelineConfigSchema = z
 		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
 		review: z.object({ enabled: z.boolean().optional() }).optional(),
 		respondToReview: z
-			.object({ enabled: z.boolean().optional(), autoMerge: z.boolean().optional() })
+			.object({
+				enabled: z.boolean().optional(),
+				autoMerge: z.boolean().optional(),
+				/** Skip approval/comment reviews so only requested changes consume a response run. */
+				skipOnMinors: z.boolean().optional(),
+			})
 			.optional(),
 		respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
 	})

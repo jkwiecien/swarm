@@ -1,22 +1,17 @@
 /**
  * Respond-to-review phase (PROJECT.md §5.4, ai/ARCHITECTURE.md "Pipeline phases" #4).
  *
- * The reviewer persona submits *any* review — approve, comment, or
- * changes-requested — and the worker runs this: provision a worktree on the
- * PR's existing task branch, spin up Claude Code as the implementer to read
- * the batched review, and for each point either fix the code (Path A) or push
- * back with a rationale (Path B). Unlike Cascade's `respond-to-review` agent
- * (which only wakes on a non-approving review), this always runs — mirroring
- * the `solve-issue` skill's respond step, which unconditionally follows
- * review regardless of verdict — so the implementer fixes any valid nits the
- * reviewer left even on an approval, and always leaves a reply (a short
- * thank-you when there's nothing to fix or push back on) so a human can see
- * the response ran. "wait for the final submitted review, not individual line
- * comments" is still Cascade's rule and still applies here. Matching the event
- * (`pull_request_review` `submitted`, authored by the *reviewer* persona — the
- * `getPersonaForLogin` routing in `src/router/adapters/github.ts`) is the
- * trigger handler's job (SWARM-53), not this phase's: it receives a review to
- * respond to, already vetted.
+ * By default, the reviewer persona submits a `changes_requested` review and the
+ * worker runs this: provision a worktree on the PR's existing task branch, spin
+ * up Claude Code as the implementer to read the batched review, and for each
+ * point either fix the code (Path A) or push back with a rationale (Path B).
+ * `pipeline.respondToReview.skipOnMinors: false` can opt back into responding
+ * to every reviewer verdict. "Wait for the final submitted review, not
+ * individual line comments" is still Cascade's rule and still applies here.
+ * Matching the event (`pull_request_review` `submitted`, authored by the
+ * *reviewer* persona — the `getPersonaForLogin` routing in
+ * `src/router/adapters/github.ts`) is the trigger handler's job (SWARM-53),
+ * not this phase's: it receives a review to respond to, already vetted.
  *
  * The checkout is the PR branch itself (`provision`'s `createBranch: false`
  * seam) — unlike Review's detached throwaway, the implementer commits and

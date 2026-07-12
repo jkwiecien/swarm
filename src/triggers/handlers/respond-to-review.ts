@@ -1,17 +1,13 @@
 /**
  * Respond-to-review trigger — starts the Respond-to-review phase
  * (`src/pipeline/respond-to-review.ts`) whenever the reviewer persona submits
- * *any* review — approve, comment, or changes-requested.
+ * a reviewer-persona review. By default it only starts when that review requests
+ * changes, avoiding a separate agent run for approvals and minor comments.
  *
- * This deliberately deviates from Cascade's `pr-review-submitted` trigger
- * (which only fires on a non-approving review): the implementer should always
- * acknowledge the reviewer, not just when changes are requested — mirroring
- * the `solve-issue` skill's respond step, which unconditionally runs after
- * review regardless of verdict. Fixing valid nits and posting a reply (even a
- * plain thank-you when there's nothing to fix or push back on) is the
- * phase's job (`src/pipeline/respond-to-review.ts`'s prompt); this handler's
- * job is just recognizing that any submitted reviewer-persona review should
- * dispatch it.
+ * Set `pipeline.respondToReview.skipOnMinors` to `false` to restore the former
+ * every-verdict behaviour, including an acknowledgement after an approval. This
+ * handler decides whether the review warrants a run; the phase itself remains
+ * responsible for addressing the batched findings it receives.
  *
  * Two gates make this fire on exactly the right event:
  *  - **The final submitted review, not line comments.** Only `pull_request_review`
@@ -47,15 +43,14 @@ export function createRespondToReviewTrigger(
 	return {
 		name: 'pr-review-submitted',
 		description:
-			'Starts Respond-to-review on any reviewer-persona-submitted review (approve/comment/changes-requested)',
+			'Starts Respond-to-review on a reviewer-persona changes-requested review (or every verdict when skipOnMinors is false)',
 
 		matches(ctx: TriggerContext): boolean {
 			if (ctx.source !== 'github') return false;
 			const { event } = ctx;
 			if (event.eventType !== 'pull_request_review') return false;
-			// Only a submitted review — not an edit or a dismissal. Every verdict
-			// (approve/comment/changes-requested) dispatches — see the module header
-			// for why an approval isn't excluded.
+			// Only a submitted review — not an edit or a dismissal. `handle` applies
+			// the configured verdict policy after this cheap shape match.
 			if (event.action !== 'submitted') return false;
 			return true;
 		},
@@ -65,6 +60,15 @@ export function createRespondToReviewTrigger(
 			const { event, project } = ctx;
 			if (project.pipeline?.respondToReview?.enabled === false) {
 				logger.debug('respond-to-review: phase disabled — skipping');
+				return null;
+			}
+			if (
+				project.pipeline?.respondToReview?.skipOnMinors !== false &&
+				event.reviewState !== 'changes_requested'
+			) {
+				logger.debug('respond-to-review: minor review skipped by project setting', {
+					reviewState: event.reviewState,
+				});
 				return null;
 			}
 

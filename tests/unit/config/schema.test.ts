@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	AgentConfigSchema,
 	AgentsConfigSchema,
 	PipelineConfigSchema,
 	PROJECT_DEFAULTS,
@@ -162,6 +163,19 @@ describe('ProjectConfigSchema', () => {
 		expect(PipelineConfigSchema.parse({ respondToReview: { autoMerge: true } })).toMatchObject({
 			respondToReview: { autoMerge: true },
 		});
+	});
+
+	it('accepts the default-on skip-minors Respond-to-review override', () => {
+		expect(PipelineConfigSchema.parse({ respondToReview: { skipOnMinors: true } })).toMatchObject({
+			respondToReview: { skipOnMinors: true },
+		});
+	});
+
+	it('limits per-phase timeouts to five through forty-five minutes', () => {
+		expect(() => AgentConfigSchema.parse({ timeoutMs: 5 * 60 * 1000 })).not.toThrow();
+		expect(() => AgentConfigSchema.parse({ timeoutMs: 45 * 60 * 1000 })).not.toThrow();
+		expect(() => AgentConfigSchema.parse({ timeoutMs: 5 * 60 * 1000 - 1 })).toThrow();
+		expect(() => AgentConfigSchema.parse({ timeoutMs: 45 * 60 * 1000 + 1 })).toThrow();
 	});
 
 	it('omits worktreeRetention entirely by default', () => {
