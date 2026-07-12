@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../src/db/client.js';
 import { deleteProjectFromDb } from '../../../src/db/repositories/projectsRepository.js';
 import {
+	appendRunOutputEvents,
 	completeRun,
 	createRun,
 	failOrphanedRunningRuns,
@@ -11,8 +12,10 @@ import {
 	getLatestRunForTask,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
+	getRunOutputEvents,
 	hasResumableDeferredRun,
 	listRunsFromDb,
+	MAX_RUN_OUTPUT_BYTES,
 	markRunUserTerminated,
 	resetRunToRunning,
 	storeRunLogs,
@@ -28,6 +31,36 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 	beforeEach(async () => {
 		await truncateAll();
 		await seedProject({ id: PROJECT_ID, repo: 'jkwiecien/runs-repo' });
+	});
+
+	describe('live output events', () => {
+		it('returns only events after the supplied cursor in emission order', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: 'live', phase: 'review' });
+			await appendRunOutputEvents(id, [
+				{ stream: 'stdout', content: 'first\n', emittedAt: new Date('2026-01-01T00:00:00Z') },
+				{ stream: 'stderr', content: 'second\n', emittedAt: new Date('2026-01-01T00:00:01Z') },
+			]);
+
+			const first = await getRunOutputEvents(id, 0);
+			expect(first.events.map((event) => event.content)).toEqual(['first\n', 'second\n']);
+			const second = await getRunOutputEvents(id, first.events[0].id);
+			expect(second.events.map((event) => event.content)).toEqual(['second\n']);
+		});
+
+		it('clips output at the durable per-run byte limit and marks it truncated', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: 'chatty', phase: 'review' });
+			await getDb()
+				.update(runs)
+				.set({ outputBytes: MAX_RUN_OUTPUT_BYTES - 3 })
+				.where(eq(runs.id, id));
+			await appendRunOutputEvents(id, [
+				{ stream: 'stdout', content: 'abcdef', emittedAt: new Date() },
+			]);
+
+			const output = await getRunOutputEvents(id, 0);
+			expect(output.events[0].content).toBe('abc');
+			expect(output.truncated).toBe(true);
+		});
 	});
 
 	describe('createRun', () => {
