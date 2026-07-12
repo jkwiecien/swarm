@@ -11,7 +11,6 @@
 import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
-import type { AgentsConfig, ProjectConfig } from '../config/schema.js';
 import { runMigrations } from '../db/migrate.js';
 import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
 import {
@@ -108,32 +107,6 @@ if (!Number.isInteger(staleRunSweepIntervalMs) || staleRunSweepIntervalMs < 1) {
 // judged stale: the harness's SIGTERM→SIGKILL grace plus headroom for a slow
 // finalize write, so an in-flight run that is merely finishing up is never reaped.
 const STALE_RUN_MARGIN_MS = 10 * 60 * 1000;
-
-const AGENT_PHASE_KEYS = [
-	'planning',
-	'implementation',
-	'review',
-	'respondToReview',
-	'respondToCi',
-	'resolveConflicts',
-] as const satisfies readonly (keyof AgentsConfig)[];
-
-/**
- * The largest wall-clock timeout any run could legitimately have: the default,
- * raised by any project's larger per-phase `agents.<phase>.timeoutMs` override.
- * The stale-run sweep uses this as its floor so a project that deliberately
- * configures a long phase timeout never has its live runs mistaken for stale.
- */
-function maxConfiguredAgentTimeoutMs(projects: ProjectConfig[], base: number): number {
-	let max = base;
-	for (const project of projects) {
-		for (const phase of AGENT_PHASE_KEYS) {
-			const timeout = project.agents?.[phase]?.timeoutMs;
-			if (timeout !== undefined && timeout > max) max = timeout;
-		}
-	}
-	return max;
-}
 
 const registry = createTriggerRegistry();
 registerBuiltInTriggers(registry);
@@ -328,17 +301,14 @@ sweepInterval.unref();
  */
 async function runStaleRunSweep(): Promise<void> {
 	try {
-		const projects = await listAllProjectsFromDb();
-		const cutoffMs = maxConfiguredAgentTimeoutMs(projects, agentTimeoutMs) + STALE_RUN_MARGIN_MS;
-		const olderThan = new Date(Date.now() - cutoffMs);
 		const reconciled = await failStaleRunningRuns(
-			olderThan,
+			agentTimeoutMs,
+			STALE_RUN_MARGIN_MS,
 			'Run exceeded its wall-clock timeout without finalizing — reconciled as stale',
 		);
 		if (reconciled > 0) {
 			logger.warn('Reconciled stale running runs while serving jobs', {
 				count: reconciled,
-				olderThan: olderThan.toISOString(),
 			});
 		}
 	} catch (err) {

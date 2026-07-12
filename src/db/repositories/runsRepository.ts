@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, inArray, isNotNull, lt, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
@@ -38,6 +38,7 @@ export interface CreateRunInput {
 	prNumber?: string;
 	prTitle?: string;
 	model?: string;
+	timeoutMs?: number;
 	jobPayload?: SwarmJob;
 }
 
@@ -57,6 +58,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			prNumber: input.prNumber,
 			prTitle: input.prTitle,
 			model: input.model,
+			timeoutMs: input.timeoutMs,
 			jobPayload: input.jobPayload,
 			agentSessionId: id,
 		})
@@ -142,6 +144,7 @@ export async function resetRunToRunning(
 	jobPayload?: SwarmJob,
 	fromStatus?: RunStatus,
 	model?: string,
+	timeoutMs?: number,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -158,6 +161,7 @@ export async function resetRunToRunning(
 			usage: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
+			...(timeoutMs !== undefined ? { timeoutMs } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });
@@ -227,11 +231,20 @@ export async function failOrphanedRunningRuns(reason: string): Promise<number> {
  * those to `failed` with an explanatory `error`; return the count reconciled.
  * Best-effort like the rest of run tracking: callers log and continue on error.
  */
-export async function failStaleRunningRuns(olderThan: Date, reason: string): Promise<number> {
+export async function failStaleRunningRuns(
+	defaultTimeoutMs: number,
+	marginMs: number,
+	reason: string,
+): Promise<number> {
 	const rows = await getDb()
 		.update(runs)
 		.set({ status: 'failed', error: reason, completedAt: new Date() })
-		.where(and(eq(runs.status, 'running'), lt(runs.startedAt, olderThan)))
+		.where(
+			and(
+				eq(runs.status, 'running'),
+				sql`${runs.startedAt} < NOW() - (COALESCE(${runs.timeoutMs}, ${defaultTimeoutMs}) + ${marginMs}) * INTERVAL '1 millisecond'`,
+			),
+		)
 		.returning({ id: runs.id });
 	return rows.length;
 }

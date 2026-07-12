@@ -1179,17 +1179,19 @@ describe('processJob', () => {
 			);
 
 			expect(outcome.status).toBe('phase-succeeded');
-			expect(createRun).toHaveBeenCalledExactlyOnceWith({
-				projectId: PROJECT.id,
-				taskId: '17',
-				phase: 'review',
-				workItemId: undefined,
-				workItemTitle: undefined,
-				workItemUrl: undefined,
-				prNumber: '17',
-				model: 'sonnet',
-				jobPayload: expect.any(Object),
-			});
+			expect(createRun).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					projectId: PROJECT.id,
+					taskId: '17',
+					phase: 'review',
+					workItemId: undefined,
+					workItemTitle: undefined,
+					workItemUrl: undefined,
+					prNumber: '17',
+					model: 'sonnet',
+					jobPayload: expect.any(Object),
+				}),
+			);
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith('run-1', {
 				status: 'completed',
 				engine: 'claude',
@@ -1318,17 +1320,19 @@ describe('processJob', () => {
 				registryReturning({ phase: 'planning', taskId: '10', workItem }),
 			);
 
-			expect(createRun).toHaveBeenCalledExactlyOnceWith({
-				projectId: projectWithAgents.id,
-				taskId: '10',
-				phase: 'planning',
-				workItemId: workItem.id,
-				workItemTitle: workItem.title,
-				workItemUrl: workItem.url,
-				prNumber: undefined,
-				model: 'Gemini 3.5 Flash (High)',
-				jobPayload: expect.any(Object),
-			});
+			expect(createRun).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					projectId: projectWithAgents.id,
+					taskId: '10',
+					phase: 'planning',
+					workItemId: workItem.id,
+					workItemTitle: workItem.title,
+					workItemUrl: workItem.url,
+					prNumber: undefined,
+					model: 'Gemini 3.5 Flash (High)',
+					jobPayload: expect.any(Object),
+				}),
+			);
 		});
 
 		it('does not store an empty provider URL', async () => {

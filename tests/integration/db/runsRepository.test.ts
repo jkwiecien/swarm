@@ -403,10 +403,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				.set({ startedAt: old })
 				.where(inArray(runs.id, [stale, settledOld]));
 
-			const count = await failStaleRunningRuns(
-				new Date(Date.now() - 60 * 60 * 1000),
-				'reconciled as stale',
-			);
+			const count = await failStaleRunningRuns(60 * 60 * 1000, 0, 'reconciled as stale');
 
 			expect(count).toBe(1);
 			const staleRow = await getRunByIdFromDb(stale);
@@ -421,7 +418,40 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('returns 0 when no running row predates the cutoff', async () => {
 			await createRun({ projectId: PROJECT_ID, taskId: '23', phase: 'review' });
-			expect(await failStaleRunningRuns(new Date(Date.now() - 60 * 60 * 1000), 'noop')).toBe(0);
+			expect(await failStaleRunningRuns(60 * 60 * 1000, 0, 'noop')).toBe(0);
+		});
+
+		it('evaluates row-specific timeoutMs when reconciling stale runs', async () => {
+			// A run with 2 hours timeout started 1.5 hours ago should NOT be failed.
+			const longRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '24',
+				phase: 'implementation',
+				timeoutMs: 2 * 60 * 60 * 1000, // 2 hours
+			});
+			// A run with 30 min timeout started 1 hour ago SHOULD be failed.
+			const shortRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '25',
+				phase: 'implementation',
+				timeoutMs: 30 * 60 * 1000, // 30 mins
+			});
+
+			const oldLong = new Date(Date.now() - 1.5 * 60 * 60 * 1000); // 1.5 hours ago
+			const oldShort = new Date(Date.now() - 1 * 60 * 60 * 1000); // 1 hour ago
+
+			await getDb().update(runs).set({ startedAt: oldLong }).where(eq(runs.id, longRun));
+			await getDb().update(runs).set({ startedAt: oldShort }).where(eq(runs.id, shortRun));
+
+			const count = await failStaleRunningRuns(
+				45 * 60 * 1000, // default timeout
+				10 * 60 * 1000, // margin
+				'reconciled as stale',
+			);
+
+			expect(count).toBe(1);
+			expect((await getRunByIdFromDb(longRun))?.status).toBe('running');
+			expect((await getRunByIdFromDb(shortRun))?.status).toBe('failed');
 		});
 	});
 

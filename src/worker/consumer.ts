@@ -514,12 +514,13 @@ async function tryReuseLatestRun(
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
 	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
-	const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 	const claimed = await resetRunToRunning(
 		prior.id,
 		{ ...job, runId: prior.id },
 		prior.status,
-		model,
+		overrides.model,
+		overrides.timeoutMs,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -535,8 +536,10 @@ async function tryResetCarriedRun(
 	const runId = job.runId;
 	if (!runId) return undefined;
 	try {
-		const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
-		return (await resetRunToRunning(runId, job, undefined, model)) ? runId : undefined;
+		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+		return (await resetRunToRunning(runId, job, undefined, overrides.model, overrides.timeoutMs))
+			? runId
+			: undefined;
 	} catch (err) {
 		logger.error('Failed to reset run row for retry (creating a new one)', {
 			projectId: project.id,
@@ -636,6 +639,7 @@ async function tryCreateRun(
 	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
+		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 		const runId = await createRun({
 			projectId: project.id,
 			taskId: trigger.taskId,
@@ -645,7 +649,8 @@ async function tryCreateRun(
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
 			prNumber,
 			prTitle: prNumber ? await tryFetchPrTitle(project, prNumber) : undefined,
-			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
+			model: overrides.model,
+			timeoutMs: overrides.timeoutMs,
 			jobPayload: job,
 		});
 		job.agentSessionId = runId;
