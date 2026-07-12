@@ -27,7 +27,7 @@ BullMQ / Redis  (job queue, Docker container)
    ▼
 Worker  (host process — NOT containerized; needs local git + agent CLIs)
    — resolves trigger handler → git worktree add (isolated sandbox) → claude / antigravity-cli (CWD = worktree)
-   — commit + push → PR opened/updated → GitHub Projects item updated
+   — validates agent hand-offs → deterministic commit/push/PR/review/comment delivery → board update
 
 Dashboard  (Hono + tRPC, host process, 127.0.0.1-only)
    — self-hosted config/credentials API; a web/ frontend is in progress (see "Status")
@@ -50,11 +50,13 @@ Each phase's agent CLI and model are configurable per project, per phase, via `s
 Worker-spawned agents are scoped to exactly one phase. Their prompts explicitly prohibit invoking the manual `solve-issue` skill, spawning subagents, or continuing into another phase; the worker owns every phase hand-off and supplies the correct persona and worktree for it. The manual skill remains available for explicitly requested interactive sessions outside the worker.
 
 1. **Planning** (Claude Code by default) — item moves to "Planning" → the worker provisions a detached worktree, the planning agent reads the code graph and writes `proposed_plan.md` → plan is posted back to the board. Moves the item to "ToDo" itself if `autoAdvance` is on for this project; otherwise a human moves it once they've reviewed the plan. If `autoSplit` is on (default) and the agent judges the item too large for a single PR, it **splits** it: the original item becomes the smaller first task (re-scoped, possibly renamed), and the rest is spawned as sibling items — each created in "Planning" so it gets planned on its own, tagged `swarm:split-child` so it never auto-advances, and carrying a comment explaining the split. A human moves those siblings to "ToDo" in the order they choose.
-2. **Implementation** (Claude Code by default) — item moves to "ToDo" → the phase reports the pickup by moving the item to "In progress" (always, regardless of `autoAdvance`) → the worker opens a worktree on the task branch, the agent implements the plan, runs tests, commits, pushes, opens a PR via `gh` → PR linked back to the board, and the item moves to "In review" if `autoAdvance` is on.
-3. **Review** (Claude Code, reviewer persona) — PR opened / checks pass → the reviewer persona reviews the diff and posts a formal `gh pr review` (approve / request changes / comment).
-4. **Respond to Review** (Claude Code, implementer persona) — the reviewer submits a review with changes requested → the worker opens a worktree on the PR branch, the implementer persona processes the full batch of review comments (fix, or push back with a rationale) → replies posted to the review thread.
-5. **Respond to CI** (Claude Code, implementer persona) — a check suite on a SWARM-authored PR fails → the worker opens a worktree on the PR branch, the implementer persona inspects the failing checks and pushes a surgical fix (or reports that no code change was warranted). A per-PR attempt cap stops a fix that never turns CI green from looping forever.
-6. **Resolve Conflicts** (Claude Code, implementer persona) — a merged PR advances its base → SWARM rechecks open same-repository, SWARM-authored PRs targeting that base and dispatches only those GitHub confirms are unmergeable. The phase creates a normal merge commit, never rebases or force-pushes, and refuses to push if the PR branch changed while it was running.
+2. **Implementation** (Claude Code by default) — item moves to "ToDo" → the phase reports the pickup by moving the item to "In progress" → the agent implements and verifies the change, then writes a structured hand-off. SWARM validates the prepared tree, commits and pushes it under the implementer persona, reuses or creates the PR, links it back to the board, and moves the item to "In review" when `autoAdvance` is on.
+3. **Review** (Claude Code, reviewer persona) — PR opened / checks pass → the agent writes a structured verdict and review body; SWARM submits the formal review under the reviewer persona.
+4. **Respond to Review** (Claude Code, implementer persona) — the agent processes the review and leaves fixes plus a structured reply; SWARM commits/pushes any fix and posts one idempotent response comment.
+5. **Respond to CI** (Claude Code, implementer persona) — the agent diagnoses CI and leaves a surgical fix or no-fix decision; SWARM performs any commit/push and posts the explanation. A per-PR attempt cap stops a fix that never turns CI green from looping forever.
+6. **Resolve Conflicts** (Claude Code, implementer persona) — the agent resolves conflicting intent and leaves the verified tree; SWARM rechecks the observed remote head, creates the normal merge commit, pushes without force, and posts the result.
+
+Deterministic delivery uses durable operation identities and a step-progress sidecar in the retained worktree. Equivalent PRs, reviews, and comments are detected and reused, so a failed delivery step can resume without duplicating already-completed external mutations.
 
 ## Security model
 

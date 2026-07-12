@@ -11,15 +11,22 @@
  * (ai/CODING_STANDARDS.md "Scope credentials with AsyncLocalStorage").
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider.js';
 import type { ProjectConfig } from '../../../config/schema.js';
+import type { ScmDeliveryProvider } from '../../../scm/delivery.js';
 import {
 	type ConflictCandidatePullRequest,
+	createPullRequest,
 	enablePullRequestAutoMerge,
+	findOpenPullRequest,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
 	type PullRequestAutoMergeResult,
+	postIdempotentPullRequestComment,
 	postIssueComment,
+	submitPullRequestReview,
 	withGitHubToken,
 } from './client.js';
 import type { GitHubPersona } from './personas.js';
@@ -127,5 +134,36 @@ export class GitHubSCMIntegration {
 		return this.withPersonaCredentials(project, 'implementer', () =>
 			listOpenPullRequestsForBase(owner, repo, baseBranch),
 		);
+	}
+
+	async deliveryProvider(
+		project: ProjectConfig,
+		persona: GitHubPersona,
+	): Promise<ScmDeliveryProvider> {
+		const [owner, repo] = project.repo.split('/');
+		const scoped = <T>(fn: () => Promise<T>) => this.withPersonaCredentials(project, persona, fn);
+		return {
+			findPullRequest: (branch) => scoped(() => findOpenPullRequest(owner, repo, branch)),
+			createPullRequest: (input) => scoped(() => createPullRequest(owner, repo, input)),
+			pushBranch: async (cwd, branch, expectedSha) => {
+				const token = await getPersonaToken(project, persona);
+				const authorization = Buffer.from(`x-access-token:${token}`).toString('base64');
+				await promisify(execFile)(
+					'git',
+					['push', `https://github.com/${project.repo}.git`, `${expectedSha}:refs/heads/${branch}`],
+					{
+						cwd,
+						env: {
+							...process.env,
+							GIT_CONFIG_COUNT: '1',
+							GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+							GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${authorization}`,
+						},
+					},
+				);
+			},
+			submitReview: (input) => scoped(() => submitPullRequestReview(owner, repo, input)),
+			postComment: (input) => scoped(() => postIdempotentPullRequestComment(owner, repo, input)),
+		};
 	}
 }

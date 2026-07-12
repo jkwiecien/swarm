@@ -30,7 +30,8 @@ Worker  (host process — NOT containerized, one job at a time or a small pool)
    — looks up the trigger handler for the event
    — provisions a Git worktree (see "Worktree lifecycle" below)
    — spawns `claude` or `antigravity` CLI with the worktree as CWD
-   — commits/pushes, opens/updates a PR, posts back to GitHub Projects
+   — validates structured agent hand-offs and performs deterministic SCM delivery
+   — persists step progress, then posts results back to GitHub Projects
 
 Dashboard (Hono HTTP server + tRPC, host process)
    — exposes a `/health` check and mounts a tRPC API under `/trpc`
@@ -56,6 +57,7 @@ The integration itself lives under `src/integrations/scm/github/` — consistent
 - Dual-persona tokens (`implementer`, `reviewer`) scoped via `AsyncLocalStorage` (`src/integrations/scm/github/client.ts`'s `withGitHubToken`), never passed as plain arguments. Token references live in the project config's `credentials` block; the secrets themselves are resolved from Postgres per-persona (`src/config/provider.ts` → `src/db/repositories/credentialsRepository.ts`).
 - Router adapter (`src/router/adapters/github.ts`) parses `pull_request`, `pull_request_review`, `issue_comment`, `check_suite` events, resolves the SWARM project from the repo, and dispatches with the right persona's credentials in scope.
 - Loop prevention via an `isSwarmBot(login)` check (`src/integrations/scm/github/personas.ts`) on comment events, exactly as described in `ai/CODING_STANDARDS.md` — a persona never reacts to its own ack/reply comments; PR/review lifecycle routing between personas is handled by `getPersonaForLogin`, not by the drop gate.
+- Pipeline code requests deterministic mutations through the provider-neutral `ScmDeliveryProvider` seam (`src/scm/delivery.ts`). Agents write Zod-validated semantic hand-offs and never commit, push, create PRs, submit reviews, or post comments. The GitHub adapter supplies persona-scoped implementations, durable delivery markers, existing-PR recovery, and safe expected-SHA pushes. Step progress is written beside the hand-off in the retained worktree so a retry resumes the failed delivery operation rather than repeating completed mutations.
 
 ### PM: GitHub Projects (`src/integrations/pm/github-projects/`) — net-new, no Cascade equivalent
 

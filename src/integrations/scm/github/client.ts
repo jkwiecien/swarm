@@ -282,3 +282,98 @@ export async function postIssueComment(
 	});
 	return data.id;
 }
+
+const DELIVERY_MARKER = (deliveryId: string) => `<!-- swarm-delivery:${deliveryId} -->`;
+
+export async function findOpenPullRequest(
+	owner: string,
+	repo: string,
+	branch: string,
+): Promise<{ number: number; url: string } | undefined> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.list({
+		owner,
+		repo,
+		state: 'open',
+		head: `${owner}:${branch}`,
+	});
+	const pull = data[0];
+	return pull ? { number: pull.number, url: pull.html_url } : undefined;
+}
+
+export async function createPullRequest(
+	owner: string,
+	repo: string,
+	input: { baseBranch: string; branch: string; title: string; body: string },
+): Promise<{ number: number; url: string }> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.create({
+		owner,
+		repo,
+		base: input.baseBranch,
+		head: input.branch,
+		title: input.title,
+		body: input.body,
+	});
+	return { number: data.number, url: data.html_url };
+}
+
+export async function submitPullRequestReview(
+	owner: string,
+	repo: string,
+	input: {
+		prNumber: number;
+		verdict: 'approve' | 'request-changes' | 'comment';
+		body: string;
+		deliveryId: string;
+	},
+): Promise<number> {
+	const client = getScopedClient();
+	const marker = DELIVERY_MARKER(input.deliveryId);
+	const reviews = await client.paginate(client.pulls.listReviews, {
+		owner,
+		repo,
+		pull_number: input.prNumber,
+		per_page: 100,
+	});
+	const existing = reviews.find((review) => review.body?.includes(marker));
+	if (existing) return existing.id;
+	const event =
+		input.verdict === 'approve'
+			? 'APPROVE'
+			: input.verdict === 'request-changes'
+				? 'REQUEST_CHANGES'
+				: 'COMMENT';
+	const { data } = await client.pulls.createReview({
+		owner,
+		repo,
+		pull_number: input.prNumber,
+		event,
+		body: `${input.body}\n\n${marker}`,
+	});
+	return data.id;
+}
+
+export async function postIdempotentPullRequestComment(
+	owner: string,
+	repo: string,
+	input: { prNumber: number; body: string; deliveryId: string },
+): Promise<number> {
+	const client = getScopedClient();
+	const marker = DELIVERY_MARKER(input.deliveryId);
+	const comments = await client.paginate(client.issues.listComments, {
+		owner,
+		repo,
+		issue_number: input.prNumber,
+		per_page: 100,
+	});
+	const existing = comments.find((comment) => comment.body?.includes(marker));
+	if (existing) return existing.id;
+	const { data } = await client.issues.createComment({
+		owner,
+		repo,
+		issue_number: input.prNumber,
+		body: `${input.body}\n\n${marker}`,
+	});
+	return data.id;
+}
