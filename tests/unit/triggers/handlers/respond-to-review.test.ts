@@ -39,11 +39,11 @@ describe('respond-to-review trigger', () => {
 			expect(handler.matches(ctx())).toBe(true);
 		});
 
-		it('matches a submitted commented review', () => {
+		it('matches a submitted commented review so an opt-out project can dispatch it', () => {
 			expect(handler.matches(ctx({ reviewState: 'commented' }))).toBe(true);
 		});
 
-		it('matches an approved review too — the implementer always responds', () => {
+		it('matches an approved review too — dispatch policy is decided by the project setting', () => {
 			expect(handler.matches(ctx({ reviewState: 'approved' }))).toBe(true);
 		});
 
@@ -80,8 +80,19 @@ describe('respond-to-review trigger', () => {
 			expect(await handler.handle({ ...ctx(), project })).toBeNull();
 		});
 
-		it('also dispatches for an approved reviewer-persona review', async () => {
-			const result = await handler.handle(ctx({ reviewState: 'approved' }));
+		it('skips approved and comment-only reviewer-persona reviews by default', async () => {
+			expect(await handler.handle(ctx({ reviewState: 'approved' }))).toBeNull();
+			expect(await handler.handle(ctx({ reviewState: 'commented' }))).toBeNull();
+		});
+
+		it('dispatches every reviewer-persona verdict when skipOnMinors is disabled', async () => {
+			const project = createMockProjectConfig({
+				pipeline: { respondToReview: { skipOnMinors: false } },
+			});
+			const result = await handler.handle({
+				...ctx({ reviewState: 'approved' }),
+				project,
+			});
 			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
 		});
 

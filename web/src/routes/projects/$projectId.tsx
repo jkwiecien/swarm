@@ -18,6 +18,8 @@ const PHASES = [
 	'resolveConflicts',
 ] as const;
 
+const DEFAULT_TIMEOUT_MINUTES = 30;
+
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
 	planning: { label: 'Planning', code: 'planning' },
 	implementation: { label: 'Implementation', code: 'implementation' },
@@ -376,7 +378,7 @@ function AgentConfigurationForm({
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
-									<th className="px-4 py-3">Timeout (s)</th>
+									<th className="px-4 py-3">Timeout (min)</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
@@ -385,11 +387,12 @@ function AgentConfigurationForm({
 									const currentConfig = agents[phase] ?? {};
 									const selectedCli = currentConfig.cli;
 									const selectedModel = currentConfig.model;
-									// Stored in ms (the `timeoutMs` config field); shown/edited in whole
-									// seconds — the ms precision was never meaningful for a multi-minute
-									// agent run and read as an intimidating six-digit number (issue #165).
-									const timeoutSeconds =
-										currentConfig.timeoutMs != null ? currentConfig.timeoutMs / 1000 : '';
+									// Stored in ms, but the dashboard exposes the 30-minute project
+									// default in whole minutes. An unset value still inherits that default.
+									const timeoutMinutes =
+										currentConfig.timeoutMs != null
+											? currentConfig.timeoutMs / (60 * 1000)
+											: DEFAULT_TIMEOUT_MINUTES;
 
 									const modelOptions = selectedCli ? AGENT_MODELS[selectedCli] : [];
 
@@ -436,11 +439,12 @@ function AgentConfigurationForm({
 											<td className="px-4 py-3.5">
 												<input
 													type="number"
-													min="1"
-													value={timeoutSeconds}
+													min="5"
+													max="45"
+													value={timeoutMinutes}
 													onChange={(e) => handleTimeoutChange(phase, e.target.value)}
 													disabled={isPending}
-													placeholder="Default"
+													aria-label={`${phaseLabel.label} timeout in minutes`}
 													className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
 												/>
 											</td>
@@ -491,6 +495,8 @@ function AgentConfigurationForm({
 interface PipelineSettingsFormProps {
 	autoMerge: boolean;
 	setAutoMerge: (value: boolean) => void;
+	skipRespondToReviewOnMinors: boolean;
+	setSkipRespondToReviewOnMinors: (value: boolean) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -503,6 +509,8 @@ interface PipelineSettingsFormProps {
 function PipelineSettingsForm({
 	autoMerge,
 	setAutoMerge,
+	skipRespondToReviewOnMinors,
+	setSkipRespondToReviewOnMinors,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -531,6 +539,24 @@ function PipelineSettingsForm({
 							<span className="block text-xs text-zinc-400 mt-1">
 								After SWARM responds to a reviewer, merge the pull request when GitHub reports it is
 								eligible. Required checks and repository rules still apply.
+							</span>
+						</span>
+					</label>
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+						<input
+							type="checkbox"
+							checked={skipRespondToReviewOnMinors}
+							onChange={(event) => setSkipRespondToReviewOnMinors(event.target.checked)}
+							disabled={isPending}
+							className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+						/>
+						<span>
+							<span className="block text-sm font-medium text-zinc-200">
+								Skip respond to review on minors
+							</span>
+							<span className="block text-xs text-zinc-400 mt-1">
+								Only start Respond to Review for a reviewer request-changes verdict. Approvals and
+								comment-only reviews do not consume a separate agent run.
 							</span>
 						</span>
 					</label>
@@ -589,6 +615,7 @@ function ProjectDetailRouteComponent() {
 	const [activeTab, setActiveTab] = useState<'general' | 'agents' | 'pipeline'>('general');
 	const [agents, setAgents] = useState<AgentsConfig>({});
 	const [autoMerge, setAutoMerge] = useState(false);
+	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
 
 	const project = projectQuery.data;
 
@@ -611,6 +638,7 @@ function ProjectDetailRouteComponent() {
 			setMaxConcurrentJobsError(undefined);
 			setAgents(project.agents ?? {});
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
+			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
 		}
 	}, [project]);
 
@@ -664,8 +692,10 @@ function ProjectDetailRouteComponent() {
 	}, [project, agents]);
 
 	const isPipelineDirty = useMemo(
-		() => autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false),
-		[project, autoMerge],
+		() =>
+			autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false) ||
+			skipRespondToReviewOnMinors !== (project?.pipeline?.respondToReview?.skipOnMinors ?? true),
+		[project, autoMerge, skipRespondToReviewOnMinors],
 	);
 
 	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {
@@ -701,10 +731,10 @@ function ProjectDetailRouteComponent() {
 	};
 
 	const handleTimeoutChange = (phase: keyof AgentsConfig, value: string) => {
-		// The field edits whole seconds; the config stores ms (issue #165).
+		// The field edits whole minutes; the config stores milliseconds.
 		setAgents((prev) => ({
 			...prev,
-			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) * 1000 : undefined },
+			[phase]: { ...prev[phase], timeoutMs: Number(value) * 60 * 1000 },
 		}));
 		updateMutation.reset();
 	};
@@ -731,13 +761,18 @@ function ProjectDetailRouteComponent() {
 			id: projectId,
 			pipeline: {
 				...project?.pipeline,
-				respondToReview: { ...project?.pipeline?.respondToReview, autoMerge },
+				respondToReview: {
+					...project?.pipeline?.respondToReview,
+					autoMerge,
+					skipOnMinors: skipRespondToReviewOnMinors,
+				},
 			},
 		});
 	};
 
 	const handlePipelineReset = () => {
 		setAutoMerge(project?.pipeline?.respondToReview?.autoMerge ?? false);
+		setSkipRespondToReviewOnMinors(project?.pipeline?.respondToReview?.skipOnMinors ?? true);
 		updateMutation.reset();
 	};
 
@@ -912,6 +947,11 @@ function ProjectDetailRouteComponent() {
 					autoMerge={autoMerge}
 					setAutoMerge={(value) => {
 						setAutoMerge(value);
+						updateMutation.reset();
+					}}
+					skipRespondToReviewOnMinors={skipRespondToReviewOnMinors}
+					setSkipRespondToReviewOnMinors={(value) => {
+						setSkipRespondToReviewOnMinors(value);
 						updateMutation.reset();
 					}}
 					handleSubmit={handlePipelineSubmit}

@@ -295,6 +295,18 @@ describe('projectsRouter', () => {
 			});
 		});
 
+		it('saves the default-on skip-minors review-response setting', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			const result = await caller.update({
+				id: 'p1',
+				pipeline: { respondToReview: { skipOnMinors: false } },
+			});
+
+			expect(result.pipeline?.respondToReview?.skipOnMinors).toBe(false);
+		});
+
 		it.each([0, -1, 1.5, 'many'])('rejects invalid maximum concurrent jobs: %s', async (value) => {
 			await expect(
 				caller.update({ id: 'p1', maxConcurrentJobs: value as number }),

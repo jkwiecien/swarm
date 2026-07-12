@@ -143,15 +143,14 @@ const RETRY_BUFFER_MS = 60 * 1000;
  * when a project sets no per-phase `agents.<phase>.timeoutMs` (issue #165).
  * Without it an agent that hangs — a model that never responds, a wedged CLI —
  * runs forever, holding a worker slot and leaving its run row stuck `running`
- * (confirmed live on run `dd0ad860-…`). Chosen generously (45 min) so it is a
- * safety net against a genuinely stuck run, not a guillotine on a legitimately
- * long planning/implementation/review run: those complete well inside it, while
- * a run past 45 min has almost certainly stopped making progress. Override the
+ * (confirmed live on run `dd0ad860-…`). Chosen as a 30-minute default: long
+ * enough for a focused phase, while bounding a runaway run's quota use and
+ * occupied worker slot. Override the
  * default globally with the `SWARM_AGENT_TIMEOUT_MS` env var
  * (README § Configuration); a per-phase `timeoutMs` in `swarm.config.json`
  * still wins over both.
  */
-export const DEFAULT_AGENT_TIMEOUT_MS = 45 * 60 * 1000;
+export const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Resolve the effective default agent timeout: `SWARM_AGENT_TIMEOUT_MS` when it
