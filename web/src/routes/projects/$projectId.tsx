@@ -1,10 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { Cpu, Settings } from 'lucide-react';
+import { Cpu, GitMerge, Settings } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { trpc, trpcClient } from '@/lib/trpc.js';
-import type { AgentConfig, AgentsConfig } from '../../../../src/config/schema.js';
+import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
 import { AGENT_MODELS } from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
@@ -376,7 +376,7 @@ function AgentConfigurationForm({
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
-									<th className="px-4 py-3">Timeout (ms)</th>
+									<th className="px-4 py-3">Timeout (s)</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
@@ -385,7 +385,11 @@ function AgentConfigurationForm({
 									const currentConfig = agents[phase] ?? {};
 									const selectedCli = currentConfig.cli;
 									const selectedModel = currentConfig.model;
-									const timeoutMs = currentConfig.timeoutMs;
+									// Stored in ms (the `timeoutMs` config field); shown/edited in whole
+									// seconds — the ms precision was never meaningful for a multi-minute
+									// agent run and read as an intimidating six-digit number (issue #165).
+									const timeoutSeconds =
+										currentConfig.timeoutMs != null ? currentConfig.timeoutMs / 1000 : '';
 
 									const modelOptions = selectedCli ? AGENT_MODELS[selectedCli] : [];
 
@@ -433,10 +437,10 @@ function AgentConfigurationForm({
 												<input
 													type="number"
 													min="1"
-													value={timeoutMs ?? ''}
+													value={timeoutSeconds}
 													onChange={(e) => handleTimeoutChange(phase, e.target.value)}
 													disabled={isPending}
-													placeholder="No timeout"
+													placeholder="Default"
 													className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
 												/>
 											</td>
@@ -484,6 +488,87 @@ function AgentConfigurationForm({
 	);
 }
 
+interface PipelineSettingsFormProps {
+	autoMerge: boolean;
+	setAutoMerge: (value: boolean) => void;
+	handleSubmit: (e: React.FormEvent) => void;
+	handleReset: () => void;
+	isDirty: boolean;
+	isPending: boolean;
+	isSuccess: boolean;
+	isError: boolean;
+	errorMessage?: string;
+}
+
+function PipelineSettingsForm({
+	autoMerge,
+	setAutoMerge,
+	handleSubmit,
+	handleReset,
+	isDirty,
+	isPending,
+	isSuccess,
+	isError,
+	errorMessage,
+}: PipelineSettingsFormProps) {
+	return (
+		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+			<form onSubmit={handleSubmit} className="space-y-6">
+				<div>
+					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+						Pipeline Automation
+					</h2>
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+						<input
+							type="checkbox"
+							checked={autoMerge}
+							onChange={(event) => setAutoMerge(event.target.checked)}
+							disabled={isPending}
+							className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+						/>
+						<span>
+							<span className="block text-sm font-medium text-zinc-200">Auto merge</span>
+							<span className="block text-xs text-zinc-400 mt-1">
+								After SWARM responds to a reviewer, merge the pull request when GitHub reports it is
+								eligible. Required checks and repository rules still apply.
+							</span>
+						</span>
+					</label>
+				</div>
+
+				{isSuccess && (
+					<div className="p-3 bg-emerald-950/20 border border-emerald-900/30 text-sm text-emerald-400 rounded">
+						Pipeline settings saved successfully.
+					</div>
+				)}
+				{isError && (
+					<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+						Failed to save pipeline settings: {errorMessage}
+					</div>
+				)}
+
+				<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
+					<button
+						type="submit"
+						disabled={isPending || !isDirty}
+						className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
+					>
+						{isPending ? 'Saving…' : 'Save Changes'}
+					</button>
+					<button
+						type="button"
+						onClick={handleReset}
+						disabled={isPending || !isDirty}
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+					>
+						Reset
+					</button>
+				</div>
+			</form>
+		</div>
+	);
+}
+
 function ProjectDetailRouteComponent() {
 	const { projectId } = projectDetailRoute.useParams();
 	const queryClient = useQueryClient();
@@ -501,8 +586,9 @@ function ProjectDetailRouteComponent() {
 	const [maxConcurrentJobs, setMaxConcurrentJobs] = useState('');
 	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
-	const [activeTab, setActiveTab] = useState<'general' | 'agents'>('general');
+	const [activeTab, setActiveTab] = useState<'general' | 'agents' | 'pipeline'>('general');
 	const [agents, setAgents] = useState<AgentsConfig>({});
+	const [autoMerge, setAutoMerge] = useState(false);
 
 	const project = projectQuery.data;
 
@@ -524,6 +610,7 @@ function ProjectDetailRouteComponent() {
 			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
 			setMaxConcurrentJobsError(undefined);
 			setAgents(project.agents ?? {});
+			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 		}
 	}, [project]);
 
@@ -538,6 +625,7 @@ function ProjectDetailRouteComponent() {
 			branchPrefix?: string;
 			maxConcurrentJobs?: number;
 			agents?: AgentsConfig;
+			pipeline?: PipelineConfig;
 		}) => trpcClient.projects.update.mutate(variables),
 		onSuccess: () => {
 			queryClient.invalidateQueries({
@@ -575,6 +663,11 @@ function ProjectDetailRouteComponent() {
 		return PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase]));
 	}, [project, agents]);
 
+	const isPipelineDirty = useMemo(
+		() => autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false),
+		[project, autoMerge],
+	);
+
 	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {
 		const cli = value ? (value as AgentCli) : undefined;
 		setAgents((prev) => {
@@ -608,9 +701,10 @@ function ProjectDetailRouteComponent() {
 	};
 
 	const handleTimeoutChange = (phase: keyof AgentsConfig, value: string) => {
+		// The field edits whole seconds; the config stores ms (issue #165).
 		setAgents((prev) => ({
 			...prev,
-			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) : undefined },
+			[phase]: { ...prev[phase], timeoutMs: value ? Number(value) * 1000 : undefined },
 		}));
 		updateMutation.reset();
 	};
@@ -629,6 +723,22 @@ function ProjectDetailRouteComponent() {
 			id: projectId,
 			agents: finalAgents,
 		});
+	};
+
+	const handlePipelineSubmit = (e: React.FormEvent) => {
+		e.preventDefault();
+		updateMutation.mutate({
+			id: projectId,
+			pipeline: {
+				...project?.pipeline,
+				respondToReview: { ...project?.pipeline?.respondToReview, autoMerge },
+			},
+		});
+	};
+
+	const handlePipelineReset = () => {
+		setAutoMerge(project?.pipeline?.respondToReview?.autoMerge ?? false);
+		updateMutation.reset();
 	};
 
 	const handleReset = () => {
@@ -734,6 +844,21 @@ function ProjectDetailRouteComponent() {
 					<Cpu className="h-4 w-4 text-violet-400" />
 					Agent Configuration
 				</button>
+				<button
+					type="button"
+					onClick={() => {
+						setActiveTab('pipeline');
+						updateMutation.reset();
+					}}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'pipeline'
+							? 'border-violet-500 text-white bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<GitMerge className="h-4 w-4 text-violet-400" />
+					Pipeline
+				</button>
 			</div>
 
 			{/* Form Card - General Settings */}
@@ -775,6 +900,23 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
+					isPending={updateMutation.isPending}
+					isSuccess={updateMutation.isSuccess}
+					isError={updateMutation.isError}
+					errorMessage={updateMutation.error?.message}
+				/>
+			)}
+
+			{activeTab === 'pipeline' && (
+				<PipelineSettingsForm
+					autoMerge={autoMerge}
+					setAutoMerge={(value) => {
+						setAutoMerge(value);
+						updateMutation.reset();
+					}}
+					handleSubmit={handlePipelineSubmit}
+					handleReset={handlePipelineReset}
+					isDirty={isPipelineDirty}
 					isPending={updateMutation.isPending}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}

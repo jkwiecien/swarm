@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, inArray, isNotNull, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
@@ -38,6 +38,7 @@ export interface CreateRunInput {
 	prNumber?: string;
 	prTitle?: string;
 	model?: string;
+	timeoutMs?: number;
 	jobPayload?: SwarmJob;
 }
 
@@ -57,6 +58,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			prNumber: input.prNumber,
 			prTitle: input.prTitle,
 			model: input.model,
+			timeoutMs: input.timeoutMs,
 			jobPayload: input.jobPayload,
 			agentSessionId: id,
 		})
@@ -129,17 +131,26 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
  * guard is supplied) — the caller then falls back to `createRun`. Best-effort
  * like the rest of run tracking: the worker swallows/logs any throw.
+ *
+ * `startedAt` is bumped to now so the row's age reflects *this* attempt, not the
+ * original one: the dashboard's live duration measures the current run, and the
+ * stale-row reconciliation ({@link failStaleRunningRuns}) — which fails a
+ * `running` row once it outlives any plausible timeout — measures each attempt
+ * from its own start rather than wrongly reaping a just-retried row for the
+ * elapsed time of a hours-old first attempt (issue #165).
  */
 export async function resetRunToRunning(
 	runId: string,
 	jobPayload?: SwarmJob,
 	fromStatus?: RunStatus,
 	model?: string,
+	timeoutMs?: number,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
 		.set({
 			status: 'running',
+			startedAt: new Date(),
 			completedAt: null,
 			error: null,
 			nextRetryAt: null,
@@ -150,6 +161,7 @@ export async function resetRunToRunning(
 			usage: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
+			...(timeoutMs !== undefined ? { timeoutMs } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });
@@ -234,6 +246,37 @@ export async function failOrphanedRunningRuns(reason: string): Promise<number> {
 		.update(runs)
 		.set({ status: 'failed', error: reason, completedAt: new Date() })
 		.where(eq(runs.status, 'running'))
+		.returning({ id: runs.id });
+	return rows.length;
+}
+
+/**
+ * Fail every `running` row whose `startedAt` predates `olderThan` — the periodic
+ * stale-row reconciliation the worker runs *while serving jobs* (issue #165),
+ * the running-worker counterpart to {@link failOrphanedRunningRuns}'s
+ * startup-only sweep. Unlike that one it cannot fail *all* `running` rows (a
+ * genuinely in-flight phase has one), so it only reaps rows old enough that no
+ * live agent could still be behind them: every agent is killed at its wall-clock
+ * timeout ({@link resetRunToRunning} keeps `startedAt` per-attempt), so a row
+ * still `running` well past the largest configured timeout is a settled phase
+ * whose finalize never landed (its process died, but the worker survived). Flip
+ * those to `failed` with an explanatory `error`; return the count reconciled.
+ * Best-effort like the rest of run tracking: callers log and continue on error.
+ */
+export async function failStaleRunningRuns(
+	defaultTimeoutMs: number,
+	marginMs: number,
+	reason: string,
+): Promise<number> {
+	const rows = await getDb()
+		.update(runs)
+		.set({ status: 'failed', error: reason, completedAt: new Date() })
+		.where(
+			and(
+				eq(runs.status, 'running'),
+				sql`${runs.startedAt} < NOW() - (COALESCE(${runs.timeoutMs}, ${defaultTimeoutMs}) + ${marginMs}) * INTERVAL '1 millisecond'`,
+			),
+		)
 		.returning({ id: runs.id });
 	return rows.length;
 }

@@ -206,25 +206,39 @@ export async function promoteRetryForRun(
 	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
 	const matches = (job: { data?: { runId?: string } }) => job.data?.runId === runId;
 
-	const pendingDelayed = delayed.find(matches);
-	if (pendingDelayed) {
-		// `getDelayed()`'s element type distributes the SwarmJob union into
-		// `Job<github> | Job<github-projects>`, whose `updateData` collapses to an
-		// uncallable never-parameter; re-view it as the non-distributed
-		// `Job<SwarmJob>` so the (union-typed) data round-trips through updateData.
-		const job = pendingDelayed as Job<SwarmJob>;
-		// Reset the attempt counter in place (a spread would widen the discriminated
-		// union past itself), then persist the same object.
+	// Apply the manual retry's overrides onto a pending job's data in place, then
+	// persist. `getDelayed()`/`getWaiting()`'s element type distributes the SwarmJob
+	// union into `Job<github> | Job<github-projects>`, whose `updateData` collapses
+	// to an uncallable never-parameter; re-view it as the non-distributed
+	// `Job<SwarmJob>` so the (union-typed) data round-trips through updateData. The
+	// attempt counter is reset in place (a spread would widen the discriminated
+	// union past itself) so the manual retry bypasses MAX_RATE_LIMIT_RETRIES.
+	const applyOverrides = async (pending: (typeof delayed)[number]): Promise<void> => {
+		const job = pending as Job<SwarmJob>;
 		job.data.rateLimitRetryAttempt = 0;
 		if (cli) job.data.cliOverride = cli;
 		if (model) job.data.modelOverride = model;
 		await job.updateData(job.data);
-		await job.promote();
+	};
+
+	const pendingDelayed = delayed.find(matches);
+	if (pendingDelayed) {
+		await applyOverrides(pendingDelayed);
+		await (pendingDelayed as Job<SwarmJob>).promote();
 		return true;
 	}
-	// Already waiting → it will run imminently on its own; treat as promoted so
-	// the caller reports success rather than a spurious "nothing to retry".
-	return waiting.some(matches);
+
+	// Already waiting (its delay elapsed) → it will run imminently on its own, so
+	// there is nothing to promote; but it must still pick up the manual retry's
+	// cli/model overrides, or the run relaunches on the *original* engine — the
+	// confirmed regression where a `codex`/`gpt-5.6-terra` retry re-ran on
+	// `antigravity` (issue #165). Update its data in place before it starts.
+	const pendingWaiting = waiting.find(matches);
+	if (pendingWaiting) {
+		await applyOverrides(pendingWaiting);
+		return true;
+	}
+	return false;
 }
 
 /**

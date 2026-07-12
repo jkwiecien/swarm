@@ -148,6 +148,7 @@ export function RunsTable({
 								<td className="px-2 py-3 text-sm">
 									<RunStatusBadge
 										status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
+										timedOut={run.timedOut}
 									/>
 								</td>
 								<td className="px-2 py-3 text-sm text-zinc-400">

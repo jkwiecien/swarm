@@ -237,8 +237,10 @@ export interface AgentCliResult {
 	/**
 	 * Normalized token usage extracted from this run's stdout (`./usage.js`),
 	 * or `undefined` when the CLI/output didn't yield any — an unsupported CLI
-	 * (Antigravity cannot report it), malformed/truncated
-	 * output, or a run that never produced output at all.
+	 * (Antigravity cannot report it), malformed output, or a run that never
+	 * produced output at all. A truncated run (`outputTruncated`) can still
+	 * report usage: the trailing usage summary is recovered from the retained
+	 * tail of stdout, unless it too was cut off.
 	 */
 	usage?: AgentUsage;
 }
@@ -267,6 +269,35 @@ function cappedBuffer(maxBytes: number | undefined) {
 		},
 		get truncated(): boolean {
 			return truncated;
+		},
+	};
+}
+
+/**
+ * Rolling buffer that retains only the last `maxBytes` of a stream, dropping
+ * the oldest chunks as newer ones arrive. Where {@link cappedBuffer} keeps the
+ * *head* (the display log, latched once full), this keeps the *tail* — the one
+ * place a CLI reports token usage (claude's final JSON, codex's trailing
+ * `turn.completed` event). It lets a run that floods the head cap — e.g. a
+ * large test suite printing ~1MB — still recover its usage summary, which is
+ * always emitted last. `undefined` maxBytes means the head buffer already
+ * captured everything, so the tail is left empty (unused).
+ */
+function tailBuffer(maxBytes: number | undefined) {
+	const chunks: string[] = [];
+	let bytes = 0;
+	return {
+		add(chunk: string): void {
+			if (maxBytes === undefined) return;
+			chunks.push(chunk);
+			bytes += Buffer.byteLength(chunk);
+			while (bytes > maxBytes && chunks.length > 1) {
+				bytes -= Buffer.byteLength(chunks[0]);
+				chunks.shift();
+			}
+		},
+		get text(): string {
+			return chunks.join('');
 		},
 	};
 }
@@ -338,6 +369,9 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 
 		const stdout = cappedBuffer(options.maxOutputBytes);
 		const stderr = cappedBuffer(options.maxOutputBytes);
+		// Retains the tail of stdout so a trailing usage summary survives even when
+		// the head-capped `stdout` buffer truncates (see {@link tailBuffer}).
+		const stdoutTail = tailBuffer(options.maxOutputBytes);
 		let timedOut = false;
 		let aborted = false;
 		let killRequested = false;
@@ -358,6 +392,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		child.stderr?.setEncoding('utf8');
 		child.stdout?.on('data', (chunk: string) => {
 			stdout.add(chunk);
+			stdoutTail.add(chunk);
 			forwardStdout.push(chunk);
 		});
 		child.stderr?.on('data', (chunk: string) => {
@@ -409,15 +444,22 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			cleanup();
 			forwardStdout.flush();
 			forwardStderr.flush();
-			// A truncated stream means any JSON in `stdout.text` is incomplete —
-			// skip parsing entirely and fall back to the raw (capped) text, same as
-			// any other unparseable output.
-			const parsed = stdout.truncated ? {} : parseAgentOutput(cli, stdout.text);
+			// A CLI reports token usage at the very END of its output. When a chatty
+			// run floods the head-capped `stdout` buffer, that trailing summary is
+			// dropped from `stdout.text` — but the rolling `stdoutTail` still holds
+			// it, so parse usage from the tail in that case (a big test suite exiting
+			// 0 would otherwise lose its usage). `stdoutTail.text` is the last
+			// `maxOutputBytes`, so it starts mid-line/mid-JSON; only usage is trusted
+			// from it — the run's log stays the (truncated) head text. A
+			// non-truncated run parses the full text as before.
+			const parsed = stdout.truncated
+				? parseAgentOutput(cli, stdoutTail.text)
+				: parseAgentOutput(cli, stdout.text);
 			const result: AgentCliResult = {
 				cli,
 				exitCode: code,
 				signal,
-				stdout: parsed.logText ?? stdout.text,
+				stdout: stdout.truncated ? stdout.text : (parsed.logText ?? stdout.text),
 				stderr: stderr.text,
 				durationMs: Date.now() - start,
 				timedOut,

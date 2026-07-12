@@ -279,6 +279,22 @@ describe('projectsRouter', () => {
 			});
 		});
 
+		it('saves the opt-in auto merge setting', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			const result = await caller.update({
+				id: 'p1',
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+
+			expect(result.pipeline?.respondToReview?.autoMerge).toBe(true);
+			expect(upsertProjectToDb).toHaveBeenCalledWith({
+				...existing,
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+		});
+
 		it.each([0, -1, 1.5, 'many'])('rejects invalid maximum concurrent jobs: %s', async (value) => {
 			await expect(
 				caller.update({ id: 'p1', maxConcurrentJobs: value as number }),

@@ -33,6 +33,7 @@ import {
 	type AgentFailure,
 	type AgentFailureKind,
 	AgentRunError,
+	agentRunError,
 } from '../harness/agent-failure.js';
 import { DEFAULT_MODEL_PER_CLI } from '../harness/models.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
@@ -136,6 +137,41 @@ const MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_MS = 30 * 60 * 1000;
 /** Fire slightly *after* the reported reset so quota is actually back. */
 const RETRY_BUFFER_MS = 60 * 1000;
+
+/**
+ * Coded default wall-clock timeout applied to *every* phase/agent invocation
+ * when a project sets no per-phase `agents.<phase>.timeoutMs` (issue #165).
+ * Without it an agent that hangs — a model that never responds, a wedged CLI —
+ * runs forever, holding a worker slot and leaving its run row stuck `running`
+ * (confirmed live on run `dd0ad860-…`). Chosen generously (45 min) so it is a
+ * safety net against a genuinely stuck run, not a guillotine on a legitimately
+ * long planning/implementation/review run: those complete well inside it, while
+ * a run past 45 min has almost certainly stopped making progress. Override the
+ * default globally with the `SWARM_AGENT_TIMEOUT_MS` env var
+ * (README § Configuration); a per-phase `timeoutMs` in `swarm.config.json`
+ * still wins over both.
+ */
+export const DEFAULT_AGENT_TIMEOUT_MS = 45 * 60 * 1000;
+
+/**
+ * Resolve the effective default agent timeout: `SWARM_AGENT_TIMEOUT_MS` when it
+ * is set to a positive integer, else {@link DEFAULT_AGENT_TIMEOUT_MS}. Exported
+ * so the worker entrypoint reuses the exact same value for its stale-run
+ * reconciliation cutoff (`src/worker/index.ts`). Throws on a non-integer / <1
+ * value so a typo surfaces at startup rather than silently disabling the safety
+ * net.
+ */
+export function resolveAgentTimeoutMs(raw = process.env.SWARM_AGENT_TIMEOUT_MS): number {
+	if (raw === undefined || raw === '') return DEFAULT_AGENT_TIMEOUT_MS;
+	const parsed = Number(raw);
+	if (!Number.isInteger(parsed) || parsed < 1) {
+		throw new Error(`SWARM_AGENT_TIMEOUT_MS must be a positive integer, got '${raw}'`);
+	}
+	return parsed;
+}
+
+/** The effective default agent timeout, resolved once at module load. */
+const AGENT_TIMEOUT_MS = resolveAgentTimeoutMs();
 
 /**
  * Turn a deferrable failure into a clamped retry delay. An `aborted` run (the
@@ -455,7 +491,9 @@ function agentOverrideFor(
 	})();
 	const cli = job?.cliOverride ?? phaseConfig.cli;
 	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
-	return { cli, model, timeoutMs: phaseConfig.timeoutMs };
+	// Fall back to the worker's default wall-clock timeout when the project set no
+	// per-phase override, so *every* agent invocation is bounded (issue #165).
+	return { cli, model, timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS };
 }
 
 /**
@@ -486,12 +524,13 @@ async function tryReuseLatestRun(
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
 	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
-	const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
+	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 	const claimed = await resetRunToRunning(
 		prior.id,
 		{ ...job, runId: prior.id },
 		prior.status,
-		model,
+		overrides.model,
+		overrides.timeoutMs,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -507,8 +546,10 @@ async function tryResetCarriedRun(
 	const runId = job.runId;
 	if (!runId) return undefined;
 	try {
-		const model = agentOverrideFor(project, globalDefaults, trigger.phase, job).model;
-		return (await resetRunToRunning(runId, job, undefined, model)) ? runId : undefined;
+		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+		return (await resetRunToRunning(runId, job, undefined, overrides.model, overrides.timeoutMs))
+			? runId
+			: undefined;
 	} catch (err) {
 		logger.error('Failed to reset run row for retry (creating a new one)', {
 			projectId: project.id,
@@ -608,6 +649,7 @@ async function tryCreateRun(
 	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
+		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 		const runId = await createRun({
 			projectId: project.id,
 			taskId: trigger.taskId,
@@ -617,7 +659,8 @@ async function tryCreateRun(
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
 			prNumber,
 			prTitle: prNumber ? await tryFetchPrTitle(project, prNumber) : undefined,
-			model: agentOverrideFor(project, globalDefaults, trigger.phase, job).model,
+			model: overrides.model,
+			timeoutMs: overrides.timeoutMs,
 			jobPayload: job,
 		});
 		job.agentSessionId = runId;
@@ -1210,6 +1253,18 @@ export async function processJob(
 		await beginRunCancellationTracking(runId, runAbort);
 
 		const result = await runPhase(trigger, project, globalDefaults, job, runAbort.signal);
+		// A run the harness killed for exceeding its wall-clock timeout is a terminal
+		// failure, even in the rare case the agent trapped SIGTERM and still exited 0
+		// before SIGKILL (so the phase read a stale/partial hand-off and "succeeded").
+		// Re-route it through the failure path so the row finalizes `failed` with
+		// `timedOut: true` rather than a contradictory `completed` (issue #165).
+		if (result.agent.timedOut) {
+			throw agentRunError(
+				result.agent,
+				`${phaseLabel(trigger.phase)} agent exceeded its wall-clock timeout`,
+				` for task '${trigger.taskId}'`,
+			);
+		}
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
 		// orchestration-level echo, kept at debug so success shows one finish line.

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getDb } from '../../../src/db/client.js';
@@ -7,6 +7,7 @@ import {
 	completeRun,
 	createRun,
 	failOrphanedRunningRuns,
+	failStaleRunningRuns,
 	getLatestRunForTask,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
@@ -185,6 +186,18 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			expect(await resetRunToRunning(id, undefined, 'failed')).toBe(false);
 			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+
+		it('bumps startedAt to the current attempt so a stale-row sweep measures it fresh', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '12', phase: 'review' });
+			await completeRun(id, { status: 'failed', error: 'boom' });
+			const backdated = new Date(Date.now() - 3 * 60 * 60 * 1000);
+			await getDb().update(runs).set({ startedAt: backdated }).where(eq(runs.id, id));
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.startedAt.getTime()).toBeGreaterThan(backdated.getTime());
 		});
 	});
 
@@ -413,6 +426,75 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('returns 0 when there are no running rows', async () => {
 			expect(await failOrphanedRunningRuns('nothing to do')).toBe(0);
+		});
+	});
+
+	describe('failStaleRunningRuns', () => {
+		it('fails only running rows older than the cutoff, sparing fresh and settled ones', async () => {
+			const stale = await createRun({ projectId: PROJECT_ID, taskId: '20', phase: 'review' });
+			const fresh = await createRun({ projectId: PROJECT_ID, taskId: '21', phase: 'planning' });
+			const settledOld = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '22',
+				phase: 'implementation',
+			});
+			await completeRun(settledOld, { status: 'completed' });
+			// Backdate the stale row and the settled row well past any plausible timeout.
+			const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			await getDb()
+				.update(runs)
+				.set({ startedAt: old })
+				.where(inArray(runs.id, [stale, settledOld]));
+
+			const count = await failStaleRunningRuns(60 * 60 * 1000, 0, 'reconciled as stale');
+
+			expect(count).toBe(1);
+			const staleRow = await getRunByIdFromDb(stale);
+			expect(staleRow?.status).toBe('failed');
+			expect(staleRow?.error).toBe('reconciled as stale');
+			expect(staleRow?.completedAt).toBeInstanceOf(Date);
+			// A running row inside the cutoff is a genuine in-flight run — untouched.
+			expect((await getRunByIdFromDb(fresh))?.status).toBe('running');
+			// A settled row is never rewritten, however old.
+			expect((await getRunByIdFromDb(settledOld))?.status).toBe('completed');
+		});
+
+		it('returns 0 when no running row predates the cutoff', async () => {
+			await createRun({ projectId: PROJECT_ID, taskId: '23', phase: 'review' });
+			expect(await failStaleRunningRuns(60 * 60 * 1000, 0, 'noop')).toBe(0);
+		});
+
+		it('evaluates row-specific timeoutMs when reconciling stale runs', async () => {
+			// A run with 2 hours timeout started 1.5 hours ago should NOT be failed.
+			const longRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '24',
+				phase: 'implementation',
+				timeoutMs: 2 * 60 * 60 * 1000, // 2 hours
+			});
+			// A run with 30 min timeout started 1 hour ago SHOULD be failed.
+			const shortRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '25',
+				phase: 'implementation',
+				timeoutMs: 30 * 60 * 1000, // 30 mins
+			});
+
+			const oldLong = new Date(Date.now() - 1.5 * 60 * 60 * 1000); // 1.5 hours ago
+			const oldShort = new Date(Date.now() - 1 * 60 * 60 * 1000); // 1 hour ago
+
+			await getDb().update(runs).set({ startedAt: oldLong }).where(eq(runs.id, longRun));
+			await getDb().update(runs).set({ startedAt: oldShort }).where(eq(runs.id, shortRun));
+
+			const count = await failStaleRunningRuns(
+				45 * 60 * 1000, // default timeout
+				10 * 60 * 1000, // margin
+				'reconciled as stale',
+			);
+
+			expect(count).toBe(1);
+			expect((await getRunByIdFromDb(longRun))?.status).toBe('running');
+			expect((await getRunByIdFromDb(shortRun))?.status).toBe('failed');
 		});
 	});
 

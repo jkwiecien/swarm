@@ -163,6 +163,50 @@ export interface ConflictCandidatePullRequest {
 	authorLogin: string | null;
 }
 
+/** Result of requesting GitHub's pending-check-aware pull-request auto-merge. */
+export interface PullRequestAutoMergeResult {
+	enabled: boolean;
+	message: string;
+}
+
+/**
+ * Ask GitHub to merge an open PR after all repository rules are satisfied.
+ *
+ * This deliberately does not inspect `mergeable`: GitHub computes that field
+ * asynchronously and it is commonly `null` immediately after the implementer
+ * pushes review fixes. GitHub auto-merge keeps waiting for checks/reviews (or
+ * enters the repository's merge queue) instead of turning that normal pending
+ * state into a lost one-shot merge attempt.
+ */
+export async function enablePullRequestAutoMerge(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<PullRequestAutoMergeResult> {
+	const client = getScopedClient();
+	const { data: pull } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	if (pull.state !== 'open' || pull.draft) {
+		return {
+			enabled: false,
+			message: pull.draft
+				? 'pull request is still a draft'
+				: pull.state !== 'open'
+					? `pull request is ${pull.state}`
+					: 'pull request cannot be auto-merged',
+		};
+	}
+
+	await client.graphql(
+		`mutation EnablePullRequestAutoMerge($pullRequestId: ID!) {
+			enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
+				pullRequest { id }
+			}
+		}`,
+		{ pullRequestId: pull.node_id },
+	);
+	return { enabled: true, message: 'GitHub auto-merge enabled' };
+}
+
 /** List open same-repository PRs targeting a base branch, including GitHub's asynchronous mergeability. */
 export async function listOpenPullRequestsForBase(
 	owner: string,

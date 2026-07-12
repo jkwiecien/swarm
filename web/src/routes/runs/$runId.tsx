@@ -303,7 +303,11 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 					</h1>
 					<p className="text-xs text-zinc-500 mt-1 font-mono">{run.id}</p>
 				</div>
-				<RunStatusBadge status={run.status as RunStatus} className="text-sm px-3 py-1" />
+				<RunStatusBadge
+					status={run.status as RunStatus}
+					timedOut={run.timedOut}
+					className="text-sm px-3 py-1"
+				/>
 			</div>
 
 			{run.status === 'running' && (
@@ -349,7 +353,9 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 				<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
 					<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
 					<div>
-						<h3 className="text-xs font-semibold text-red-200">Run Failure Error</h3>
+						<h3 className="text-xs font-semibold text-red-200">
+							{run.timedOut ? 'Run Timed Out' : 'Run Failure Error'}
+						</h3>
 						<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
 							{run.error}
 						</p>
@@ -507,7 +513,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					<div>
 						<span className="block text-xs font-medium text-zinc-400">Status</span>
 						<span className="mt-1 block">
-							<RunStatusBadge status={run.status as RunStatus} />
+							<RunStatusBadge status={run.status as RunStatus} timedOut={run.timedOut} />
 						</span>
 					</div>
 

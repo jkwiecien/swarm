@@ -170,7 +170,9 @@ export const PipelineConfigSchema = z
 		 */
 		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
 		review: z.object({ enabled: z.boolean().optional() }).optional(),
-		respondToReview: z.object({ enabled: z.boolean().optional() }).optional(),
+		respondToReview: z
+			.object({ enabled: z.boolean().optional(), autoMerge: z.boolean().optional() })
+			.optional(),
 		respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
 	})
 	.refine(
