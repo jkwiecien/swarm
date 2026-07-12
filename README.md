@@ -271,7 +271,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
 | `pipeline.review.enabled` | `true` | If false, Review events are skipped without dispatching the Review phase. |
 | `pipeline.respondToReview.enabled` | `true` | If false, submitted reviews are skipped without dispatching Respond-to-review. Requires Review to be enabled. |
-| `pipeline.respondToReview.autoMerge` | `false` | If true, after the implementer has successfully responded to a review (including a no-findings acknowledgment), SWARM attempts a normal GitHub merge. GitHub mergeability, required checks, and repository rules remain authoritative; an unavailable merge is logged but does not fail the response. |
+| `pipeline.respondToReview.autoMerge` | `false` | If true, after the implementer fixes review findings or acknowledges a review with no findings, SWARM enables GitHub auto-merge. GitHub waits for required checks/reviews or uses the repository merge queue; pushbacks on concrete review points never enable it. An unavailable auto-merge is logged but does not fail the response. |
 | `pipeline.respondToCi.enabled` | `true` | If false, failed-check events are skipped without dispatching Respond-to-CI. |
 
 ### Global settings (`app_settings`)

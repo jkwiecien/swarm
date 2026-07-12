@@ -166,39 +166,53 @@ describe('runRespondToReviewPhase', () => {
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('antigravity');
 	});
 
-	it('does not merge when auto merge is disabled', async () => {
+	it('does not enable auto merge when it is disabled', async () => {
 		const deps = makeDeps();
-		const mergePullRequest = vi.fn();
-		await runRespondToReviewPhase({ ...deps, mergePullRequest });
-		expect(mergePullRequest).not.toHaveBeenCalled();
+		const enablePullRequestAutoMerge = vi.fn();
+		await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
+		expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 	});
 
-	it('merges after a successful response when auto merge is enabled', async () => {
+	it('enables GitHub auto-merge after fixes, including while CI is pending', async () => {
 		const deps = makeDeps();
 		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
-		const mergePullRequest = vi.fn(async () => ({
-			merged: true,
-			message: 'Pull Request successfully merged',
+		const enablePullRequestAutoMerge = vi.fn(async () => ({
+			enabled: true,
+			message: 'GitHub auto-merge enabled; waiting for required checks',
 		}));
 
-		const result = await runRespondToReviewPhase({ ...deps, mergePullRequest });
+		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
 
-		expect(mergePullRequest).toHaveBeenCalledWith(deps.project, 99);
-		expect(result.merged).toBe(true);
+		expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
+		expect(result.autoMergeEnabled).toBe(true);
 	});
 
-	it('keeps a successful response successful when auto merge is rejected', async () => {
+	it('does not enable auto merge after a concrete review pushback', async () => {
 		const deps = makeDeps();
 		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
-		const mergePullRequest = vi.fn(async () => ({
-			merged: false,
-			message: 'required checks are pending',
+		outcomeFileContents = 'pushed-back';
+		const enablePullRequestAutoMerge = vi.fn();
+
+		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
+
+		expect(result.outcome).toBe('pushed-back');
+		expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+		expect(result.autoMergeEnabled).toBeUndefined();
+	});
+
+	it('enables GitHub auto-merge after a true no-findings acknowledgment', async () => {
+		const deps = makeDeps();
+		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
+		outcomeFileContents = 'no-findings';
+		const enablePullRequestAutoMerge = vi.fn(async () => ({
+			enabled: true,
+			message: 'GitHub auto-merge enabled',
 		}));
 
-		const result = await runRespondToReviewPhase({ ...deps, mergePullRequest });
+		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
 
-		expect(result.outcome).toBe('fixed');
-		expect(result.merged).toBe(false);
+		expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
+		expect(result.autoMergeEnabled).toBe(true);
 	});
 
 	it('throws and still cleans up when the agent exits non-zero', async () => {
@@ -230,7 +244,7 @@ describe('runRespondToReviewPhase', () => {
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('respond-21');
 	});
 
-	it('throws and cleans up when the outcome is not one of the known two', async () => {
+	it('throws and cleans up when the outcome is not recognized', async () => {
 		outcomeFileContents = 'done!\n';
 		const deps = makeDeps();
 		await expect(runRespondToReviewPhase(deps)).rejects.toThrow(/unrecognized outcome 'done!'/);
@@ -242,6 +256,8 @@ describe('runRespondToReviewPhase', () => {
 		['Fixed', 'fixed'],
 		['PUSHED-BACK\n', 'pushed-back'],
 		['pushed-back', 'pushed-back'],
+		['NO-FINDINGS\n', 'no-findings'],
+		['no-findings', 'no-findings'],
 	])('normalizes outcome %j to %j', async (contents, expected) => {
 		outcomeFileContents = contents;
 		const deps = makeDeps();
@@ -374,6 +390,7 @@ describe('buildRespondToReviewPrompt', () => {
 		expect(prompt).toContain('push back');
 		expect(prompt).toContain('`fixed`');
 		expect(prompt).toContain('`pushed-back`');
+		expect(prompt).toContain('`no-findings`');
 		expect(prompt).toMatch(/Do NOT `git add`\/commit/);
 		expect(prompt).toContain('Do not merge the PR');
 		expect(prompt).toContain('do not submit a review of your own');

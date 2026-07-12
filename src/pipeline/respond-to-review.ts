@@ -108,14 +108,14 @@ const DONE_STATUS: PmStatusKey = 'inReview';
  * The outcomes the agent may report — PROJECT.md §5.4's two paths, now also
  * covering an approval/comment review with nothing actionable in it. `fixed`
  * means at least one fix commit was pushed (even if some points were pushed
- * back); `pushed-back` means no code changed — either every point got a
- * rationale reply, or (when the review raised nothing to fix or push back on)
- * a short thank-you acknowledgment was posted instead, so a human can still
- * see the phase ran. The agent hands back which one applied via
+ * back); `pushed-back` means no code changed because at least one concrete
+ * point was rejected with a rationale; `no-findings` means the review raised
+ * no actionable points and the agent only acknowledged it. The agent hands
+ * back which one applied via
  * {@link RESPOND_OUTCOME_FILENAME}; anything else is a failed run, not a third
  * outcome.
  */
-export const RESPOND_OUTCOMES = ['fixed', 'pushed-back'] as const;
+export const RESPOND_OUTCOMES = ['fixed', 'pushed-back', 'no-findings'] as const;
 
 export type RespondOutcome = (typeof RESPOND_OUTCOMES)[number];
 
@@ -179,11 +179,11 @@ export interface RunRespondToReviewPhaseOptions {
 	graft?: typeof graftEnvironment;
 	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
 	getToken?: typeof getPersonaToken;
-	/** Injectable normal-merge operation; best-effort after a successful response when enabled. */
-	mergePullRequest?: (
+	/** Injectable GitHub auto-merge operation; best-effort after an eligible response when enabled. */
+	enablePullRequestAutoMerge?: (
 		project: ProjectConfig,
 		prNumber: number,
-	) => Promise<{ merged: boolean; message: string }>;
+	) => Promise<{ enabled: boolean; message: string }>;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -197,8 +197,8 @@ export interface RespondToReviewPhaseResult {
 	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
-	/** Whether opt-in automatic merge actually merged the PR. */
-	merged?: boolean;
+	/** Whether GitHub accepted the opt-in automatic-merge request. */
+	autoMergeEnabled?: boolean;
 }
 
 /**
@@ -315,7 +315,7 @@ export function buildRespondToReviewPrompt(context: {
 		'   nothing to fix or question), skip straight to step 5.',
 		`4. If you changed code: run the project lint, type-check, and the relevant tests; fix whatever they surface. Then commit with a conventional-commit message and push: \`git push origin ${prBranch}\` (explicit remote/branch — the checkout may have no upstream configured, e.g. on a human-created PR branch).`,
 		`5. ALWAYS reply on the PR with exactly ONE comment, non-interactively: write the reply to a scratch file (e.g. respond_body.md), then run \`gh pr comment ${prNumber} --repo ${repo} --body-file <file>\`. If the review raised specific points, answer them point by point — for each, say whether you fixed it (name the commit) or are pushing back (give the rationale). If it raised nothing actionable, post a short comment thanking the reviewer instead — never skip this step, even when there is nothing to fix, so a human can see the response ran.`,
-		`6. Write the outcome — exactly \`fixed\` if you pushed at least one fix commit, or exactly \`pushed-back\` if you changed no code (this covers both "pushed back with a rationale" and "nothing actionable, just acknowledged"), and nothing else — to a file named "${RESPOND_OUTCOME_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file (or the reply scratch file) — they are scratch hand-offs read by SWARM, not part of the PR.`,
+		`6. Write the outcome — exactly \`fixed\` if you pushed at least one fix commit; exactly \`pushed-back\` if you changed no code but pushed back on one or more concrete review points; or exactly \`no-findings\` if the review raised no actionable points and you only acknowledged it. Write nothing else to a file named "${RESPOND_OUTCOME_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file (or the reply scratch file) — they are scratch hand-offs read by SWARM, not part of the PR.`,
 		'',
 		'Do not merge the PR, and do not submit a review of your own — you are the author.',
 	].join('\n');
@@ -341,32 +341,43 @@ function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult
 	});
 }
 
-async function attemptAutoMerge(
+async function enableAutoMerge(
 	enabled: boolean,
-	mergePullRequest: NonNullable<RunRespondToReviewPhaseOptions['mergePullRequest']>,
+	outcome: RespondOutcome,
+	enablePullRequestAutoMerge: NonNullable<
+		RunRespondToReviewPhaseOptions['enablePullRequestAutoMerge']
+	>,
 	project: ProjectConfig,
 	prNumber: string,
 	taskId: string,
 ): Promise<boolean | undefined> {
-	if (!enabled) return undefined;
+	// A pushback leaves requested changes unresolved. Only a real fix or a
+	// no-findings acknowledgment is safe to hand to GitHub for auto-merge.
+	if (!enabled || (outcome !== 'fixed' && outcome !== 'no-findings')) return undefined;
 	try {
-		const merge = await mergePullRequest(project, Number(prNumber));
-		if (merge.merged) {
-			logger.info('Respond-to-review automatically merged pull request', { taskId, prNumber });
+		const merge = await enablePullRequestAutoMerge(project, Number(prNumber));
+		if (merge.enabled) {
+			logger.info('Respond-to-review enabled GitHub auto-merge for pull request', {
+				taskId,
+				prNumber,
+			});
 		} else {
-			logger.warn('Respond-to-review did not auto-merge pull request', {
+			logger.warn('Respond-to-review did not enable GitHub auto-merge', {
 				taskId,
 				prNumber,
 				reason: merge.message,
 			});
 		}
-		return merge.merged;
+		return merge.enabled;
 	} catch (error) {
-		logger.warn('Respond-to-review auto-merge failed — response remains successful', {
-			taskId,
-			prNumber,
-			error: error instanceof Error ? error.message : String(error),
-		});
+		logger.warn(
+			'Respond-to-review could not enable GitHub auto-merge — response remains successful',
+			{
+				taskId,
+				prNumber,
+				error: error instanceof Error ? error.message : String(error),
+			},
+		);
 		return false;
 	}
 }
@@ -430,8 +441,8 @@ export async function runRespondToReviewPhase(
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 		getToken = getPersonaToken,
-		mergePullRequest = (mergeProject, mergePrNumber) =>
-			new GitHubSCMIntegration().mergePullRequest(mergeProject, mergePrNumber),
+		enablePullRequestAutoMerge = (mergeProject, mergePrNumber) =>
+			new GitHubSCMIntegration().enablePullRequestAutoMerge(mergeProject, mergePrNumber),
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
@@ -503,9 +514,10 @@ export async function runRespondToReviewPhase(
 			movedTo = DONE_STATUS;
 		}
 
-		const merged = await attemptAutoMerge(
+		const autoMergeEnabled = await enableAutoMerge(
 			project.pipeline?.respondToReview?.autoMerge ?? false,
-			mergePullRequest,
+			outcome,
+			enablePullRequestAutoMerge,
 			project,
 			prNumber,
 			taskId,
@@ -517,10 +529,10 @@ export async function runRespondToReviewPhase(
 			prBranch,
 			outcome,
 			movedTo,
-			merged,
+			autoMergeEnabled,
 		});
 
-		return { outcome, movedTo, agent, merged };
+		return { outcome, movedTo, agent, autoMergeEnabled };
 	} finally {
 		// Swallow-and-log: a cleanup failure must not mask the run's outcome
 		// (a successful phase turning into a reported failure, or a genuine

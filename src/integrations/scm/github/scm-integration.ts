@@ -15,10 +15,10 @@ import { getPersonaToken, getPersonaTokenOrNull } from '../../../config/provider
 import type { ProjectConfig } from '../../../config/schema.js';
 import {
 	type ConflictCandidatePullRequest,
+	enablePullRequestAutoMerge,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
-	mergePullRequest,
-	type PullRequestMergeResult,
+	type PullRequestAutoMergeResult,
 	postIssueComment,
 	withGitHubToken,
 } from './client.js';
@@ -109,13 +109,13 @@ export class GitHubSCMIntegration {
 		);
 	}
 
-	/** Attempt a normal merge as the implementer after a successful review response. */
-	async mergePullRequest(
+	/** Enable GitHub auto-merge as the implementer after an eligible review response. */
+	async enablePullRequestAutoMerge(
 		project: ProjectConfig,
 		prNumber: number,
-	): Promise<PullRequestMergeResult> {
+	): Promise<PullRequestAutoMergeResult> {
 		const [owner, repo] = project.repo.split('/');
-		return this.withCredentials(project, () => mergePullRequest(owner, repo, prNumber));
+		return this.withCredentials(project, () => enablePullRequestAutoMerge(owner, repo, prNumber));
 	}
 
 	/** Provider seam for conflict detection after a base branch advances. */

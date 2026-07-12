@@ -9,11 +9,11 @@ vi.mock('@/config/provider.js', () => ({
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	// Pass-through so we can assert the token that would be scoped without a real Octokit.
 	withGitHubToken: vi.fn((_token: string, fn: () => Promise<unknown>) => fn()),
-	mergePullRequest: vi.fn(),
+	enablePullRequestAutoMerge: vi.fn(),
 }));
 
 import { getPersonaToken, getPersonaTokenOrNull } from '@/config/provider.js';
-import { mergePullRequest, withGitHubToken } from '@/integrations/scm/github/client.js';
+import { enablePullRequestAutoMerge, withGitHubToken } from '@/integrations/scm/github/client.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 
 const project = createMockProjectConfig();
@@ -84,16 +84,19 @@ describe('GitHubSCMIntegration', () => {
 		});
 	});
 
-	describe('mergePullRequest', () => {
-		it('merges under the implementer credentials', async () => {
+	describe('enablePullRequestAutoMerge', () => {
+		it('enables auto-merge under the implementer credentials', async () => {
 			vi.mocked(getPersonaToken).mockResolvedValue('tok-impl');
-			vi.mocked(mergePullRequest).mockResolvedValue({ merged: true, message: 'merged' });
-
-			await expect(scm.mergePullRequest(project, 42)).resolves.toEqual({
-				merged: true,
-				message: 'merged',
+			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
+				enabled: true,
+				message: 'auto-merge enabled',
 			});
-			expect(mergePullRequest).toHaveBeenCalledWith('jkwiecien', 'swarm', 42);
+
+			await expect(scm.enablePullRequestAutoMerge(project, 42)).resolves.toEqual({
+				enabled: true,
+				message: 'auto-merge enabled',
+			});
+			expect(enablePullRequestAutoMerge).toHaveBeenCalledWith('jkwiecien', 'swarm', 42);
 		});
 	});
 });
