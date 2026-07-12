@@ -461,8 +461,9 @@ describe('runsRouter', () => {
 				USER_TERMINATION_MESSAGE,
 				'deferred',
 			);
-			// The worker never touches this row, so the flag is cleared here.
-			expect(clearRunCancellation).toHaveBeenCalledWith('run-1');
+			// Keep the marker until an explicit retry clears it: the worker's
+			// completed handler may still be about to enqueue the delayed retry.
+			expect(clearRunCancellation).not.toHaveBeenCalled();
 		});
 
 		it('falls back to the worker path when a deferred run was picked up concurrently', async () => {

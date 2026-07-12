@@ -259,9 +259,9 @@ export const runsRouter = router({
 				// then atomically fail the row while it's still deferred.
 				await removePendingRetryForRun(run.id);
 				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
-					// The worker never touches this row, so clear the (now-consumed) flag
-					// here to keep the durable set from accumulating settled entries.
-					await clearRunCancellation(run.id);
+					// Keep the durable marker until an explicit retry clears it. The
+					// completed handler can still be between persisting `deferred` and
+					// enqueueing its retry; it uses this marker to remove a late retry.
 					return { runId: run.id, status: 'failed' as const };
 				}
 				// Lost the race: a worker picked the retry up between our read and the

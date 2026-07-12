@@ -19,11 +19,11 @@ import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { closeRunCancellationRedis, subscribeToRunCancellations } from '../queue/cancellation.js';
-import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueDelayedRetry } from '../queue/producer.js';
+import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
 import { type JobOutcome, processJob, reportInterruptedJobToBoard } from './consumer.js';
+import { reenqueueDeferred } from './deferred-retry.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 
@@ -165,47 +165,6 @@ worker.on('completed', (job, outcome: JobOutcome) => {
 	}
 });
 
-/**
- * Re-enqueue a deferred job (rate-limited or worker-aborted) with its retry
- * counter bumped, so the consumer can cap the loop. `data` is re-validated (it
- * round-trips through Redis) before the counter is incremented.
- */
-async function reenqueueDeferred(
-	jobId: string | undefined,
-	data: unknown,
-	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
-): Promise<void> {
-	try {
-		const parsed = SwarmJobSchema.parse(data);
-		const next: SwarmJob = {
-			...parsed,
-			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
-			// Carry the originating run row forward (issue #136) so the retry resets
-			// that same row instead of inserting a second one. `outcome.runId` wins
-			// over any stale value on `parsed` (they match on a retry; only the
-			// outcome knows the row a fresh webhook's first run just created).
-			...(outcome.runId ? { runId: outcome.runId } : {}),
-			...(parsed.type === 'github-projects' &&
-			(outcome.phase === 'planning' || outcome.phase === 'implementation')
-				? { resumePmPhase: outcome.phase }
-				: {}),
-		};
-		await enqueueDelayedRetry(next, outcome.retryDelayMs);
-		logger.debug('Rate-limited phase re-enqueued for retry', {
-			jobId,
-			phase: outcome.phase,
-			taskId: outcome.taskId,
-			retryDelayMs: outcome.retryDelayMs,
-			attempt: next.rateLimitRetryAttempt,
-		});
-	} catch (err) {
-		logger.error('Failed to re-enqueue rate-limited phase', {
-			jobId,
-			taskId: outcome.taskId,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
-}
 worker.on('failed', (job, err) => {
 	logger.error('Job failed', { jobId: job?.id, name: job?.name, error: err.message });
 	// A job reaches `failed` only outside `processJob` (which turns phase failures
