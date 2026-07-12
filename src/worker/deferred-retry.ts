@@ -31,6 +31,10 @@ export async function reenqueueDeferred(
 			(outcome.phase === 'planning' || outcome.phase === 'implementation')
 				? { resumePmPhase: outcome.phase }
 				: {}),
+			// Continue the prior agent session on the retry (any phase, any CLI) when
+			// the deferral was a resumable one (rate-limit/timeout). Separate from
+			// `resumePmPhase`, which is only the github-projects board-dispatch signal.
+			...(outcome.resumable ? { resumeSession: true } : {}),
 		};
 
 		if (outcome.runId && (await isRunCancellationRequested(outcome.runId))) {

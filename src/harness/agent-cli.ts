@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import { z } from 'zod';
 
 import { logger } from '@/lib/logger.js';
+import { detectNewConversationId, snapshotConversationIds } from './antigravity-session.js';
 import { type AgentUsage, parseAgentOutput } from './usage.js';
 
 /** Agent CLIs the harness knows how to launch. Source of truth for the set. */
@@ -153,9 +154,20 @@ export interface RunAgentCliOptions {
 	 * fixed list, since the two CLIs' model names don't overlap.
 	 */
 	model?: string;
-	/** Claude session UUID to assign to a fresh run. Ignored by other CLIs. */
+	/**
+	 * Session UUID to *assign* to a fresh run. Only `claude` supports assigning
+	 * an id up front (`--session-id`); `codex` and `agy` generate their own, so
+	 * this is ignored for them (their id is captured post-run into
+	 * {@link AgentCliResult.sessionId} instead). Mutually exclusive with
+	 * {@link resumeSessionId} — a run either starts fresh or resumes.
+	 */
 	sessionId?: string;
-	/** Existing Claude session UUID to resume. Ignored by other CLIs. */
+	/**
+	 * Existing session/thread id to *resume*, threaded into the CLI's own resume
+	 * mechanism: `claude --resume <id>`, `agy --conversation <id>`, or
+	 * `codex exec resume <id>` (a subcommand, not a flag — see the assembly in
+	 * {@link runAgentCli}). Ignored when {@link sessionId} is also set.
+	 */
 	resumeSessionId?: string;
 	/** Extra env vars, merged over (and overriding) the parent process env. */
 	env?: Record<string, string>;
@@ -234,6 +246,16 @@ export interface AgentCliResult {
 	 * truncated. The per-line callbacks still saw the full stream.
 	 */
 	outputTruncated: boolean;
+	/**
+	 * The CLI session/thread id this run used, to `--resume` it later. Captured
+	 * per CLI: `claude` echoes it in its JSON output (and SWARM assigned it via
+	 * `--session-id`), `codex` emits it as its `thread.started` event, and
+	 * `antigravity` is recovered out-of-band by diffing its conversation store
+	 * ({@link ./antigravity-session.ts}). Absent when the CLI produced no
+	 * recoverable id — an unsupported/older CLI, malformed output, or a run that
+	 * never got far enough to create a session.
+	 */
+	sessionId?: string;
 	/**
 	 * Normalized token usage extracted from this run's stdout (`./usage.js`),
 	 * or `undefined` when the CLI/output didn't yield any — an unsupported CLI
@@ -337,21 +359,54 @@ function lineForwarder(onLine: (line: string) => void) {
  * failure (e.g. ENOENT because the CLI isn't installed) is a deployment/config
  * error and rejects the promise, per ai/CODING_STANDARDS.md "Error handling".
  */
+/**
+ * The base subcommand args plus the resume/assign session flags for one run,
+ * per CLI (ai/RULES.md §6: the three CLIs don't share resume shapes):
+ *  - codex resumes via a *subcommand* — `codex exec resume <id> …` — so a resume
+ *    rewrites the base `exec` args entirely (keeping the bypass flag), and adds
+ *    no separate session flag;
+ *  - claude/agy resume via a *flag* (`--resume` / `--conversation`) inserted
+ *    after the output-format flags, leaving their base args unchanged;
+ *  - a resume id always wins over an assign id — a run either continues an
+ *    existing session or starts a fresh one, never both.
+ */
+function buildSessionArgs(
+	cli: AgentCli,
+	resumeId: string | undefined,
+	assignId: string | undefined,
+): { baseArgs: string[]; sessionArgs: string[] } {
+	if (cli === 'codex') {
+		return {
+			baseArgs: resumeId
+				? ['exec', 'resume', resumeId, '--dangerously-bypass-approvals-and-sandbox']
+				: DEFAULT_ARGS.codex,
+			sessionArgs: [],
+		};
+	}
+	if (cli === 'claude') {
+		const sessionArgs = resumeId
+			? ['--resume', resumeId]
+			: assignId
+				? ['--session-id', assignId]
+				: [];
+		return { baseArgs: DEFAULT_ARGS.claude, sessionArgs };
+	}
+	// antigravity: resume by conversation id; no assign-upfront flag exists.
+	return {
+		baseArgs: DEFAULT_ARGS.antigravity,
+		sessionArgs: resumeId ? ['--conversation', resumeId] : [],
+	};
+}
+
 export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCliResult> {
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
 	const modelArgs = options.model ? ['--model', options.model] : [];
-	const sessionArgs =
-		cli !== 'claude'
-			? []
-			: options.resumeSessionId
-				? ['--resume', options.resumeSessionId]
-				: options.sessionId
-					? ['--session-id', options.sessionId]
-					: [];
+	const resumeId = options.resumeSessionId;
+	const { baseArgs, sessionArgs } = buildSessionArgs(cli, resumeId, options.sessionId);
 	const printFlag = PRINT_FLAG[cli];
 	const args = [
-		...DEFAULT_ARGS[cli],
+		...baseArgs,
 		...modelArgs,
 		...OUTPUT_FORMAT_ARGS[cli],
 		...sessionArgs,
@@ -359,6 +414,15 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		...(options.args ?? []),
 	];
 	const start = Date.now();
+
+	// Antigravity neither assigns nor prints its conversation id, so capture it by
+	// diffing its on-disk conversation store around the run. Snapshot the "before"
+	// set here (synchronously, immediately before spawn) so the "after" diff in the
+	// close handler attributes only this run's new conversation. A resume run
+	// reuses the existing conversation and creates no new file — its id is
+	// `resumeId`, so we skip the snapshot entirely in that case.
+	const antigravityBefore =
+		cli === 'antigravity' && !resumeId ? snapshotConversationIds() : undefined;
 
 	return new Promise<AgentCliResult>((resolve, reject) => {
 		const child = spawn(command, args, {
@@ -455,6 +519,12 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			const parsed = stdout.truncated
 				? parseAgentOutput(cli, stdoutTail.text)
 				: parseAgentOutput(cli, stdout.text);
+			// Resolve the resumable session id per CLI. claude/codex emit it in
+			// their output (`parsed.sessionId`); claude also falls back to the id
+			// SWARM assigned/resumed with, in case an older build omits it.
+			// Antigravity has no output id, so diff its conversation store — or, on a
+			// resume run, keep the id we resumed with.
+			const sessionId = resolveSessionId(parsed.sessionId);
 			const result: AgentCliResult = {
 				cli,
 				exitCode: code,
@@ -466,6 +536,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				aborted,
 				outputTruncated: stdout.truncated || stderr.truncated,
 				usage: parsed.usage,
+				sessionId,
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,
@@ -476,8 +547,22 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				timedOut,
 				aborted,
 				outputTruncated: result.outputTruncated,
+				sessionId,
 			});
 			resolve(result);
 		});
+
+		/** Per-CLI resolution of the id to resume this run with (see close handler). */
+		function resolveSessionId(parsedSessionId?: string): string | undefined {
+			if (cli === 'claude') return parsedSessionId ?? resumeId ?? options.sessionId;
+			if (cli === 'antigravity') {
+				if (resumeId) return resumeId;
+				return antigravityBefore ? detectNewConversationId(antigravityBefore) : undefined;
+			}
+			// codex: `thread.started` re-emits the same id on resume, so the parsed
+			// value already reflects a resumed session; fall back to resumeId if the
+			// event was missed (e.g. truncated head with no tail recovery).
+			return parsedSessionId ?? resumeId;
+		}
 	});
 }

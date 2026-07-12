@@ -389,13 +389,32 @@ describe('processJob', () => {
 		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
 
 		await processJob(
-			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation', runId: 'run-1' }),
+			createMockGitHubProjectsWebhookJob({
+				resumePmPhase: 'implementation',
+				resumeSession: true,
+				runId: 'run-1',
+			}),
 			registryReturning(trigger),
 		);
 
 		// The carried row's preserved session is restored from the DB and resumed.
 		expect(getRunByIdFromDb).toHaveBeenCalledWith('run-1');
 		expect(phaseCalls[0].args.resumeSessionId).toBe('sess-restored');
+		expect(phaseCalls[0].args.sessionId).toBeUndefined();
+	});
+
+	it('threads the restored session as resumeSessionId on a resumed non-PM (review) run', async () => {
+		getRunByIdFromDb.mockResolvedValue({ agentSessionId: 'sess-review' });
+
+		await processJob(
+			createMockGitHubWebhookJob({ resumeSession: true, runId: 'run-1' }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		// Review is a github (PR) job with no resumePmPhase — session continuation is
+		// driven purely by the generic resumeSession flag, uniform across phases.
+		expect(phaseCalls[0].phase).toBe('review');
+		expect(phaseCalls[0].args.resumeSessionId).toBe('sess-review');
 		expect(phaseCalls[0].args.sessionId).toBeUndefined();
 	});
 
@@ -821,10 +840,15 @@ describe('processJob', () => {
 		expect(body).toContain('splitting the issue');
 	});
 
-	it('posts a failure comment with splitting suggestion for timeout agent runs', async () => {
+	it('defers a timeout agent run for a resume retry instead of failing it', async () => {
 		const workItem = createMockWorkItem({ statusId: '61e4505c' });
 		phaseImpl = async () => {
-			throw new AgentRunError('timeout', { kind: 'timeout' });
+			// A genuinely-killed timeout always carries an agent result (exit null).
+			throw new AgentRunError(
+				'timeout',
+				{ kind: 'timeout' },
+				agentResult({ exitCode: null, timedOut: true, sessionId: 'sess-100' }),
+			);
 		};
 
 		const outcome = await processJob(
@@ -832,10 +856,11 @@ describe('processJob', () => {
 			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
 		);
 
-		expect(outcome.status).toBe('phase-failed');
-		expect(addComment).toHaveBeenCalledTimes(1);
-		const [, body] = addComment.mock.calls[0];
-		expect(body).toContain('splitting the issue');
+		// Timeout is now recoverable: the run resumes rather than failing outright,
+		// so no terminal failure comment is posted.
+		expect(outcome.status).toBe('phase-deferred');
+		expect(outcome).toMatchObject({ resumable: true });
+		expect(addComment).not.toHaveBeenCalled();
 	});
 
 	it('does not append splitting suggestion for a non-stalled AgentRunError', async () => {
@@ -1632,12 +1657,18 @@ describe('processJob', () => {
 			expect(phaseCalls[0].args.timeoutMs).toBe(DEFAULT_AGENT_TIMEOUT_MS);
 		});
 
-		it('finalizes a timed-out phase run as a terminal failure with timedOut', async () => {
+		it('defers a genuinely-killed timeout (non-zero exit) for a resume retry', async () => {
 			phaseImpl = async () => {
 				throw new AgentRunError(
 					'review agent exceeded its wall-clock timeout',
 					{ kind: 'timeout' },
-					agentResult({ exitCode: null, signal: 'SIGKILL', timedOut: true, durationMs: 999 }),
+					agentResult({
+						exitCode: null,
+						signal: 'SIGKILL',
+						timedOut: true,
+						durationMs: 999,
+						sessionId: 'sess-review',
+					}),
 				);
 			};
 
@@ -1646,11 +1677,16 @@ describe('processJob', () => {
 				registryReturning(REVIEW_TRIGGER),
 			);
 
-			// A timeout is terminal (not deferred) and the row leaves `running`.
-			expect(outcome.status).toBe('phase-failed');
+			// A genuine kill interrupted work — resume it: the row finalizes `deferred`
+			// (with timedOut recorded) and its captured session id is preserved.
+			expect(outcome.status).toBe('phase-deferred');
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
 				'run-1',
-				expect.objectContaining({ status: 'failed', timedOut: true }),
+				expect.objectContaining({
+					status: 'deferred',
+					timedOut: true,
+					agentSessionId: 'sess-review',
+				}),
 			);
 		});
 

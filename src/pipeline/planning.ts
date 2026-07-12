@@ -35,9 +35,15 @@ import {
 	describeAgent,
 	runAgentCli,
 } from '@/harness/agent-cli.js';
-import { type AgentRunError, agentRunError } from '@/harness/agent-failure.js';
+import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import {
+	acquireResumableWorktree,
+	cleanupUnlessPreserved,
+	sessionRunArgs,
+	shouldPreserveForResume,
+} from '@/pipeline/resume.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
@@ -449,26 +455,8 @@ async function acquirePlanningWorktree(
 	baseBranch: string,
 	resumeSessionId: string | undefined,
 ): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
-	const resumedHandle = resumeSessionId
-		? await worktrees.reuse(taskId, baseBranch, true)
-		: undefined;
-	if (resumedHandle) return { handle: resumedHandle, resumed: true };
-	return { handle: await worktrees.provision(taskId, { detach: true }), resumed: false };
-}
-
-/**
- * Whether a failed planning run's worktree should be kept for a Claude
- * `--resume` retry: only a `claude` run that carried (or reused) a session and
- * failed on a rate limit — anything else cleans up as usual.
- */
-function shouldPreserveForResume(
-	cli: AgentCli,
-	sessionId: string | undefined,
-	resumed: boolean,
-	error: AgentRunError,
-): boolean {
-	return (
-		cli === 'claude' && (sessionId !== undefined || resumed) && error.failure.kind === 'rate-limit'
+	return acquireResumableWorktree(worktrees, taskId, baseBranch, true, resumeSessionId, () =>
+		worktrees.provision(taskId, { detach: true }),
 	);
 }
 
@@ -522,8 +510,7 @@ export async function runPlanningPhase(
 		const agent = await runAgent({
 			cli,
 			model,
-			sessionId: resumed ? undefined : sessionId,
-			resumeSessionId: resumed ? resumeSessionId : undefined,
+			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
 			args: [buildPlanningPrompt(workItem, autoSplit)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
@@ -539,7 +526,7 @@ export async function runPlanningPhase(
 				`Planning agent (${cli}) exited with code ${agent.exitCode}`,
 				` for task '${taskId}'`,
 			);
-			preserveForResume = shouldPreserveForResume(cli, sessionId, resumed, error);
+			preserveForResume = shouldPreserveForResume(error);
 			throw error;
 		}
 
@@ -569,20 +556,6 @@ export async function runPlanningPhase(
 
 		return { plan, commentId, agent, movedTo, split: splitResult };
 	} finally {
-		// Swallow-and-log: a cleanup failure must not mask the run's outcome
-		// (a successful phase turning into a reported failure, or a genuine
-		// error being replaced by the cleanup error).
-		try {
-			if (preserveForResume) {
-				logger.debug('planning phase: preserving worktree for Claude session resume', { taskId });
-			} else {
-				await worktrees.cleanup(taskId);
-			}
-		} catch (error) {
-			logger.error('planning phase: worktree cleanup failed', {
-				taskId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'planning phase');
 	}
 }

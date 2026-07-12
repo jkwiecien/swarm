@@ -47,8 +47,20 @@ const jobBase = z.object({
 	 * PM phase to resume after an agent failure. A retried implementation has
 	 * already moved its card to In progress, which normally is deliberately not
 	 * a phase-triggering status; this preserves the original dispatch intent.
+	 * Board-dispatch concern only (github-projects jobs) — session continuation is
+	 * the separate {@link resumeSession} flag, which spans every phase and CLI.
 	 */
 	resumePmPhase: z.enum(['planning', 'implementation']).optional(),
+	/**
+	 * Set on a deferred retry that should *continue the prior agent session*
+	 * rather than start fresh (a `rate-limit`/`timeout` deferral, any phase, any
+	 * CLI). When set, the consumer threads {@link agentSessionId} into the phase
+	 * as a resume id (`claude --resume` / `agy --conversation` /
+	 * `codex exec resume`) and the phase reuses the preserved worktree; when
+	 * absent, the run starts a fresh session and, for claude, assigns
+	 * `agentSessionId` as its new `--session-id`.
+	 */
+	resumeSession: z.boolean().optional(),
 	/**
 	 * The `runs` row this job re-runs (issue #136). Absent on a fresh webhook;
 	 * set when a deferred run is re-enqueued (`reenqueueDeferred`
@@ -58,7 +70,12 @@ const jobBase = z.object({
 	 * creates a fresh row as before.
 	 */
 	runId: z.string().min(1).optional(),
-	/** Persisted Claude session handle for a resumable deferred PM phase. */
+	/**
+	 * Persisted agent session/thread id for a resumable deferred run — the value
+	 * threaded back as the CLI's resume id on retry. UUID-shaped for every CLI:
+	 * claude's assigned `--session-id`, codex's `thread_id`, and agy's conversation
+	 * id are all UUIDs (verified live). Not claude-only anymore.
+	 */
 	agentSessionId: z.string().uuid().optional(),
 	/** Optional overrides for retrying/running with a specific agent CLI and model. */
 	cliOverride: AgentCliSchema.optional(),

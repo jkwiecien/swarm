@@ -309,16 +309,29 @@ describe('runImplementationPhase', () => {
 		expect(runArgs.sessionId).toBe('sess-19');
 	});
 
-	it('preserves the worktree (skips cleanup) when a claude session run fails on a rate limit', async () => {
+	it('preserves the worktree (skips cleanup) when a session run fails on a rate limit', async () => {
 		const deps = makeDeps();
+		// A rate-limited run that captured a session id (any CLI) — the resumable case.
 		deps.runAgent = vi.fn(async () =>
 			agentResult({
 				exitCode: 1,
 				stdout: "You've hit your session limit · resets 1:40pm (Europe/Warsaw)\n",
+				sessionId: 'sess-19',
 			}),
 		);
 		await expect(runImplementationPhase({ ...deps, sessionId: 'sess-19' })).rejects.toThrow(
 			/rate limited/,
+		);
+		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
+	});
+
+	it('preserves the worktree (skips cleanup) when a session run times out', async () => {
+		const deps = makeDeps();
+		deps.runAgent = vi.fn(async () =>
+			agentResult({ exitCode: null, timedOut: true, sessionId: 'sess-19' }),
+		);
+		await expect(runImplementationPhase({ ...deps, sessionId: 'sess-19' })).rejects.toThrow(
+			/timed out/,
 		);
 		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
 	});

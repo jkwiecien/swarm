@@ -97,7 +97,12 @@ export type JobOutcome =
 			reason: string;
 			/** The retry attempt count *before* this deferral (0 on the first). */
 			attempt: number;
-			/** True only for a Claude rate-limit deferral in a PM phase. */
+			/**
+			 * True for a rate-limit or genuinely-interrupted-timeout deferral (any
+			 * phase, any CLI): the retry should resume the preserved session rather
+			 * than start fresh. Drives `resumeSession` on the re-enqueued job and
+			 * whether the captured `agentSessionId` is kept on the deferred row.
+			 */
 			resumable: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
@@ -186,7 +191,10 @@ function retryDelayForFailure(failure: AgentFailure, now: number): number {
 	if (
 		failure.kind === 'aborted' ||
 		failure.kind === 'capacity' ||
-		failure.kind === 'worktree-exists'
+		failure.kind === 'worktree-exists' ||
+		// A timeout has no "resets at…" hint and needs no long wait — the run
+		// simply ran long; retry after the same dedup-claim floor as an abort.
+		failure.kind === 'timeout'
 	)
 		return MIN_RETRY_DELAY_MS;
 	const raw = failure.retryAfter
@@ -232,7 +240,9 @@ function deferAgentRunError(
 				? `Phase stopped - ${phaseLabel(trigger.phase)} — model at capacity, deferring short retry`
 				: failure.kind === 'worktree-exists'
 					? `Phase stopped - ${phaseLabel(trigger.phase)} — worktree already exists, deferring retry`
-					: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
+					: failure.kind === 'timeout'
+						? `Phase stopped - ${phaseLabel(trigger.phase)} — timed out, deferring resume retry`
+						: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
 		{
 			projectId,
 			phase: trigger.phase,
@@ -251,10 +261,13 @@ function deferAgentRunError(
 		reason: error,
 		attempt,
 		runId,
-		resumable:
-			failure.kind === 'rate-limit' &&
-			job.type === 'github-projects' &&
-			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
+		// A rate-limit or timeout may have interrupted useful work whose reasoning
+		// lives in the agent's CLI session (and, for implementer phases, whose
+		// partial edits live in the worktree) — resume it instead of redoing it.
+		// Every phase and CLI now captures a resumable session id (agent-cli.ts), so
+		// this is no longer gated to claude or the PM phases; a run whose session
+		// wasn't captured simply persists no id and retries from scratch.
+		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
 	};
 }
 
@@ -373,6 +386,14 @@ function runPhase(
 }> {
 	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
 	const runAgent = createLiveOutputRunner(runId);
+	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
+	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
+	// resume id; on a fresh run it's assigned as claude's `--session-id` (codex/agy
+	// ignore the assign and have their id captured post-run).
+	const session = {
+		sessionId: job.resumeSession ? undefined : job.agentSessionId,
+		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
+	};
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -386,8 +407,7 @@ function runPhase(
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				timeoutMs: overrides.timeoutMs,
 				signal,
-				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
-				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
+				...session,
 				runAgent,
 			});
 		case 'implementation':
@@ -400,8 +420,7 @@ function runPhase(
 				model: overrides.model,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
-				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
-				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
+				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
@@ -414,6 +433,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
@@ -428,6 +448,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
@@ -441,6 +462,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
@@ -456,6 +478,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
@@ -786,7 +809,11 @@ async function finalizeFailedRun(
 				error: outcome.reason,
 				nextRetryAt: new Date(Date.now() + outcome.retryDelayMs),
 				...agentColumns(agent),
-				agentSessionId: outcome.resumable ? undefined : null,
+				// Persist the session id the run captured so the retry can resume it —
+				// for claude the id it assigned/echoed, for codex/agy the id captured
+				// from their output/store. `null` when not resumable, or when the run
+				// created no session to resume (retry then starts from scratch).
+				agentSessionId: outcome.resumable ? (agent?.sessionId ?? null) : null,
 			},
 			agent,
 		);
@@ -1205,7 +1232,14 @@ async function handlePhaseFailure(
 		(err instanceof AgentRunError &&
 			(err.failure.kind === 'rate-limit' ||
 				err.failure.kind === 'capacity' ||
-				err.failure.kind === 'aborted')) ||
+				err.failure.kind === 'aborted' ||
+				// A timeout resumes only when the run was genuinely interrupted: it
+				// carries an agent result whose exit was non-zero/null (the phase threw
+				// and preserved its worktree). A run that trapped SIGTERM and still
+				// exited 0 (issue #165's clean-exit case) already finished and cleaned up
+				// its worktree, so it stays a terminal failure rather than deferring onto
+				// a checkout that's gone.
+				(err.failure.kind === 'timeout' && err.agent !== undefined && err.agent.exitCode !== 0))) ||
 		err instanceof WorktreeAlreadyExistsError;
 	if (isDeferrable) {
 		const failure: AgentFailure =

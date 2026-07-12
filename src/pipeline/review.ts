@@ -61,6 +61,12 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import {
+	acquireResumableWorktree,
+	cleanupUnlessPreserved,
+	sessionRunArgs,
+	shouldPreserveForResume,
+} from '@/pipeline/resume.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -112,6 +118,13 @@ export interface RunReviewPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/**
+	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
+	 * (`resumeSessionId`). When resuming, the preserved head-SHA checkout is reused
+	 * so the agent continues its prior session in place.
+	 */
+	sessionId?: string;
+	resumeSessionId?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -214,6 +227,8 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		taskId,
 		cli = DEFAULT_REVIEW_CLI,
 		model,
+		sessionId,
+		resumeSessionId,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -236,14 +251,24 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	const reviewerToken = await getToken(project, 'reviewer');
 
 	// Read-only checkout pinned to the reviewed commit (see the module header for
-	// why detached-at-SHA rather than the PR branch).
-	const handle = await worktrees.provision(taskId, { detach: true, baseBranch: headSha });
+	// why detached-at-SHA rather than the PR branch). On a resume retry, reuse the
+	// preserved checkout so the agent continues its session against the same head.
+	const { handle, resumed } = await acquireResumableWorktree(
+		worktrees,
+		taskId,
+		headSha,
+		true,
+		resumeSessionId,
+		() => worktrees.provision(taskId, { detach: true, baseBranch: headSha }),
+	);
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
 		const agent = await runAgent({
 			cli,
 			model,
+			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
 			args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
 			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
@@ -257,11 +282,13 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
-			throw agentRunError(
+			const error = agentRunError(
 				agent,
 				`Review agent (${cli}) exited with code ${agent.exitCode}`,
 				` for PR #${prNumber}`,
 			);
+			preserveForResume = shouldPreserveForResume(error);
+			throw error;
 		}
 
 		const verdictPath = join(handle.path, REVIEW_VERDICT_FILENAME);
@@ -293,16 +320,6 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 
 		return { verdict, agent };
 	} finally {
-		// Swallow-and-log: a cleanup failure must not mask the run's outcome
-		// (a successful phase turning into a reported failure, or a genuine
-		// error being replaced by the cleanup error).
-		try {
-			await worktrees.cleanup(taskId);
-		} catch (error) {
-			logger.error('review phase: worktree cleanup failed', {
-				taskId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'review phase');
 	}
 }

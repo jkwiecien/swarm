@@ -56,6 +56,12 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import {
+	acquireResumableWorktree,
+	cleanupUnlessPreserved,
+	sessionRunArgs,
+	shouldPreserveForResume,
+} from '@/pipeline/resume.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -115,6 +121,13 @@ export interface RunRespondToCiPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/**
+	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
+	 * (`resumeSessionId`). When resuming, the preserved PR-branch checkout is
+	 * reused so the agent continues its prior session (and any partial fixes) in place.
+	 */
+	sessionId?: string;
+	resumeSessionId?: string;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -216,6 +229,8 @@ export async function runRespondToCiPhase(
 		taskId,
 		cli = DEFAULT_RESPOND_CI_CLI,
 		model,
+		sessionId,
+		resumeSessionId,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -239,14 +254,25 @@ export async function runRespondToCiPhase(
 	const implementerToken = await getToken(project, 'implementer');
 
 	// The existing task branch, not a fresh one — the agent commits and pushes to
-	// the PR here (see the module header for the local-branch precondition).
-	const handle = await worktrees.provision(taskId, { createBranch: false, branch: prBranch });
+	// the PR here (see the module header for the local-branch precondition). On a
+	// resume retry, reuse the preserved checkout so partial fixes and the agent's
+	// session carry over.
+	const { handle, resumed } = await acquireResumableWorktree(
+		worktrees,
+		taskId,
+		prBranch,
+		false,
+		resumeSessionId,
+		() => worktrees.provision(taskId, { createBranch: false, branch: prBranch }),
+	);
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
 		const agent = await runAgent({
 			cli,
 			model,
+			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
 			args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
 			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
@@ -261,11 +287,13 @@ export async function runRespondToCiPhase(
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
-			throw agentRunError(
+			const error = agentRunError(
 				agent,
 				`Respond-to-ci agent (${cli}) exited with code ${agent.exitCode}`,
 				` for PR #${prNumber}`,
 			);
+			preserveForResume = shouldPreserveForResume(error);
+			throw error;
 		}
 
 		const outcomePath = join(handle.path, RESPOND_CI_OUTCOME_FILENAME);
@@ -297,16 +325,6 @@ export async function runRespondToCiPhase(
 
 		return { outcome, agent };
 	} finally {
-		// Swallow-and-log: a cleanup failure must not mask the run's outcome
-		// (a successful phase turning into a reported failure, or a genuine
-		// error being replaced by the cleanup error).
-		try {
-			await worktrees.cleanup(taskId);
-		} catch (error) {
-			logger.error('respond-to-ci phase: worktree cleanup failed', {
-				taskId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'respond-to-ci phase');
 	}
 }

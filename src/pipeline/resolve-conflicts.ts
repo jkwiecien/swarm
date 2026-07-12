@@ -15,6 +15,12 @@ import { GitWorktreeManager } from '../worker/git-worktree-manager.js';
 import { graftEnvironment } from '../worktree/graft.js';
 import { GH_IDENTITY_GUARD } from './agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from './agent-scope.js';
+import {
+	acquireResumableWorktree,
+	cleanupUnlessPreserved,
+	sessionRunArgs,
+	shouldPreserveForResume,
+} from './resume.js';
 
 export const RESOLVE_CONFLICTS_OUTCOME_FILENAME = 'resolve_conflicts_outcome.json';
 export const ResolveConflictsOutcomeSchema = z.object({
@@ -33,6 +39,9 @@ export interface RunResolveConflictsPhaseOptions {
 	taskId: string;
 	cli?: AgentCli;
 	model?: string;
+	/** Assign a fresh session id (`sessionId`) or resume from one on retry (`resumeSessionId`). */
+	sessionId?: string;
+	resumeSessionId?: string;
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	worktrees?: GitWorktreeManager;
@@ -78,6 +87,8 @@ export async function runResolveConflictsPhase(
 		taskId,
 		cli = 'claude',
 		model,
+		sessionId,
+		resumeSessionId,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -92,12 +103,23 @@ export async function runResolveConflictsPhase(
 		baseSha,
 	});
 	const token = await getToken(project, 'implementer');
-	const handle = await worktrees.provision(taskId, { createBranch: false, branch: prBranch });
+	// On a resume retry, reuse the preserved checkout so a partial merge resolution
+	// and the agent's session carry over.
+	const { handle, resumed } = await acquireResumableWorktree(
+		worktrees,
+		taskId,
+		prBranch,
+		false,
+		resumeSessionId,
+		() => worktrees.provision(taskId, { createBranch: false, branch: prBranch }),
+	);
+	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 		const agent = await runAgent({
 			cli,
 			model,
+			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
 			args: [
 				buildResolveConflictsPrompt({ project, prNumber, prBranch, headSha, baseBranch, baseSha }),
@@ -108,12 +130,15 @@ export async function runResolveConflictsPhase(
 			timeoutMs,
 			signal,
 		});
-		if (agent.exitCode !== 0)
-			throw agentRunError(
+		if (agent.exitCode !== 0) {
+			const error = agentRunError(
 				agent,
 				`Resolve-conflicts agent (${cli}) exited with code ${agent.exitCode}`,
 				` for PR #${prNumber}`,
 			);
+			preserveForResume = shouldPreserveForResume(error);
+			throw error;
+		}
 		const path = join(handle.path, RESOLVE_CONFLICTS_OUTCOME_FILENAME);
 		if (!existsSync(path))
 			throw new Error(
@@ -123,13 +148,6 @@ export async function runResolveConflictsPhase(
 		logger.info('Phase finished - Resolve-conflicts', { taskId, prNumber, ...outcome });
 		return { agent, outcome };
 	} finally {
-		try {
-			await worktrees.cleanup(taskId);
-		} catch (error) {
-			logger.error('resolve-conflicts phase: worktree cleanup failed', {
-				taskId,
-				error: String(error),
-			});
-		}
+		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'resolve-conflicts phase');
 	}
 }
