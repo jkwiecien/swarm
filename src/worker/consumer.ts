@@ -423,6 +423,7 @@ function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
 	return async (options) => {
 		let pending = Promise.resolve();
 		let queuedBytes = 0;
+		let reachedOutputLimit = false;
 		let timer: NodeJS.Timeout | undefined;
 		let queue: Array<{ stream: 'stdout' | 'stderr'; content: string; emittedAt: Date }> = [];
 		const flush = (): void => {
@@ -441,10 +442,17 @@ function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
 				);
 		};
 		const append = (stream: 'stdout' | 'stderr', line: string): void => {
+			if (reachedOutputLimit) return;
 			const content = `${line}\n`;
 			queuedBytes += Buffer.byteLength(content);
-			if (queuedBytes > MAX_RUN_OUTPUT_BYTES) return;
 			queue.push({ stream, content, emittedAt: new Date() });
+			// Keep the boundary event: the repository clips it and records that
+			// retention was truncated. Dropping it here leaves the UI unaware.
+			if (queuedBytes > MAX_RUN_OUTPUT_BYTES) {
+				reachedOutputLimit = true;
+				flush();
+				return;
+			}
 			if (queue.length >= 100) flush();
 			else timer ??= setTimeout(flush, 100);
 		};
