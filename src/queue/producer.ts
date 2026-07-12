@@ -242,6 +242,29 @@ export async function promoteRetryForRun(
 }
 
 /**
+ * Remove a deferred run's pending BullMQ retry job(s) — the queue half of the
+ * dashboard's "Terminate" action for a `deferred` run (issue #166). A deferred
+ * run has exactly one delayed retry job carrying its `runId`; removing it before
+ * the run row is flipped to `failed` guarantees no automatic pickup resurrects a
+ * run the user just terminated (leaving neither an orphaned job nor a false
+ * `deferred` row).
+ *
+ * Only *pending* jobs (delayed/waiting) are removable here — a job BullMQ already
+ * moved to `active` (a worker is mid-processing it) isn't in these sets and isn't
+ * removed; that pickup race is handled instead by the worker honouring the
+ * durable cancellation flag (`src/queue/cancellation.ts`). Matches on the same
+ * `data.runId` as {@link promoteRetryForRun}. Returns how many jobs were removed.
+ */
+export async function removePendingRetryForRun(runId: string): Promise<number> {
+	const q = getQueue();
+	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
+	const matches = (job: { data?: { runId?: string } }) => job.data?.runId === runId;
+	const pending = [...delayed, ...waiting].filter(matches);
+	await Promise.all(pending.map((job) => job.remove()));
+	return pending.length;
+}
+
+/**
  * Close the producer connection — called from the router's shutdown handler so
  * the process exits cleanly instead of hanging on an open Redis socket. A no-op
  * if nothing was ever enqueued (the queue is created lazily).

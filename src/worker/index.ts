@@ -21,8 +21,8 @@ import { optionalEnv, requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
-import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueDelayedRetry } from '../queue/producer.js';
+import { closeRunCancellationRedis, subscribeToRunCancellations } from '../queue/cancellation.js';
+import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
 import {
@@ -31,7 +31,9 @@ import {
 	reportInterruptedJobToBoard,
 	resolveAgentTimeoutMs,
 } from './consumer.js';
+import { reenqueueDeferred } from './deferred-retry.js';
 import { resetProjectSlot } from './project-concurrency.js';
+import { abortRun } from './run-cancellation.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -199,47 +201,6 @@ worker.on('completed', (job, outcome: JobOutcome) => {
 	}
 });
 
-/**
- * Re-enqueue a deferred job (rate-limited or worker-aborted) with its retry
- * counter bumped, so the consumer can cap the loop. `data` is re-validated (it
- * round-trips through Redis) before the counter is incremented.
- */
-async function reenqueueDeferred(
-	jobId: string | undefined,
-	data: unknown,
-	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
-): Promise<void> {
-	try {
-		const parsed = SwarmJobSchema.parse(data);
-		const next: SwarmJob = {
-			...parsed,
-			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
-			// Carry the originating run row forward (issue #136) so the retry resets
-			// that same row instead of inserting a second one. `outcome.runId` wins
-			// over any stale value on `parsed` (they match on a retry; only the
-			// outcome knows the row a fresh webhook's first run just created).
-			...(outcome.runId ? { runId: outcome.runId } : {}),
-			...(parsed.type === 'github-projects' &&
-			(outcome.phase === 'planning' || outcome.phase === 'implementation')
-				? { resumePmPhase: outcome.phase }
-				: {}),
-		};
-		await enqueueDelayedRetry(next, outcome.retryDelayMs);
-		logger.debug('Rate-limited phase re-enqueued for retry', {
-			jobId,
-			phase: outcome.phase,
-			taskId: outcome.taskId,
-			retryDelayMs: outcome.retryDelayMs,
-			attempt: next.rateLimitRetryAttempt,
-		});
-	} catch (err) {
-		logger.error('Failed to re-enqueue rate-limited phase', {
-			jobId,
-			taskId: outcome.taskId,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
-}
 worker.on('failed', (job, err) => {
 	logger.error('Job failed', { jobId: job?.id, name: job?.name, error: err.message });
 	// A job reaches `failed` only outside `processJob` (which turns phase failures
@@ -257,6 +218,17 @@ worker.on('failed', (job, err) => {
 // unhandled 'error' event would crash the process.
 worker.on('error', (err) => {
 	logger.error('Worker queue error', { error: err.message });
+});
+
+// Subscribe to user-initiated run terminations from the dashboard (issue #166):
+// when a cancellation for a run running in this worker arrives, abort its agent
+// via the per-run controller registered in `processJob`. A notification for a run
+// not currently executing here is a no-op — the durable set (checked at run
+// start) covers that case.
+const cancellationSubscription = subscribeToRunCancellations((runId) => {
+	if (abortRun(runId)) {
+		logger.info('Aborting run — user requested termination', { runId });
+	}
 });
 
 logger.debug('swarm-worker started', { queue: QUEUE_NAME, concurrency });
@@ -331,6 +303,8 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		clearInterval(sweepInterval);
 		clearInterval(staleRunSweepInterval);
 		shutdown.abort();
+		void cancellationSubscription.close();
+		void closeRunCancellationRedis();
 		void worker.close().then(
 			() => process.exit(0),
 			(err) => {

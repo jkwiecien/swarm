@@ -49,12 +49,22 @@ import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
 import { runReviewPhase } from '../pipeline/review.js';
 import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
 import type { WorkItem } from '../pm/types.js';
+import {
+	clearRunCancellation,
+	isRunCancellationRequested,
+	USER_TERMINATION_MESSAGE,
+} from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueJob } from '../queue/producer.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
+import {
+	beginRunCancellationTracking,
+	linkRunAbortController,
+	unregisterRunController,
+} from './run-cancellation.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
@@ -1093,6 +1103,29 @@ async function handlePhaseFailure(
 	runId: string | undefined,
 ): Promise<JobOutcome> {
 	const error = err instanceof Error ? err.message : String(err);
+
+	// A user asked to terminate this run (issue #166): its abort must settle as a
+	// terminal, user-initiated failure — never a deferral, which would re-enqueue
+	// the very run the user just killed. Checked before the deferrable-abort branch
+	// below, since a user-termination abort is classified `aborted` and would
+	// otherwise be deferred. The captured agent output is still persisted by
+	// `finalizeFailedRun` (logs preserved); we only skip the board "failed" comment,
+	// as an intentional stop isn't a stall a human needs to investigate.
+	if (runId && (await isRunCancellationRequested(runId))) {
+		logger.info(`Phase terminated by user - ${phaseLabel(trigger.phase)}`, {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			runId,
+		});
+		return {
+			status: 'phase-failed',
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			error: USER_TERMINATION_MESSAGE,
+		};
+	}
+
 	const failureKind =
 		err instanceof AgentRunError
 			? err.failure.kind
@@ -1199,6 +1232,10 @@ export async function processJob(
 	}
 
 	let runId: string | undefined;
+	// Per-run abort signal, linked to the worker's shutdown signal (see
+	// {@link linkRunAbortController}): the run is aborted by the worker's own
+	// shutdown *or* a user-initiated dashboard termination (issue #166).
+	const { controller: runAbort, detach } = linkRunAbortController(signal);
 	try {
 		// The global per-CLI default models (DB-backed app settings) — the fallback
 		// tier between the project's own defaults and the coded defaults. Loaded once
@@ -1211,7 +1248,11 @@ export async function processJob(
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
 		runId = await tryCreateRun(project, globalDefaults, trigger, job);
 
-		const result = await runPhase(trigger, project, globalDefaults, job, signal);
+		// Make this run cancellable by id and honour a cancellation that already
+		// landed (a deferred run terminated as its retry was dequeued).
+		await beginRunCancellationTracking(runId, runAbort);
+
+		const result = await runPhase(trigger, project, globalDefaults, job, runAbort.signal);
 		// A run the harness killed for exceeding its wall-clock timeout is a terminal
 		// failure, even in the rare case the agent trapped SIGTERM and still exited 0
 		// before SIGKILL (so the phase read a stale/partial hand-off and "succeeded").
@@ -1264,6 +1305,15 @@ export async function processJob(
 		await finalizeFailedRun(runId, outcome, err);
 		return outcome;
 	} finally {
+		// Detach the shutdown listener and drop this run from the cancellation
+		// registry now that it has settled. Clearing the durable cancellation flag
+		// keeps the set from accumulating handled entries and — since a retry reuses
+		// this same run id — stops a stale request from terminating a later re-run.
+		detach();
+		if (runId) {
+			unregisterRunController(runId);
+			await clearRunCancellation(runId);
+		}
 		// Release the slot once the run settles (success, failure, or deferral) so
 		// a later legitimate dispatch for the same task — a genuine retry, or a
 		// re-run after this one finished — isn't blocked. A deferred job is

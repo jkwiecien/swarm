@@ -5,11 +5,19 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	getRunByIdFromDb: vi.fn(),
 	getRunLogsFromDb: vi.fn(),
 	resetRunToRunning: vi.fn(),
+	markRunUserTerminated: vi.fn(),
 }));
 
 vi.mock('@/queue/producer.js', () => ({
 	promoteRetryForRun: vi.fn(),
 	enqueueDelayedRetry: vi.fn(),
+	removePendingRetryForRun: vi.fn(),
+}));
+
+vi.mock('@/queue/cancellation.js', () => ({
+	requestRunCancellation: vi.fn(),
+	clearRunCancellation: vi.fn(),
+	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
 }));
 
 import { runsRouter } from '@/api/routers/runs.js';
@@ -17,10 +25,20 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
+	markRunUserTerminated,
 	resetRunToRunning,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
-import { enqueueDelayedRetry, promoteRetryForRun } from '@/queue/producer.js';
+import {
+	clearRunCancellation,
+	requestRunCancellation,
+	USER_TERMINATION_MESSAGE,
+} from '@/queue/cancellation.js';
+import {
+	enqueueDelayedRetry,
+	promoteRetryForRun,
+	removePendingRetryForRun,
+} from '@/queue/producer.js';
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -65,6 +83,10 @@ describe('runsRouter', () => {
 		vi.mocked(promoteRetryForRun).mockReset();
 		vi.mocked(resetRunToRunning).mockReset();
 		vi.mocked(enqueueDelayedRetry).mockReset();
+		vi.mocked(markRunUserTerminated).mockReset();
+		vi.mocked(removePendingRetryForRun).mockReset();
+		vi.mocked(requestRunCancellation).mockReset();
+		vi.mocked(clearRunCancellation).mockReset();
 	});
 
 	describe('list', () => {
@@ -368,6 +390,112 @@ describe('runsRouter', () => {
 				expect.objectContaining({ code: 'CONFLICT' }),
 			);
 			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
+		});
+
+		it('clears a stale user-termination flag before re-running the row', async () => {
+			// A run terminated while deferred keeps its cancellation entry; retrying
+			// reuses the same run id, so the flag must be cleared or the worker would
+			// instantly terminate the fresh attempt (issue #166).
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+
+			await caller.retryNow({ runId: 'run-1' });
+
+			expect(clearRunCancellation).toHaveBeenCalledWith('run-1');
+		});
+	});
+
+	describe('terminate', () => {
+		it('throws NOT_FOUND for an unknown run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(undefined);
+
+			await expect(caller.terminate({ runId: 'missing' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'NOT_FOUND' }),
+			);
+			expect(requestRunCancellation).not.toHaveBeenCalled();
+		});
+
+		it('is a no-op returning the settled state for an already-completed run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'completed' }));
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'completed' });
+			expect(requestRunCancellation).not.toHaveBeenCalled();
+		});
+
+		it('is a no-op returning the settled state for an already-failed run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'failed' }));
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
+			expect(requestRunCancellation).not.toHaveBeenCalled();
+		});
+
+		it('requests cancellation and reports terminating for a running run (worker settles the row)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'running' }));
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'terminating' });
+			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
+			// The worker owns an in-flight run's terminal state — the mutation must not
+			// write the row itself.
+			expect(markRunUserTerminated).not.toHaveBeenCalled();
+			expect(removePendingRetryForRun).not.toHaveBeenCalled();
+		});
+
+		it('cancels the pending retry and fails the row for a deferred run', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(removePendingRetryForRun).mockResolvedValue(1);
+			vi.mocked(markRunUserTerminated).mockResolvedValue(true);
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
+			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
+			expect(removePendingRetryForRun).toHaveBeenCalledWith('run-1');
+			expect(markRunUserTerminated).toHaveBeenCalledWith(
+				'run-1',
+				USER_TERMINATION_MESSAGE,
+				'deferred',
+			);
+			// Keep the marker until an explicit retry clears it: the worker's
+			// completed handler may still be about to enqueue the delayed retry.
+			expect(clearRunCancellation).not.toHaveBeenCalled();
+		});
+
+		it('falls back to the worker path when a deferred run was picked up concurrently', async () => {
+			// The conditional deferred→failed loses the race (returns false): the row is
+			// now running. Re-read shows running → report terminating; the flag we set
+			// drives the worker to terminate it.
+			vi.mocked(getRunByIdFromDb)
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'running' }));
+			vi.mocked(removePendingRetryForRun).mockResolvedValue(0);
+			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'terminating' });
+			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
+			expect(clearRunCancellation).not.toHaveBeenCalled();
+		});
+
+		it('returns the settled state when a deferred run settled during termination', async () => {
+			// The conditional lost the race and the re-read shows the run already
+			// terminal (a concurrent pickup completed it) — report that, don't error.
+			vi.mocked(getRunByIdFromDb)
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'completed' }));
+			vi.mocked(removePendingRetryForRun).mockResolvedValue(0);
+			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'completed' });
 		});
 	});
 });

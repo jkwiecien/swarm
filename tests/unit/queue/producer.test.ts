@@ -367,6 +367,35 @@ describe('promoteRetryForRun', () => {
 	});
 });
 
+describe('removePendingRetryForRun', () => {
+	it('removes every pending delayed/waiting job carrying the runId and returns the count', async () => {
+		const removeMatch = vi.fn().mockResolvedValue(undefined);
+		const removeWaiting = vi.fn().mockResolvedValue(undefined);
+		const removeOther = vi.fn().mockResolvedValue(undefined);
+		getDelayed.mockResolvedValue([
+			{ data: { runId: 'run-9' }, remove: removeMatch },
+			{ data: { runId: 'someone-else' }, remove: removeOther },
+		]);
+		getWaiting.mockResolvedValue([{ data: { runId: 'run-9' }, remove: removeWaiting }]);
+		const { removePendingRetryForRun } = await import('@/queue/producer.js');
+
+		const removed = await removePendingRetryForRun('run-9');
+
+		expect(removed).toBe(2);
+		expect(removeMatch).toHaveBeenCalledOnce();
+		expect(removeWaiting).toHaveBeenCalledOnce();
+		expect(removeOther).not.toHaveBeenCalled();
+	});
+
+	it('returns 0 and removes nothing when no pending job carries the runId', async () => {
+		getDelayed.mockResolvedValue([{ data: { runId: 'other' }, remove: vi.fn() }]);
+		getWaiting.mockResolvedValue([]);
+		const { removePendingRetryForRun } = await import('@/queue/producer.js');
+
+		expect(await removePendingRetryForRun('run-9')).toBe(0);
+	});
+});
+
 describe('closeQueue', () => {
 	it('closes the queue once it has been created', async () => {
 		const { enqueueJob, closeQueue } = await import('@/queue/producer.js');

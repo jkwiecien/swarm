@@ -169,6 +169,38 @@ export async function resetRunToRunning(
 }
 
 /**
+ * Atomically finalize a run as user-terminated (issue #166): flip it to `failed`
+ * with the explicit user-termination `reason`, stamp `completedAt`, and clear the
+ * retry-shaped columns (`nextRetryAt`, `agentSessionId`) so it can't be picked up
+ * or resumed. Preserves the run's other columns (logs live in `run_logs`, which
+ * this never touches) so the terminated run keeps whatever it produced.
+ *
+ * The optional `fromStatus` makes the write a conditional claim: pass `'deferred'`
+ * and the update only lands while the row is still deferred — losing the race to
+ * a concurrent worker pickup (which flipped it to `running`) returns `false`
+ * rather than clobbering an in-flight run, so the caller can fall back to the
+ * notify-the-worker path. Returns whether a row was updated.
+ */
+export async function markRunUserTerminated(
+	runId: string,
+	reason: string,
+	fromStatus?: RunStatus,
+): Promise<boolean> {
+	const rows = await getDb()
+		.update(runs)
+		.set({
+			status: 'failed',
+			error: reason,
+			nextRetryAt: null,
+			agentSessionId: null,
+			completedAt: new Date(),
+		})
+		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
+		.returning({ id: runs.id });
+	return rows.length > 0;
+}
+
+/**
  * Resolve the most recent run for one project task and phase. Fresh webhook
  * reruns use this to find a deferred or failed row that can be reused.
  */
