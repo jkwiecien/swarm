@@ -11,9 +11,13 @@
 import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
+import type { AgentsConfig, ProjectConfig } from '../config/schema.js';
 import { runMigrations } from '../db/migrate.js';
 import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
-import { failOrphanedRunningRuns } from '../db/repositories/runsRepository.js';
+import {
+	failOrphanedRunningRuns,
+	failStaleRunningRuns,
+} from '../db/repositories/runsRepository.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
@@ -22,7 +26,12 @@ import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry } from '../queue/producer.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
-import { type JobOutcome, processJob, reportInterruptedJobToBoard } from './consumer.js';
+import {
+	type JobOutcome,
+	processJob,
+	reportInterruptedJobToBoard,
+	resolveAgentTimeoutMs,
+} from './consumer.js';
 import { resetProjectSlot } from './project-concurrency.js';
 
 // Tag every line this process emits so router and worker logs stay
@@ -70,6 +79,60 @@ if (!Number.isInteger(sweepIntervalMs) || sweepIntervalMs < 1) {
 	throw new Error(
 		`SWARM_WORKTREE_SWEEP_INTERVAL_MS must be a positive integer, got '${rawSweepInterval}'`,
 	);
+}
+
+// The default wall-clock timeout every agent run is bounded by (issue #165),
+// resolved here too so the stale-run reconciliation below reaps a `running` row
+// only once it has outlived any run that could still legitimately be behind it.
+// Reading it at startup also validates `SWARM_AGENT_TIMEOUT_MS` (throws on a bad
+// value) alongside the other worker knobs, rather than only when the first job
+// runs.
+const agentTimeoutMs = resolveAgentTimeoutMs();
+
+// How often the worker sweeps for stale `running` rows (a phase whose process
+// died while the worker kept serving jobs — its finalize never landed). Cheap
+// (one bounded UPDATE), so it can run far more often than the hourly worktree
+// sweep; default every 5 min.
+const rawStaleRunSweepInterval = optionalEnv(
+	'SWARM_STALE_RUN_SWEEP_INTERVAL_MS',
+	String(5 * 60 * 1000),
+);
+const staleRunSweepIntervalMs = Number(rawStaleRunSweepInterval);
+if (!Number.isInteger(staleRunSweepIntervalMs) || staleRunSweepIntervalMs < 1) {
+	throw new Error(
+		`SWARM_STALE_RUN_SWEEP_INTERVAL_MS must be a positive integer, got '${rawStaleRunSweepInterval}'`,
+	);
+}
+
+// Grace added on top of the largest configured timeout before a `running` row is
+// judged stale: the harness's SIGTERM→SIGKILL grace plus headroom for a slow
+// finalize write, so an in-flight run that is merely finishing up is never reaped.
+const STALE_RUN_MARGIN_MS = 10 * 60 * 1000;
+
+const AGENT_PHASE_KEYS = [
+	'planning',
+	'implementation',
+	'review',
+	'respondToReview',
+	'respondToCi',
+	'resolveConflicts',
+] as const satisfies readonly (keyof AgentsConfig)[];
+
+/**
+ * The largest wall-clock timeout any run could legitimately have: the default,
+ * raised by any project's larger per-phase `agents.<phase>.timeoutMs` override.
+ * The stale-run sweep uses this as its floor so a project that deliberately
+ * configures a long phase timeout never has its live runs mistaken for stale.
+ */
+function maxConfiguredAgentTimeoutMs(projects: ProjectConfig[], base: number): number {
+	let max = base;
+	for (const project of projects) {
+		for (const phase of AGENT_PHASE_KEYS) {
+			const timeout = project.agents?.[phase]?.timeoutMs;
+			if (timeout !== undefined && timeout > max) max = timeout;
+		}
+	}
+	return max;
 }
 
 const registry = createTriggerRegistry();
@@ -254,6 +317,40 @@ const sweepInterval = setInterval(() => {
 }, sweepIntervalMs);
 sweepInterval.unref();
 
+/**
+ * Reconcile stale `running` rows while the worker keeps serving jobs (issue
+ * #165) — the running-worker safety net the startup-only `failOrphanedRunningRuns`
+ * can't provide. A row still `running` past `max(configured timeout) + grace` is
+ * a phase whose process died without finalizing (the exact `dd0ad860-…` symptom:
+ * the agent exited but the row stayed `running`), since every live agent is
+ * killed at its own timeout — so it is safe to fail without touching a genuinely
+ * in-flight run. Best-effort: a hiccup must not stop the worker serving jobs.
+ */
+async function runStaleRunSweep(): Promise<void> {
+	try {
+		const projects = await listAllProjectsFromDb();
+		const cutoffMs = maxConfiguredAgentTimeoutMs(projects, agentTimeoutMs) + STALE_RUN_MARGIN_MS;
+		const olderThan = new Date(Date.now() - cutoffMs);
+		const reconciled = await failStaleRunningRuns(
+			olderThan,
+			'Run exceeded its wall-clock timeout without finalizing — reconciled as stale',
+		);
+		if (reconciled > 0) {
+			logger.warn('Reconciled stale running runs while serving jobs', {
+				count: reconciled,
+				olderThan: olderThan.toISOString(),
+			});
+		}
+	} catch (err) {
+		logger.error('Failed to reconcile stale running runs', { error: describeError(err) });
+	}
+}
+
+const staleRunSweepInterval = setInterval(() => {
+	void runStaleRunSweep();
+}, staleRunSweepIntervalMs);
+staleRunSweepInterval.unref();
+
 // On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
 // the in-flight agent run (it completes as `phase-failed`; each phase runs its
 // own worktree cleanup in a `finally`), then let worker.close() wait for the
@@ -262,6 +359,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
 		logger.debug(`Received ${signal} — aborting in-flight agent run and closing worker`);
 		clearInterval(sweepInterval);
+		clearInterval(staleRunSweepInterval);
 		shutdown.abort();
 		void worker.close().then(
 			() => process.exit(0),

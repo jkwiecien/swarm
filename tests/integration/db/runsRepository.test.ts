@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getDb } from '../../../src/db/client.js';
@@ -7,6 +7,7 @@ import {
 	completeRun,
 	createRun,
 	failOrphanedRunningRuns,
+	failStaleRunningRuns,
 	getLatestRunForTask,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
@@ -184,6 +185,18 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			expect(await resetRunToRunning(id, undefined, 'failed')).toBe(false);
 			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+
+		it('bumps startedAt to the current attempt so a stale-row sweep measures it fresh', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '12', phase: 'review' });
+			await completeRun(id, { status: 'failed', error: 'boom' });
+			const backdated = new Date(Date.now() - 3 * 60 * 60 * 1000);
+			await getDb().update(runs).set({ startedAt: backdated }).where(eq(runs.id, id));
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.startedAt.getTime()).toBeGreaterThan(backdated.getTime());
 		});
 	});
 
@@ -370,6 +383,45 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('returns 0 when there are no running rows', async () => {
 			expect(await failOrphanedRunningRuns('nothing to do')).toBe(0);
+		});
+	});
+
+	describe('failStaleRunningRuns', () => {
+		it('fails only running rows older than the cutoff, sparing fresh and settled ones', async () => {
+			const stale = await createRun({ projectId: PROJECT_ID, taskId: '20', phase: 'review' });
+			const fresh = await createRun({ projectId: PROJECT_ID, taskId: '21', phase: 'planning' });
+			const settledOld = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '22',
+				phase: 'implementation',
+			});
+			await completeRun(settledOld, { status: 'completed' });
+			// Backdate the stale row and the settled row well past any plausible timeout.
+			const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+			await getDb()
+				.update(runs)
+				.set({ startedAt: old })
+				.where(inArray(runs.id, [stale, settledOld]));
+
+			const count = await failStaleRunningRuns(
+				new Date(Date.now() - 60 * 60 * 1000),
+				'reconciled as stale',
+			);
+
+			expect(count).toBe(1);
+			const staleRow = await getRunByIdFromDb(stale);
+			expect(staleRow?.status).toBe('failed');
+			expect(staleRow?.error).toBe('reconciled as stale');
+			expect(staleRow?.completedAt).toBeInstanceOf(Date);
+			// A running row inside the cutoff is a genuine in-flight run — untouched.
+			expect((await getRunByIdFromDb(fresh))?.status).toBe('running');
+			// A settled row is never rewritten, however old.
+			expect((await getRunByIdFromDb(settledOld))?.status).toBe('completed');
+		});
+
+		it('returns 0 when no running row predates the cutoff', async () => {
+			await createRun({ projectId: PROJECT_ID, taskId: '23', phase: 'review' });
+			expect(await failStaleRunningRuns(new Date(Date.now() - 60 * 60 * 1000), 'noop')).toBe(0);
 		});
 	});
 

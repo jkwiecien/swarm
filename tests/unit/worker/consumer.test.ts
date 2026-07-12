@@ -119,7 +119,11 @@ vi.mock('@/worker/project-concurrency.js', () => ({
 
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
-import { processJob, reportInterruptedJobToBoard } from '@/worker/consumer.js';
+import {
+	DEFAULT_AGENT_TIMEOUT_MS,
+	processJob,
+	reportInterruptedJobToBoard,
+} from '@/worker/consumer.js';
 
 const PROJECT = createMockProjectConfig();
 
@@ -1470,6 +1474,103 @@ describe('processJob', () => {
 
 			release?.();
 			await first;
+		});
+	});
+
+	describe('wall-clock timeout & retry lifecycle (issue #165)', () => {
+		it('passes the worker default timeout to a phase the project sets no override for', async () => {
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(phaseCalls[0].args.timeoutMs).toBe(DEFAULT_AGENT_TIMEOUT_MS);
+		});
+
+		it('finalizes a timed-out phase run as a terminal failure with timedOut', async () => {
+			phaseImpl = async () => {
+				throw new AgentRunError(
+					'review agent exceeded its wall-clock timeout',
+					{ kind: 'timeout' },
+					agentResult({ exitCode: null, signal: 'SIGKILL', timedOut: true, durationMs: 999 }),
+				);
+			};
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			// A timeout is terminal (not deferred) and the row leaves `running`.
+			expect(outcome.status).toBe('phase-failed');
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ status: 'failed', timedOut: true }),
+			);
+		});
+
+		it('re-routes a clean-exit run the harness still flagged timed-out to a failure', async () => {
+			// The rare trap-SIGTERM-then-exit-0 case: the phase "succeeded" but the
+			// harness reports timedOut, so the row must finalize `failed`, not
+			// `completed` (a completed+timedOut row is self-contradictory).
+			phaseImpl = async () => ({ agent: agentResult({ exitCode: 0, timedOut: true }) });
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-failed');
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ status: 'failed', timedOut: true }),
+			);
+			expect(completeRun).not.toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ status: 'completed' }),
+			);
+		});
+
+		it('runs a manual retry on its cli/model overrides and finalizes the reused row out of running', async () => {
+			const captured: Partial<AgentCliResult> = {
+				cli: 'codex',
+				exitCode: 1,
+				timedOut: false,
+			};
+			phaseImpl = async (_phase, args) => {
+				// The phase must be dispatched with the retry's overrides, not the
+				// project/coded defaults — the confirmed `codex`/`gpt-5.6-terra`
+				// regression that instead relaunched `antigravity`.
+				expect(args.cli).toBe('codex');
+				expect(args.model).toBe('gpt-5.6-terra');
+				throw new AgentRunError(
+					'implementation agent (codex) exited with code 1',
+					{ kind: 'error' },
+					agentResult(captured),
+				);
+			};
+			const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
+			const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob({
+					runId: 'run-1',
+					cliOverride: 'codex',
+					modelOverride: 'gpt-5.6-terra',
+				}),
+				registryReturning(trigger),
+			);
+
+			expect(outcome.status).toBe('phase-failed');
+			// The carried row is reused (reset to running), then finalized `failed`
+			// with the engine that actually ran — never left `running`.
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ runId: 'run-1' }),
+				undefined,
+			);
+			expect(createRun).not.toHaveBeenCalled();
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ status: 'failed', engine: 'codex' }),
+			);
 		});
 	});
 });
