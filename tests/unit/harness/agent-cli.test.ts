@@ -374,12 +374,13 @@ describe('runAgentCli', () => {
 			expect(result.stdout).toBe('plain text, not JSON\n');
 		});
 
-		it('skips parsing (leaving usage undefined and stdout raw/capped) when the stream was truncated', async () => {
+		it('leaves usage undefined when the trailing summary itself was cut off by truncation', async () => {
 			const promise = runAgentCli(createMockRunAgentCliOptions({ maxOutputBytes: 5 }));
 			const child = lastChild();
-			// A truncated Claude JSON blob would otherwise fail to parse anyway, but
-			// the guard must skip parsing outright rather than rely on that.
-			child.stdout.emit('data', JSON.stringify({ result: 'x', usage: { input_tokens: 1 } }));
+			// The JSON blob arrives across chunks larger than the tail budget, so the
+			// tail retains only its final fragment — unparseable, so usage stays absent.
+			child.stdout.emit('data', '{"result":"x",'); // latches head truncation
+			child.stdout.emit('data', '"usage":{"input_tokens":1,"output_tokens":2}}');
 			child.emit('close', 0, null);
 
 			const result = await promise;
@@ -387,20 +388,42 @@ describe('runAgentCli', () => {
 			expect(result.usage).toBeUndefined();
 		});
 
-		it('skips Codex usage parsing when its JSONL stream was truncated', async () => {
+		it('leaves Codex usage undefined when its trailing event was cut off by truncation', async () => {
 			const promise = runAgentCli(
 				createMockRunAgentCliOptions({ cli: 'codex', maxOutputBytes: 10 }),
 			);
 			const child = lastChild();
-			child.stdout.emit(
-				'data',
-				'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}',
-			);
+			// Same for a Codex event split across chunks past the tail budget: the tail
+			// holds a bare fragment with no `turn.completed` line, so nothing parses.
+			child.stdout.emit('data', '{"type":"turn.completed","usage":');
+			child.stdout.emit('data', '{"input_tokens":1,"output_tokens":2}}');
 			child.emit('close', 0, null);
 
 			const result = await promise;
 			expect(result.outputTruncated).toBe(true);
 			expect(result.usage).toBeUndefined();
+		});
+
+		it('recovers Codex usage from the tail when earlier output floods the cap', async () => {
+			// Simulates the real failure: a large test suite floods the head buffer
+			// (latching truncation), but the small trailing `turn.completed` event —
+			// emitted last — still fits within the retained tail and yields usage.
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ cli: 'codex', maxOutputBytes: 100 }),
+			);
+			const child = lastChild();
+			child.stdout.emit('data', `${'x'.repeat(200)}\n`); // floods the head cap
+			child.stdout.emit(
+				'data',
+				'{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}\n',
+			);
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.outputTruncated).toBe(true);
+			expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+			// The stored log stays the truncated head — only usage comes from the tail.
+			expect(result.stdout).toBe(`${'x'.repeat(200)}\n`);
 		});
 	});
 
