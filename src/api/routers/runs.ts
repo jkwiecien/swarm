@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
+	getRunOutputEvents,
 	listRunsFromDb,
 	resetRunToRunning,
 } from '../../db/repositories/runsRepository.js';
@@ -91,6 +92,10 @@ export const runsRouter = router({
 		.query(async ({ input }) => {
 			return (await getRunLogsFromDb(input.runId)) ?? null;
 		}),
+
+	getOutput: publicProcedure
+		.input(z.object({ runId: z.string().min(1), after: z.number().int().nonnegative().default(0) }))
+		.query(async ({ input }) => await getRunOutputEvents(input.runId, input.after)),
 
 	// Fire a run's retry immediately ("Retry now", issue #136).
 	//

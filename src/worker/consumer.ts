@@ -20,15 +20,17 @@ import type { AgentDefaults, ProjectConfig } from '../config/schema.js';
 import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
+	appendRunOutputEvents,
 	type CompleteRunInput,
 	completeRun,
 	createRun,
 	getLatestRunForTask,
 	getRunByIdFromDb,
+	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
-import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
+import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
 	type AgentFailureKind,
@@ -317,6 +319,7 @@ function runPhase(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	job: SwarmJob,
+	runId: string | undefined,
 	signal?: AbortSignal,
 ): Promise<{
 	agent: AgentCliResult;
@@ -324,6 +327,7 @@ function runPhase(
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 }> {
 	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+	const runAgent = createLiveOutputRunner(runId);
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -339,6 +343,7 @@ function runPhase(
 				signal,
 				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
+				runAgent,
 			});
 		case 'implementation':
 			return runImplementationPhase({
@@ -354,6 +359,7 @@ function runPhase(
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'review':
 			return runReviewPhase({
@@ -365,6 +371,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'respond-to-review':
 			return runRespondToReviewPhase({
@@ -378,6 +385,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'respond-to-ci':
 			return runRespondToCiPhase({
@@ -390,6 +398,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'resolve-conflicts':
 			return runResolveConflictsPhase({
@@ -404,8 +413,56 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 	}
+}
+
+function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
+	if (!runId) return runAgentCli;
+	return async (options) => {
+		let pending = Promise.resolve();
+		let queuedBytes = 0;
+		let timer: NodeJS.Timeout | undefined;
+		let queue: Array<{ stream: 'stdout' | 'stderr'; content: string; emittedAt: Date }> = [];
+		const flush = (): void => {
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+			const batch = queue;
+			queue = [];
+			if (batch.length === 0) return;
+			pending = pending
+				.then(() => appendRunOutputEvents(runId, batch))
+				.catch((err) =>
+					logger.error('Failed to persist live run output (continuing)', {
+						runId,
+						error: describeError(err),
+					}),
+				);
+		};
+		const append = (stream: 'stdout' | 'stderr', line: string): void => {
+			const content = `${line}\n`;
+			queuedBytes += Buffer.byteLength(content);
+			if (queuedBytes > MAX_RUN_OUTPUT_BYTES) return;
+			queue.push({ stream, content, emittedAt: new Date() });
+			if (queue.length >= 100) flush();
+			else timer ??= setTimeout(flush, 100);
+		};
+		const result = await runAgentCli({
+			...options,
+			onStdout: (line) => {
+				options.onStdout?.(line);
+				append('stdout', line);
+			},
+			onStderr: (line) => {
+				options.onStderr?.(line);
+				append('stderr', line);
+			},
+		});
+		flush();
+		await pending;
+		return result;
+	};
 }
 
 /**
@@ -1168,7 +1225,7 @@ export async function processJob(
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
 		runId = await tryCreateRun(project, globalDefaults, trigger, job);
 
-		const result = await runPhase(trigger, project, globalDefaults, job, signal);
+		const result = await runPhase(trigger, project, globalDefaults, job, runId, signal);
 		// The phase itself logs the scannable `Phase finished - <label>` line (it
 		// carries the run's result — PR URL, verdict, …); this is just the
 		// orchestration-level echo, kept at debug so success shows one finish line.

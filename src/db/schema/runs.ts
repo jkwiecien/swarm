@@ -1,4 +1,5 @@
 import {
+	bigserial,
 	boolean,
 	index,
 	integer,
@@ -55,6 +56,8 @@ export const runs = pgTable(
 		jobPayload: jsonb('job_payload').$type<SwarmJob>(),
 		/** Claude Code session handle used to continue a deferred PM phase. */
 		agentSessionId: uuid('agent_session_id'),
+		outputBytes: integer('output_bytes').notNull().default(0),
+		outputTruncated: boolean('output_truncated').notNull().default(false),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),
@@ -72,3 +75,17 @@ export const runLogs = pgTable('run_logs', {
 	stdout: text('stdout'),
 	stderr: text('stderr'),
 });
+
+export const runOutputEvents = pgTable(
+	'run_output_events',
+	{
+		id: bigserial('id', { mode: 'number' }).primaryKey(),
+		runId: uuid('run_id')
+			.notNull()
+			.references(() => runs.id, { onDelete: 'cascade' }),
+		stream: text('stream').$type<'stdout' | 'stderr'>().notNull(),
+		content: text('content').notNull(),
+		emittedAt: timestamp('emitted_at').defaultNow().notNull(),
+	},
+	(table) => [index('idx_run_output_events_cursor').on(table.runId, table.id)],
+);

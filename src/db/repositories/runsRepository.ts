@@ -14,14 +14,23 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, count, desc, eq, inArray, isNotNull, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, type SQL, sql } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
-import { runLogs, runs } from '../schema/runs.js';
+import { runLogs, runOutputEvents, runs } from '../schema/runs.js';
+
+export const MAX_RUN_OUTPUT_BYTES = 5_000_000;
+export const RUN_OUTPUT_PAGE_SIZE = 200;
+
+export interface RunOutputEventInput {
+	stream: 'stdout' | 'stderr';
+	content: string;
+	emittedAt: Date;
+}
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -184,6 +193,92 @@ export async function storeRunLogs(runId: string, stdout: string, stderr: string
 		.insert(runLogs)
 		.values({ runId, stdout, stderr })
 		.onConflictDoUpdate({ target: runLogs.runId, set: { stdout, stderr } });
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+	if (Buffer.byteLength(value) <= maxBytes) return value;
+	return Buffer.from(value)
+		.subarray(0, maxBytes)
+		.toString('utf8')
+		.replace(/\uFFFD$/, '');
+}
+
+/** Append ordered CLI events while keeping each run below its durable retention cap. */
+export async function appendRunOutputEvents(
+	runId: string,
+	events: RunOutputEventInput[],
+): Promise<void> {
+	if (events.length === 0) return;
+	await getDb().transaction(async (tx) => {
+		const rows = await tx
+			.select({ outputBytes: runs.outputBytes, outputTruncated: runs.outputTruncated })
+			.from(runs)
+			.where(eq(runs.id, runId))
+			.for('update')
+			.limit(1);
+		const run = rows[0];
+		if (!run || run.outputTruncated) return;
+
+		let remaining = MAX_RUN_OUTPUT_BYTES - run.outputBytes;
+		let storedBytes = 0;
+		let truncated = false;
+		const retained: RunOutputEventInput[] = [];
+		for (const event of events) {
+			const content = truncateUtf8(event.content, remaining);
+			const bytes = Buffer.byteLength(content);
+			if (content) retained.push({ ...event, content });
+			storedBytes += bytes;
+			remaining -= bytes;
+			if (content !== event.content || remaining === 0) {
+				truncated = true;
+				break;
+			}
+		}
+		if (retained.length > 0)
+			await tx.insert(runOutputEvents).values(retained.map((e) => ({ ...e, runId })));
+		await tx
+			.update(runs)
+			.set({
+				outputBytes: sql`${runs.outputBytes} + ${storedBytes}`,
+				outputTruncated: truncated,
+			})
+			.where(eq(runs.id, runId));
+	});
+}
+
+export async function getRunOutputEvents(
+	runId: string,
+	after: number,
+): Promise<{
+	events: Array<{ id: number; stream: 'stdout' | 'stderr'; content: string; emittedAt: Date }>;
+	nextCursor: number;
+	hasMore: boolean;
+	truncated: boolean;
+	retentionBytes: number;
+}> {
+	const db = getDb();
+	const [runRows, events] = await Promise.all([
+		db.select({ truncated: runs.outputTruncated }).from(runs).where(eq(runs.id, runId)).limit(1),
+		db
+			.select({
+				id: runOutputEvents.id,
+				stream: runOutputEvents.stream,
+				content: runOutputEvents.content,
+				emittedAt: runOutputEvents.emittedAt,
+			})
+			.from(runOutputEvents)
+			.where(and(eq(runOutputEvents.runId, runId), gt(runOutputEvents.id, after)))
+			.orderBy(asc(runOutputEvents.id))
+			.limit(RUN_OUTPUT_PAGE_SIZE + 1),
+	]);
+	const page = events.slice(0, RUN_OUTPUT_PAGE_SIZE);
+	return {
+		events: page,
+		nextCursor: page.at(-1)?.id ?? after,
+		hasMore: events.length > RUN_OUTPUT_PAGE_SIZE,
+		truncated: runRows[0]?.truncated ?? false,
+		retentionBytes: MAX_RUN_OUTPUT_BYTES,
+	};
 }
 
 /**

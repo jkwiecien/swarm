@@ -65,6 +65,7 @@ export async function runMigrations(): Promise<void> {
 export async function truncateAll(): Promise<void> {
 	await getDb().execute(`
 		TRUNCATE TABLE
+			run_output_events,
 			run_logs,
 			runs,
 			project_credentials,
