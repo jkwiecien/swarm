@@ -17,6 +17,8 @@ import {
 	type ConflictCandidatePullRequest,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
+	mergePullRequest,
+	type PullRequestMergeResult,
 	postIssueComment,
 	withGitHubToken,
 } from './client.js';
@@ -105,6 +107,15 @@ export class GitHubSCMIntegration {
 		return this.withPersonaCredentials(project, persona, () =>
 			getPullRequestTitle(owner, repo, prNumber),
 		);
+	}
+
+	/** Attempt a normal merge as the implementer after a successful review response. */
+	async mergePullRequest(
+		project: ProjectConfig,
+		prNumber: number,
+	): Promise<PullRequestMergeResult> {
+		const [owner, repo] = project.repo.split('/');
+		return this.withCredentials(project, () => mergePullRequest(owner, repo, prNumber));
 	}
 
 	/** Provider seam for conflict detection after a base branch advances. */

@@ -163,6 +163,39 @@ export interface ConflictCandidatePullRequest {
 	authorLogin: string | null;
 }
 
+/** Result of an attempted normal GitHub pull-request merge. */
+export interface PullRequestMergeResult {
+	merged: boolean;
+	message: string;
+}
+
+/**
+ * Merge an open, mergeable pull request using the repository's normal merge
+ * policy. A non-mergeable PR is reported without attempting a merge; GitHub's
+ * merge endpoint remains the authority for required checks and review rules.
+ */
+export async function mergePullRequest(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<PullRequestMergeResult> {
+	const client = getScopedClient();
+	const { data: pull } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	if (pull.state !== 'open' || pull.draft || pull.mergeable !== true) {
+		return {
+			merged: false,
+			message: pull.draft
+				? 'pull request is still a draft'
+				: pull.state !== 'open'
+					? `pull request is ${pull.state}`
+					: 'GitHub has not marked the pull request mergeable',
+		};
+	}
+
+	const { data } = await client.pulls.merge({ owner, repo, pull_number: prNumber });
+	return { merged: data.merged, message: data.message };
+}
+
 /** List open same-repository PRs targeting a base branch, including GitHub's asynchronous mergeability. */
 export async function listOpenPullRequestsForBase(
 	owner: string,

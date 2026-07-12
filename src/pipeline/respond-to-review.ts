@@ -75,6 +75,7 @@ import {
 	runAgentCli,
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
+import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
@@ -178,6 +179,11 @@ export interface RunRespondToReviewPhaseOptions {
 	graft?: typeof graftEnvironment;
 	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
 	getToken?: typeof getPersonaToken;
+	/** Injectable normal-merge operation; best-effort after a successful response when enabled. */
+	mergePullRequest?: (
+		project: ProjectConfig,
+		prNumber: number,
+	) => Promise<{ merged: boolean; message: string }>;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -191,6 +197,8 @@ export interface RespondToReviewPhaseResult {
 	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
+	/** Whether opt-in automatic merge actually merged the PR. */
+	merged?: boolean;
 }
 
 /**
@@ -333,6 +341,65 @@ function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult
 	});
 }
 
+async function attemptAutoMerge(
+	enabled: boolean,
+	mergePullRequest: NonNullable<RunRespondToReviewPhaseOptions['mergePullRequest']>,
+	project: ProjectConfig,
+	prNumber: string,
+	taskId: string,
+): Promise<boolean | undefined> {
+	if (!enabled) return undefined;
+	try {
+		const merge = await mergePullRequest(project, Number(prNumber));
+		if (merge.merged) {
+			logger.info('Respond-to-review automatically merged pull request', { taskId, prNumber });
+		} else {
+			logger.warn('Respond-to-review did not auto-merge pull request', {
+				taskId,
+				prNumber,
+				reason: merge.message,
+			});
+		}
+		return merge.merged;
+	} catch (error) {
+		logger.warn('Respond-to-review auto-merge failed — response remains successful', {
+			taskId,
+			prNumber,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return false;
+	}
+}
+
+function readRespondOutcome(
+	handlePath: string,
+	agent: AgentCliResult,
+	taskId: string,
+	prNumber: string,
+): RespondOutcome {
+	const outcomePath = join(handlePath, RESPOND_OUTCOME_FILENAME);
+	if (!existsSync(outcomePath)) {
+		logAgentFailure(taskId, prNumber, agent);
+		throw new Error(
+			`Respond-to-review agent (${agent.cli}) did not write ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber}`,
+		);
+	}
+	const rawOutcome = readFileSync(outcomePath, 'utf8').trim();
+	if (rawOutcome.length === 0) {
+		logAgentFailure(taskId, prNumber, agent);
+		throw new Error(
+			`Respond-to-review agent (${agent.cli}) wrote an empty ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber}`,
+		);
+	}
+	const outcome = rawOutcome.toLowerCase() as RespondOutcome;
+	if (RESPOND_OUTCOMES.includes(outcome)) return outcome;
+
+	logAgentFailure(taskId, prNumber, agent);
+	throw new Error(
+		`Respond-to-review agent (${agent.cli}) wrote unrecognized outcome '${rawOutcome}' to ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber} (expected one of: ${RESPOND_OUTCOMES.join(', ')})`,
+	);
+}
+
 /**
  * Run the Respond-to-review phase for one submitted review. Provisions a
  * worktree on the PR's existing branch, runs the implementer agent to address
@@ -363,6 +430,8 @@ export async function runRespondToReviewPhase(
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 		getToken = getPersonaToken,
+		mergePullRequest = (mergeProject, mergePrNumber) =>
+			new GitHubSCMIntegration().mergePullRequest(mergeProject, mergePrNumber),
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
@@ -421,30 +490,10 @@ export async function runRespondToReviewPhase(
 			);
 		}
 
-		const outcomePath = join(handle.path, RESPOND_OUTCOME_FILENAME);
-		if (!existsSync(outcomePath)) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Respond-to-review agent (${cli}) did not write ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber}`,
-			);
-		}
-		const rawOutcome = readFileSync(outcomePath, 'utf8').trim();
-		if (rawOutcome.length === 0) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Respond-to-review agent (${cli}) wrote an empty ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber}`,
-			);
-		}
 		// Case-tolerant ("Fixed" happens) but otherwise strict: an unknown outcome
 		// means the hand-off contract broke, and pretending the response happened
 		// would stall the pipeline silently.
-		const outcome = rawOutcome.toLowerCase() as RespondOutcome;
-		if (!RESPOND_OUTCOMES.includes(outcome)) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Respond-to-review agent (${cli}) wrote unrecognized outcome '${rawOutcome}' to ${RESPOND_OUTCOME_FILENAME} for PR #${prNumber} (expected one of: ${RESPOND_OUTCOMES.join(', ')})`,
-			);
-		}
+		const outcome = readRespondOutcome(handle.path, agent, taskId, prNumber);
 
 		// Best-effort: return the card to "In review" now the response is posted.
 		// Only on success — a failed run leaves it at "In progress" (as
@@ -454,15 +503,24 @@ export async function runRespondToReviewPhase(
 			movedTo = DONE_STATUS;
 		}
 
+		const merged = await attemptAutoMerge(
+			project.pipeline?.respondToReview?.autoMerge ?? false,
+			mergePullRequest,
+			project,
+			prNumber,
+			taskId,
+		);
+
 		logger.info('Phase finished - Respond-to-review', {
 			taskId,
 			prNumber,
 			prBranch,
 			outcome,
 			movedTo,
+			merged,
 		});
 
-		return { outcome, movedTo, agent };
+		return { outcome, movedTo, agent, merged };
 	} finally {
 		// Swallow-and-log: a cleanup failure must not mask the run's outcome
 		// (a successful phase turning into a reported failure, or a genuine

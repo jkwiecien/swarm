@@ -166,6 +166,41 @@ describe('runRespondToReviewPhase', () => {
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('antigravity');
 	});
 
+	it('does not merge when auto merge is disabled', async () => {
+		const deps = makeDeps();
+		const mergePullRequest = vi.fn();
+		await runRespondToReviewPhase({ ...deps, mergePullRequest });
+		expect(mergePullRequest).not.toHaveBeenCalled();
+	});
+
+	it('merges after a successful response when auto merge is enabled', async () => {
+		const deps = makeDeps();
+		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
+		const mergePullRequest = vi.fn(async () => ({
+			merged: true,
+			message: 'Pull Request successfully merged',
+		}));
+
+		const result = await runRespondToReviewPhase({ ...deps, mergePullRequest });
+
+		expect(mergePullRequest).toHaveBeenCalledWith(deps.project, 99);
+		expect(result.merged).toBe(true);
+	});
+
+	it('keeps a successful response successful when auto merge is rejected', async () => {
+		const deps = makeDeps();
+		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
+		const mergePullRequest = vi.fn(async () => ({
+			merged: false,
+			message: 'required checks are pending',
+		}));
+
+		const result = await runRespondToReviewPhase({ ...deps, mergePullRequest });
+
+		expect(result.outcome).toBe('fixed');
+		expect(result.merged).toBe(false);
+	});
+
 	it('throws and still cleans up when the agent exits non-zero', async () => {
 		const deps = makeDeps();
 		deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
