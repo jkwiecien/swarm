@@ -991,10 +991,12 @@ describe('processJob', () => {
 		expect(outcome.retryDelayMs).toBe(30 * 60 * 1000);
 	});
 
-	it('carries the created run row id on the deferred outcome so the retry reuses it', async () => {
+	it('carries the created run row id on the deferred outcome and preserves its cancellation marker', async () => {
 		// createRun resolves 'run-1' (see the top-level mock); a deferral must
 		// surface that id so `reenqueueDeferred` threads it onto the retry job and
 		// the retry resets this same row instead of inserting a new one (issue #136).
+		// The marker must survive this return: termination can race the queue hand-off
+		// and `reenqueueDeferred` is responsible for observing it before retrying.
 		phaseImpl = async () => {
 			throw new AgentRunError('rate limited', { kind: 'rate-limit' });
 		};
@@ -1006,6 +1008,7 @@ describe('processJob', () => {
 
 		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
 		expect(outcome.runId).toBe('run-1');
+		expect(clearRunCancellation).not.toHaveBeenCalledWith('run-1');
 	});
 
 	it('fails a rate-limited phase once the retry budget is exhausted', async () => {
