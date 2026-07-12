@@ -5,10 +5,20 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	listRunsFromDb,
+	markRunUserTerminated,
 	resetRunToRunning,
 } from '../../db/repositories/runsRepository.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
-import { enqueueDelayedRetry, promoteRetryForRun } from '../../queue/producer.js';
+import {
+	clearRunCancellation,
+	requestRunCancellation,
+	USER_TERMINATION_MESSAGE,
+} from '../../queue/cancellation.js';
+import {
+	enqueueDelayedRetry,
+	promoteRetryForRun,
+	removePendingRetryForRun,
+} from '../../queue/producer.js';
 import { publicProcedure, router } from '../trpc.js';
 
 // `RunStatus`/`RunRow` are local (non-exported) types in the repository, so the
@@ -146,6 +156,12 @@ export const runsRouter = router({
 				});
 			}
 
+			// Clear any stale user-termination flag before re-running this row: a run
+			// terminated while deferred keeps its cancellation entry (issue #166), and
+			// re-running reuses the same immutable run id — without this the worker's
+			// start-check would instantly terminate the fresh attempt.
+			await clearRunCancellation(input.runId);
+
 			if (run.status === 'deferred') {
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
@@ -189,5 +205,77 @@ export const runsRouter = router({
 			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };
+		}),
+
+	// Terminate a running or deferred run ("Terminate", issue #166).
+	//
+	// The dashboard and worker are separate processes, so this never touches a
+	// PID: it records a durable, run-id-keyed cancellation request in Redis
+	// (`requestRunCancellation`) and notifies the worker, then handles the two
+	// live states:
+	//
+	//  - `running`: the worker is executing the agent. The published notification
+	//    (and, failing that, the worker's own start-check against the durable set)
+	//    aborts the run via its `AbortSignal`, and the phase settles the row as
+	//    `failed` with the user-termination reason. We don't write the row here —
+	//    the worker owns an in-flight run's terminal state — so we report
+	//    `terminating` and let the UI poll for the settle.
+	//
+	//  - `deferred`: no agent is running; a delayed BullMQ retry job is waiting.
+	//    Remove that job so nothing resurrects the run, then atomically flip the
+	//    row `deferred → failed`. If that conditional loses to a concurrent
+	//    automatic pickup (the row is now `running`), we fall through to the
+	//    running case — the flag we already set makes the worker terminate it.
+	//
+	// Idempotent and race-safe: a run that already settled (`completed`/`failed`)
+	// returns its current state rather than erroring, so a second click or a
+	// settle-during-terminate can't terminate a different run or double-act.
+	// Keyed on the immutable run id, so a later retry of the same task is never
+	// caught by this request.
+	terminate: publicProcedure
+		.input(z.object({ runId: z.string().min(1) }))
+		.mutation(async ({ input }) => {
+			const run = await getRunByIdFromDb(input.runId);
+			if (!run) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Run with ID "${input.runId}" not found`,
+				});
+			}
+
+			// Already terminal — nothing to terminate; report its settled state so a
+			// second click (or a run that finished as we clicked) is a no-op, not an
+			// error. Only `running`/`deferred` runs are actionable.
+			if (run.status === 'completed' || run.status === 'failed') {
+				return { runId: run.id, status: run.status };
+			}
+
+			// Durably record the intent and notify the worker before doing anything
+			// else, so a pickup that races the branches below still sees it.
+			await requestRunCancellation(run.id);
+
+			if (run.status === 'deferred') {
+				// Cancel the pending retry job so no automatic pickup resurrects it,
+				// then atomically fail the row while it's still deferred.
+				await removePendingRetryForRun(run.id);
+				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
+					// The worker never touches this row, so clear the (now-consumed) flag
+					// here to keep the durable set from accumulating settled entries.
+					await clearRunCancellation(run.id);
+					return { runId: run.id, status: 'failed' as const };
+				}
+				// Lost the race: a worker picked the retry up between our read and the
+				// conditional flip (the row is now `running`, or already settled).
+				// Report its current state — the flag we set drives the worker to
+				// terminate it if it's running.
+				const latest = await getRunByIdFromDb(run.id);
+				if (latest && (latest.status === 'failed' || latest.status === 'completed')) {
+					return { runId: run.id, status: latest.status };
+				}
+				return { runId: run.id, status: 'terminating' as const };
+			}
+
+			// `running`: the worker aborts the agent and settles the row.
+			return { runId: run.id, status: 'terminating' as const };
 		}),
 });

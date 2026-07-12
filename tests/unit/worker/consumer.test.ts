@@ -117,6 +117,49 @@ vi.mock('@/worker/project-concurrency.js', () => ({
 	releaseProjectSlot: (projectId: string) => releaseProjectSlot(projectId),
 }));
 
+// User-initiated termination (issue #166): the durable cancellation flag is read
+// to tell a user termination apart from a worker-shutdown abort, and the per-run
+// controller is registered/unregistered around the phase. Mocked at the boundary
+// so these tests drive the "was this cancelled?" answer without Redis.
+const isRunCancellationRequested = vi.fn<(runId: string) => Promise<boolean>>(async () => false);
+const clearRunCancellation = vi.fn(async (_runId: string) => {});
+vi.mock('@/queue/cancellation.js', () => ({
+	isRunCancellationRequested: (runId: string) => isRunCancellationRequested(runId),
+	clearRunCancellation: (runId: string) => clearRunCancellation(runId),
+	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
+}));
+
+const registerRunController = vi.fn<(runId: string, controller: AbortController) => void>();
+const unregisterRunController = vi.fn<(runId: string) => void>();
+const linkRunAbortController = vi.fn((signal?: AbortSignal) => {
+	const controller = new AbortController();
+	if (!signal) {
+		return { controller, detach: () => {} };
+	}
+	const onShutdown = () => controller.abort();
+	signal.addEventListener('abort', onShutdown);
+	return {
+		controller,
+		detach: () => signal.removeEventListener('abort', onShutdown),
+	};
+});
+const beginRunCancellationTracking = vi.fn(async (runId?: string, controller?: AbortController) => {
+	if (!runId || !controller) return;
+	registerRunController(runId, controller);
+	if (await isRunCancellationRequested(runId)) {
+		controller.abort();
+	}
+});
+
+vi.mock('@/worker/run-cancellation.js', () => ({
+	registerRunController: (runId: string, controller: AbortController) =>
+		registerRunController(runId, controller),
+	unregisterRunController: (runId: string) => unregisterRunController(runId),
+	linkRunAbortController: (signal?: AbortSignal) => linkRunAbortController(signal),
+	beginRunCancellationTracking: (runId?: string, controller?: AbortController) =>
+		beginRunCancellationTracking(runId, controller),
+}));
+
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
 import { processJob, reportInterruptedJobToBoard } from '@/worker/consumer.js';
@@ -186,6 +229,11 @@ describe('processJob', () => {
 		acquireProjectSlot.mockClear();
 		acquireProjectSlot.mockResolvedValue({ acquired: true, tracked: true });
 		releaseProjectSlot.mockClear();
+		isRunCancellationRequested.mockClear();
+		isRunCancellationRequested.mockResolvedValue(false);
+		clearRunCancellation.mockClear();
+		registerRunController.mockClear();
+		unregisterRunController.mockClear();
 	});
 
 	it('runs under the project limit and releases the slot on success', async () => {
@@ -673,8 +721,16 @@ describe('processJob', () => {
 		expect(phaseCalls[0].args.autoAdvance).toBeUndefined();
 	});
 
-	it('threads the shutdown signal through to the phase', async () => {
+	it('threads a shutdown-linked per-run signal through to the phase', async () => {
+		// The phase now receives a per-run signal (so a single run can be terminated
+		// independently, issue #166) that is *linked* to the worker's shutdown signal
+		// rather than being the same object — aborting shutdown still aborts the run.
 		const controller = new AbortController();
+		let phaseSignal: AbortSignal | undefined;
+		phaseImpl = async (_phase, args) => {
+			phaseSignal = args.signal as AbortSignal | undefined;
+			return { agent: agentResult() };
+		};
 
 		await processJob(
 			createMockGitHubWebhookJob(),
@@ -682,7 +738,27 @@ describe('processJob', () => {
 			controller.signal,
 		);
 
-		expect(phaseCalls[0].args.signal).toBe(controller.signal);
+		expect(phaseSignal).toBeInstanceOf(AbortSignal);
+		expect(phaseSignal).not.toBe(controller.signal);
+	});
+
+	it('aborts the in-flight phase signal when the worker shutdown signal fires', async () => {
+		const controller = new AbortController();
+		let phaseSignal: AbortSignal | undefined;
+		phaseImpl = async (_phase, args) => {
+			phaseSignal = args.signal as AbortSignal | undefined;
+			// Fire shutdown mid-run; the linked per-run signal must abort too.
+			controller.abort();
+			return { agent: agentResult() };
+		};
+
+		await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+			controller.signal,
+		);
+
+		expect(phaseSignal?.aborted).toBe(true);
 	});
 
 	it('reports a phase failure as phase-failed, not a thrown error', async () => {
@@ -1000,6 +1076,71 @@ describe('processJob', () => {
 			taskId: '17',
 			error: 'Review agent (claude) exited with code 143 (aborted)',
 		});
+	});
+
+	it('registers a per-run abort controller and threads its signal into the phase', async () => {
+		let seenSignal: AbortSignal | undefined;
+		phaseImpl = async (_phase, args) => {
+			seenSignal = args.signal as AbortSignal | undefined;
+			return { agent: agentResult() };
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		expect(registerRunController).toHaveBeenCalledWith('run-1', expect.any(AbortController));
+		expect(seenSignal).toBeInstanceOf(AbortSignal);
+		// Cleanup: the controller is unregistered and the flag cleared on settle.
+		expect(unregisterRunController).toHaveBeenCalledWith('run-1');
+		expect(clearRunCancellation).toHaveBeenCalledWith('run-1');
+	});
+
+	it('settles a user-terminated abort as a terminal failure, not a deferral', async () => {
+		// The user asked to terminate: an aborted run that would normally defer must
+		// instead fail terminally with the user-termination reason (issue #166).
+		isRunCancellationRequested.mockResolvedValue(true);
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toEqual({
+			status: 'phase-failed',
+			phase: 'review',
+			taskId: '17',
+			error: 'Run terminated by user from the dashboard.',
+		});
+		// An intentional stop isn't a stall — no board/PR "failed" comment is posted.
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
+		// The failed row records the user-termination reason.
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				error: 'Run terminated by user from the dashboard.',
+			}),
+		);
+	});
+
+	it('aborts before running the agent when cancellation was requested at pickup', async () => {
+		// A deferred run terminated in the window between its retry being dequeued and
+		// the phase starting: the start-check aborts the controller so the phase gets
+		// an already-aborted signal.
+		isRunCancellationRequested.mockResolvedValue(true);
+		let signalAborted = false;
+		phaseImpl = async (_phase, args) => {
+			signalAborted = (args.signal as AbortSignal | undefined)?.aborted ?? false;
+			return { agent: agentResult() };
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		expect(signalAborted).toBe(true);
 	});
 
 	it('defers a worktree already exists error with the dedup-safe floor delay', async () => {

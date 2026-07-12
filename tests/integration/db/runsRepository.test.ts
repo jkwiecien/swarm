@@ -12,6 +12,7 @@ import {
 	getRunLogsFromDb,
 	hasResumableDeferredRun,
 	listRunsFromDb,
+	markRunUserTerminated,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../../../src/db/repositories/runsRepository.js';
@@ -184,6 +185,48 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			expect(await resetRunToRunning(id, undefined, 'failed')).toBe(false);
 			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+	});
+
+	describe('markRunUserTerminated', () => {
+		it('flips a deferred row to failed with the reason and clears retry columns', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'deferred',
+				error: 'rate limited',
+				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
+				agentSessionId: id,
+			});
+
+			const terminated = await markRunUserTerminated(id, 'Run terminated by user', 'deferred');
+
+			expect(terminated).toBe(true);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('failed');
+			expect(row?.error).toBe('Run terminated by user');
+			expect(row?.nextRetryAt).toBeNull();
+			expect(row?.agentSessionId).toBeNull();
+			expect(row?.completedAt).toBeInstanceOf(Date);
+		});
+
+		it('is a conditional claim: returns false when the row is no longer deferred', async () => {
+			// A concurrent pickup flipped it to running — the conditional must not
+			// clobber the in-flight run.
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '21', phase: 'review' });
+
+			expect(await markRunUserTerminated(id, 'Run terminated by user', 'deferred')).toBe(false);
+			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+
+		it('terminates unconditionally when no fromStatus is supplied', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '22', phase: 'review' });
+
+			expect(await markRunUserTerminated(id, 'Run terminated by user')).toBe(true);
+			expect((await getRunByIdFromDb(id))?.status).toBe('failed');
+		});
+
+		it('returns false for an unknown run id', async () => {
+			expect(await markRunUserTerminated('00000000-0000-0000-0000-000000000000', 'x')).toBe(false);
 		});
 	});
 
