@@ -1297,6 +1297,10 @@ export async function processJob(
 	}
 
 	let runId: string | undefined;
+	// A deferred outcome hands the run to `reenqueueDeferred`, which relies on
+	// this durable marker to prevent a termination racing that queue hand-off
+	// from resurrecting the run. Terminal outcomes consume the marker here.
+	let preserveCancellationMarker = false;
 	// Per-run abort signal, linked to the worker's shutdown signal (see
 	// {@link linkRunAbortController}): the run is aborted by the worker's own
 	// shutdown *or* a user-initiated dashboard termination (issue #166).
@@ -1367,17 +1371,20 @@ export async function processJob(
 		};
 	} catch (err) {
 		const outcome = await handlePhaseFailure(err, job, trigger, project, runId);
+		preserveCancellationMarker = outcome.status === 'phase-deferred';
 		await finalizeFailedRun(runId, outcome, err);
 		return outcome;
 	} finally {
 		// Detach the shutdown listener and drop this run from the cancellation
-		// registry now that it has settled. Clearing the durable cancellation flag
-		// keeps the set from accumulating handled entries and — since a retry reuses
-		// this same run id — stops a stale request from terminating a later re-run.
+		// registry now that it has settled. A deferred outcome deliberately keeps
+		// its marker until `reenqueueDeferred` observes it: a dashboard termination
+		// can land after `deferred` is persisted but before the retry is queued.
+		// Terminal outcomes clear it so a stale request cannot terminate a later
+		// re-run that reuses this run id.
 		detach();
 		if (runId) {
 			unregisterRunController(runId);
-			await clearRunCancellation(runId);
+			if (!preserveCancellationMarker) await clearRunCancellation(runId);
 		}
 		// Release the slot once the run settles (success, failure, or deferral) so
 		// a later legitimate dispatch for the same task — a genuine retry, or a
