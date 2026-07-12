@@ -41,7 +41,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { getPersonaToken } from '@/config/provider.js';
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
 	type AgentCli,
@@ -52,6 +52,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
@@ -63,11 +64,14 @@ import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import {
 	commitPreparedTree,
+	DeliveryDeferredError,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
 	ImplementationHandoffSchema,
 	loadDeliveryProgress,
 	readHandoff,
+	resumedDeliveryAgent,
 	type ScmDeliveryProvider,
 	saveDeliveryProgress,
 } from '@/scm/delivery.js';
@@ -189,6 +193,7 @@ export function buildImplementationPrompt(
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
 		...PIPELINE_PHASE_GUARD,
+		...GH_IDENTITY_GUARD,
 		'',
 		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
 		'worktree whose root is your current working directory. The repository is',
@@ -199,7 +204,7 @@ export function buildImplementationPrompt(
 		"3. Definition of enough: meet the work item's agreed acceptance criteria with the smallest durable change. Do not add speculative features, broad refactors, or exhaustive test coverage merely because adjacent code is untested. Add or update focused tests for changed stable behavior, regressions, public/critical paths, and bug fixes; leave volatile or explicitly out-of-scope coverage alone unless the issue/plan requires it.",
 		'4. Run the project lint, type-check, and the relevant tests; fix whatever they surface before continuing.',
 		'5. Do not commit, push, open a pull request, or run any GitHub mutation. SWARM delivers the prepared tree after you exit.',
-		`Specifically, do not run \`git push -u origin ${branch}\` or \`gh pr create --base ${baseBranch} --head ${branch}\`; SWARM constructs the PR with \`Closes #${context.taskId}\`. GH_TOKEN is not assigned for delivery and you must not run gh auth switch.`,
+		`Specifically, do not run \`git push -u origin ${branch}\` or \`gh pr create --base ${baseBranch} --head ${branch}\`; SWARM constructs the PR with \`Closes #${context.taskId}\`. GH_TOKEN is read-only context authentication; do not run gh auth switch.`,
 		`6. Write "${OPENED_PR_FILENAME}" as JSON with: summary (PR-ready text), verification (an array of {command,outcome:"passed"}), commitSubject (a conventional-commit subject), limitations (an array), and readyForDelivery:true. Do not track this file.`,
 		'Do NOT `git add`/commit the hand-off file.',
 		`If a genuine external prerequisite blocks implementation (for example, a required PR has not merged), do not open a placeholder PR. Instead, write a concise, human-readable explanation and the actionable next step to "${BLOCKED_REASON_FILENAME}" at the worktree root, then stop. Do NOT commit that file.`,
@@ -343,7 +348,8 @@ export async function runImplementationPhase(
 		graft = graftEnvironment,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-	const legacyToken = options.getToken ? await options.getToken(project, 'implementer') : undefined;
+	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
+	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'implementer');
 
 	logger.info(`Phase started - Implementation — running ${describeAgent(cli, model)}`, {
 		taskId,
@@ -373,28 +379,31 @@ export async function runImplementationPhase(
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [
-				buildImplementationPrompt(workItem, {
-					repo: project.repo,
-					taskId,
-					branch: handle.branch,
-					baseBranch: project.baseBranch,
-				}),
-			],
-			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-			// call the agent makes (including `gh pr create`) acts as the
-			// implementer persona, not the worker host's own logged-in account.
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			logContext: { taskId, phase: 'implementation', workItemId: workItem.id },
-			timeoutMs,
-			signal,
-			...(legacyToken ? { env: { GH_TOKEN: legacyToken } } : {}),
-		});
+		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [
+						buildImplementationPrompt(workItem, {
+							repo: project.repo,
+							taskId,
+							branch: handle.branch,
+							baseBranch: project.baseBranch,
+						}),
+					],
+					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+					// call the agent makes (including `gh pr create`) acts as the
+					// implementer persona, not the worker host's own logged-in account.
+					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+					logContext: { taskId, phase: 'implementation', workItemId: workItem.id },
+					timeoutMs,
+					signal,
+					env: { GH_TOKEN: agentToken },
+				});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, workItem.id, agent);
@@ -411,10 +420,10 @@ export async function runImplementationPhase(
 			const blockedReason = readBlockedReason(handle.path);
 			if (blockedReason)
 				throw new Error(`Implementation blocked for task '${taskId}': ${blockedReason}`);
-			if (legacyToken)
+			if (legacyMode)
 				throw new Error(`Implementation agent (${cli}) did not write ${OPENED_PR_FILENAME}`);
 		}
-		if (legacyToken) {
+		if (legacyMode) {
 			const prUrl = readFileSync(join(handle.path, OPENED_PR_FILENAME), 'utf8').trim();
 			if (!prUrl)
 				throw new Error(`Implementation agent (${cli}) wrote an empty ${OPENED_PR_FILENAME}`);
@@ -437,8 +446,13 @@ export async function runImplementationPhase(
 			(await new GitHubSCMIntegration().deliveryProvider(project, 'implementer'));
 		const deliveryId = deliveryIdentity(['implementation', project.repo, taskId, handle.branch]);
 		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
 		if (!progress.commitSha) {
-			progress.commitSha = await commitPreparedTree(handle.path, handoff.commitSubject);
+			progress.commitSha = await commitPreparedTree(
+				handle.path,
+				handoff.commitSubject,
+				delivery.commitIdentity,
+			);
 			saveDeliveryProgress(handle.path, progress);
 		}
 		if (!progress.pushed) {
@@ -485,6 +499,14 @@ export async function runImplementationPhase(
 			movedTo: autoAdvance ? NEXT_STATUS : undefined,
 			agent,
 		};
+	} catch (error) {
+		if (!legacyMode && hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('Implementation delivery deferred for retry', {
+				cause: error,
+			});
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'implementation phase');
 	}

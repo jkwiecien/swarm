@@ -21,6 +21,7 @@ import {
 	createPullRequest,
 	enablePullRequestAutoMerge,
 	findOpenPullRequest,
+	getGitHubUserForToken,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
 	type PullRequestAutoMergeResult,
@@ -141,12 +142,15 @@ export class GitHubSCMIntegration {
 		persona: GitHubPersona,
 	): Promise<ScmDeliveryProvider> {
 		const [owner, repo] = project.repo.split('/');
+		const token = await getPersonaToken(project, persona);
+		const login = await getGitHubUserForToken(token);
+		if (!login) throw new Error(`Could not resolve GitHub identity for ${persona} persona`);
 		const scoped = <T>(fn: () => Promise<T>) => this.withPersonaCredentials(project, persona, fn);
 		return {
+			commitIdentity: { name: login, email: `${login}@users.noreply.github.com` },
 			findPullRequest: (branch) => scoped(() => findOpenPullRequest(owner, repo, branch)),
 			createPullRequest: (input) => scoped(() => createPullRequest(owner, repo, input)),
 			pushBranch: async (cwd, branch, expectedSha) => {
-				const token = await getPersonaToken(project, persona);
 				const authorization = Buffer.from(`x-access-token:${token}`).toString('base64');
 				await promisify(execFile)(
 					'git',

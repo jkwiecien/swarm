@@ -43,7 +43,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { getPersonaToken } from '@/config/provider.js';
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
 	type AgentCli,
@@ -54,6 +54,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
@@ -64,10 +65,13 @@ import {
 import {
 	CiResponseHandoffSchema,
 	commitPreparedTree,
+	DeliveryDeferredError,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
 	loadDeliveryProgress,
 	readHandoff,
+	resumedDeliveryAgent,
 	type ScmDeliveryProvider,
 	saveDeliveryProgress,
 } from '@/scm/delivery.js';
@@ -176,6 +180,7 @@ export function buildRespondToCiPrompt(context: {
 		'You are a senior software engineer whose pull request has failing CI checks.',
 		'',
 		...PIPELINE_PHASE_GUARD,
+		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
 		`#${prNumber} in ${repo} on GitHub. Its check suite completed with at least one`,
@@ -186,7 +191,7 @@ export function buildRespondToCiPrompt(context: {
 		`2. Find out what failed: \`gh pr checks ${prNumber} --repo ${repo}\` for the check summary, then read the failing run's logs — \`gh run view <run-id> --repo ${repo} --log-failed\` (list runs for the commit with \`gh run list --repo ${repo} --commit ${headSha}\`). Read the PR discussion for context too: \`gh pr view ${prNumber} --repo ${repo} --comments\`.`,
 		'3. Diagnose the failure and fix it. Keep the fix surgical — change only what the failing checks require; do not refactor unrelated code. If the failure is not something a code change should address (a flaky test, transient infra, or a check unrelated to this PR), make NO code change.',
 		'4. If you changed code, run lint, type-check, and relevant tests. Do not commit, push, comment, or perform any GitHub mutation.',
-		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is not assigned for delivery and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
+		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is read-only context authentication and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
 		`5. Write "${RESPOND_CI_OUTCOME_FILENAME}" as JSON containing outcome (fixed or no-fix), body (the PR explanation), optional commitSubject when fixed, and verification [{command,outcome:"passed"}].`,
 		'The outcome strings are exactly `fixed` and `no-fix`.',
 		'',
@@ -246,7 +251,8 @@ export async function runRespondToCiPhase(
 		graft = graftEnvironment,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-	const legacyToken = options.getToken ? await options.getToken(project, 'implementer') : undefined;
+	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
+	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'implementer');
 
 	logger.info(`Phase started - Respond-to-CI — running ${describeAgent(cli, model)}`, {
 		taskId,
@@ -276,21 +282,24 @@ export async function runRespondToCiPhase(
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
-			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-			// call the agent makes (incl. the PR comment) acts as the implementer
-			// persona, not the worker host's own logged-in account.
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			logContext: { taskId, phase: 'respond-to-ci', prNumber, headSha },
-			timeoutMs,
-			signal,
-			...(legacyToken ? { env: { GH_TOKEN: legacyToken } } : {}),
-		});
+		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
+					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+					// call the agent makes (incl. the PR comment) acts as the implementer
+					// persona, not the worker host's own logged-in account.
+					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+					logContext: { taskId, phase: 'respond-to-ci', prNumber, headSha },
+					timeoutMs,
+					signal,
+					env: { GH_TOKEN: agentToken },
+				});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
@@ -303,7 +312,7 @@ export async function runRespondToCiPhase(
 			throw error;
 		}
 
-		if (legacyToken) {
+		if (legacyMode) {
 			if (!existsSync(join(handle.path, RESPOND_CI_OUTCOME_FILENAME)))
 				throw new Error(
 					`Respond-to-ci agent (${cli}) did not write ${RESPOND_CI_OUTCOME_FILENAME}`,
@@ -333,8 +342,13 @@ export async function runRespondToCiPhase(
 			(await new GitHubSCMIntegration().deliveryProvider(project, 'implementer'));
 		const deliveryId = deliveryIdentity(['respond-to-ci', project.repo, prNumber, headSha]);
 		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
 		if (handoff.outcome === 'fixed' && !progress.commitSha) {
-			progress.commitSha = await commitPreparedTree(handle.path, handoff.commitSubject as string);
+			progress.commitSha = await commitPreparedTree(
+				handle.path,
+				handoff.commitSubject as string,
+				delivery.commitIdentity,
+			);
 			saveDeliveryProgress(handle.path, progress);
 		}
 		if (progress.commitSha && !progress.pushed) {
@@ -355,6 +369,12 @@ export async function runRespondToCiPhase(
 		logger.info('Phase finished - Respond-to-CI', { taskId, prNumber, prBranch, outcome });
 
 		return { outcome, agent };
+	} catch (error) {
+		if (!legacyMode && hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('CI-response delivery deferred for retry', { cause: error });
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'respond-to-ci phase');
 	}

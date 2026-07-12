@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -68,6 +69,7 @@ export interface CreatePullRequestInput {
 }
 
 export interface ScmDeliveryProvider {
+	commitIdentity: { name: string; email: string };
 	findPullRequest(branch: string): Promise<{ number: number; url: string } | undefined>;
 	createPullRequest(input: CreatePullRequestInput): Promise<{ number: number; url: string }>;
 	pushBranch(cwd: string, branch: string, expectedSha: string): Promise<void>;
@@ -89,6 +91,27 @@ export const HANDOFF_FILENAMES = {
 } as const;
 
 const PROGRESS_FILENAME = '.swarm_delivery.json';
+
+export class DeliveryDeferredError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = 'DeliveryDeferredError';
+	}
+}
+
+export function resumedDeliveryAgent(cli: AgentCli): AgentCliResult {
+	return {
+		cli,
+		exitCode: 0,
+		signal: null,
+		stdout: '',
+		stderr: '',
+		durationMs: 0,
+		timedOut: false,
+		aborted: false,
+		outputTruncated: false,
+	};
+}
 
 export function readHandoff<T>(cwd: string, filename: string, schema: z.ZodType<T>): T {
 	const path = join(cwd, filename);
@@ -121,6 +144,10 @@ export function saveDeliveryProgress(cwd: string, progress: DeliveryProgress): v
 	});
 }
 
+export function hasDeliveryProgress(cwd: string): boolean {
+	return existsSync(join(cwd, PROGRESS_FILENAME));
+}
+
 async function git(cwd: string, args: string[]): Promise<string> {
 	const { stdout } = await execFileAsync('git', args, { cwd });
 	return stdout.trim();
@@ -143,7 +170,11 @@ export async function validatePreparedTree(cwd: string): Promise<void> {
 	}
 }
 
-export async function commitPreparedTree(cwd: string, subject: string): Promise<string> {
+export async function commitPreparedTree(
+	cwd: string,
+	subject: string,
+	identity: { name: string; email: string },
+): Promise<string> {
 	await validatePreparedTree(cwd);
 	await git(cwd, [
 		'add',
@@ -158,7 +189,15 @@ export async function commitPreparedTree(cwd: string, subject: string): Promise<
 		throw new Error(
 			'Unsafe delivery: no deliverable changes remain after excluding hand-off artifacts',
 		);
-	await git(cwd, ['commit', '-m', subject]);
+	await git(cwd, [
+		'-c',
+		`user.name=${identity.name}`,
+		'-c',
+		`user.email=${identity.email}`,
+		'commit',
+		'-m',
+		subject,
+	]);
 	return git(cwd, ['rev-parse', 'HEAD']);
 }
 

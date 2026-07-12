@@ -60,7 +60,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { getPersonaToken } from '@/config/provider.js';
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
 	type AgentCli,
@@ -71,6 +71,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
@@ -82,11 +83,14 @@ import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider } from '@/pm/types.js';
 import {
 	commitPreparedTree,
+	DeliveryDeferredError,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
 	loadDeliveryProgress,
 	ReviewResponseHandoffSchema,
 	readHandoff,
+	resumedDeliveryAgent,
 	type ScmDeliveryProvider,
 	saveDeliveryProgress,
 } from '@/scm/delivery.js';
@@ -312,6 +316,7 @@ export function buildRespondToReviewPrompt(context: {
 		'you authored.',
 		'',
 		...PIPELINE_PHASE_GUARD,
+		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
 		`#${prNumber} in ${repo} on GitHub. A reviewer has submitted a review — it may`,
@@ -329,7 +334,7 @@ export function buildRespondToReviewPrompt(context: {
 		'   If the review raised no specific points at all (e.g. a plain approval with',
 		'   nothing to fix or question), skip straight to step 5.',
 		'4. If you changed code, run lint, type-check, and relevant tests. Do not commit, push, comment, or perform any GitHub mutation.',
-		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is not assigned for delivery and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
+		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is read-only context authentication and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
 		`5. Write "${RESPOND_OUTCOME_FILENAME}" as JSON with outcome (fixed, pushed-back, or no-findings), body (the point-by-point PR reply), optional commitSubject when fixed, and verification [{command,outcome:"passed"}].`,
 		'The outcome strings are exactly `fixed`, `pushed-back`, and `no-findings`. The body must ALWAYS reply on the PR point by point; with no findings, post a short comment thanking the reviewer — never skip this step, even when there is nothing to fix.',
 		'',
@@ -433,7 +438,8 @@ export async function runRespondToReviewPhase(
 			new GitHubSCMIntegration().enablePullRequestAutoMerge(mergeProject, mergePrNumber),
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-	const legacyToken = options.getToken ? await options.getToken(project, 'implementer') : undefined;
+	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
+	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'implementer');
 
 	logger.info(`Phase started - Respond-to-review — running ${describeAgent(cli, model)}`, {
 		taskId,
@@ -474,21 +480,24 @@ export async function runRespondToReviewPhase(
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [buildRespondToReviewPrompt({ repo: project.repo, prNumber, prBranch, reviewId })],
-			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-			// call the agent makes (incl. the PR comment reply) acts as the
-			// implementer persona, not the worker host's own logged-in account.
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			logContext: { taskId, phase: 'respond-to-review', prNumber, prBranch },
-			timeoutMs,
-			signal,
-			...(legacyToken ? { env: { GH_TOKEN: legacyToken } } : {}),
-		});
+		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [buildRespondToReviewPrompt({ repo: project.repo, prNumber, prBranch, reviewId })],
+					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+					// call the agent makes (incl. the PR comment reply) acts as the
+					// implementer persona, not the worker host's own logged-in account.
+					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+					logContext: { taskId, phase: 'respond-to-review', prNumber, prBranch },
+					timeoutMs,
+					signal,
+					env: { GH_TOKEN: agentToken },
+				});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
@@ -504,7 +513,7 @@ export async function runRespondToReviewPhase(
 		// Case-tolerant ("Fixed" happens) but otherwise strict: an unknown outcome
 		// means the hand-off contract broke, and pretending the response happened
 		// would stall the pipeline silently.
-		if (legacyToken) {
+		if (legacyMode) {
 			if (!existsSync(join(handle.path, RESPOND_OUTCOME_FILENAME)))
 				throw new Error(
 					`Respond-to-review agent (${cli}) did not write ${RESPOND_OUTCOME_FILENAME}`,
@@ -545,8 +554,13 @@ export async function runRespondToReviewPhase(
 			(await new GitHubSCMIntegration().deliveryProvider(project, 'implementer'));
 		const deliveryId = deliveryIdentity(['respond-to-review', project.repo, prNumber, reviewId]);
 		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
 		if (handoff.outcome === 'fixed' && !progress.commitSha) {
-			progress.commitSha = await commitPreparedTree(handle.path, handoff.commitSubject as string);
+			progress.commitSha = await commitPreparedTree(
+				handle.path,
+				handoff.commitSubject as string,
+				delivery.commitIdentity,
+			);
 			saveDeliveryProgress(handle.path, progress);
 		}
 		if (progress.commitSha && !progress.pushed) {
@@ -591,6 +605,14 @@ export async function runRespondToReviewPhase(
 		});
 
 		return { outcome, movedTo, agent, autoMergeEnabled };
+	} catch (error) {
+		if (!legacyMode && hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('Review-response delivery deferred for retry', {
+				cause: error,
+			});
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'respond-to-review phase');
 	}

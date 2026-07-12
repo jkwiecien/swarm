@@ -46,7 +46,7 @@
  * would fail the job.
  */
 
-import type { getPersonaToken } from '@/config/provider.js';
+import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
 	type AgentCli,
@@ -57,6 +57,7 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
@@ -65,11 +66,16 @@ import {
 	shouldPreserveForResume,
 } from '@/pipeline/resume.js';
 import {
+	DeliveryDeferredError,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
+	loadDeliveryProgress,
 	ReviewHandoffSchema,
 	readHandoff,
+	resumedDeliveryAgent,
 	type ScmDeliveryProvider,
+	saveDeliveryProgress,
 } from '@/scm/delivery.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
@@ -169,6 +175,7 @@ export function buildReviewPrompt(context: {
 		'You are a senior code reviewer reviewing a pull request.',
 		'',
 		...PIPELINE_PHASE_GUARD,
+		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
 		'in any way. When you find a problem, report it as a review finding — never fix it',
@@ -183,7 +190,7 @@ export function buildReviewPrompt(context: {
 		'3. Confirm README.md remains accurate for the changes in this PR. If a configuration, architecture, workflow, or user-facing behavior change makes it stale, report the missing README update as a review finding.',
 		'4. Verify before claiming: for each candidate finding, trace the exact failing scenario in the surrounding code of this checkout. Only report issues you can demonstrate — do not invent problems, pad the review with praise, or restate personal preferences as defects.',
 		'5. Do not submit a review or perform any GitHub mutation. SWARM submits the decision after you exit.',
-		`In particular, do not run \`gh pr review ${prNumber} --repo ${repo}\`, \`--approve\`, \`--request-changes\`, or \`--comment\`. GH_TOKEN is not assigned for delivery; do not run gh auth switch.`,
+		`In particular, do not run \`gh pr review ${prNumber} --repo ${repo}\`, \`--approve\`, \`--request-changes\`, or \`--comment\`. GH_TOKEN is read-only context authentication; do not run gh auth switch.`,
 		`6. Write "${REVIEW_VERDICT_FILENAME}" as JSON containing verdict (approve, request-changes, or comment), body (the final review body), and optional findings [{title,body}].`,
 		'Do NOT `git add`/commit the hand-off.',
 		'',
@@ -241,7 +248,8 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		graft = graftEnvironment,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-	const legacyToken = options.getToken ? await options.getToken(project, 'reviewer') : undefined;
+	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
+	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'reviewer');
 
 	logger.info(`Phase started - Review — running ${describeAgent(cli, model)}`, {
 		taskId,
@@ -269,20 +277,23 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
-			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-			// call the agent makes acts as the reviewer persona.
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			logContext: { taskId, phase: 'review', prNumber, headSha },
-			timeoutMs,
-			signal,
-			...(legacyToken ? { env: { GH_TOKEN: legacyToken } } : {}),
-		});
+		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
+					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+					// call the agent makes acts as the reviewer persona.
+					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+					logContext: { taskId, phase: 'review', prNumber, headSha },
+					timeoutMs,
+					signal,
+					env: { GH_TOKEN: agentToken },
+				});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
@@ -295,7 +306,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			throw error;
 		}
 
-		if (legacyToken) {
+		if (legacyMode) {
 			if (!existsSync(join(handle.path, REVIEW_VERDICT_FILENAME)))
 				throw new Error(`Review agent (${cli}) did not write ${REVIEW_VERDICT_FILENAME}`);
 			const original = readFileSync(join(handle.path, REVIEW_VERDICT_FILENAME), 'utf8').trim();
@@ -308,17 +319,28 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		const handoff = readHandoff(handle.path, REVIEW_VERDICT_FILENAME, ReviewHandoffSchema);
 		const delivery =
 			options.delivery ?? (await new GitHubSCMIntegration().deliveryProvider(project, 'reviewer'));
-		await delivery.submitReview({
-			prNumber: Number(prNumber),
-			verdict: handoff.verdict,
-			body: handoff.body,
-			deliveryId: deliveryIdentity(['review', project.repo, prNumber, headSha]),
-		});
+		const deliveryId = deliveryIdentity(['review', project.repo, prNumber, headSha]);
+		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
+		if (!progress.reviewId)
+			progress.reviewId = await delivery.submitReview({
+				prNumber: Number(prNumber),
+				verdict: handoff.verdict,
+				body: handoff.body,
+				deliveryId,
+			});
+		saveDeliveryProgress(handle.path, progress);
 		const verdict = handoff.verdict;
 
 		logger.info('Phase finished - Review', { taskId, prNumber, headSha, verdict });
 
 		return { verdict, agent };
+	} catch (error) {
+		if (!legacyMode && hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('Review delivery deferred for retry', { cause: error });
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'review phase');
 	}

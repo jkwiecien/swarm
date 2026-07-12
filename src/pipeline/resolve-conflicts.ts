@@ -13,10 +13,13 @@ import {
 	assertRemoteHead,
 	ConflictHandoffSchema,
 	commitPreparedTree,
+	DeliveryDeferredError,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
 	loadDeliveryProgress,
 	readHandoff,
+	resumedDeliveryAgent,
 	type ScmDeliveryProvider,
 	saveDeliveryProgress,
 } from '../scm/delivery.js';
@@ -120,19 +123,29 @@ export async function runResolveConflictsPhase(
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [
-				buildResolveConflictsPrompt({ project, prNumber, prBranch, headSha, baseBranch, baseSha }),
-			],
-			maxOutputBytes: 1_000_000,
-			logContext: { taskId, phase: 'resolve-conflicts', prNumber, headSha, baseSha },
-			timeoutMs,
-			signal,
-		});
+		const resumeDelivery = hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [
+						buildResolveConflictsPrompt({
+							project,
+							prNumber,
+							prBranch,
+							headSha,
+							baseBranch,
+							baseSha,
+						}),
+					],
+					maxOutputBytes: 1_000_000,
+					logContext: { taskId, phase: 'resolve-conflicts', prNumber, headSha, baseSha },
+					timeoutMs,
+					signal,
+				});
 		if (agent.exitCode !== 0) {
 			const error = agentRunError(
 				agent,
@@ -158,11 +171,13 @@ export async function runResolveConflictsPhase(
 			baseSha,
 		]);
 		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
 		if (!progress.commitSha) {
 			await assertRemoteHead(handle.path, prBranch, headSha);
 			progress.commitSha = await commitPreparedTree(
 				handle.path,
 				`chore: merge ${baseBranch} into ${prBranch}`,
+				delivery.commitIdentity,
 			);
 			saveDeliveryProgress(handle.path, progress);
 		}
@@ -185,6 +200,14 @@ export async function runResolveConflictsPhase(
 		});
 		logger.info('Phase finished - Resolve-conflicts', { taskId, prNumber, ...outcome });
 		return { agent, outcome };
+	} catch (error) {
+		if (hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('Conflict-resolution delivery deferred for retry', {
+				cause: error,
+			});
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'resolve-conflicts phase');
 	}
