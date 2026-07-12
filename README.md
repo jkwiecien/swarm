@@ -236,7 +236,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `githubProjects` | **required** | GitHub Projects board mapping (below). |
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
 | `agents` | optional | Per-phase agent CLI/model overrides (below). |
-| `pipeline` | optional | Per-phase autonomous board-move control (below). |
+| `pipeline` | optional | Per-phase autonomous board-move and PR-merge control (below). |
 | `worktreeRetention` | optional | Retention sweep tuning — `{ maxWorktrees }`, default `10`; how many of the project's most-recently-active `task-<id>` worktrees to keep (`src/config/schema.ts`'s `WorktreeRetentionConfigSchema`). |
 
 **`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
@@ -263,7 +263,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
   | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]`, then the global `defaults[cli]`, then the coded default. |
   | `timeoutMs` | Positive per-phase wall-clock run timeout in **milliseconds** (the dashboard edits this field in whole seconds). Omit to fall back to the worker-wide default `SWARM_AGENT_TIMEOUT_MS`. A run that exceeds it is killed and finalized as `failed` with `timedOut: true`. |
 
-**`pipeline`** — controls board movement/splitting for Planning and Implementation, and whether SCM-event-driven phases run. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
+**`pipeline`** — controls board movement/splitting for Planning and Implementation, whether SCM-event-driven phases run, and opt-in merging after a successful review response. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. Always forced off for a spawned `swarm:split-child` item. |
@@ -271,6 +271,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
 | `pipeline.review.enabled` | `true` | If false, Review events are skipped without dispatching the Review phase. |
 | `pipeline.respondToReview.enabled` | `true` | If false, submitted reviews are skipped without dispatching Respond-to-review. Requires Review to be enabled. |
+| `pipeline.respondToReview.autoMerge` | `false` | If true, after the implementer fixes review findings or acknowledges a review with no findings, SWARM enables GitHub auto-merge. GitHub waits for required checks/reviews or uses the repository merge queue; pushbacks on concrete review points never enable it. An unavailable auto-merge is logged but does not fail the response. |
 | `pipeline.respondToCi.enabled` | `true` | If false, failed-check events are skipped without dispatching Respond-to-CI. |
 
 ### Global settings (`app_settings`)
