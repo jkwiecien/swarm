@@ -4,6 +4,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	listRunsFromDb: vi.fn(),
 	getRunByIdFromDb: vi.fn(),
 	getRunLogsFromDb: vi.fn(),
+	getRunOutputEvents: vi.fn(),
 	resetRunToRunning: vi.fn(),
 	markRunUserTerminated: vi.fn(),
 }));
@@ -24,6 +25,7 @@ import { runsRouter } from '@/api/routers/runs.js';
 import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
+	getRunOutputEvents,
 	listRunsFromDb,
 	markRunUserTerminated,
 	resetRunToRunning,
@@ -69,6 +71,8 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		usage: null,
 		jobPayload: null,
 		agentSessionId: null,
+		outputBytes: 0,
+		outputTruncated: false,
 		...overrides,
 	};
 }
@@ -80,6 +84,7 @@ describe('runsRouter', () => {
 		vi.mocked(listRunsFromDb).mockReset();
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
+		vi.mocked(getRunOutputEvents).mockReset();
 		vi.mocked(promoteRetryForRun).mockReset();
 		vi.mocked(resetRunToRunning).mockReset();
 		vi.mocked(enqueueDelayedRetry).mockReset();
@@ -197,6 +202,22 @@ describe('runsRouter', () => {
 
 			const result = await caller.getLogs({ runId: 'run-1' });
 			expect(result).toBeNull();
+		});
+	});
+
+	describe('getOutput', () => {
+		it('passes the cursor through and returns the incremental page', async () => {
+			const page = {
+				events: [{ id: 8, stream: 'stderr' as const, content: 'warning\n', emittedAt: new Date() }],
+				nextCursor: 8,
+				hasMore: false,
+				truncated: false,
+				retentionBytes: 5_000_000,
+			};
+			vi.mocked(getRunOutputEvents).mockResolvedValue(page);
+
+			await expect(caller.getOutput({ runId: 'run-1', after: 7 })).resolves.toEqual(page);
+			expect(getRunOutputEvents).toHaveBeenCalledWith('run-1', 7);
 		});
 	});
 

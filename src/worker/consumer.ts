@@ -20,15 +20,17 @@ import type { AgentDefaults, ProjectConfig } from '../config/schema.js';
 import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
+	appendRunOutputEvents,
 	type CompleteRunInput,
 	completeRun,
 	createRun,
 	getLatestRunForTask,
 	getRunByIdFromDb,
+	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
-import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
+import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
 	type AgentFailureKind,
@@ -362,6 +364,7 @@ function runPhase(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
 	job: SwarmJob,
+	runId: string | undefined,
 	signal?: AbortSignal,
 ): Promise<{
 	agent: AgentCliResult;
@@ -369,6 +372,7 @@ function runPhase(
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 }> {
 	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+	const runAgent = createLiveOutputRunner(runId);
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -384,6 +388,7 @@ function runPhase(
 				signal,
 				sessionId: job.resumePmPhase ? undefined : job.agentSessionId,
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
+				runAgent,
 			});
 		case 'implementation':
 			return runImplementationPhase({
@@ -399,6 +404,7 @@ function runPhase(
 				resumeSessionId: job.resumePmPhase ? job.agentSessionId : undefined,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'review':
 			return runReviewPhase({
@@ -410,6 +416,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'respond-to-review':
 			return runRespondToReviewPhase({
@@ -423,6 +430,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'respond-to-ci':
 			return runRespondToCiPhase({
@@ -435,6 +443,7 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 		case 'resolve-conflicts':
 			return runResolveConflictsPhase({
@@ -449,8 +458,64 @@ function runPhase(
 				model: overrides.model,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				runAgent,
 			});
 	}
+}
+
+function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
+	if (!runId) return runAgentCli;
+	return async (options) => {
+		let pending = Promise.resolve();
+		let queuedBytes = 0;
+		let reachedOutputLimit = false;
+		let timer: NodeJS.Timeout | undefined;
+		let queue: Array<{ stream: 'stdout' | 'stderr'; content: string; emittedAt: Date }> = [];
+		const flush = (): void => {
+			if (timer) clearTimeout(timer);
+			timer = undefined;
+			const batch = queue;
+			queue = [];
+			if (batch.length === 0) return;
+			pending = pending
+				.then(() => appendRunOutputEvents(runId, batch))
+				.catch((err) =>
+					logger.error('Failed to persist live run output (continuing)', {
+						runId,
+						error: describeError(err),
+					}),
+				);
+		};
+		const append = (stream: 'stdout' | 'stderr', line: string): void => {
+			if (reachedOutputLimit) return;
+			const content = `${line}\n`;
+			queuedBytes += Buffer.byteLength(content);
+			queue.push({ stream, content, emittedAt: new Date() });
+			// Keep the boundary event: the repository clips it and records that
+			// retention was truncated. Dropping it here leaves the UI unaware.
+			if (queuedBytes > MAX_RUN_OUTPUT_BYTES) {
+				reachedOutputLimit = true;
+				flush();
+				return;
+			}
+			if (queue.length >= 100) flush();
+			else timer ??= setTimeout(flush, 100);
+		};
+		const result = await runAgentCli({
+			...options,
+			onStdout: (line) => {
+				options.onStdout?.(line);
+				append('stdout', line);
+			},
+			onStderr: (line) => {
+				options.onStderr?.(line);
+				append('stderr', line);
+			},
+		});
+		flush();
+		await pending;
+		return result;
+	};
 }
 
 /**
@@ -1255,7 +1320,7 @@ export async function processJob(
 		// landed (a deferred run terminated as its retry was dequeued).
 		await beginRunCancellationTracking(runId, runAbort);
 
-		const result = await runPhase(trigger, project, globalDefaults, job, runAbort.signal);
+		const result = await runPhase(trigger, project, globalDefaults, job, runId, runAbort.signal);
 		// A run the harness killed for exceeding its wall-clock timeout is a terminal
 		// failure, even in the rare case the agent trapped SIGTERM and still exited 0
 		// before SIGKILL (so the phase read a stale/partial hand-off and "succeeded").

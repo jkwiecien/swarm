@@ -11,6 +11,7 @@ import {
 	Terminal,
 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { type LiveOutputEvent, LiveOutputViewer } from '@/components/runs/live-output-viewer.js';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { Modal, ModalFooter } from '@/components/ui/modal.js';
@@ -609,7 +610,10 @@ function RunOverview({ run, project }: RunOverviewProps) {
 
 function RunDetailRouteComponent() {
 	const { runId } = runDetailRoute.useParams();
-	const [activeTab, setActiveTab] = useState<'overview' | 'logs'>('overview');
+	const [activeTab, setActiveTab] = useState<'live' | 'overview' | 'logs'>('live');
+	const [outputCursor, setOutputCursor] = useState(0);
+	const [outputEvents, setOutputEvents] = useState<LiveOutputEvent[]>([]);
+	const [uiOutputTruncated, setUiOutputTruncated] = useState(false);
 
 	// Query project list to map projectId to project repo/name
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
@@ -634,6 +638,23 @@ function RunDetailRouteComponent() {
 				: false;
 		},
 	});
+
+	const outputQuery = useQuery({
+		...trpc.runs.getOutput.queryOptions({ runId, after: outputCursor }),
+		refetchInterval: (query) =>
+			query.state.data?.hasMore ? 100 : runQuery.data?.status === 'running' ? 1000 : false,
+	});
+	useEffect(() => {
+		const page = outputQuery.data;
+		if (!page || page.nextCursor === outputCursor) return;
+		setOutputEvents((current) => {
+			const combined = [...current, ...page.events];
+			if (combined.length <= 2_000) return combined;
+			setUiOutputTruncated(true);
+			return combined.slice(-2_000);
+		});
+		setOutputCursor(page.nextCursor);
+	}, [outputCursor, outputQuery.data]);
 
 	// Trigger a final logs refetch when status transitions out of 'running'
 	const status = runQuery.data?.status;
@@ -677,6 +698,18 @@ function RunDetailRouteComponent() {
 			<div className="flex border-b border-zinc-800">
 				<button
 					type="button"
+					onClick={() => setActiveTab('live')}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all cursor-pointer ${
+						activeTab === 'live'
+							? 'border-b-2 border-violet-500 text-white bg-zinc-800/20'
+							: 'border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<Terminal className="h-4 w-4" />
+					Live Output
+				</button>
+				<button
+					type="button"
 					onClick={() => setActiveTab('overview')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all cursor-pointer ${
 						activeTab === 'overview'
@@ -702,7 +735,16 @@ function RunDetailRouteComponent() {
 			</div>
 
 			{/* Active Tab Content */}
-			{activeTab === 'overview' ? (
+			{activeTab === 'live' ? (
+				<LiveOutputViewer
+					events={outputEvents}
+					isRunning={run.status === 'running'}
+					isLoading={outputQuery.isLoading}
+					retentionBytes={outputQuery.data?.retentionBytes ?? 5_000_000}
+					serverTruncated={outputQuery.data?.truncated ?? false}
+					uiTruncated={uiOutputTruncated}
+				/>
+			) : activeTab === 'overview' ? (
 				<RunOverview run={run as unknown as RunRow} project={project} />
 			) : (
 				<LogViewer
