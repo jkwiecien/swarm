@@ -37,6 +37,17 @@ describe('parseAgentOutput', () => {
 			});
 		});
 
+		it('captures session_id from the JSON output as sessionId', () => {
+			const stdout = JSON.stringify({
+				result: 'done',
+				session_id: '11111111-2222-3333-4444-555555555555',
+				usage: { input_tokens: 10, output_tokens: 5 },
+			});
+			expect(parseAgentOutput('claude', stdout).sessionId).toBe(
+				'11111111-2222-3333-4444-555555555555',
+			);
+		});
+
 		it('returns {} for malformed JSON', () => {
 			expect(parseAgentOutput('claude', 'not json at all')).toEqual({});
 		});
@@ -73,7 +84,18 @@ describe('parseAgentOutput', () => {
 					reasoningTokens: 0,
 				},
 				logText: 'pong',
+				sessionId: '019f4f7e-...',
 			});
+		});
+
+		it('captures the thread id from the thread.started event as sessionId', () => {
+			const stdout = [
+				'{"type":"thread.started","thread_id":"019f57a7-cf1b-72d3-b887-63758a10f3a8"}',
+				'{"type":"item.completed","item":{"type":"agent_message","text":"pong"}}',
+			].join('\n');
+			expect(parseAgentOutput('codex', stdout).sessionId).toBe(
+				'019f57a7-cf1b-72d3-b887-63758a10f3a8',
+			);
 		});
 
 		it('accepts input/output-only usage', () => {

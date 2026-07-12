@@ -34,6 +34,11 @@ export type AgentUsage = z.infer<typeof AgentUsageSchema>;
  */
 const ClaudeJsonResultSchema = z.object({
 	result: z.string(),
+	// The session UUID this run used — the same value SWARM assigned via
+	// `--session-id`, echoed back so a resume can reuse it even if the assignment
+	// path ever changes. Optional: an older `claude` build that omits it still
+	// parses (SWARM falls back to the id it assigned).
+	session_id: z.string().optional(),
 	usage: z.object({
 		input_tokens: z.number(),
 		output_tokens: z.number(),
@@ -69,12 +74,21 @@ function codexAgentMessage(event: Record<string, unknown>): string | undefined {
 function collectCodexEvents(stdout: string): {
 	rawUsage?: z.infer<typeof CodexUsageSchema>;
 	messages: string[];
+	sessionId?: string;
 } {
 	let rawUsage: z.infer<typeof CodexUsageSchema> | undefined;
+	let sessionId: string | undefined;
 	const messages: string[] = [];
 	for (const line of stdout.split('\n')) {
 		const event = parseJsonLine(line);
 		if (!event) continue;
+		// `codex exec --json` emits `{"type":"thread.started","thread_id":"…"}` as
+		// its first event; the thread id is what `codex exec resume <id>` takes to
+		// continue the same session (verified live). A resume run re-emits the same
+		// id, so capturing it on every run keeps the row's session handle current.
+		if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+			sessionId = event.thread_id;
+		}
 		if (event.type === 'turn.completed') {
 			const parsedUsage = CodexUsageSchema.safeParse(event.usage);
 			if (parsedUsage.success) rawUsage = parsedUsage.data;
@@ -82,7 +96,7 @@ function collectCodexEvents(stdout: string): {
 		const message = codexAgentMessage(event);
 		if (message !== undefined) messages.push(message);
 	}
-	return { rawUsage, messages };
+	return { rawUsage, messages, sessionId };
 }
 
 export interface ParsedAgentOutput {
@@ -94,6 +108,13 @@ export interface ParsedAgentOutput {
 	 * means "keep whatever raw stdout the caller already captured".
 	 */
 	logText?: string;
+	/**
+	 * The CLI session/thread id recovered from this run's output, to resume it
+	 * later. Only `claude` (`session_id`) and `codex` (`thread.started`) emit one
+	 * on stdout; Antigravity does not (it's captured out-of-band — see
+	 * `./antigravity-session.ts`), so this is absent for it.
+	 */
+	sessionId?: string;
 }
 
 /**
@@ -113,23 +134,27 @@ function parseClaudeOutput(stdout: string): ParsedAgentOutput {
 	const outer = ClaudeJsonResultSchema.safeParse(parsed);
 	if (!outer.success) return {};
 
-	const { result: logText, usage: rawUsage } = outer.data;
+	const { result: logText, session_id: sessionId, usage: rawUsage } = outer.data;
 	const usage = AgentUsageSchema.safeParse({
 		inputTokens: rawUsage.input_tokens,
 		outputTokens: rawUsage.output_tokens,
 		cacheReadTokens: rawUsage.cache_read_input_tokens,
 		cacheCreationTokens: rawUsage.cache_creation_input_tokens,
 	});
-	if (!usage.success) return { logText };
+	if (!usage.success) return { logText, sessionId };
 
-	return { usage: usage.data, logText };
+	return { usage: usage.data, logText, sessionId };
 }
 
 /** Parse the JSONL event stream emitted by `codex exec --json`. */
 function parseCodexOutput(stdout: string): ParsedAgentOutput {
-	const { rawUsage, messages } = collectCodexEvents(stdout);
+	const { rawUsage, messages, sessionId } = collectCodexEvents(stdout);
 	const logText = messages.length > 0 ? messages.join('\n') : undefined;
-	if (!rawUsage) return logText === undefined ? {} : { logText };
+	const base = {
+		...(logText === undefined ? {} : { logText }),
+		...(sessionId === undefined ? {} : { sessionId }),
+	};
+	if (!rawUsage) return base;
 
 	// Codex input_tokens includes cached input; preserve both reported values
 	// independently rather than subtracting cached_input_tokens from the total.
@@ -139,9 +164,9 @@ function parseCodexOutput(stdout: string): ParsedAgentOutput {
 		cacheReadTokens: rawUsage.cached_input_tokens,
 		reasoningTokens: rawUsage.reasoning_output_tokens,
 	});
-	if (!usage.success) return logText === undefined ? {} : { logText };
+	if (!usage.success) return base;
 
-	return { usage: usage.data, ...(logText === undefined ? {} : { logText }) };
+	return { usage: usage.data, ...base };
 }
 
 /**

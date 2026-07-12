@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gt, inArray, isNotNull, type SQL, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, isNotNull, type SQL, sql } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
@@ -75,7 +75,12 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 	return rows[0].id;
 }
 
-/** Whether retention must pin this task's checkout for a resumable deferred PM run. */
+/**
+ * Whether retention must pin this task's checkout for a resumable deferred run —
+ * any phase, any engine (cross-CLI resume). A deferred row that still holds an
+ * `agentSessionId` is one the worker intends to resume; pruning its worktree
+ * would strip the partial work the resume relies on.
+ */
 export async function hasResumableDeferredRun(projectId: string, taskId: string): Promise<boolean> {
 	const rows = await getDb()
 		.select({ id: runs.id })
@@ -85,8 +90,6 @@ export async function hasResumableDeferredRun(projectId: string, taskId: string)
 				eq(runs.projectId, projectId),
 				eq(runs.taskId, taskId),
 				eq(runs.status, 'deferred'),
-				inArray(runs.phase, ['planning', 'implementation']),
-				eq(runs.engine, 'claude'),
 				isNotNull(runs.agentSessionId),
 			),
 		)

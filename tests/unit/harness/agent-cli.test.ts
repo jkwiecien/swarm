@@ -116,6 +116,45 @@ describe('runAgentCli', () => {
 		expect(spawnMock.mock.calls[1][1].slice(-2)).toEqual(['-p', 'continue']);
 	});
 
+	it('resumes codex via the `exec resume <id>` subcommand, not a flag', async () => {
+		const resumed = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'codex',
+				resumeSessionId: '019f57a7-cf1b-72d3-b887-63758a10f3a8',
+				args: ['continue'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await resumed;
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'exec',
+			'resume',
+			'019f57a7-cf1b-72d3-b887-63758a10f3a8',
+			'--dangerously-bypass-approvals-and-sandbox',
+			'--json',
+			'continue',
+		]);
+	});
+
+	it('resumes antigravity via --conversation, keeping -p immediately before the prompt', async () => {
+		const resumed = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'antigravity',
+				resumeSessionId: '08bbd753-411b-4797-a252-9b49087b26e5',
+				args: ['continue'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await resumed;
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'--dangerously-skip-permissions',
+			'--conversation',
+			'08bbd753-411b-4797-a252-9b49087b26e5',
+			'-p',
+			'continue',
+		]);
+	});
+
 	it('requests each supported structured output while leaving antigravity plain', async () => {
 		const claude = runAgentCli(createMockRunAgentCliOptions());
 		lastChild().emit('close', 0, null);

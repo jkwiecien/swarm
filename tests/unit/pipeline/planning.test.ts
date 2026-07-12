@@ -356,17 +356,27 @@ describe('runPlanningPhase', () => {
 		expect(runArgs.sessionId).toBe('sess-18');
 	});
 
-	it('preserves the worktree (skips cleanup) when a claude session run fails on a rate limit', async () => {
+	it('preserves the worktree (skips cleanup) when a session run fails on a rate limit', async () => {
 		const deps = makeDeps();
 		deps.runAgent = vi.fn(async () =>
 			agentResult({
 				exitCode: 1,
 				stdout: "You've hit your session limit · resets 1:40pm (Europe/Warsaw)\n",
+				sessionId: 'sess-18',
 			}),
 		);
 		await expect(runPlanningPhase({ ...deps, sessionId: 'sess-18' })).rejects.toThrow(
 			/rate limited/,
 		);
+		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
+	});
+
+	it('preserves the worktree (skips cleanup) when a session run times out', async () => {
+		const deps = makeDeps();
+		deps.runAgent = vi.fn(async () =>
+			agentResult({ exitCode: null, timedOut: true, sessionId: 'sess-18' }),
+		);
+		await expect(runPlanningPhase({ ...deps, sessionId: 'sess-18' })).rejects.toThrow(/timed out/);
 		expect(deps.worktrees.cleanup).not.toHaveBeenCalled();
 	});
 
