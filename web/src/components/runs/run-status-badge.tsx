@@ -4,9 +4,33 @@ type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
 
 interface RunStatusBadgeProps extends ComponentProps<'span'> {
 	status: RunStatus;
+	/**
+	 * When the run failed specifically because it hit its wall-clock timeout,
+	 * render an unambiguous "Timed out" badge instead of a generic "Failed" — so
+	 * a run the worker killed for running too long reads distinctly from one that
+	 * exited with an error (issue #165).
+	 */
+	timedOut?: boolean;
 }
 
-export function RunStatusBadge({ status, className = '', ...props }: RunStatusBadgeProps) {
+export function RunStatusBadge({
+	status,
+	timedOut = false,
+	className = '',
+	...props
+}: RunStatusBadgeProps) {
+	if (status === 'failed' && timedOut) {
+		return (
+			<span
+				className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-semibold border bg-orange-500/10 text-orange-400 border-orange-500/20 ${className}`}
+				{...props}
+			>
+				<span className="h-1.5 w-1.5 rounded-full bg-orange-400" />
+				Timed out
+			</span>
+		);
+	}
+
 	const configs: Record<
 		RunStatus,
 		{ text: string; classes: string; dotClass: string; pulse?: boolean }

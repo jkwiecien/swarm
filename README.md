@@ -173,6 +173,8 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | `SWARM_WORKER_CONCURRENCY` | `1` | Worker-global maximum number of jobs running at once (`src/worker/index.ts`). Must be a positive integer or startup throws. Each project's `maxConcurrentJobs` additionally caps that project's in-flight jobs, so its effective limit is the smaller of the two values. |
 | `SWARM_WORKER_LOCK_DURATION_MS` | `300000` (5m) | BullMQ job-lock duration (`src/worker/index.ts`). The lock is renewed at ~half this interval while a phase runs, so it only has to exceed the worst-case event-loop stall between renewals — well above BullMQ's 30s default, so a brief CPU/GC/Redis hiccup can't get an in-flight run reclaimed as stalled (and, with `maxStalledCount: 0`, failed with no retry). Must be a positive integer or startup throws. |
 | `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_AGENT_TIMEOUT_MS` | `2700000` (45m) | Default wall-clock timeout applied to **every** phase/agent run when the project sets no per-phase `agents.<phase>.timeoutMs` (`src/worker/consumer.ts`). The harness kills a run that exceeds it (SIGTERM, then SIGKILL after a 5s grace) and the run is finalized as `failed` with `timedOut: true`, so a hung agent can't run — or hold a worker slot — indefinitely. Generous by default so it never cuts a legitimate long run short; lower it to fail runaway runs faster. A per-phase `timeoutMs` in `swarm.config.json` overrides it. Must be a positive integer or startup throws. |
+| `SWARM_STALE_RUN_SWEEP_INTERVAL_MS` | `300000` (5m) | How often the worker sweeps for stale `running` run-history rows while it keeps serving jobs — a phase whose process died without finalizing (`src/worker/index.ts`). A row still `running` past `max(configured timeout) + 10m` grace is reconciled to `failed`. Must be a positive integer or startup throws. |
 
 **Credential encryption at rest** — `src/db/crypto.ts`
 | Variable | Default | Purpose |
@@ -234,7 +236,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `githubProjects` | **required** | GitHub Projects board mapping (below). |
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
 | `agents` | optional | Per-phase agent CLI/model overrides (below). |
-| `pipeline` | optional | Per-phase autonomous board-move control (below). |
+| `pipeline` | optional | Per-phase autonomous board-move and PR-merge control (below). |
 | `worktreeRetention` | optional | Retention sweep tuning — `{ maxWorktrees }`, default `10`; how many of the project's most-recently-active `task-<id>` worktrees to keep (`src/config/schema.ts`'s `WorktreeRetentionConfigSchema`). |
 
 **`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
@@ -259,9 +261,9 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
   | --- | --- |
   | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
   | `model` | Model string; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity: the exact `agy models` display strings, defaults to `Gemini 3.5 Flash (Medium)`; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). Omit to fall back to the project's `defaults[cli]`, then the global `defaults[cli]`, then the coded default. |
-  | `timeoutMs` | Positive run timeout in milliseconds. Omit for no phase timeout. |
+  | `timeoutMs` | Positive per-phase wall-clock run timeout in **milliseconds** (the dashboard edits this field in whole seconds). Omit to fall back to the worker-wide default `SWARM_AGENT_TIMEOUT_MS`. A run that exceeds it is killed and finalized as `failed` with `timedOut: true`. |
 
-**`pipeline`** — controls board movement/splitting for Planning and Implementation, and whether SCM-event-driven phases run. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
+**`pipeline`** — controls board movement/splitting for Planning and Implementation, whether SCM-event-driven phases run, and opt-in merging after a successful review response. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
 | Field | Default | Purpose |
 | --- | --- | --- |
 | `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. Always forced off for a spawned `swarm:split-child` item. |
@@ -269,6 +271,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
 | `pipeline.review.enabled` | `true` | If false, Review events are skipped without dispatching the Review phase. |
 | `pipeline.respondToReview.enabled` | `true` | If false, submitted reviews are skipped without dispatching Respond-to-review. Requires Review to be enabled. |
+| `pipeline.respondToReview.autoMerge` | `false` | If true, after the implementer fixes review findings or acknowledges a review with no findings, SWARM enables GitHub auto-merge. GitHub waits for required checks/reviews or uses the repository merge queue; pushbacks on concrete review points never enable it. An unavailable auto-merge is logged but does not fail the response. |
 | `pipeline.respondToCi.enabled` | `true` | If false, failed-check events are skipped without dispatching Respond-to-CI. |
 
 ### Global settings (`app_settings`)
@@ -346,6 +349,7 @@ Early implementation. Summary by area:
 - `projectsRepository` has full CRUD primitives (SWARM-77); a `projects` tRPC router (list/getById/create/update/delete, SWARM-78) is implemented and up for review, not yet merged into `appRouter`.
 - `runsRepository` has full CRUD, upsert, and pagination primitives for agent-run history (SWARM-102), ready for future dashboard API/UI integration.
 - Runs now record per-phase token usage where the agent CLI reports it (issue #138): a nullable `runs.usage` column, populated from `claude -p --output-format json` and `codex exec --json` (`src/harness/usage.ts`) and shown on the runs table and run-detail page. Antigravity has no structured-output flag, so its runs — like every pre-existing run — render a graceful "not reported" state.
+- A running or deferred run can be terminated from its detail page (issue #166). Terminating a running run stops its agent; terminating a deferred run cancels its scheduled retry. Both settle as a failed run with the user-termination reason, and a terminated deferred run cannot be automatically resumed.
 - A `web/` scaffold (Vite + React, TanStack Router/Query, a tRPC client, Tailwind and the `ai/DESIGN_SYSTEM.md` tokens, SWARM-81) is merged; the first real screen (projects list + create dialog, SWARM-82) is implemented.
 - The `credentials` tRPC sub-router (list/set/delete, SWARM-79) is implemented under `projectsRouter`, exposing `credentialsRepository` database primitives over the dashboard API.
 - Still backlog: credentials token verification (SWARM-80), credentials dashboard UI (part of SWARM-85), and the remaining per-project settings screens (SWARM-83–87).

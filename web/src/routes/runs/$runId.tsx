@@ -1,13 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { AlertTriangle, ChevronDown, ExternalLink, Info, RefreshCw, Terminal } from 'lucide-react';
+import {
+	AlertTriangle,
+	ChevronDown,
+	ExternalLink,
+	Info,
+	Loader2,
+	OctagonX,
+	RefreshCw,
+	Terminal,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { type LiveOutputEvent, LiveOutputViewer } from '@/components/runs/live-output-viewer.js';
 import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
+import { Modal, ModalFooter } from '@/components/ui/modal.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import { canRetryRun, retryButtonLabel } from '@/lib/run-retry.js';
+import {
+	canTerminateRun,
+	terminateButtonLabel,
+	terminateConfirmMessage,
+} from '@/lib/run-terminate.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { AgentUsage, RunRow } from '@/types/runs.js';
@@ -195,6 +210,77 @@ function RetryNowButton({ run }: { run: RunRow }) {
 	);
 }
 
+/**
+ * "Terminate" action (issue #166) for a running or deferred run: a click opens a
+ * confirmation modal (an intentional stop that can't be undone), and confirming
+ * fires the `runs.terminate` mutation. The button carries its own pending state
+ * so a double-click can't fire twice; the mutation is idempotent server-side.
+ */
+function TerminateRunButton({ run }: { run: RunRow }) {
+	const queryClient = useQueryClient();
+	const [confirmOpen, setConfirmOpen] = useState(false);
+	const mutation = useMutation({
+		mutationFn: () => trpcClient.runs.terminate.mutate({ runId: run.id }),
+		onSuccess: () => {
+			setConfirmOpen(false);
+			queryClient.invalidateQueries({ queryKey: trpc.runs.getById.queryKey({ id: run.id }) });
+			queryClient.invalidateQueries({ queryKey: trpc.runs.list.queryKey() });
+		},
+	});
+
+	return (
+		<div className="mt-3">
+			<button
+				type="button"
+				onClick={() => setConfirmOpen(true)}
+				disabled={mutation.isPending}
+				className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-red-200 bg-red-950/40 border border-red-900/50 rounded-md hover:bg-red-900/40 focus:outline-none focus:ring-1 focus:ring-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+			>
+				<OctagonX className={`h-4 w-4 ${mutation.isPending ? 'animate-pulse' : ''}`} />
+				{terminateButtonLabel(mutation.isPending)}
+			</button>
+
+			<Modal
+				open={confirmOpen}
+				onClose={() => {
+					if (!mutation.isPending) setConfirmOpen(false);
+				}}
+				title="Terminate run?"
+			>
+				<p className="text-sm text-zinc-300">{terminateConfirmMessage(run.status)}</p>
+				{mutation.isError && (
+					<div className="mt-3 p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+						{mutation.error.message}
+					</div>
+				)}
+				<ModalFooter
+					primary={
+						<button
+							type="button"
+							onClick={() => mutation.mutate()}
+							disabled={mutation.isPending}
+							className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-white bg-red-600 rounded hover:bg-red-500 focus:outline-none focus:ring-1 focus:ring-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+						>
+							{mutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+							{terminateButtonLabel(mutation.isPending)}
+						</button>
+					}
+					secondary={
+						<button
+							type="button"
+							onClick={() => setConfirmOpen(false)}
+							disabled={mutation.isPending}
+							className="px-3 py-1.5 text-xs font-medium text-zinc-300 hover:text-zinc-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+						>
+							Cancel
+						</button>
+					}
+				/>
+			</Modal>
+		</div>
+	);
+}
+
 interface RunDetailHeaderProps {
 	run: RunRow;
 }
@@ -218,8 +304,25 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 					</h1>
 					<p className="text-xs text-zinc-500 mt-1 font-mono">{run.id}</p>
 				</div>
-				<RunStatusBadge status={run.status as RunStatus} className="text-sm px-3 py-1" />
+				<RunStatusBadge
+					status={run.status as RunStatus}
+					timedOut={run.timedOut}
+					className="text-sm px-3 py-1"
+				/>
 			</div>
+
+			{run.status === 'running' && (
+				<div className="p-4 bg-violet-950/20 border border-violet-900/30 rounded flex items-start gap-3">
+					<Loader2 className="h-5 w-5 text-violet-400 shrink-0 mt-0.5 animate-spin" />
+					<div>
+						<h3 className="text-xs font-semibold text-violet-200">Running</h3>
+						<p className="text-xs text-violet-200/70 mt-1">
+							This run is in progress. Terminating it stops the agent and frees its project slot.
+						</p>
+						{canTerminateRun(run.status) && <TerminateRunButton run={run} />}
+					</div>
+				</div>
+			)}
 
 			{run.status === 'deferred' && run.nextRetryAt && (
 				<div className="p-4 bg-amber-950/20 border border-amber-900/30 rounded flex items-start gap-3">
@@ -239,7 +342,10 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 						<p className="text-xs text-amber-200/70 mt-1 font-mono">
 							UTC: {new Date(run.nextRetryAt).toISOString()}
 						</p>
-						{canRetryRun(run.status) && <RetryNowButton run={run} />}
+						<div className="flex flex-wrap items-center gap-3">
+							{canRetryRun(run.status) && <RetryNowButton run={run} />}
+							{canTerminateRun(run.status) && <TerminateRunButton run={run} />}
+						</div>
 					</div>
 				</div>
 			)}
@@ -248,7 +354,9 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 				<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
 					<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
 					<div>
-						<h3 className="text-xs font-semibold text-red-200">Run Failure Error</h3>
+						<h3 className="text-xs font-semibold text-red-200">
+							{run.timedOut ? 'Run Timed Out' : 'Run Failure Error'}
+						</h3>
 						<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
 							{run.error}
 						</p>
@@ -406,7 +514,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					<div>
 						<span className="block text-xs font-medium text-zinc-400">Status</span>
 						<span className="mt-1 block">
-							<RunStatusBadge status={run.status as RunStatus} />
+							<RunStatusBadge status={run.status as RunStatus} timedOut={run.timedOut} />
 						</span>
 					</div>
 

@@ -206,25 +206,62 @@ export async function promoteRetryForRun(
 	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
 	const matches = (job: { data?: { runId?: string } }) => job.data?.runId === runId;
 
-	const pendingDelayed = delayed.find(matches);
-	if (pendingDelayed) {
-		// `getDelayed()`'s element type distributes the SwarmJob union into
-		// `Job<github> | Job<github-projects>`, whose `updateData` collapses to an
-		// uncallable never-parameter; re-view it as the non-distributed
-		// `Job<SwarmJob>` so the (union-typed) data round-trips through updateData.
-		const job = pendingDelayed as Job<SwarmJob>;
-		// Reset the attempt counter in place (a spread would widen the discriminated
-		// union past itself), then persist the same object.
+	// Apply the manual retry's overrides onto a pending job's data in place, then
+	// persist. `getDelayed()`/`getWaiting()`'s element type distributes the SwarmJob
+	// union into `Job<github> | Job<github-projects>`, whose `updateData` collapses
+	// to an uncallable never-parameter; re-view it as the non-distributed
+	// `Job<SwarmJob>` so the (union-typed) data round-trips through updateData. The
+	// attempt counter is reset in place (a spread would widen the discriminated
+	// union past itself) so the manual retry bypasses MAX_RATE_LIMIT_RETRIES.
+	const applyOverrides = async (pending: (typeof delayed)[number]): Promise<void> => {
+		const job = pending as Job<SwarmJob>;
 		job.data.rateLimitRetryAttempt = 0;
 		if (cli) job.data.cliOverride = cli;
 		if (model) job.data.modelOverride = model;
 		await job.updateData(job.data);
-		await job.promote();
+	};
+
+	const pendingDelayed = delayed.find(matches);
+	if (pendingDelayed) {
+		await applyOverrides(pendingDelayed);
+		await (pendingDelayed as Job<SwarmJob>).promote();
 		return true;
 	}
-	// Already waiting → it will run imminently on its own; treat as promoted so
-	// the caller reports success rather than a spurious "nothing to retry".
-	return waiting.some(matches);
+
+	// Already waiting (its delay elapsed) → it will run imminently on its own, so
+	// there is nothing to promote; but it must still pick up the manual retry's
+	// cli/model overrides, or the run relaunches on the *original* engine — the
+	// confirmed regression where a `codex`/`gpt-5.6-terra` retry re-ran on
+	// `antigravity` (issue #165). Update its data in place before it starts.
+	const pendingWaiting = waiting.find(matches);
+	if (pendingWaiting) {
+		await applyOverrides(pendingWaiting);
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Remove a deferred run's pending BullMQ retry job(s) — the queue half of the
+ * dashboard's "Terminate" action for a `deferred` run (issue #166). A deferred
+ * run has exactly one delayed retry job carrying its `runId`; removing it before
+ * the run row is flipped to `failed` guarantees no automatic pickup resurrects a
+ * run the user just terminated (leaving neither an orphaned job nor a false
+ * `deferred` row).
+ *
+ * Only *pending* jobs (delayed/waiting) are removable here — a job BullMQ already
+ * moved to `active` (a worker is mid-processing it) isn't in these sets and isn't
+ * removed; that pickup race is handled instead by the worker honouring the
+ * durable cancellation flag (`src/queue/cancellation.ts`). Matches on the same
+ * `data.runId` as {@link promoteRetryForRun}. Returns how many jobs were removed.
+ */
+export async function removePendingRetryForRun(runId: string): Promise<number> {
+	const q = getQueue();
+	const [delayed, waiting] = await Promise.all([q.getDelayed(), q.getWaiting()]);
+	const matches = (job: { data?: { runId?: string } }) => job.data?.runId === runId;
+	const pending = [...delayed, ...waiting].filter(matches);
+	await Promise.all(pending.map((job) => job.remove()));
+	return pending.length;
 }
 
 /**

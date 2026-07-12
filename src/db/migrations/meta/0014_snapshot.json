@@ -1,6 +1,6 @@
 {
-  "id": "6c28d999-4ed2-4f78-b746-2fbb813c6285",
-  "prevId": "288a3699-2b4d-4eba-896f-6dd36fb3ee5d",
+  "id": "101562ff-99d2-42b2-9aa5-13e41bf9a452",
+  "prevId": "6c28d999-4ed2-4f78-b746-2fbb813c6285",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -281,6 +281,86 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.run_output_events": {
+      "name": "run_output_events",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "bigserial",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "stream": {
+          "name": "stream",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "emitted_at": {
+          "name": "emitted_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_run_output_events_cursor": {
+          "name": "idx_run_output_events_cursor",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "run_output_events_run_id_runs_id_fk": {
+          "name": "run_output_events_run_id_runs_id_fk",
+          "tableFrom": "run_output_events",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.runs": {
       "name": "runs",
       "schema": "",
@@ -426,6 +506,20 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
+        },
+        "output_bytes": {
+          "name": "output_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "output_truncated": {
+          "name": "output_truncated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {

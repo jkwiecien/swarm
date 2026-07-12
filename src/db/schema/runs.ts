@@ -44,6 +44,11 @@ export const runs = pgTable(
 		nextRetryAt: timestamp('next_retry_at'),
 		durationMs: integer('duration_ms'),
 		/**
+		 * Stored agent timeout (issue #165 review), capture the effective timeout
+		 * in milliseconds for this attempt to accurately reconcile stale runs.
+		 */
+		timeoutMs: integer('timeout_ms'),
+		/**
 		 * Per-run token usage (issue #138), reported by the agent CLI where it
 		 * exposes one — nullable: unsupported CLIs (`antigravity`/`codex`, until a
 		 * follow-up task) and every pre-existing run have none.

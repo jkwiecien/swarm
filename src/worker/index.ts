@@ -13,17 +13,27 @@ import '../integrations/entrypoint.js';
 import { Worker } from 'bullmq';
 import { runMigrations } from '../db/migrate.js';
 import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
-import { failOrphanedRunningRuns } from '../db/repositories/runsRepository.js';
+import {
+	failOrphanedRunningRuns,
+	failStaleRunningRuns,
+} from '../db/repositories/runsRepository.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
-import { QUEUE_NAME, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueDelayedRetry } from '../queue/producer.js';
+import { closeRunCancellationRedis, subscribeToRunCancellations } from '../queue/cancellation.js';
+import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
-import { type JobOutcome, processJob, reportInterruptedJobToBoard } from './consumer.js';
+import {
+	type JobOutcome,
+	processJob,
+	reportInterruptedJobToBoard,
+	resolveAgentTimeoutMs,
+} from './consumer.js';
+import { reenqueueDeferred } from './deferred-retry.js';
 import { resetProjectSlot } from './project-concurrency.js';
+import { abortRun } from './run-cancellation.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -71,6 +81,34 @@ if (!Number.isInteger(sweepIntervalMs) || sweepIntervalMs < 1) {
 		`SWARM_WORKTREE_SWEEP_INTERVAL_MS must be a positive integer, got '${rawSweepInterval}'`,
 	);
 }
+
+// The default wall-clock timeout every agent run is bounded by (issue #165),
+// resolved here too so the stale-run reconciliation below reaps a `running` row
+// only once it has outlived any run that could still legitimately be behind it.
+// Reading it at startup also validates `SWARM_AGENT_TIMEOUT_MS` (throws on a bad
+// value) alongside the other worker knobs, rather than only when the first job
+// runs.
+const agentTimeoutMs = resolveAgentTimeoutMs();
+
+// How often the worker sweeps for stale `running` rows (a phase whose process
+// died while the worker kept serving jobs — its finalize never landed). Cheap
+// (one bounded UPDATE), so it can run far more often than the hourly worktree
+// sweep; default every 5 min.
+const rawStaleRunSweepInterval = optionalEnv(
+	'SWARM_STALE_RUN_SWEEP_INTERVAL_MS',
+	String(5 * 60 * 1000),
+);
+const staleRunSweepIntervalMs = Number(rawStaleRunSweepInterval);
+if (!Number.isInteger(staleRunSweepIntervalMs) || staleRunSweepIntervalMs < 1) {
+	throw new Error(
+		`SWARM_STALE_RUN_SWEEP_INTERVAL_MS must be a positive integer, got '${rawStaleRunSweepInterval}'`,
+	);
+}
+
+// Grace added on top of the largest configured timeout before a `running` row is
+// judged stale: the harness's SIGTERM→SIGKILL grace plus headroom for a slow
+// finalize write, so an in-flight run that is merely finishing up is never reaped.
+const STALE_RUN_MARGIN_MS = 10 * 60 * 1000;
 
 const registry = createTriggerRegistry();
 registerBuiltInTriggers(registry);
@@ -163,47 +201,6 @@ worker.on('completed', (job, outcome: JobOutcome) => {
 	}
 });
 
-/**
- * Re-enqueue a deferred job (rate-limited or worker-aborted) with its retry
- * counter bumped, so the consumer can cap the loop. `data` is re-validated (it
- * round-trips through Redis) before the counter is incremented.
- */
-async function reenqueueDeferred(
-	jobId: string | undefined,
-	data: unknown,
-	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
-): Promise<void> {
-	try {
-		const parsed = SwarmJobSchema.parse(data);
-		const next: SwarmJob = {
-			...parsed,
-			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
-			// Carry the originating run row forward (issue #136) so the retry resets
-			// that same row instead of inserting a second one. `outcome.runId` wins
-			// over any stale value on `parsed` (they match on a retry; only the
-			// outcome knows the row a fresh webhook's first run just created).
-			...(outcome.runId ? { runId: outcome.runId } : {}),
-			...(parsed.type === 'github-projects' &&
-			(outcome.phase === 'planning' || outcome.phase === 'implementation')
-				? { resumePmPhase: outcome.phase }
-				: {}),
-		};
-		await enqueueDelayedRetry(next, outcome.retryDelayMs);
-		logger.debug('Rate-limited phase re-enqueued for retry', {
-			jobId,
-			phase: outcome.phase,
-			taskId: outcome.taskId,
-			retryDelayMs: outcome.retryDelayMs,
-			attempt: next.rateLimitRetryAttempt,
-		});
-	} catch (err) {
-		logger.error('Failed to re-enqueue rate-limited phase', {
-			jobId,
-			taskId: outcome.taskId,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
-}
 worker.on('failed', (job, err) => {
 	logger.error('Job failed', { jobId: job?.id, name: job?.name, error: err.message });
 	// A job reaches `failed` only outside `processJob` (which turns phase failures
@@ -221,6 +218,17 @@ worker.on('failed', (job, err) => {
 // unhandled 'error' event would crash the process.
 worker.on('error', (err) => {
 	logger.error('Worker queue error', { error: err.message });
+});
+
+// Subscribe to user-initiated run terminations from the dashboard (issue #166):
+// when a cancellation for a run running in this worker arrives, abort its agent
+// via the per-run controller registered in `processJob`. A notification for a run
+// not currently executing here is a no-op — the durable set (checked at run
+// start) covers that case.
+const cancellationSubscription = subscribeToRunCancellations((runId) => {
+	if (abortRun(runId)) {
+		logger.info('Aborting run — user requested termination', { runId });
+	}
 });
 
 logger.debug('swarm-worker started', { queue: QUEUE_NAME, concurrency });
@@ -254,6 +262,37 @@ const sweepInterval = setInterval(() => {
 }, sweepIntervalMs);
 sweepInterval.unref();
 
+/**
+ * Reconcile stale `running` rows while the worker keeps serving jobs (issue
+ * #165) — the running-worker safety net the startup-only `failOrphanedRunningRuns`
+ * can't provide. A row still `running` past `max(configured timeout) + grace` is
+ * a phase whose process died without finalizing (the exact `dd0ad860-…` symptom:
+ * the agent exited but the row stayed `running`), since every live agent is
+ * killed at its own timeout — so it is safe to fail without touching a genuinely
+ * in-flight run. Best-effort: a hiccup must not stop the worker serving jobs.
+ */
+async function runStaleRunSweep(): Promise<void> {
+	try {
+		const reconciled = await failStaleRunningRuns(
+			agentTimeoutMs,
+			STALE_RUN_MARGIN_MS,
+			'Run exceeded its wall-clock timeout without finalizing — reconciled as stale',
+		);
+		if (reconciled > 0) {
+			logger.warn('Reconciled stale running runs while serving jobs', {
+				count: reconciled,
+			});
+		}
+	} catch (err) {
+		logger.error('Failed to reconcile stale running runs', { error: describeError(err) });
+	}
+}
+
+const staleRunSweepInterval = setInterval(() => {
+	void runStaleRunSweep();
+}, staleRunSweepIntervalMs);
+staleRunSweepInterval.unref();
+
 // On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
 // the in-flight agent run (it completes as `phase-failed`; each phase runs its
 // own worktree cleanup in a `finally`), then let worker.close() wait for the
@@ -262,7 +301,10 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 	process.on(signal, () => {
 		logger.debug(`Received ${signal} — aborting in-flight agent run and closing worker`);
 		clearInterval(sweepInterval);
+		clearInterval(staleRunSweepInterval);
 		shutdown.abort();
+		void cancellationSubscription.close();
+		void closeRunCancellationRedis();
 		void worker.close().then(
 			() => process.exit(0),
 			(err) => {

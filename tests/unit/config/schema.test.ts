@@ -158,6 +158,12 @@ describe('ProjectConfigSchema', () => {
 		});
 	});
 
+	it('accepts an optional respond-to-review autoMerge override', () => {
+		expect(PipelineConfigSchema.parse({ respondToReview: { autoMerge: true } })).toMatchObject({
+			respondToReview: { autoMerge: true },
+		});
+	});
+
 	it('omits worktreeRetention entirely by default', () => {
 		const project = createMockProjectConfig();
 		expect(project.worktreeRetention).toBeUndefined();

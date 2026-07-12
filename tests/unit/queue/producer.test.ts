@@ -328,12 +328,34 @@ describe('promoteRetryForRun', () => {
 
 	it('returns true without promoting when the retry is already waiting (delay elapsed)', async () => {
 		// A retry whose delay already elapsed sits in `waiting`, about to run on its
-		// own — treated as already-retrying, not absent, so no double-fire.
+		// own — treated as already-retrying, not absent, so no double-fire (no
+		// `promote()`), but its attempt counter is still reset in place.
+		const updateData = vi.fn().mockResolvedValue(undefined);
 		getDelayed.mockResolvedValue([]);
-		getWaiting.mockResolvedValue([{ data: { runId: 'run-7' } }]);
+		getWaiting.mockResolvedValue([
+			{ data: { runId: 'run-7', rateLimitRetryAttempt: 3 }, updateData },
+		]);
 		const { promoteRetryForRun } = await import('@/queue/producer.js');
 
 		expect(await promoteRetryForRun('run-7')).toBe(true);
+		expect(updateData).toHaveBeenCalledOnce();
+	});
+
+	it('applies cli/model overrides onto an already-waiting retry (issue #165 regression)', async () => {
+		// The confirmed bug: a manual retry with overrides hit a retry already in
+		// `waiting`, which previously ran on the *original* engine because the
+		// overrides were dropped. They must be written onto its data instead.
+		const updateData = vi.fn().mockResolvedValue(undefined);
+		const data = { runId: 'run-9', rateLimitRetryAttempt: 2 } as Record<string, unknown>;
+		getDelayed.mockResolvedValue([]);
+		getWaiting.mockResolvedValue([{ data, updateData }]);
+		const { promoteRetryForRun } = await import('@/queue/producer.js');
+
+		expect(await promoteRetryForRun('run-9', 'codex', 'gpt-5.6-terra')).toBe(true);
+		expect(data.cliOverride).toBe('codex');
+		expect(data.modelOverride).toBe('gpt-5.6-terra');
+		expect(data.rateLimitRetryAttempt).toBe(0);
+		expect(updateData).toHaveBeenCalledWith(data);
 	});
 
 	it('returns false when no pending job carries the runId', async () => {
@@ -342,6 +364,35 @@ describe('promoteRetryForRun', () => {
 		const { promoteRetryForRun } = await import('@/queue/producer.js');
 
 		expect(await promoteRetryForRun('run-42')).toBe(false);
+	});
+});
+
+describe('removePendingRetryForRun', () => {
+	it('removes every pending delayed/waiting job carrying the runId and returns the count', async () => {
+		const removeMatch = vi.fn().mockResolvedValue(undefined);
+		const removeWaiting = vi.fn().mockResolvedValue(undefined);
+		const removeOther = vi.fn().mockResolvedValue(undefined);
+		getDelayed.mockResolvedValue([
+			{ data: { runId: 'run-9' }, remove: removeMatch },
+			{ data: { runId: 'someone-else' }, remove: removeOther },
+		]);
+		getWaiting.mockResolvedValue([{ data: { runId: 'run-9' }, remove: removeWaiting }]);
+		const { removePendingRetryForRun } = await import('@/queue/producer.js');
+
+		const removed = await removePendingRetryForRun('run-9');
+
+		expect(removed).toBe(2);
+		expect(removeMatch).toHaveBeenCalledOnce();
+		expect(removeWaiting).toHaveBeenCalledOnce();
+		expect(removeOther).not.toHaveBeenCalled();
+	});
+
+	it('returns 0 and removes nothing when no pending job carries the runId', async () => {
+		getDelayed.mockResolvedValue([{ data: { runId: 'other' }, remove: vi.fn() }]);
+		getWaiting.mockResolvedValue([]);
+		const { removePendingRetryForRun } = await import('@/queue/producer.js');
+
+		expect(await removePendingRetryForRun('run-9')).toBe(0);
 	});
 });
 

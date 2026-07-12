@@ -13,6 +13,7 @@ const listWorkflowRunsForRepo = vi.fn();
 const listJobsForWorkflowRun = vi.fn();
 const pullsGet = vi.fn();
 const paginate = vi.fn();
+const graphql = vi.fn();
 
 vi.mock('@octokit/rest', () => ({
 	Octokit: class {
@@ -21,6 +22,7 @@ vi.mock('@octokit/rest', () => ({
 		actions = { listWorkflowRunsForRepo, listJobsForWorkflowRun };
 		pulls = { get: pullsGet };
 		paginate = paginate;
+		graphql = graphql;
 		constructor(opts: { auth: unknown }) {
 			this.auth = opts.auth;
 			octokitInstances.push(this);
@@ -29,6 +31,7 @@ vi.mock('@octokit/rest', () => ({
 }));
 
 import {
+	enablePullRequestAutoMerge,
 	getCheckSuiteStatus,
 	getGitHubUserForToken,
 	getPullRequestAuthorLogin,
@@ -44,6 +47,7 @@ describe('github client', () => {
 		listJobsForWorkflowRun.mockReset();
 		pullsGet.mockReset();
 		paginate.mockReset();
+		graphql.mockReset();
 	});
 
 	describe('getScopedClient', () => {
@@ -167,6 +171,31 @@ describe('github client', () => {
 			await expect(
 				withGitHubToken('tok', () => getPullRequestAuthorLogin('jkwiecien', 'swarm', 9)),
 			).rejects.toThrow(/502/);
+		});
+	});
+
+	describe('enablePullRequestAutoMerge', () => {
+		it('enables GitHub auto-merge without waiting for asynchronous mergeability', async () => {
+			pullsGet.mockResolvedValue({
+				data: { state: 'open', draft: false, mergeable: null, node_id: 'PR_node_42' },
+			});
+			graphql.mockResolvedValue({});
+
+			await expect(
+				withGitHubToken('tok', () => enablePullRequestAutoMerge('jkwiecien', 'swarm', 42)),
+			).resolves.toEqual({ enabled: true, message: 'GitHub auto-merge enabled' });
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('enablePullRequestAutoMerge'), {
+				pullRequestId: 'PR_node_42',
+			});
+		});
+
+		it('does not request auto-merge for a draft pull request', async () => {
+			pullsGet.mockResolvedValue({ data: { state: 'open', draft: true, node_id: 'PR_node_42' } });
+
+			await expect(
+				withGitHubToken('tok', () => enablePullRequestAutoMerge('jkwiecien', 'swarm', 42)),
+			).resolves.toEqual({ enabled: false, message: 'pull request is still a draft' });
+			expect(graphql).not.toHaveBeenCalled();
 		});
 	});
 });
