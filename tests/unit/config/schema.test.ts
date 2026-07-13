@@ -98,11 +98,11 @@ describe('ProjectConfigSchema', () => {
 			projects: [
 				{
 					...base,
-					agents: { delegation: { enabled: true, childModels: { codex: 'gpt-5.4-mini' } } },
+					agents: { delegation: { enabled: true, lightModels: { codex: 'gpt-5.4-mini' } } },
 				},
 			],
 		}).projects[0];
-		expect(project.agents?.delegation?.childModels).toEqual({ codex: 'gpt-5.4-mini' });
+		expect(project.agents?.delegation?.lightModels).toEqual({ codex: 'gpt-5.4-mini' });
 	});
 
 	it('rejects a delegation threshold that would route trivial work', () => {

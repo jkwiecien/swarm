@@ -2,14 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
 	configureDelegationRun,
-	DEFAULT_CHILD_MODEL,
+	DEFAULT_LIGHT_MODEL,
 	DELEGATION_CHILD_CAPABLE,
 	DELEGATION_ENV,
 	DelegationContractSchema,
 	delegationEnabled,
 	delegationGuardLines,
 	hasUnreviewedCompletedDelegation,
-	resolveChildModel,
+	resolveLightModel,
 } from '@/delegation/native.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 
@@ -41,9 +41,9 @@ describe('curated delegation policy', () => {
 
 	it('resolves the per-CLI child model, falling back to the coded default', () => {
 		const policy = { enabled: true, minimumSemanticOperations: 3, phases: {} };
-		expect(resolveChildModel(policy, 'claude')).toBe('haiku');
-		expect(resolveChildModel(policy, 'codex')).toBe(DEFAULT_CHILD_MODEL.codex);
-		expect(resolveChildModel({ ...policy, childModels: { codex: 'gpt-5.5' } }, 'codex')).toBe(
+		expect(resolveLightModel(policy, 'claude')).toBe('haiku');
+		expect(resolveLightModel(policy, 'codex')).toBe(DEFAULT_LIGHT_MODEL.codex);
+		expect(resolveLightModel({ ...policy, lightModels: { codex: 'gpt-5.5' } }, 'codex')).toBe(
 			'gpt-5.5',
 		);
 	});
@@ -57,7 +57,7 @@ describe('curated delegation policy', () => {
 		expect(configured.env).toMatchObject({
 			GH_TOKEN: 'token',
 			[DELEGATION_ENV.childCli]: 'codex',
-			[DELEGATION_ENV.childModel]: DEFAULT_CHILD_MODEL.codex,
+			[DELEGATION_ENV.lightModel]: DEFAULT_LIGHT_MODEL.codex,
 			[DELEGATION_ENV.minimumOperations]: '3',
 			[DELEGATION_ENV.parentRunId]: 'run-1',
 			[DELEGATION_ENV.phase]: 'implementation',

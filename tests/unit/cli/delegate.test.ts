@@ -51,7 +51,7 @@ afterEach(() => {
 
 function enableDelegation(): void {
 	process.env[DELEGATION_ENV.childCli] = 'codex';
-	process.env[DELEGATION_ENV.childModel] = 'gpt-5.4-mini';
+	process.env[DELEGATION_ENV.lightModel] = 'gpt-5.4-mini';
 	process.env[DELEGATION_ENV.minimumOperations] = '3';
 	process.env[DELEGATION_ENV.parentRunId] = 'run-1';
 	process.env[DELEGATION_ENV.phase] = 'implementation';

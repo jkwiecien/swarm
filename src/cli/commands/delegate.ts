@@ -46,7 +46,7 @@ export async function run(argv: string[]): Promise<number> {
 	}
 
 	const childCli = process.env[DELEGATION_ENV.childCli];
-	const model = process.env[DELEGATION_ENV.childModel];
+	const model = process.env[DELEGATION_ENV.lightModel];
 	if (!childCli || !model) {
 		out.error('delegation is not enabled for this run (no curated child CLI/model configured)');
 		return 2;

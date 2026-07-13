@@ -220,7 +220,7 @@ The flow: a phase's primary agent writes a validated delegation contract to
 command, `src/cli/commands/delegate.ts` → `src/delegation/orchestrator.ts`), never a CLI subagent.
 SWARM launches a lighter-model child in the same leased worktree:
 
-- **Model pinning** — the child runs on the per-CLI `childModels` tier (Claude→Haiku,
+- **Model pinning** — the child runs on the per-CLI `lightModels` tier (Claude→Haiku,
   Codex→`gpt-5.4-mini` by default), pinned via `--model`.
 - **Tool/scope confinement** — Claude children are restricted to `Read`/`Edit` (no shell, so no
   git/commit/push/nested delegation); Codex children run under the `--sandbox workspace-write` policy

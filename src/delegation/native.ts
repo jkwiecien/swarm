@@ -46,7 +46,7 @@ export const DELEGATION_ENV = {
 	/** Host kill switch: `'false'` disables delegation everywhere, over project config. */
 	killSwitch: 'SWARM_DELEGATION_ENABLED',
 	childCli: 'SWARM_DELEGATION_CHILD_CLI',
-	childModel: 'SWARM_DELEGATION_CHILD_MODEL',
+	lightModel: 'SWARM_DELEGATION_LIGHT_MODEL',
 	minimumOperations: 'SWARM_DELEGATION_MINIMUM_OPERATIONS',
 	parentRunId: 'SWARM_PARENT_RUN_ID',
 	phase: 'SWARM_PIPELINE_PHASE',
@@ -140,21 +140,22 @@ export const DELEGATION_CHILD_CAPABLE: Record<AgentCli, boolean> = {
 };
 
 /**
- * Coded per-CLI child model when a project pins none. A child should be a
- * genuinely cheaper tier than any sensible primary: Claude Haiku, Codex mini.
+ * Coded per-CLI light model — the cheaper tier a delegation child runs on when a
+ * project pins none. Genuinely lighter than any sensible primary: Claude Haiku,
+ * Codex mini. (Overridable per project via `agents.delegation.lightModels`.)
  */
-export const DEFAULT_CHILD_MODEL: Record<AgentCli, string> = {
+export const DEFAULT_LIGHT_MODEL: Record<AgentCli, string> = {
 	claude: 'haiku',
 	codex: 'gpt-5.4-mini',
 	antigravity: '',
 };
 
 /** The lighter model a delegation child runs under for the given phase CLI. */
-export function resolveChildModel(policy: DelegationPolicy, cli: AgentCli): string {
-	// Only child-capable CLIs (claude/codex) can pin a `childModels` entry; a
+export function resolveLightModel(policy: DelegationPolicy, cli: AgentCli): string {
+	// Only child-capable CLIs (claude/codex) can pin a `lightModels` entry; a
 	// non-capable CLI never reaches a live child, so fall straight to the default.
-	const pinned = cli === 'antigravity' ? undefined : policy.childModels?.[cli];
-	return pinned ?? DEFAULT_CHILD_MODEL[cli];
+	const pinned = cli === 'antigravity' ? undefined : policy.lightModels?.[cli];
+	return pinned ?? DEFAULT_LIGHT_MODEL[cli];
 }
 
 export function delegationEnabled(
@@ -191,7 +192,7 @@ export function configureDelegationRun(
 		env: {
 			...parentEnv,
 			[DELEGATION_ENV.childCli]: childCli,
-			[DELEGATION_ENV.childModel]: resolveChildModel(policy, childCli),
+			[DELEGATION_ENV.lightModel]: resolveLightModel(policy, childCli),
 			[DELEGATION_ENV.minimumOperations]: String(policy.minimumSemanticOperations),
 			[DELEGATION_ENV.parentRunId]: context.runId ?? '',
 			[DELEGATION_ENV.phase]: context.phase,

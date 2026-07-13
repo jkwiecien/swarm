@@ -121,10 +121,10 @@ export const DelegationConfigSchema = z
 		/**
 		 * Per-CLI lighter model a curated delegation child runs under (the phase's
 		 * own CLI, pinned down a tier). Omitted CLIs fall back to the coded defaults
-		 * in `src/delegation/native.ts` (`DEFAULT_CHILD_MODEL`): Claude→haiku,
+		 * in `src/delegation/native.ts` (`DEFAULT_LIGHT_MODEL`): Claude→haiku,
 		 * Codex→gpt-5.4-mini. Antigravity cannot host a child (ai/RULES.md §6, #185).
 		 */
-		childModels: z
+		lightModels: z
 			.object({
 				claude: z.string().min(1).optional(),
 				codex: z.string().min(1).optional(),
