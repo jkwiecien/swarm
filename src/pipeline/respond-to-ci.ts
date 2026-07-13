@@ -45,7 +45,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { nativeDelegationEnabled } from '@/delegation/native.js';
+import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -177,13 +177,13 @@ export function buildRespondToCiPrompt(
 		prBranch: string;
 		headSha: string;
 	},
-	nativeDelegation = false,
+	delegationAllowed = false,
 ): string {
 	const { repo, prNumber, prBranch, headSha } = context;
 	return [
 		'You are a senior software engineer whose pull request has failing CI checks.',
 		'',
-		...pipelinePhaseGuard(nativeDelegation),
+		...pipelinePhaseGuard(delegationAllowed),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
@@ -297,7 +297,7 @@ export async function runRespondToCiPhase(
 					args: [
 						buildRespondToCiPrompt(
 							{ repo: project.repo, prNumber, prBranch, headSha },
-							nativeDelegationEnabled(project, 'respond-to-ci', cli),
+							delegationEnabled(project, 'respond-to-ci', cli),
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

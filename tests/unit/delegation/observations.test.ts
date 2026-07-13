@@ -91,4 +91,26 @@ describe('readDelegationObservations', () => {
 			}),
 		]);
 	});
+
+	it('filters by parent run id in preference to session id', () => {
+		const cwd = mkdtempSync(join(tmpdir(), 'swarm-delegation-'));
+		const base = {
+			contractId: 'docs-update',
+			phase: 'implementation',
+			agent: 'swarm-doc-editor',
+			model: 'gpt-5.4-mini',
+			delegationType: 'documentation-edit',
+			allowedPaths: ['README.md'],
+			outcome: 'completed',
+		};
+		writeFileSync(
+			join(cwd, '.swarm-delegation-events.jsonl'),
+			`${JSON.stringify({ ...base, invocationId: 'inv-1', parentRunId: 'run-A' })}\n${JSON.stringify({ ...base, invocationId: 'inv-2', parentRunId: 'run-B' })}\n`,
+		);
+		// A Codex child never knows the parent's post-run session id up front, so the
+		// run id is the durable link the reader trusts first — even when both are given.
+		expect(
+			readDelegationObservations(cwd, { parentRunId: 'run-B', parentSessionId: 'ignored' }),
+		).toEqual([expect.objectContaining({ invocationId: 'inv-2' })]);
+	});
 });

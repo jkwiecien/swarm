@@ -88,10 +88,10 @@ describe('runAgentCli', () => {
 		);
 	});
 
-	it('inserts trusted provider arguments before output/session/print arguments', async () => {
+	it('inserts provider arguments before output/session/print arguments', async () => {
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({
-				providerArgs: ['--agent', 'swarm-phase-coordinator'],
+				providerArgs: ['--provider-flag', 'value'],
 				args: ['implement the thing'],
 			}),
 		);
@@ -100,8 +100,8 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock.mock.calls[0][1]).toEqual([
 			'--dangerously-skip-permissions',
-			'--agent',
-			'swarm-phase-coordinator',
+			'--provider-flag',
+			'value',
 			'--output-format',
 			'json',
 			'-p',
@@ -109,11 +109,10 @@ describe('runAgentCli', () => {
 		]);
 	});
 
-	it('attributes delegation observations only to the current parent invocation', async () => {
+	it('attributes delegation observations to the current parent run', async () => {
 		const cwd = mkdtempSync(join(tmpdir(), 'swarm-agent-cli-'));
 		const base = {
 			contractId: 'docs-update',
-			parentRunId: 'run-1',
 			phase: 'implementation',
 			agent: 'swarm-doc-editor',
 			model: 'haiku',
@@ -123,7 +122,7 @@ describe('runAgentCli', () => {
 		};
 		writeFileSync(
 			join(cwd, '.swarm-delegation-events.jsonl'),
-			`${JSON.stringify({ ...base, invocationId: 'stale:agent-1', parentSessionId: 'stale' })}\n${JSON.stringify({ ...base, invocationId: 'fresh:agent-2', parentSessionId: 'fresh' })}\n`,
+			`${JSON.stringify({ ...base, invocationId: 'inv-1', parentRunId: 'other-run' })}\n${JSON.stringify({ ...base, invocationId: 'inv-2', parentRunId: 'run-1' })}\n`,
 		);
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({
@@ -136,7 +135,7 @@ describe('runAgentCli', () => {
 
 		const result = await promise;
 		expect(result.delegations).toEqual([
-			expect.objectContaining({ invocationId: 'fresh:agent-2', parentSessionId: 'fresh' }),
+			expect.objectContaining({ invocationId: 'inv-2', parentRunId: 'run-1' }),
 		]);
 	});
 

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ProjectConfig } from '../config/schema.js';
-import { nativeDelegationEnabled } from '../delegation/native.js';
+import { delegationEnabled } from '../delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -67,11 +67,11 @@ export function buildResolveConflictsPrompt(
 		RunResolveConflictsPhaseOptions,
 		'project' | 'prNumber' | 'prBranch' | 'headSha' | 'baseBranch' | 'baseSha'
 	>,
-	nativeDelegation = false,
+	delegationAllowed = false,
 ): string {
 	return [
 		'You are the implementer assigned only to SWARM’s Resolve Conflicts phase.',
-		...pipelinePhaseGuard(nativeDelegation),
+		...pipelinePhaseGuard(delegationAllowed),
 		`PR #${input.prNumber} in ${input.project.repo} has confirmed merge conflicts.`,
 		`Its branch is "${input.prBranch}" and the observed head was ${input.headSha}. The current base is "${input.baseBranch}" at ${input.baseSha}.`,
 		'Fetch origin. Before changing anything, verify origin/' +
@@ -143,7 +143,7 @@ export async function runResolveConflictsPhase(
 								baseBranch,
 								baseSha,
 							},
-							nativeDelegationEnabled(project, 'resolve-conflicts', cli),
+							delegationEnabled(project, 'resolve-conflicts', cli),
 						),
 					],
 					maxOutputBytes: 1_000_000,

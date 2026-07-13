@@ -206,22 +206,48 @@ successful task; a two-line README edit should normally stay with the primary ag
 deterministic formatter, while coordinated edits across several documents may justify a
 lighter subagent.
 
-### Implemented Option A boundary
+### Implemented boundary (unified Option B)
 
-SWARM's initial implementation uses project-owned Claude agents named `swarm-phase-coordinator`
-and `swarm-doc-editor`. It is disabled by default per project and phase, with a global environment
-kill switch. The coordinator's native Agent-tool allowlist contains only the documentation child;
-the child is pinned to Haiku, has only Read/Edit, cannot nest agents or invoke skills/commands, and
-an agent-scoped hook validates the structured contract, minimum semantic-operation threshold, and
-every exact documentation path. The hook records child duration/usage where Claude exposes it, and
-the parent run is rejected unless the coordinator records that it inspected and accepted or
-reworked the child result. Run history stores those child observations beside the parent phase.
+SWARM implements **Option B for every child-capable CLI** — one provider-neutral, SWARM-orchestrated
+delegation path rather than a per-CLI native mechanism. The Codex capability spike (#184) established
+that `codex exec` runs a single agent with no `--agent`/subagent mechanism, so native (Option A)
+delegation is impossible there; rather than maintain a second, Claude-only native path beside it,
+Claude was migrated onto the same Option B path. (The spike's findings are pinned by an executable
+test, `tests/unit/delegation/codex-capability.spike.test.ts`, skipped when `codex` isn't installed.)
 
-Option B remains deliberately unimplemented. Promote it only under the reliability, attribution,
-enforcement, retry, parent-continuity, or cross-CLI criteria above; the contract and persisted
-observation shapes are provider-neutral so that promotion does not require redefining delegation.
-The harness capability registry explicitly marks Claude supported and Codex/Antigravity unsupported;
-their provider-specific discovery and adapters are tracked by #184 and #185 respectively.
+The flow: a phase's primary agent writes a validated delegation contract to
+`.swarm-delegation-<id>.contract.json` and runs `swarm delegate <file>` (a deterministic SWARM
+command, `src/cli/commands/delegate.ts` → `src/delegation/orchestrator.ts`), never a CLI subagent.
+SWARM launches a lighter-model child in the same leased worktree:
+
+- **Model pinning** — the child runs on the per-CLI `childModels` tier (Claude→Haiku,
+  Codex→`gpt-5.4-mini` by default), pinned via `--model`.
+- **Tool/scope confinement** — Claude children are restricted to `Read`/`Edit` (no shell, so no
+  git/commit/push/nested delegation); Codex children run under the `--sandbox workspace-write` policy
+  rooted at the worktree with approvals disabled. A recursion guard (`SWARM_DELEGATION_DEPTH`) refuses
+  a child that tries to delegate again.
+- **Path enforcement** — provider-neutral and authoritative: SWARM diffs the worktree before/after
+  the child and rejects (and reverts) any change outside the contract's `allowedPaths`. Contract
+  paths are pre-validated to be documentation files outside protected areas (`.git`, `.claude`).
+- **Usage attribution** — the child's reported usage (Claude JSON / Codex JSONL) is captured and
+  recorded as a provider-neutral observation linked to the parent by run id.
+- **Primary review** — the parent must inspect the returned diff and record an accepted/reworked
+  disposition for every completed child, or the phase fails. Run history stores the child
+  observations beside the parent phase.
+
+It is disabled by default per project and phase, with the global `SWARM_DELEGATION_ENABLED` kill
+switch. Antigravity has no usable tool/sandbox controls and stays unsupported (#185): a non-capable
+CLI fails closed to the no-subagent prompt guard.
+
+**Guarantees and limits.** Model pinning, usage attribution, and path scope are enforced for both
+Claude and Codex. Tool restriction is strongest on Claude (an allowlist that removes shell entirely);
+on Codex the OS sandbox confines writes to the worktree but the child can still run commands within
+it, so path scope is enforced primarily by SWARM's post-hoc diff check (safe rejection) rather than a
+per-file OS control. Delegation happens inline within the single primary run — SWARM does not (yet)
+run the child across an independent run boundary with its own retry/resume lifecycle; that
+between-runs variant remains a future option to promote only under the reliability/attribution/retry
+criteria above, and the contract and observation shapes are provider-neutral so promoting it needs no
+redefinition. Deterministic delivery (§4) stays outside delegation for every CLI.
 
 ## 7. Add phase-specific effort and spending controls
 
