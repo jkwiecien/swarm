@@ -16,6 +16,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
+	DEFAULT_CHILD_TIMEOUT_MS,
 	DELEGATION_ENV,
 	DELEGATION_EVENTS_FILENAME,
 	DelegationContractSchema,
@@ -56,12 +57,25 @@ export async function run(argv: string[]): Promise<number> {
 	const minimumSemanticOperations = Number.isInteger(rawMinimum)
 		? rawMinimum
 		: DEFAULT_MINIMUM_OPERATIONS;
+	const rawTimeout = Number.parseInt(process.env[DELEGATION_ENV.childTimeoutMs] ?? '', 10);
+	const timeoutMs =
+		Number.isInteger(rawTimeout) && rawTimeout > 0 ? rawTimeout : DEFAULT_CHILD_TIMEOUT_MS;
 
 	const cwd = process.cwd();
-	const contract = DelegationContractSchema.parse(
-		JSON.parse(readFileSync(resolve(cwd, manifestPath), 'utf8')),
-	);
-	validateContractPaths(contract);
+
+	// A malformed/missing contract is a delegation rejection the primary must
+	// handle, not a CLI crash — surface it as exit 2 with the reason, uniform with
+	// runDelegatedChild's own rejection exit code.
+	let contract: ReturnType<typeof DelegationContractSchema.parse>;
+	try {
+		contract = DelegationContractSchema.parse(
+			JSON.parse(readFileSync(resolve(cwd, manifestPath), 'utf8')),
+		);
+		validateContractPaths(contract);
+	} catch (err) {
+		out.error(`invalid delegation contract: ${err instanceof Error ? err.message : String(err)}`);
+		return 2;
+	}
 
 	const outcome = await runDelegatedChild({
 		contract,
@@ -70,8 +84,8 @@ export async function run(argv: string[]): Promise<number> {
 		model,
 		phase: process.env[DELEGATION_ENV.phase] ?? 'unknown',
 		minimumSemanticOperations,
+		timeoutMs,
 		parentRunId: process.env[DELEGATION_ENV.parentRunId] || undefined,
-		parentSessionId: process.env[DELEGATION_ENV.parentSessionId] || undefined,
 	});
 
 	appendFileSync(

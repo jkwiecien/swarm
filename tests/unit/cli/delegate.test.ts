@@ -125,9 +125,9 @@ describe('swarm delegate', () => {
 		});
 	});
 
-	it('rejects an invalid contract before launching a child', async () => {
+	it('rejects an invalid contract with exit 2 before launching a child', async () => {
 		enableDelegation();
-		await expect(run([writeManifest({ ...validContract, allowedPaths: [] })])).rejects.toThrow();
+		expect(await run([writeManifest({ ...validContract, allowedPaths: [] })])).toBe(2);
 		expect(runDelegatedChild).not.toHaveBeenCalled();
 	});
 });

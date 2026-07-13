@@ -17,9 +17,9 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, normalize, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, normalize, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 import type { AgentCli } from '@/harness/agent-cli.js';
@@ -27,7 +27,6 @@ import { parseAgentOutput } from '@/harness/usage.js';
 import { logger } from '@/lib/logger.js';
 import {
 	CURATED_DOCUMENTATION_AGENT,
-	DELEGATION_CHILD_MAX_TURNS,
 	DELEGATION_ENV,
 	DELEGATION_REVIEW_FILENAME,
 	type DelegationContract,
@@ -60,6 +59,18 @@ export type ChildRunner = (
 /** Run a git subcommand in the worktree, resolving with its stdout. Injectable. */
 export type GitRunner = (args: string[], cwd: string) => Promise<string>;
 
+/**
+ * A before-run snapshot of the working tree: every currently-changed path mapped
+ * to its content (`null` when the path is absent). A before/after pair attributes
+ * exactly what the child touched, and the `before` content is what a rejected
+ * out-of-scope path is restored to — so the primary's own uncommitted edits are
+ * never clobbered.
+ */
+export type WorktreeSnapshot = Map<string, string | null>;
+
+/** Restore an out-of-scope path to its pre-child content (`null` → delete). Injectable. */
+export type FileRestorer = (cwd: string, relPath: string, content: string | null) => void;
+
 export interface RunDelegatedChildParams {
 	contract: DelegationContract;
 	cwd: string;
@@ -69,17 +80,19 @@ export interface RunDelegatedChildParams {
 	phase: string;
 	minimumSemanticOperations: number;
 	parentRunId?: string;
-	parentSessionId?: string;
+	/** Wall-clock bound (ms) for the child run. */
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	runChild?: ChildRunner;
 	git?: GitRunner;
 	/**
-	 * Snapshot the content hash of every changed path (default: git + fs). A
-	 * before/after pair attributes exactly what the child touched. Injectable so
-	 * the orchestration logic is unit-testable without a real worktree.
+	 * Snapshot the working tree (default: git + fs). A before/after pair attributes
+	 * exactly what the child touched. Injectable so the orchestration logic is
+	 * unit-testable without a real worktree.
 	 */
-	snapshot?: (cwd: string) => Promise<Map<string, string>>;
+	snapshot?: (cwd: string) => Promise<WorktreeSnapshot>;
+	/** Restore a reverted path's content (default: fs). Injectable for tests. */
+	restoreFile?: FileRestorer;
 }
 
 export interface DelegationOutcome {
@@ -227,7 +240,12 @@ export function buildChildLaunch(
 				'-p',
 				'--output-format',
 				'json',
-				'--dangerously-skip-permissions',
+				// `acceptEdits` auto-approves Read/Edit without a prompt (stdin is closed)
+				// while — crucially — NOT bypassing the tool allowlist. `--dangerously-skip-permissions`
+				// (== bypassPermissions) would re-enable every tool including Bash, defeating
+				// the allowlist; it must not be used for a confined child.
+				'--permission-mode',
+				'acceptEdits',
 				// Variadic list; the following `--model` flag terminates it before the
 				// positional prompt, so the prompt is never swallowed as a tool name.
 				'--allowedTools',
@@ -278,56 +296,82 @@ function porcelainPaths(status: string): string[] {
 	return paths;
 }
 
-function hashPath(cwd: string, rel: string): string {
+/** Read a path's content, or `null` when it is absent/unreadable. */
+function readPathContent(cwd: string, rel: string): string | null {
 	const abs = resolve(cwd, rel);
-	if (!existsSync(abs)) return '';
+	if (!existsSync(abs)) return null;
 	try {
-		return createHash('sha1').update(readFileSync(abs)).digest('hex');
+		return readFileSync(abs, 'utf8');
 	} catch {
-		return '';
+		return null;
 	}
 }
 
 /**
- * Snapshot the content hash of every currently-changed path, so a before/after
+ * Snapshot the content of every currently-changed path, so a before/after
  * comparison attributes exactly the files the child modified — even one the
- * primary had already edited (a plain path-set diff would miss a re-edit).
+ * primary had already edited (a plain path-set diff would miss a re-edit) — and
+ * so a rejected out-of-scope path can be restored to its pre-child content.
  */
-async function snapshotChangedPaths(git: GitRunner, cwd: string): Promise<Map<string, string>> {
+async function snapshotChangedPaths(git: GitRunner, cwd: string): Promise<WorktreeSnapshot> {
 	const status = await git(['status', '--porcelain'], cwd);
-	const snapshot = new Map<string, string>();
-	for (const rel of porcelainPaths(status)) snapshot.set(rel, hashPath(cwd, rel));
+	const snapshot: WorktreeSnapshot = new Map();
+	for (const rel of porcelainPaths(status)) snapshot.set(rel, readPathContent(cwd, rel));
 	return snapshot;
 }
 
 /** Paths whose content differs between two snapshots (added, changed, or removed). */
-function touchedPaths(before: Map<string, string>, after: Map<string, string>): string[] {
+function touchedPaths(before: WorktreeSnapshot, after: WorktreeSnapshot): string[] {
 	const touched: string[] = [];
 	for (const key of new Set([...before.keys(), ...after.keys()])) {
-		if ((before.get(key) ?? '') !== (after.get(key) ?? '')) touched.push(key);
+		if ((before.get(key) ?? null) !== (after.get(key) ?? null)) touched.push(key);
 	}
 	return touched;
 }
 
+const defaultRestoreFile: FileRestorer = (cwd, relPath, content) => {
+	const abs = resolve(cwd, relPath);
+	if (content === null) {
+		rmSync(abs, { force: true });
+		return;
+	}
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, content);
+};
+
 /**
- * Revert the child's changes to a set of out-of-scope paths, so a rejected
- * delegation leaves the worktree as the primary handed it over. Tracked paths
- * are restored from HEAD/index; untracked ones are removed. Best-effort — a
- * revert failure is logged, never thrown, so it can't mask the rejection.
+ * Undo the child's changes to a set of out-of-scope paths, restoring each to the
+ * state the primary handed over — NOT to HEAD. A path the primary had already
+ * edited is restored to that edited content (captured in `before`); a path that
+ * was clean before the child is reset via HEAD (and any leftover untracked file
+ * removed). This is what keeps a rejected delegation from clobbering the
+ * primary's own uncommitted work. Best-effort — a revert failure is logged, never
+ * thrown, so it can't mask the rejection.
  */
-async function revertPaths(git: GitRunner, cwd: string, paths: string[]): Promise<void> {
+async function revertPaths(
+	git: GitRunner,
+	cwd: string,
+	before: WorktreeSnapshot,
+	paths: string[],
+	restoreFile: FileRestorer,
+): Promise<void> {
 	for (const path of paths) {
 		try {
-			await git(['checkout', 'HEAD', '--', path], cwd);
-		} catch {
-			try {
-				await git(['clean', '-f', '--', path], cwd);
-			} catch (err) {
-				logger.warn('delegation: failed to revert out-of-scope path', {
-					path,
-					error: err instanceof Error ? err.message : String(err),
-				});
+			if (before.has(path)) {
+				// The primary already had this path changed before delegating — restore
+				// exactly that content (or its absence), never HEAD.
+				restoreFile(cwd, path, before.get(path) ?? null);
+			} else {
+				// Clean at HEAD before the child touched it — reset to HEAD, then drop
+				// any residual untracked file the child created.
+				await git(['checkout', 'HEAD', '--', path], cwd).catch(() => {});
+				await git(['clean', '-f', '--', path], cwd).catch(() => {});
 			}
+		} catch (err) {
+			logger.warn('delegation: failed to revert out-of-scope path', {
+				path,
+				error: err instanceof Error ? err.message : String(err),
+			});
 		}
 	}
 }
@@ -346,13 +390,13 @@ export async function runDelegatedChild(
 	const git = params.git ?? defaultGit;
 	const runChild = params.runChild ?? defaultRunChild;
 	const snapshot = params.snapshot ?? ((dir: string) => snapshotChangedPaths(git, dir));
+	const restoreFile = params.restoreFile ?? defaultRestoreFile;
 	const invocationId = randomUUID();
 
 	const observationBase = {
 		invocationId,
 		contractId: contract.id,
 		parentRunId: params.parentRunId || undefined,
-		parentSessionId: params.parentSessionId || undefined,
 		phase,
 		agent: CURATED_DOCUMENTATION_AGENT,
 		model,
@@ -385,7 +429,7 @@ export async function runDelegatedChild(
 	const outOfScope = touched.filter((path) => !allowed.has(normalizeRepoPath(path)));
 
 	if (outOfScope.length > 0) {
-		await revertPaths(git, cwd, outOfScope);
+		await revertPaths(git, cwd, before, outOfScope, restoreFile);
 		const reason = `child modified files outside allowedPaths: ${outOfScope.join(', ')}`;
 		return {
 			observation: {
@@ -415,7 +459,7 @@ export async function runDelegatedChild(
 	const diff = touched.length > 0 ? await git(['diff', '--', ...touched], cwd).catch(() => '') : '';
 	const report = [
 		`Delegation completed (invocationId: ${invocationId}, contractId: ${contract.id}).`,
-		`Child: ${cli} (${model}), ${DELEGATION_CHILD_MAX_TURNS}-turn budget.`,
+		`Child: ${cli} (${model}), wall-clock-bounded.`,
 		touched.length > 0
 			? `Files changed:\n${touched.map((p) => `  ${p}`).join('\n')}`
 			: 'No files changed.',

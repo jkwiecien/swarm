@@ -41,9 +41,12 @@ function fakeChild(result: Partial<ChildRunResult> = {}) {
 }
 
 /** A snapshot stub that returns `before` then `after` on successive calls. */
-function snapshots(before: Record<string, string>, after: Record<string, string>) {
-	const maps = [new Map(Object.entries(before)), new Map(Object.entries(after))];
-	return vi.fn(async () => maps.shift() ?? new Map());
+function snapshots(before: Record<string, string | null>, after: Record<string, string | null>) {
+	const maps: Array<Map<string, string | null>> = [
+		new Map(Object.entries(before)),
+		new Map(Object.entries(after)),
+	];
+	return vi.fn(async () => maps.shift() ?? new Map<string, string | null>());
 }
 
 describe('buildChildLaunch', () => {
@@ -53,6 +56,12 @@ describe('buildChildLaunch', () => {
 		expect(launch.args).toContain('--allowedTools');
 		expect(launch.args).toContain('Read');
 		expect(launch.args).toContain('Edit');
+		// The child must NOT bypass permissions (that would re-enable Bash and defeat
+		// the allowlist); it uses acceptEdits, which auto-approves edits within the
+		// allowlist without granting anything else — so no shell → no git/commit.
+		expect(launch.args).not.toContain('--dangerously-skip-permissions');
+		expect(launch.args).toEqual(expect.arrayContaining(['--permission-mode', 'acceptEdits']));
+		expect(launch.args).not.toContain('Bash');
 		// `--model` must terminate the variadic --allowedTools list before the prompt.
 		expect(launch.args.indexOf('--model')).toBeGreaterThan(launch.args.indexOf('Edit'));
 		expect(launch.args).toEqual(expect.arrayContaining(['--model', 'haiku']));
@@ -141,21 +150,49 @@ describe('runDelegatedChild', () => {
 		expect(outcome.exitCode).toBe(0);
 	});
 
-	it('rejects and reverts an out-of-scope change', async () => {
+	it('rejects and resets an out-of-scope file that was clean before the child (via HEAD)', async () => {
 		const { runChild } = fakeChild();
 		const git = vi.fn(async () => '');
+		const restoreFile = vi.fn();
 		const outcome = await runDelegatedChild({
 			...baseParams,
 			cli: 'codex',
 			model: 'gpt-5.4-mini',
 			runChild,
 			git,
-			snapshot: snapshots({}, { 'src/secret.ts': 'hash-after' }),
+			restoreFile,
+			// src/secret.ts was NOT changed before the child (absent from `before`).
+			snapshot: snapshots({}, { 'src/secret.ts': 'child-content' }),
 		});
 		expect(outcome.observation.outcome).toBe('rejected');
 		expect(outcome.exitCode).toBe(2);
-		// The out-of-scope path was reverted.
+		// A clean-before path is reset to HEAD, not restored from a snapshot.
 		expect(git).toHaveBeenCalledWith(['checkout', 'HEAD', '--', 'src/secret.ts'], '/wt');
+		expect(restoreFile).not.toHaveBeenCalled();
+	});
+
+	it('restores the primary’s own pre-edit content when the child overwrites an out-of-scope file', async () => {
+		const { runChild } = fakeChild();
+		const git = vi.fn(async () => '');
+		const restoreFile = vi.fn();
+		const outcome = await runDelegatedChild({
+			...baseParams,
+			cli: 'claude',
+			model: 'haiku',
+			runChild,
+			git,
+			restoreFile,
+			// The primary had already edited src/secret.ts (in `before`); the child
+			// overwrote it. Revert must restore the primary's content, never HEAD.
+			snapshot: snapshots(
+				{ 'src/secret.ts': 'PRIMARY EDIT' },
+				{ 'src/secret.ts': 'child clobber' },
+			),
+		});
+		expect(outcome.observation.outcome).toBe('rejected');
+		expect(restoreFile).toHaveBeenCalledWith('/wt', 'src/secret.ts', 'PRIMARY EDIT');
+		// Must NOT reset the primary's file to HEAD.
+		expect(git).not.toHaveBeenCalledWith(['checkout', 'HEAD', '--', 'src/secret.ts'], '/wt');
 	});
 
 	it('records a failed outcome when the child exits non-zero', async () => {

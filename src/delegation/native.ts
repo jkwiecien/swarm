@@ -34,8 +34,12 @@ export const DELEGATION_REVIEW_FILENAME = '.swarm-delegation-review.json';
  */
 export const DELEGATION_SCRATCH_GLOB = '.swarm-delegation-*';
 
-/** Fixed turn ceiling for a curated child run — a contract cannot raise it. */
-export const DELEGATION_CHILD_MAX_TURNS = 12;
+/**
+ * Default wall-clock bound for a curated child run. Neither `claude` nor `codex`
+ * exposes a turn-count flag on the installed CLIs (verified via `--help`), so a
+ * child is bounded by time, not turns. Override with {@link DELEGATION_ENV.childTimeoutMs}.
+ */
+export const DEFAULT_CHILD_TIMEOUT_MS = 10 * 60 * 1000;
 
 /** Env var names shared by the config injector and the `swarm delegate` command. */
 export const DELEGATION_ENV = {
@@ -45,12 +49,13 @@ export const DELEGATION_ENV = {
 	childModel: 'SWARM_DELEGATION_CHILD_MODEL',
 	minimumOperations: 'SWARM_DELEGATION_MINIMUM_OPERATIONS',
 	parentRunId: 'SWARM_PARENT_RUN_ID',
-	parentSessionId: 'SWARM_PARENT_SESSION_ID',
 	phase: 'SWARM_PIPELINE_PHASE',
 	/** Recursion guard: set to `'1'` on the child so it cannot delegate again. */
 	depth: 'SWARM_DELEGATION_DEPTH',
 	/** The exact command the primary must run to delegate (host-overridable). */
 	command: 'SWARM_DELEGATE_COMMAND',
+	/** Wall-clock bound (ms) for the child run; falls back to the coded default. */
+	childTimeoutMs: 'SWARM_DELEGATION_CHILD_TIMEOUT_MS',
 } as const;
 
 /** Default `swarm delegate` invocation when the host sets no override. */
@@ -211,7 +216,7 @@ export function delegationGuardLines(enabled: boolean): readonly string[] {
 		'     verification command/evidence; reviewRequired:true; estimatedSemanticOperations;',
 		`     delegationType:"documentation-edit"; agent:"${CURATED_DOCUMENTATION_AGENT}"; version:1.`,
 		`  2. Run \`$${DELEGATION_ENV.command} <that-file>\`. SWARM launches a lighter-model child,`,
-		`     pinned and sandboxed to a ${DELEGATION_CHILD_MAX_TURNS}-turn budget, in this worktree.`,
+		'     pinned, tool-restricted, sandboxed, and wall-clock-bounded, in this worktree.',
 		'  3. Inspect the diff the command prints, accept or rework it yourself, run verification',
 		`     yourself, and write \`${DELEGATION_REVIEW_FILENAME}\` with`,
 		'     `{ "delegations": [{ "invocationId", "contractId", "disposition": "accepted"|"reworked", "note" }] }`.',
