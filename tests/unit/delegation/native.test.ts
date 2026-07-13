@@ -67,18 +67,19 @@ describe('native delegation policy', () => {
 			verification: { command: 'npm run lint', evidence: 'exit code 0' },
 			reviewRequired: true,
 			estimatedSemanticOperations: 3,
-			maxTurns: 8,
 		};
 		expect(DelegationContractSchema.parse(valid)).toEqual(valid);
 		expect(DelegationContractSchema.safeParse({ ...valid, allowedPaths: [] }).success).toBe(false);
 		expect(DelegationContractSchema.safeParse({ ...valid, reviewRequired: false }).success).toBe(
 			false,
 		);
+		expect(DelegationContractSchema.safeParse({ ...valid, maxTurns: 1 }).success).toBe(false);
 	});
 
 	it('defines a Haiku child without command, skill, GitHub, or nested-agent tools', () => {
 		const definition = readFileSync('.claude/agents/swarm-doc-editor.md', 'utf8');
 		expect(definition).toContain('model: haiku');
+		expect(definition).toContain('maxTurns: 12');
 		expect(definition).toContain('tools: Read, Edit');
 		expect(definition).not.toMatch(/^tools:.*(?:Bash|Agent|Skill)/m);
 		const coordinator = readFileSync('.claude/agents/swarm-phase-coordinator.md', 'utf8');
@@ -88,6 +89,7 @@ describe('native delegation policy', () => {
 
 	it('requires the primary to record acceptance or rework for every completed child', () => {
 		const base = {
+			invocationId: 'session-1:agent-1',
 			contractId: 'docs-update',
 			phase: 'implementation',
 			agent: 'swarm-doc-editor' as const,

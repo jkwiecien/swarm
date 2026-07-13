@@ -18,3 +18,7 @@ native delegation and only with the complete `<swarm-delegation-contract>` requi
 the child's complete diff and record whether you accepted or reworked it. Never use delegation for
 another phase, a skill/workflow, GitHub or board mutation, commit/push/PR delivery, command execution,
 formatting-only work, metadata collection, ambiguous decisions, or final judgment.
+
+Preserve the complete contract tag verbatim in the `Agent(swarm-doc-editor)` prompt. After the child
+returns, read its invocation ID from `.swarm-delegation-events.jsonl` and include both that unique ID
+and the logical contract ID in the review disposition. Contract IDs cannot be reused in one session.

@@ -80,4 +80,46 @@ describe('SCM delivery hand-offs', () => {
 			'swarm-implementer <swarm-implementer@users.noreply.github.com>|swarm-implementer <swarm-implementer@users.noreply.github.com>',
 		);
 	});
+
+	it('excludes every delegation lifecycle artifact from a delegated prepared tree', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
+		roots.push(root);
+		execFileSync('git', ['init'], { cwd: root });
+		writeFileSync(join(root, 'change.txt'), 'prepared\n');
+		writeFileSync(join(root, '.swarm-delegation-events.jsonl'), '{}\n');
+		writeFileSync(join(root, '.swarm-delegation-review.json'), '{}\n');
+		writeFileSync(join(root, '.swarm-delegation-agent-123.start'), '{}\n');
+
+		const sha = await commitPreparedTree(root, 'feat: delegated delivery', {
+			name: 'swarm-implementer',
+			email: 'swarm-implementer@users.noreply.github.com',
+		});
+		const committed = execFileSync('git', ['show', '--format=', '--name-only', sha], {
+			cwd: root,
+			encoding: 'utf8',
+		});
+		expect(committed.trim()).toBe('change.txt');
+		expect(
+			execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }),
+		).toContain('?? .swarm-delegation-agent-123.start');
+	});
+
+	it('rejects a tracked delegation lifecycle artifact', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
+		roots.push(root);
+		execFileSync('git', ['init'], { cwd: root });
+		execFileSync('git', ['config', 'user.name', 'Fixture'], { cwd: root });
+		execFileSync('git', ['config', 'user.email', 'fixture@example.com'], { cwd: root });
+		writeFileSync(join(root, '.swarm-delegation-events.jsonl'), '{}\n');
+		execFileSync('git', ['add', '.swarm-delegation-events.jsonl'], { cwd: root });
+		execFileSync('git', ['commit', '-m', 'test: track scratch'], { cwd: root });
+		writeFileSync(join(root, 'change.txt'), 'prepared\n');
+
+		await expect(
+			commitPreparedTree(root, 'feat: unsafe delivery', {
+				name: 'swarm-implementer',
+				email: 'swarm-implementer@users.noreply.github.com',
+			}),
+		).rejects.toThrow('scratch artifact is tracked');
+	});
 });

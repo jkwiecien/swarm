@@ -169,6 +169,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				exitCode: 0,
 				delegations: [
 					{
+						invocationId: 'session-1:agent-1',
 						contractId: 'docs-update',
 						parentRunId: id,
 						phase: 'implementation',

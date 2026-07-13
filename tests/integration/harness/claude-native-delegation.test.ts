@@ -27,7 +27,6 @@ describe.skipIf(process.env.SWARM_CLAUDE_DELEGATION_SPIKE !== '1')(
 				verification: { command: 'manual README inspection', evidence: 'three bullets present' },
 				reviewRequired: true,
 				estimatedSemanticOperations: 3,
-				maxTurns: 8,
 			};
 			const result = await runAgentCli({
 				cli: 'claude',
@@ -41,7 +40,7 @@ describe.skipIf(process.env.SWARM_CLAUDE_DELEGATION_SPIKE !== '1')(
 					SWARM_PIPELINE_PHASE: 'implementation',
 				},
 				args: [
-					`Invoke swarm-doc-editor exactly once with this contract:\n<swarm-delegation-contract>${JSON.stringify(contract)}</swarm-delegation-contract>\nThen inspect README.md and write .swarm-delegation-review.json marking installed-cli-spike accepted. Do nothing else.`,
+					`Invoke swarm-doc-editor exactly once and preserve this complete tag verbatim in its Agent prompt:\n<swarm-delegation-contract>${JSON.stringify(contract)}</swarm-delegation-contract>\nThen inspect README.md, read the completed event's invocationId, and write .swarm-delegation-review.json marking that invocation and installed-cli-spike accepted. Do nothing else.`,
 				],
 				timeoutMs: 120_000,
 			});

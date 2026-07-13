@@ -80,7 +80,11 @@ phase hand-offs, personas, and worktrees. An opted-in Claude phase is launched t
 project-owned `swarm-phase-coordinator`, whose native tool allowlist exposes only
 `Agent(swarm-doc-editor)`. That Haiku child has Read/Edit only, exact paths are enforced by
 agent-scoped hooks against a structured delegation contract, and the parent phase fails if it
-does not record an accepted/reworked disposition. Provider-neutral policy and observations stay
+does not record an invocation-scoped accepted/reworked disposition. The hook trusts only the
+pending native Agent call, resolves exact paths through symlinks, rejects duplicate contract IDs
+within a session, and keeps its lifecycle records outside deterministic delivery. The child uses
+the fixed provider-enforced 12-turn definition rather than advertising a dynamic contract limit.
+Provider-neutral policy and observations stay
 outside the Claude adapter, selected through an explicit adapter registry covering every harness
 CLI, so a future provider adapter or orchestrated child-run implementation can reuse them. Native
 Codex and Antigravity support are tracked separately in #184 and #185; unsupported CLIs fail closed

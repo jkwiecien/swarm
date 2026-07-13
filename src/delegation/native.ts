@@ -9,30 +9,33 @@ export const CURATED_DOCUMENTATION_AGENT = 'swarm-doc-editor';
 export const CURATED_COORDINATOR_AGENT = 'swarm-phase-coordinator';
 export const DELEGATION_EVENTS_FILENAME = '.swarm-delegation-events.jsonl';
 export const DELEGATION_REVIEW_FILENAME = '.swarm-delegation-review.json';
+export const DELEGATION_START_GLOB = '.swarm-delegation-*.start';
 
-export const DelegationContractSchema = z.object({
-	version: z.literal(1),
-	id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,63}$/),
-	delegationType: z.literal('documentation-edit'),
-	agent: z.literal(CURATED_DOCUMENTATION_AGENT),
-	task: z.string().min(20),
-	decidedFacts: z.array(z.string().min(1)).min(1),
-	allowedPaths: z
-		.array(z.string().min(1))
-		.min(1)
-		.refine((paths) => new Set(paths).size === paths.length, 'allowedPaths must be unique'),
-	prohibitedScope: z.array(z.string().min(1)).min(1),
-	expectedArtifact: z.string().min(10),
-	verification: z.object({ command: z.string().min(1), evidence: z.string().min(1) }),
-	reviewRequired: z.literal(true),
-	estimatedSemanticOperations: z.number().int().positive(),
-	maxTurns: z.number().int().min(1).max(12),
-});
+export const DelegationContractSchema = z
+	.object({
+		version: z.literal(1),
+		id: z.string().regex(/^[a-z0-9][a-z0-9-]{2,63}$/),
+		delegationType: z.literal('documentation-edit'),
+		agent: z.literal(CURATED_DOCUMENTATION_AGENT),
+		task: z.string().min(20),
+		decidedFacts: z.array(z.string().min(1)).min(1),
+		allowedPaths: z
+			.array(z.string().min(1))
+			.min(1)
+			.refine((paths) => new Set(paths).size === paths.length, 'allowedPaths must be unique'),
+		prohibitedScope: z.array(z.string().min(1)).min(1),
+		expectedArtifact: z.string().min(10),
+		verification: z.object({ command: z.string().min(1), evidence: z.string().min(1) }),
+		reviewRequired: z.literal(true),
+		estimatedSemanticOperations: z.number().int().positive(),
+	})
+	.strict();
 export type DelegationContract = z.infer<typeof DelegationContractSchema>;
 
 export const DelegationReviewSchema = z.object({
 	delegations: z.array(
 		z.object({
+			invocationId: z.string().min(1),
 			contractId: z.string().min(1),
 			disposition: z.enum(['accepted', 'reworked']),
 			note: z.string().min(1),
@@ -41,6 +44,7 @@ export const DelegationReviewSchema = z.object({
 });
 
 export const DelegationObservationSchema = z.object({
+	invocationId: z.string().min(1),
 	contractId: z.string().min(1),
 	parentRunId: z.string().optional(),
 	parentSessionId: z.string().optional(),
@@ -98,7 +102,6 @@ const claudeNativeDelegationAdapter: NativeDelegationAdapter = {
 				CLAUDE_CODE_SUBAGENT_MODEL: policy.model,
 				SWARM_DELEGATION_MINIMUM_OPERATIONS: String(policy.minimumSemanticOperations),
 				SWARM_PARENT_RUN_ID: context.runId ?? '',
-				SWARM_PARENT_SESSION_ID: options.sessionId ?? options.resumeSessionId ?? '',
 				SWARM_PIPELINE_PHASE: context.phase,
 			},
 		};
@@ -151,10 +154,11 @@ export function delegationGuardLines(enabled: boolean): readonly string[] {
 		'or concurrency reasoning, broad refactors, and deterministic commands remain prohibited.',
 		'Every request must contain one `<swarm-delegation-contract>` JSON object matching the project',
 		'contract: exact task and decidedFacts; allowedPaths; prohibitedScope; expectedArtifact;',
-		'verification command/evidence; reviewRequired:true; estimatedSemanticOperations; and maxTurns.',
+		'verification command/evidence; reviewRequired:true; and estimatedSemanticOperations.',
+		'The curated child has a fixed provider-enforced limit of 12 turns.',
 		'Do not delegate below the configured minimum. After the child returns, inspect its complete diff,',
 		'accept or rework it yourself, run verification yourself, and write `.swarm-delegation-review.json`',
-		'with `{ "delegations": [{ "contractId", "disposition": "accepted"|"reworked", "note" }] }`.',
+		'with `{ "delegations": [{ "invocationId", "contractId", "disposition": "accepted"|"reworked", "note" }] }`.',
 		'Never delegate commit, push, PR/review/comment/board mutation, formatting-only work, prescribed',
 		'commands, verification execution, metadata collection, hand-off mechanics, or final judgment.',
 	];

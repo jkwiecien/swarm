@@ -1479,6 +1479,7 @@ describe('processJob', () => {
 
 		it('links native child observations to the completed parent run', async () => {
 			const delegation = {
+				invocationId: 'session-1:agent-1',
 				contractId: 'docs-update',
 				parentRunId: 'run-1',
 				phase: 'review',

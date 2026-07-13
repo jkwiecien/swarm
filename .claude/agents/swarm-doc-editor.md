@@ -17,6 +17,7 @@ hooks:
 ---
 
 Apply only the documentation change described by the validated delegation contract in your task.
+Your provider-enforced budget is the fixed `maxTurns: 12` above; contracts cannot override it.
 The coordinator has already decided the facts and scope; preserve the repository's terminology,
 structure, and style. Read and edit only exact `allowedPaths`. Do not reinterpret requirements,
 redesign behavior, or broaden the change. Stop and report ambiguity instead of guessing.
