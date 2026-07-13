@@ -575,8 +575,9 @@ describe('processJob', () => {
 		});
 	});
 
-	it("threads the project's per-phase agent override (cli/model) into the phase call", async () => {
+	it("threads the project's per-phase agent override (cli/model/reasoning) into the phase call", async () => {
 		const projectWithAgents = createMockProjectConfig({
+			// Legacy combined string migrates to logical model + reasoning (issue #180).
 			agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
 		});
 		projectLookup = () => projectWithAgents;
@@ -587,7 +588,8 @@ describe('processJob', () => {
 
 		expect(phaseCalls[0].args).toMatchObject({
 			cli: 'antigravity',
-			model: 'Gemini 3.5 Flash (High)',
+			model: 'gemini-3.5-flash',
+			reasoning: 'high',
 		});
 	});
 
@@ -1500,7 +1502,7 @@ describe('processJob', () => {
 			);
 		});
 
-		it('records the work item metadata and requested model for a PM-driven phase', async () => {
+		it('records the work item metadata and requested model/reasoning for a PM-driven phase', async () => {
 			const projectWithAgents = createMockProjectConfig({
 				agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
 			});
@@ -1521,7 +1523,9 @@ describe('processJob', () => {
 					workItemTitle: workItem.title,
 					workItemUrl: workItem.url,
 					prNumber: undefined,
-					model: 'Gemini 3.5 Flash (High)',
+					// Legacy combined string normalized to logical model + reasoning (issue #180).
+					model: 'gemini-3.5-flash',
+					reasoning: 'high',
 					jobPayload: expect.any(Object),
 				}),
 			);

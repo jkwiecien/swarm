@@ -7,7 +7,11 @@ import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AppSettings } from '../../../../src/config/app-settings.js';
 import type { AgentDefaults } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
-import { AGENT_MODELS, DEFAULT_MODEL_PER_CLI } from '../../../../src/harness/models.js';
+import {
+	capabilityFor,
+	DEFAULT_MODEL_PER_CLI,
+	MODEL_CAPABILITIES,
+} from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
 
 const CLIS = ['claude', 'antigravity', 'codex'] as const;
@@ -28,19 +32,7 @@ const CLI_LABELS: Record<AgentCli, string> = {
  */
 function getGlobalModelDefaultLabel(cli: AgentCli): string {
 	const defaultModel = DEFAULT_MODEL_PER_CLI[cli];
-
-	const displayModel =
-		defaultModel === 'sonnet'
-			? 'Sonnet'
-			: defaultModel === 'opus'
-				? 'Opus'
-				: defaultModel === 'fable'
-					? 'Fable'
-					: defaultModel === 'haiku'
-						? 'Haiku'
-						: defaultModel;
-
-	return displayModel;
+	return capabilityFor(cli, defaultModel)?.label ?? defaultModel;
 }
 
 /** Strip empty/undefined per-CLI entries so cleared defaults aren't persisted. */
@@ -100,7 +92,15 @@ function DefaultModelsForm({
 							<tbody className="divide-y divide-zinc-800/60">
 								{CLIS.map((cli) => {
 									const selectedModel = defaults[cli];
-									const modelOptions = AGENT_MODELS[cli];
+									const modelOptions = MODEL_CAPABILITIES[cli].map((m) => ({
+										id: m.id,
+										label: m.label,
+									}));
+									// A pre-#180 config may hold a legacy combined antigravity string; keep
+									// it selectable so it stays visible and isn't silently dropped on save.
+									if (selectedModel && !modelOptions.some((m) => m.id === selectedModel)) {
+										modelOptions.push({ id: selectedModel, label: selectedModel });
+									}
 
 									return (
 										<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
@@ -117,8 +117,8 @@ function DefaultModelsForm({
 												>
 													<option value="">{getGlobalModelDefaultLabel(cli)}</option>
 													{modelOptions.map((model) => (
-														<option key={model} value={model}>
-															{model}
+														<option key={model.id} value={model.id}>
+															{model.label}
 														</option>
 													))}
 												</select>

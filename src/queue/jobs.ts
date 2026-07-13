@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { AgentCliSchema } from '../harness/agent-cli.js';
+import { ReasoningLevelSchema } from '../harness/models.js';
 import { GitHubParsedEventSchema } from '../router/adapters/github.js';
 import { GitHubProjectsParsedEventSchema } from '../router/adapters/github-projects.js';
 
@@ -80,6 +81,13 @@ const jobBase = z.object({
 	/** Optional overrides for retrying/running with a specific agent CLI and model. */
 	cliOverride: AgentCliSchema.optional(),
 	modelOverride: z.string().min(1).optional(),
+	/**
+	 * Optional per-run reasoning-level override (issue #180). Validated against the
+	 * effective model when resolved (`resolveReasoning`, `src/worker/consumer.ts`),
+	 * so a level incompatible with an overridden CLI/model is dropped rather than
+	 * launched. Rides `...jobPayload` spreads through deferred/manual retries.
+	 */
+	reasoningOverride: ReasoningLevelSchema.optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

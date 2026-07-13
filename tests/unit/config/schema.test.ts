@@ -124,7 +124,7 @@ describe('ProjectConfigSchema', () => {
 		).toThrow();
 	});
 
-	it('accepts a per-phase agent CLI/model override', () => {
+	it('accepts a per-phase agent CLI/model override (normalizing legacy antigravity strings)', () => {
 		const project = createMockProjectConfig({
 			agents: {
 				planning: { cli: 'claude', model: 'sonnet' },
@@ -134,9 +134,37 @@ describe('ProjectConfigSchema', () => {
 		});
 		expect(project.agents).toEqual({
 			planning: { cli: 'claude', model: 'sonnet' },
-			implementation: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' },
+			// The legacy combined antigravity string migrates losslessly to logical
+			// model + reasoning (issue #180).
+			implementation: { cli: 'antigravity', model: 'gemini-3.5-flash', reasoning: 'high' },
 			review: { cli: 'codex', model: 'gpt-5.6-sol' },
 		});
+	});
+
+	it('accepts an explicit per-phase reasoning level supported by the model', () => {
+		const project = createMockProjectConfig({
+			agents: { planning: { cli: 'claude', model: 'sonnet', reasoning: 'high' } },
+		});
+		expect(project.agents?.planning).toEqual({ cli: 'claude', model: 'sonnet', reasoning: 'high' });
+	});
+
+	it('rejects a reasoning level the selected model does not support', () => {
+		// Antigravity Gemini 3.1 Pro exposes only low/high — medium is invalid.
+		expect(() =>
+			createMockProjectConfig({
+				agents: { planning: { cli: 'antigravity', model: 'gemini-3.1-pro', reasoning: 'medium' } },
+			}),
+		).toThrow(/reasoning/);
+	});
+
+	it('rejects a reasoning level on a single-variant model with no choices', () => {
+		expect(() =>
+			createMockProjectConfig({
+				agents: {
+					planning: { cli: 'antigravity', model: 'claude-sonnet-4.6', reasoning: 'high' },
+				},
+			}),
+		).toThrow(/reasoning/);
 	});
 
 	it('rejects an unknown cli value in an agent override', () => {

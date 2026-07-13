@@ -38,7 +38,12 @@ import {
 	AgentRunError,
 	agentRunError,
 } from '../harness/agent-failure.js';
-import { DEFAULT_MODEL_PER_CLI } from '../harness/models.js';
+import {
+	capabilityFor,
+	DEFAULT_MODEL_PER_CLI,
+	isReasoningLevel,
+	type ReasoningLevel,
+} from '../harness/models.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
 import { describeError } from '../lib/errors.js';
@@ -363,6 +368,35 @@ function resolveModel(
 }
 
 /**
+ * Resolve the *explicitly requested* reasoning level for a phase — per-run
+ * `reasoningOverride` → per-phase config, and nothing else. Unlike `model`,
+ * reasoning has no per-CLI defaults tier: a default level valid for one model
+ * can be invalid for another (issue #180). Omitting it here means the CLI keeps
+ * its own default behavior (claude/codex get no reasoning flag; antigravity's
+ * combined-variant string falls back to the model's default inside
+ * `resolveModelLaunch`), which is what we persist as "Default (unknown)".
+ *
+ * A requested level is dropped (→ `undefined`) when the effective model doesn't
+ * support it, so a stale override left over from a different model/CLI can't
+ * launch an invalid variant — it degrades to the CLI/model default instead.
+ */
+function resolveReasoning(
+	cli: AgentCli | undefined,
+	model: string,
+	phaseReasoning?: ReasoningLevel,
+	overrideReasoning?: ReasoningLevel,
+): ReasoningLevel | undefined {
+	const requested = overrideReasoning ?? phaseReasoning;
+	if (!requested) return undefined;
+	if (!cli) return requested;
+	const cap = capabilityFor(cli, model);
+	if (!cap) return requested; // legacy/unknown model — trust the value
+	return (cap.reasoningChoices as readonly ReasoningLevel[]).includes(requested)
+		? requested
+		: undefined;
+}
+
+/**
  * Run the pipeline phase a matched trigger resolved to. The orchestrators
  * differ in their inputs but all resolve to a result carrying the agent run
  * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
@@ -405,6 +439,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				timeoutMs: overrides.timeoutMs,
@@ -420,6 +455,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
 				...session,
@@ -435,6 +471,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -450,6 +487,7 @@ function runPhase(
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -464,6 +502,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -480,6 +519,7 @@ function runPhase(
 				taskId: trigger.taskId,
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -589,7 +629,7 @@ function agentOverrideFor(
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 	job?: SwarmJob,
-): { cli?: AgentCli; model?: string; timeoutMs?: number } {
+): { cli?: AgentCli; model?: string; reasoning?: ReasoningLevel; timeoutMs?: number } {
 	const phaseConfig = (() => {
 		switch (phase) {
 			case 'planning':
@@ -608,9 +648,13 @@ function agentOverrideFor(
 	})();
 	const cli = job?.cliOverride ?? phaseConfig.cli;
 	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
+	const overrideReasoning = isReasoningLevel(job?.reasoningOverride)
+		? job?.reasoningOverride
+		: undefined;
+	const reasoning = resolveReasoning(cli, model, phaseConfig.reasoning, overrideReasoning);
 	// Fall back to the worker's default wall-clock timeout when the project set no
 	// per-phase override, so *every* agent invocation is bounded (issue #165).
-	return { cli, model, timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS };
+	return { cli, model, reasoning, timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS };
 }
 
 /**
@@ -648,6 +692,7 @@ async function tryReuseLatestRun(
 		prior.status,
 		overrides.model,
 		overrides.timeoutMs,
+		overrides.reasoning ?? null,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -664,7 +709,14 @@ async function tryResetCarriedRun(
 	if (!runId) return undefined;
 	try {
 		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
-		return (await resetRunToRunning(runId, job, undefined, overrides.model, overrides.timeoutMs))
+		return (await resetRunToRunning(
+			runId,
+			job,
+			undefined,
+			overrides.model,
+			overrides.timeoutMs,
+			overrides.reasoning ?? null,
+		))
 			? runId
 			: undefined;
 	} catch (err) {
@@ -777,6 +829,7 @@ async function tryCreateRun(
 			prNumber,
 			prTitle: prNumber ? await tryFetchPrTitle(project, prNumber) : undefined,
 			model: overrides.model,
+			reasoning: overrides.reasoning,
 			timeoutMs: overrides.timeoutMs,
 			jobPayload: job,
 		});

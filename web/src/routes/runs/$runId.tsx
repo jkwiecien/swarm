@@ -26,27 +26,27 @@ import {
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { AgentUsage, RunRow } from '@/types/runs.js';
+// Shared model catalog — the single source of truth (`src/harness/models.ts`), so
+// the retry override dropdowns stay in lockstep with the config UI (issue #180).
+import type { AgentCli } from '../../../../src/harness/agent-cli.js';
+import {
+	capabilityFor,
+	MODEL_CAPABILITIES,
+	normalizeModelSelection,
+	type ReasoningLevel,
+	reasoningChoicesFor,
+} from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
 
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
 
 const RUN_AGENTS = ['claude', 'antigravity', 'codex'] as const;
-type RunAgent = (typeof RUN_AGENTS)[number];
+type RunAgent = AgentCli;
 
-const AGENT_MODELS: Record<RunAgent, readonly string[]> = {
-	claude: ['sonnet', 'fable', 'opus', 'haiku'],
-	antigravity: [
-		'Gemini 3.5 Flash (Low)',
-		'Gemini 3.5 Flash (Medium)',
-		'Gemini 3.5 Flash (High)',
-		'Gemini 3.1 Pro (Low)',
-		'Gemini 3.1 Pro (High)',
-		'Claude Sonnet 4.6 (Thinking)',
-		'Claude Opus 4.6 (Thinking)',
-		'GPT-OSS 120B (Medium)',
-	],
-	codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
-};
+/** Capitalize a normalized reasoning level for display ("high" → "High"). */
+function capitalizeLevel(value: string): string {
+	return value.charAt(0).toUpperCase() + value.slice(1);
+}
 
 /**
  * Split "Retry" button (issue #153): clicking the main left button retries the run
@@ -56,11 +56,12 @@ const AGENT_MODELS: Record<RunAgent, readonly string[]> = {
 function RetryNowButton({ run }: { run: RunRow }) {
 	const queryClient = useQueryClient();
 	const mutation = useMutation({
-		mutationFn: (overrides: { cli?: RunAgent; model?: string }) =>
+		mutationFn: (overrides: { cli?: RunAgent; model?: string; reasoning?: ReasoningLevel }) =>
 			trpcClient.runs.retryNow.mutate({
 				runId: run.id,
 				cli: overrides.cli,
 				model: overrides.model,
+				reasoning: overrides.reasoning,
 			}),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: trpc.runs.getById.queryKey({ id: run.id }) });
@@ -74,19 +75,32 @@ function RetryNowButton({ run }: { run: RunRow }) {
 			: 'claude'
 	) as RunAgent;
 
+	// A prior run's model may be a legacy combined antigravity string; decompose it
+	// into the logical id (+ reasoning) the dropdowns now speak (issue #180).
+	const normalizedCurrent = run.model ? normalizeModelSelection(currentCli, run.model) : undefined;
+	const modelIds = MODEL_CAPABILITIES[currentCli].map((m) => m.id);
 	const currentModel =
-		run.model && AGENT_MODELS[currentCli].includes(run.model)
-			? run.model
-			: AGENT_MODELS[currentCli][0];
+		normalizedCurrent?.model && modelIds.includes(normalizedCurrent.model)
+			? normalizedCurrent.model
+			: modelIds[0];
+	const currentReasoning = (run.reasoning ?? normalizedCurrent?.reasoning) as
+		| ReasoningLevel
+		| undefined;
 
 	const [isOpen, setIsOpen] = useState(false);
 	const [selectedCli, setSelectedCli] = useState<RunAgent>(currentCli);
 	const [selectedModel, setSelectedModel] = useState<string>(currentModel);
+	const [selectedReasoning, setSelectedReasoning] = useState<ReasoningLevel | ''>(
+		currentReasoning ?? '',
+	);
 
 	useEffect(() => {
 		setSelectedCli(currentCli);
 		setSelectedModel(currentModel);
-	}, [currentCli, currentModel]);
+		setSelectedReasoning(currentReasoning ?? '');
+	}, [currentCli, currentModel, currentReasoning]);
+
+	const reasoningOptions = reasoningChoicesFor(selectedCli, selectedModel);
 
 	return (
 		<div className="mt-3">
@@ -144,7 +158,9 @@ function RetryNowButton({ run }: { run: RunRow }) {
 										onChange={(e) => {
 											const newCli = e.target.value as RunAgent;
 											setSelectedCli(newCli);
-											setSelectedModel(AGENT_MODELS[newCli][0]);
+											setSelectedModel(MODEL_CAPABILITIES[newCli][0].id);
+											// Reasoning is model-specific — clear it on any CLI change.
+											setSelectedReasoning('');
 										}}
 										className="w-full bg-zinc-950 border border-zinc-850 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500"
 									>
@@ -166,12 +182,52 @@ function RetryNowButton({ run }: { run: RunRow }) {
 									<select
 										id="model-select"
 										value={selectedModel}
-										onChange={(e) => setSelectedModel(e.target.value)}
+										onChange={(e) => {
+											const newModel = e.target.value;
+											setSelectedModel(newModel);
+											// Drop the reasoning if the new model doesn't support it.
+											const stillValid =
+												selectedReasoning &&
+												(reasoningChoicesFor(selectedCli, newModel) as readonly string[]).includes(
+													selectedReasoning,
+												);
+											if (!stillValid) setSelectedReasoning('');
+										}}
 										className="w-full bg-zinc-950 border border-zinc-850 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500"
 									>
-										{AGENT_MODELS[selectedCli].map((m) => (
-											<option key={m} value={m}>
-												{m}
+										{MODEL_CAPABILITIES[selectedCli].map((m) => (
+											<option key={m.id} value={m.id}>
+												{m.label}
+											</option>
+										))}
+									</select>
+								</div>
+
+								<div>
+									<label
+										htmlFor="reasoning-select"
+										className="block text-xs font-medium text-zinc-400 mb-1 select-none"
+									>
+										Reasoning
+									</label>
+									<select
+										id="reasoning-select"
+										value={selectedReasoning}
+										onChange={(e) => setSelectedReasoning(e.target.value as ReasoningLevel | '')}
+										disabled={reasoningOptions.length === 0}
+										className="w-full bg-zinc-950 border border-zinc-850 rounded px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500 disabled:opacity-50 disabled:text-zinc-500"
+									>
+										<option value="">
+											{reasoningOptions.length === 0
+												? 'Fixed'
+												: (() => {
+														const def = capabilityFor(selectedCli, selectedModel)?.defaultReasoning;
+														return def ? `Default (${capitalizeLevel(def)})` : 'Default';
+													})()}
+										</option>
+										{reasoningOptions.map((level) => (
+											<option key={level} value={level}>
+												{capitalizeLevel(level)}
 											</option>
 										))}
 									</select>
@@ -188,7 +244,11 @@ function RetryNowButton({ run }: { run: RunRow }) {
 									<button
 										type="button"
 										onClick={() => {
-											mutation.mutate({ cli: selectedCli, model: selectedModel });
+											mutation.mutate({
+												cli: selectedCli,
+												model: selectedModel,
+												reasoning: selectedReasoning || undefined,
+											});
 											setIsOpen(false);
 										}}
 										className="px-3 py-1.5 text-xs font-semibold text-white bg-violet-600 rounded hover:bg-violet-500 transition-colors cursor-pointer"
@@ -549,6 +609,13 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					<div>
 						<span className="block text-xs font-medium text-zinc-400">Model Used</span>
 						<span className="text-sm text-zinc-200 mt-1 block font-mono">{run.model || '—'}</span>
+					</div>
+
+					<div>
+						<span className="block text-xs font-medium text-zinc-400">Reasoning</span>
+						<span className="text-sm text-zinc-200 mt-1 block font-mono">
+							{run.reasoning ? capitalizeLevel(run.reasoning) : 'Default'}
+						</span>
 					</div>
 
 					<div>

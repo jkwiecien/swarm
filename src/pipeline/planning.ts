@@ -37,6 +37,7 @@ import {
 	runAgentCli,
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
+import type { ReasoningLevel } from '@/harness/models.js';
 import { logger } from '@/lib/logger.js';
 import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
@@ -157,6 +158,8 @@ export interface RunPlanningPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
+	reasoning?: ReasoningLevel;
 	/** Deterministic Claude session handle assigned by the run row. */
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
@@ -475,6 +478,7 @@ export async function runPlanningPhase(
 		pm,
 		cli = DEFAULT_PLANNING_CLI,
 		model,
+		reasoning,
 		sessionId,
 		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
@@ -492,11 +496,12 @@ export async function runPlanningPhase(
 	const isSplitChild = workItem.labels.some((l) => l.name === SPLIT_CHILD_LABEL);
 	const effectiveAutoAdvance = autoAdvance && !isSplitChild;
 
-	logger.info(`Phase started - Planning — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Planning — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,
 		workItemId: workItem.id,
 		cli,
 		model,
+		reasoning,
 	});
 
 	// Read-only checkout: detached HEAD, no task branch (see ProvisionOptions.detach).
@@ -515,6 +520,7 @@ export async function runPlanningPhase(
 		const agent = await runAgent({
 			cli,
 			model,
+			reasoning,
 			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
 			args: [buildPlanningPrompt(workItem, autoSplit, delegationEnabled(project, 'planning', cli))],

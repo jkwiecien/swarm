@@ -320,6 +320,73 @@ describe('runAgentCli', () => {
 		expect(args).not.toContain('--model');
 	});
 
+	it('maps claude reasoning to a --effort flag beside --model (issue #180)', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				model: 'sonnet',
+				reasoning: 'high',
+				args: ['implement the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'--dangerously-skip-permissions',
+			'--model',
+			'sonnet',
+			'--effort',
+			'high',
+			'--output-format',
+			'json',
+			'-p',
+			'implement the thing',
+		]);
+	});
+
+	it('maps codex reasoning to a -c model_reasoning_effort config override (issue #180)', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'codex',
+				model: 'gpt-5.6-terra',
+				reasoning: 'xhigh',
+				args: ['implement the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'exec',
+			'--dangerously-bypass-approvals-and-sandbox',
+			'--model',
+			'gpt-5.6-terra',
+			'-c',
+			'model_reasoning_effort="xhigh"',
+			'--json',
+			'implement the thing',
+		]);
+	});
+
+	it('folds antigravity reasoning into the combined --model variant with no reasoning flag', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'antigravity',
+				model: 'gemini-3.5-flash',
+				reasoning: 'high',
+				args: ['implement the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		const args = spawnMock.mock.calls[0][1] as string[];
+		expect(args).toContain('--model');
+		expect(args[args.indexOf('--model') + 1]).toBe('Gemini 3.5 Flash (High)');
+		expect(args).not.toContain('--effort');
+		expect(args.some((a) => a.startsWith('model_reasoning_effort'))).toBe(false);
+	});
+
 	it('forwards output line-by-line, including partial and CRLF lines', async () => {
 		const stdoutLines: string[] = [];
 		const stderrLines: string[] = [];

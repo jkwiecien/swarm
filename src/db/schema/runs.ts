@@ -36,6 +36,12 @@ export const runs = pgTable(
 		phase: text('phase').notNull(),
 		engine: text('engine'),
 		model: text('model'),
+		/**
+		 * The explicitly requested normalized reasoning level for this attempt
+		 * (`src/harness/models.ts`, issue #180). Nullable: null means "Default" —
+		 * no reasoning was configured, so the CLI/model used its own default.
+		 */
+		reasoning: text('reasoning'),
 		status: text('status').notNull().default('running'),
 		exitCode: integer('exit_code'),
 		timedOut: boolean('timed_out').notNull().default(false),

@@ -6,7 +6,14 @@ import { useEffect, useMemo, useState } from 'react';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
-import { AGENT_MODELS } from '../../../../src/harness/models.js';
+import {
+	AGENT_MODELS,
+	capabilityFor,
+	MODEL_CAPABILITIES,
+	normalizeModelSelection,
+	type ReasoningLevel,
+	reasoningChoicesFor,
+} from '../../../../src/harness/models.js';
 import { rootRoute } from '../__root.js';
 
 const PHASES = [
@@ -41,37 +48,67 @@ const LIGHT_MODEL_CLIS = [
 	{ cli: 'codex', label: 'Codex', defaultModel: 'gpt-5.4-mini' },
 ] as const;
 
+const CODED_DEFAULT_MODEL: Record<string, string> = {
+	claude: 'sonnet',
+	codex: 'gpt-5.6-terra',
+	antigravity: 'gemini-3.5-flash',
+};
+
+/** The user-facing label for a model id (its capability label, or the id itself). */
+function modelLabel(cli: AgentCli, model: string): string {
+	return capabilityFor(cli, model)?.label ?? model;
+}
+
 function getModelDefaultLabel(
-	cli: string,
+	cli: AgentCli,
 	projectDefaults?: Record<string, string | undefined>,
 ): string {
-	const defaultModel =
-		projectDefaults?.[cli] ||
-		{
-			claude: 'sonnet',
-			codex: 'gpt-5.6-terra',
-			antigravity: 'Gemini 3.5 Flash (Medium)',
-		}[cli] ||
-		'Unset';
+	const defaultModel = projectDefaults?.[cli] || CODED_DEFAULT_MODEL[cli] || 'Unset';
+	return `Default (${modelLabel(cli, defaultModel)})`;
+}
 
-	const displayModel =
-		defaultModel === 'sonnet'
-			? 'Sonnet'
-			: defaultModel === 'opus'
-				? 'Opus'
-				: defaultModel === 'fable'
-					? 'Fable'
-					: defaultModel === 'haiku'
-						? 'Haiku'
-						: defaultModel;
+/**
+ * The "Default" reasoning option label for a (cli, model) — surfaces the model's
+ * known default so an omitted reasoning reads as e.g. "Default (Medium)" rather
+ * than implying no reasoning happens (issue #180). `Default (unknown)` when the
+ * CLI controls its own default (claude) or none is known.
+ */
+function getReasoningDefaultLabel(cli: AgentCli, model?: string): string {
+	const def = model ? capabilityFor(cli, model)?.defaultReasoning : null;
+	return def ? `Default (${capitalize(def)})` : 'Default (unknown)';
+}
 
-	return `Default (${displayModel})`;
+function capitalize(value: string): string {
+	return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+/**
+ * Normalize a stored per-phase config for display: a legacy combined antigravity
+ * model string (`"Gemini 3.5 Flash (High)"`) becomes its logical id + reasoning
+ * so the Model and Reasoning selectors render the right selections. Non-legacy
+ * values pass through untouched.
+ */
+function normalizeAgentsForDisplay(agents: AgentsConfig): AgentsConfig {
+	const next: AgentsConfig = { ...agents };
+	for (const phase of PHASES) {
+		const config = agents[phase];
+		if (!config?.cli || !config.model) continue;
+		const { model, reasoning } = normalizeModelSelection(config.cli, config.model);
+		if (model !== config.model) {
+			next[phase] = { ...config, model, reasoning: config.reasoning ?? reasoning };
+		}
+	}
+	return next;
 }
 
 function isPhaseConfigDirty(local: AgentConfig = {}, db: AgentConfig = {}): boolean {
+	const normalizedDb = db.cli && db.model ? normalizeModelSelection(db.cli, db.model) : undefined;
+	const dbModel = normalizedDb?.model ?? db.model;
+	const dbReasoning = db.reasoning ?? normalizedDb?.reasoning;
 	return (
 		(local.cli ?? '') !== (db.cli ?? '') ||
-		(local.model ?? '') !== (db.model ?? '') ||
+		(local.model ?? '') !== (dbModel ?? '') ||
+		(local.reasoning ?? '') !== (dbReasoning ?? '') ||
 		(local.timeoutMs ?? '') !== (db.timeoutMs ?? '')
 	);
 }
@@ -94,9 +131,16 @@ function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 	return Object.keys(cleanAgents).length > 0 ? cleanAgents : undefined;
 }
 
-function cleanAgentConfig({ cli, model, timeoutMs }: AgentConfig): AgentConfig | undefined {
-	if (!cli && !model && !timeoutMs) return undefined;
-	return { cli, model, timeoutMs };
+function cleanAgentConfig({
+	cli,
+	model,
+	reasoning,
+	timeoutMs,
+}: AgentConfig): AgentConfig | undefined {
+	if (!cli && !model && !reasoning && !timeoutMs) return undefined;
+	// Reasoning is meaningless without a model to validate it against — drop it if
+	// the model was cleared, so a stale level can't reach the server.
+	return { cli, model, reasoning: model ? reasoning : undefined, timeoutMs };
 }
 
 interface GeneralSettingsFormProps {
@@ -348,10 +392,129 @@ function GeneralSettingsForm({
 	);
 }
 
+interface PhaseConfigRowProps {
+	phase: (typeof PHASES)[number];
+	config: AgentConfig;
+	projectDefaults?: AgentsConfig['defaults'];
+	isPending: boolean;
+	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+}
+
+/**
+ * One phase's row of dependent selectors — CLI → Model → Reasoning → Timeout. The
+ * Model options come from the selected CLI's catalog; the Reasoning options from
+ * the selected model's supported levels (empty → shown "Fixed"/disabled). Split
+ * out of the table body so each cell's dependent logic stays readable.
+ */
+function PhaseConfigRow({
+	phase,
+	config,
+	projectDefaults,
+	isPending,
+	handleCliChange,
+	handleModelChange,
+	handleReasoningChange,
+	handleTimeoutChange,
+}: PhaseConfigRowProps) {
+	const phaseLabel = PHASE_LABELS[phase];
+	const selectedCli = config.cli;
+	const selectedModel = config.model;
+	const selectedReasoning = config.reasoning;
+	// Stored in ms, but the dashboard exposes the 30-minute project default in
+	// whole minutes. An unset value still inherits that default.
+	const timeoutMinutes =
+		config.timeoutMs != null ? config.timeoutMs / (60 * 1000) : DEFAULT_TIMEOUT_MINUTES;
+	const modelOptions = selectedCli ? MODEL_CAPABILITIES[selectedCli] : [];
+	// Reasoning depends on both CLI and model. An empty list means the model
+	// exposes no choice (an antigravity single-variant model, or no model selected
+	// yet) — the selector is shown disabled/informational.
+	const reasoningOptions =
+		selectedCli && selectedModel ? reasoningChoicesFor(selectedCli, selectedModel) : [];
+	const reasoningDisabled = isPending || !selectedModel || reasoningOptions.length === 0;
+	const reasoningPlaceholder = !selectedModel
+		? '—'
+		: reasoningOptions.length === 0
+			? 'Fixed'
+			: selectedCli
+				? getReasoningDefaultLabel(selectedCli, selectedModel)
+				: 'Default';
+
+	return (
+		<tr className="hover:bg-zinc-800/40 transition-colors">
+			<td className="px-4 py-3.5">
+				<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
+				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
+			</td>
+			<td className="px-4 py-3.5">
+				<select
+					value={selectedCli ?? ''}
+					onChange={(e) => handleCliChange(phase, e.target.value)}
+					disabled={isPending}
+					className="block w-full max-w-[200px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow"
+				>
+					<option value="">Default (Unset)</option>
+					<option value="claude">Claude</option>
+					<option value="antigravity">Antigravity</option>
+					<option value="codex">Codex</option>
+				</select>
+			</td>
+			<td className="px-4 py-3.5">
+				<select
+					value={selectedModel ?? ''}
+					onChange={(e) => handleModelChange(phase, e.target.value)}
+					disabled={isPending || !selectedCli}
+					className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+				>
+					<option value="">
+						{selectedCli ? getModelDefaultLabel(selectedCli, projectDefaults) : 'Default (Unset)'}
+					</option>
+					{modelOptions.map((model) => (
+						<option key={model.id} value={model.id}>
+							{model.label}
+						</option>
+					))}
+				</select>
+			</td>
+			<td className="px-4 py-3.5">
+				<select
+					value={selectedReasoning ?? ''}
+					onChange={(e) => handleReasoningChange(phase, e.target.value)}
+					disabled={reasoningDisabled}
+					aria-label={`${phaseLabel.label} reasoning level`}
+					className="block w-full max-w-[200px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow"
+				>
+					<option value="">{reasoningPlaceholder}</option>
+					{reasoningOptions.map((level) => (
+						<option key={level} value={level}>
+							{capitalize(level)}
+						</option>
+					))}
+				</select>
+			</td>
+			<td className="px-4 py-3.5">
+				<input
+					type="number"
+					min="5"
+					max="45"
+					value={timeoutMinutes}
+					onChange={(e) => handleTimeoutChange(phase, e.target.value)}
+					disabled={isPending}
+					aria-label={`${phaseLabel.label} timeout in minutes`}
+					className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
+				/>
+			</td>
+		</tr>
+	);
+}
+
 interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleLightModelChange: (cli: 'claude' | 'codex', value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
@@ -367,6 +530,7 @@ function AgentConfigurationForm({
 	agents,
 	handleCliChange,
 	handleModelChange,
+	handleReasoningChange,
 	handleTimeoutChange,
 	handleLightModelChange,
 	handleSubmit,
@@ -396,79 +560,24 @@ function AgentConfigurationForm({
 									<th className="px-4 py-3">Phase</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
+									<th className="px-4 py-3">Reasoning</th>
 									<th className="px-4 py-3">Timeout (min)</th>
 								</tr>
 							</thead>
 							<tbody className="divide-y divide-zinc-800/60">
-								{PHASES.map((phase) => {
-									const phaseLabel = PHASE_LABELS[phase];
-									const currentConfig = agents[phase] ?? {};
-									const selectedCli = currentConfig.cli;
-									const selectedModel = currentConfig.model;
-									// Stored in ms, but the dashboard exposes the 30-minute project
-									// default in whole minutes. An unset value still inherits that default.
-									const timeoutMinutes =
-										currentConfig.timeoutMs != null
-											? currentConfig.timeoutMs / (60 * 1000)
-											: DEFAULT_TIMEOUT_MINUTES;
-
-									const modelOptions = selectedCli ? AGENT_MODELS[selectedCli] : [];
-
-									return (
-										<tr key={phase} className="hover:bg-zinc-800/40 transition-colors">
-											<td className="px-4 py-3.5">
-												<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
-												<div className="text-xs text-zinc-500 font-mono select-all">
-													{phaseLabel.code}
-												</div>
-											</td>
-											<td className="px-4 py-3.5">
-												<select
-													value={selectedCli ?? ''}
-													onChange={(e) => handleCliChange(phase, e.target.value)}
-													disabled={isPending}
-													className="block w-full max-w-[200px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow"
-												>
-													<option value="">Default (Unset)</option>
-													<option value="claude">Claude</option>
-													<option value="antigravity">Antigravity</option>
-													<option value="codex">Codex</option>
-												</select>
-											</td>
-											<td className="px-4 py-3.5">
-												<select
-													value={selectedModel ?? ''}
-													onChange={(e) => handleModelChange(phase, e.target.value)}
-													disabled={isPending || !selectedCli}
-													className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
-												>
-													<option value="">
-														{selectedCli
-															? getModelDefaultLabel(selectedCli, agents.defaults)
-															: 'Default (Unset)'}
-													</option>
-													{modelOptions.map((model) => (
-														<option key={model} value={model}>
-															{model}
-														</option>
-													))}
-												</select>
-											</td>
-											<td className="px-4 py-3.5">
-												<input
-													type="number"
-													min="5"
-													max="45"
-													value={timeoutMinutes}
-													onChange={(e) => handleTimeoutChange(phase, e.target.value)}
-													disabled={isPending}
-													aria-label={`${phaseLabel.label} timeout in minutes`}
-													className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
-												/>
-											</td>
-										</tr>
-									);
-								})}
+								{PHASES.map((phase) => (
+									<PhaseConfigRow
+										key={phase}
+										phase={phase}
+										config={agents[phase] ?? {}}
+										projectDefaults={agents.defaults}
+										isPending={isPending}
+										handleCliChange={handleCliChange}
+										handleModelChange={handleModelChange}
+										handleReasoningChange={handleReasoningChange}
+										handleTimeoutChange={handleTimeoutChange}
+									/>
+								))}
 							</tbody>
 						</table>
 					</div>
@@ -706,7 +815,7 @@ function ProjectDetailRouteComponent() {
 			setBranchPrefix(project.branchPrefix ?? '');
 			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
 			setMaxConcurrentJobsError(undefined);
-			setAgents(project.agents ?? {});
+			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
 		}
@@ -788,6 +897,9 @@ function ProjectDetailRouteComponent() {
 				updatedPhase.cli = undefined;
 				updatedPhase.model = undefined;
 			}
+			// Reasoning is model-specific: any CLI change may make the old level invalid,
+			// so clear it rather than keep a hidden incompatible value (issue #180).
+			updatedPhase.reasoning = undefined;
 			return {
 				...prev,
 				[phase]: updatedPhase,
@@ -797,11 +909,33 @@ function ProjectDetailRouteComponent() {
 	};
 
 	const handleModelChange = (phase: keyof AgentsConfig, value: string) => {
+		setAgents((prev) => {
+			const current = (prev[phase] ?? {}) as AgentConfig;
+			const model = value || undefined;
+			// Keep the reasoning only if the newly selected model still supports it.
+			const stillValid =
+				current.reasoning &&
+				current.cli &&
+				model &&
+				(reasoningChoicesFor(current.cli, model) as readonly string[]).includes(current.reasoning);
+			return {
+				...prev,
+				[phase]: {
+					...current,
+					model,
+					reasoning: stillValid ? current.reasoning : undefined,
+				},
+			};
+		});
+		updateMutation.reset();
+	};
+
+	const handleReasoningChange = (phase: keyof AgentsConfig, value: string) => {
 		setAgents((prev) => ({
 			...prev,
 			[phase]: {
 				...prev[phase],
-				model: value || undefined,
+				reasoning: value ? (value as ReasoningLevel) : undefined,
 			},
 		}));
 		updateMutation.reset();
@@ -841,7 +975,7 @@ function ProjectDetailRouteComponent() {
 
 	const handleAgentsReset = () => {
 		if (project) {
-			setAgents(project.agents ?? {});
+			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			updateMutation.reset();
 		}
 	};
@@ -1031,6 +1165,7 @@ function ProjectDetailRouteComponent() {
 					agents={agents}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
+					handleReasoningChange={handleReasoningChange}
 					handleTimeoutChange={handleTimeoutChange}
 					handleLightModelChange={handleLightModelChange}
 					handleSubmit={handleAgentsSubmit}

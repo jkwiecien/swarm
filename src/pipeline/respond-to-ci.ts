@@ -53,6 +53,7 @@ import {
 	runAgentCli,
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
+import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
@@ -135,6 +136,8 @@ export interface RunRespondToCiPhaseOptions {
 	cli?: AgentCli;
 	/** Model for the agent's session (e.g. 'sonnet', 'opus'). Omit for the CLI's own default. */
 	model?: string;
+	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
+	reasoning?: ReasoningLevel;
 	/**
 	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
 	 * (`resumeSessionId`). When resuming, the preserved PR-branch checkout is
@@ -247,6 +250,7 @@ export async function runRespondToCiPhase(
 		taskId,
 		cli = DEFAULT_RESPOND_CI_CLI,
 		model,
+		reasoning,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -258,13 +262,14 @@ export async function runRespondToCiPhase(
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
 	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'implementer');
 
-	logger.info(`Phase started - Respond-to-CI — running ${describeAgent(cli, model)}`, {
+	logger.info(`Phase started - Respond-to-CI — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,
 		prNumber,
 		prBranch,
 		headSha,
 		cli,
 		model,
+		reasoning,
 	});
 
 	// Resolved first: a missing implementer credential fails the job before any
@@ -292,6 +297,7 @@ export async function runRespondToCiPhase(
 			: await runAgent({
 					cli,
 					model,
+					reasoning,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
 					args: [

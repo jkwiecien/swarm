@@ -11,6 +11,7 @@
 
 import { type Job, Queue } from 'bullmq';
 import type { AgentCli } from '../harness/agent-cli.js';
+import type { ReasoningLevel } from '../harness/models.js';
 import { requireEnv } from '../lib/env.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob } from './jobs.js';
@@ -197,6 +198,7 @@ export async function promoteRetryForRun(
 	runId: string,
 	cli?: AgentCli,
 	model?: string,
+	reasoning?: ReasoningLevel,
 ): Promise<boolean> {
 	const q = getQueue();
 	// A promotable retry is always `delayed` (it was scheduled with a delay).
@@ -218,6 +220,7 @@ export async function promoteRetryForRun(
 		job.data.rateLimitRetryAttempt = 0;
 		if (cli) job.data.cliOverride = cli;
 		if (model) job.data.modelOverride = model;
+		if (reasoning) job.data.reasoningOverride = reasoning;
 		await job.updateData(job.data);
 	};
 

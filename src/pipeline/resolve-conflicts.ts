@@ -8,6 +8,7 @@ import {
 	runAgentCli,
 } from '../harness/agent-cli.js';
 import { agentRunError } from '../harness/agent-failure.js';
+import type { ReasoningLevel } from '../harness/models.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
 import { logger } from '../lib/logger.js';
 import {
@@ -51,6 +52,8 @@ export interface RunResolveConflictsPhaseOptions {
 	taskId: string;
 	cli?: AgentCli;
 	model?: string;
+	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
+	reasoning?: ReasoningLevel;
 	/** Assign a fresh session id (`sessionId`) or resume from one on retry (`resumeSessionId`). */
 	sessionId?: string;
 	resumeSessionId?: string;
@@ -98,6 +101,7 @@ export async function runResolveConflictsPhase(
 		taskId,
 		cli = 'claude',
 		model,
+		reasoning,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -106,12 +110,16 @@ export async function runResolveConflictsPhase(
 		graft = graftEnvironment,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-	logger.info(`Phase started - Resolve-conflicts — running ${describeAgent(cli, model)}`, {
-		taskId,
-		prNumber,
-		headSha,
-		baseSha,
-	});
+	logger.info(
+		`Phase started - Resolve-conflicts — running ${describeAgent(cli, model, reasoning)}`,
+		{
+			taskId,
+			prNumber,
+			headSha,
+			baseSha,
+			reasoning,
+		},
+	);
 	// On a resume retry, reuse the preserved checkout so a partial merge resolution
 	// and the agent's session carry over.
 	const { handle, resumed } = await acquireResumableWorktree(
@@ -131,6 +139,7 @@ export async function runResolveConflictsPhase(
 			: await runAgent({
 					cli,
 					model,
+					reasoning,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
 					args: [
