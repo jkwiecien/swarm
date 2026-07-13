@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ProjectConfig } from '../config/schema.js';
+import { nativeDelegationEnabled } from '../delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -25,7 +26,7 @@ import {
 } from '../scm/delivery.js';
 import { GitWorktreeManager } from '../worker/git-worktree-manager.js';
 import { graftEnvironment } from '../worktree/graft.js';
-import { PIPELINE_PHASE_GUARD } from './agent-scope.js';
+import { pipelinePhaseGuard } from './agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -66,10 +67,11 @@ export function buildResolveConflictsPrompt(
 		RunResolveConflictsPhaseOptions,
 		'project' | 'prNumber' | 'prBranch' | 'headSha' | 'baseBranch' | 'baseSha'
 	>,
+	nativeDelegation = false,
 ): string {
 	return [
 		'You are the implementer assigned only to SWARM’s Resolve Conflicts phase.',
-		PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		`PR #${input.prNumber} in ${input.project.repo} has confirmed merge conflicts.`,
 		`Its branch is "${input.prBranch}" and the observed head was ${input.headSha}. The current base is "${input.baseBranch}" at ${input.baseSha}.`,
 		'Fetch origin. Before changing anything, verify origin/' +
@@ -132,14 +134,17 @@ export async function runResolveConflictsPhase(
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
 					args: [
-						buildResolveConflictsPrompt({
-							project,
-							prNumber,
-							prBranch,
-							headSha,
-							baseBranch,
-							baseSha,
-						}),
+						buildResolveConflictsPrompt(
+							{
+								project,
+								prNumber,
+								prBranch,
+								headSha,
+								baseBranch,
+								baseSha,
+							},
+							nativeDelegationEnabled(project, 'resolve-conflicts', cli),
+						),
 					],
 					maxOutputBytes: 1_000_000,
 					logContext: { taskId, phase: 'resolve-conflicts', prNumber, headSha, baseSha },

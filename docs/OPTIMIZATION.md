@@ -206,6 +206,23 @@ successful task; a two-line README edit should normally stay with the primary ag
 deterministic formatter, while coordinated edits across several documents may justify a
 lighter subagent.
 
+### Implemented Option A boundary
+
+SWARM's initial implementation uses project-owned Claude agents named `swarm-phase-coordinator`
+and `swarm-doc-editor`. It is disabled by default per project and phase, with a global environment
+kill switch. The coordinator's native Agent-tool allowlist contains only the documentation child;
+the child is pinned to Haiku, has only Read/Edit, cannot nest agents or invoke skills/commands, and
+an agent-scoped hook validates the structured contract, minimum semantic-operation threshold, and
+every exact documentation path. The hook records child duration/usage where Claude exposes it, and
+the parent run is rejected unless the coordinator records that it inspected and accepted or
+reworked the child result. Run history stores those child observations beside the parent phase.
+
+Option B remains deliberately unimplemented. Promote it only under the reliability, attribution,
+enforcement, retry, parent-continuity, or cross-CLI criteria above; the contract and persisted
+observation shapes are provider-neutral so that promotion does not require redefining delegation.
+The harness capability registry explicitly marks Claude supported and Codex/Antigravity unsupported;
+their provider-specific discovery and adapters are tracked by #184 and #185 respectively.
+
 ## 7. Add phase-specific effort and spending controls
 
 Model choice alone does not bound how intensely a model reasons or how long it explores. The

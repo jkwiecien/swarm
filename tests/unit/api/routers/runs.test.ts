@@ -69,6 +69,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		durationMs: 60000,
 		timeoutMs: null,
 		usage: null,
+		delegations: null,
 		jobPayload: null,
 		agentSessionId: null,
 		outputBytes: 0,

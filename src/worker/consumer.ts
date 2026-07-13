@@ -30,6 +30,10 @@ import {
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
+import {
+	configureNativeDelegationRun,
+	hasUnreviewedCompletedDelegation,
+} from '../delegation/native.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
@@ -386,7 +390,7 @@ function runPhase(
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 }> {
 	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
-	const runAgent = createLiveOutputRunner(runId);
+	const runAgent = createLiveOutputRunner(runId, project, trigger.phase);
 	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
 	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
 	// resume id; on a fresh run it's assigned as claude's `--session-id` (codex/agy
@@ -487,8 +491,24 @@ function runPhase(
 	}
 }
 
-function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
-	if (!runId) return runAgentCli;
+function createLiveOutputRunner(
+	runId: string | undefined,
+	project: ProjectConfig,
+	phase: TriggerPhase,
+): typeof runAgentCli {
+	if (!runId) {
+		return async (options) => {
+			const result = await runAgentCli(configureNativeDelegationRun(options, { project, phase }));
+			if (result.exitCode !== 0 || !hasUnreviewedCompletedDelegation(result.delegations)) {
+				return result;
+			}
+			return {
+				...result,
+				exitCode: 1,
+				stderr: `${result.stderr}\nSWARM delegation failed: primary review disposition was not recorded.`,
+			};
+		};
+	}
 	return async (options) => {
 		let pending = Promise.resolve();
 		let queuedBytes = 0;
@@ -525,19 +545,31 @@ function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
 			if (queue.length >= 100) flush();
 			else timer ??= setTimeout(flush, 100);
 		};
-		const result = await runAgentCli({
-			...options,
-			onStdout: (line) => {
-				options.onStdout?.(line);
-				append('stdout', line);
-			},
-			onStderr: (line) => {
-				options.onStderr?.(line);
-				append('stderr', line);
-			},
-		});
+		const result = await runAgentCli(
+			configureNativeDelegationRun(
+				{
+					...options,
+					onStdout: (line) => {
+						options.onStdout?.(line);
+						append('stdout', line);
+					},
+					onStderr: (line) => {
+						options.onStderr?.(line);
+						append('stderr', line);
+					},
+				},
+				{ project, phase, runId },
+			),
+		);
 		flush();
 		await pending;
+		if (result.exitCode === 0 && hasUnreviewedCompletedDelegation(result.delegations)) {
+			return {
+				...result,
+				exitCode: 1,
+				stderr: `${result.stderr}\nSWARM delegation failed: primary review disposition was not recorded.`,
+			};
+		}
 		return result;
 	};
 }
@@ -835,6 +867,7 @@ function agentColumns(agent: AgentCliResult | undefined): Partial<CompleteRunInp
 		timedOut: agent?.timedOut,
 		durationMs: agent?.durationMs,
 		usage: agent?.usage,
+		delegations: agent?.delegations,
 	};
 }
 
@@ -1393,6 +1426,7 @@ export async function processJob(
 				timedOut: result.agent.timedOut,
 				durationMs: result.agent.durationMs,
 				usage: result.agent.usage,
+				delegations: result.agent.delegations,
 			},
 			result.agent,
 		);

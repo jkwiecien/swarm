@@ -4,9 +4,42 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import {
+	DELEGATION_EVENTS_FILENAME,
+	DELEGATION_REVIEW_FILENAME,
+	DELEGATION_START_GLOB,
+} from '../delegation/native.js';
 import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 
 const execFileAsync = promisify(execFile);
+
+// Git exports repository-local variables while running hooks. They override
+// `cwd`, so carrying them into a worktree delivery can redirect commands to
+// the hook's repository/index. Preserve transport/auth variables, but always
+// let the requested worktree determine repository location.
+const repositoryLocalGitEnvironment = [
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+	'GIT_CONFIG',
+	'GIT_CONFIG_PARAMETERS',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_IMPLICIT_WORK_TREE',
+	'GIT_GRAFT_FILE',
+	'GIT_INDEX_FILE',
+	'GIT_NO_REPLACE_OBJECTS',
+	'GIT_REPLACE_REF_BASE',
+	'GIT_PREFIX',
+	'GIT_INTERNAL_SUPER_PREFIX',
+	'GIT_SHALLOW_FILE',
+	'GIT_COMMON_DIR',
+] as const;
+
+function gitEnvironmentForCwd(): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	for (const key of repositoryLocalGitEnvironment) delete env[key];
+	return env;
+}
 
 export const VerificationSchema = z.object({
 	command: z.string().min(1),
@@ -91,6 +124,13 @@ export const HANDOFF_FILENAMES = {
 } as const;
 
 const PROGRESS_FILENAME = '.swarm_delivery.json';
+const SCRATCH_PATHSPECS = [
+	...Object.values(HANDOFF_FILENAMES),
+	PROGRESS_FILENAME,
+	DELEGATION_EVENTS_FILENAME,
+	DELEGATION_REVIEW_FILENAME,
+	`:(glob)${DELEGATION_START_GLOB}`,
+] as const;
 
 export class DeliveryDeferredError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
@@ -149,7 +189,7 @@ export function hasDeliveryProgress(cwd: string): boolean {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync('git', args, { cwd });
+	const { stdout } = await execFileAsync('git', args, { cwd, env: gitEnvironmentForCwd() });
 	return stdout.trim();
 }
 
@@ -158,16 +198,9 @@ export async function validatePreparedTree(cwd: string): Promise<void> {
 	if (unresolved) throw new Error(`Unsafe delivery: unresolved conflicts in ${unresolved}`);
 	const status = await git(cwd, ['status', '--porcelain']);
 	if (!status) throw new Error('Unsafe delivery: expected working-tree changes but found none');
-	const scratch = status
-		.split('\n')
-		.map((line) => line.slice(3))
-		.filter(
-			(path) =>
-				Object.values(HANDOFF_FILENAMES).includes(path as never) || path === PROGRESS_FILENAME,
-		);
-	if (scratch.some((path) => !status.includes(`?? ${path}`))) {
-		throw new Error(`Unsafe delivery: scratch artifact is tracked (${scratch.join(', ')})`);
-	}
+	const trackedScratch = await git(cwd, ['ls-files', '--', ...SCRATCH_PATHSPECS]);
+	if (trackedScratch)
+		throw new Error(`Unsafe delivery: scratch artifact is tracked (${trackedScratch})`);
 }
 
 export async function commitPreparedTree(
@@ -181,8 +214,11 @@ export async function commitPreparedTree(
 		'--all',
 		'--',
 		'.',
-		...Object.values(HANDOFF_FILENAMES).flatMap((name) => [`:(exclude)${name}`]),
-		`:(exclude)${PROGRESS_FILENAME}`,
+		...SCRATCH_PATHSPECS.map((path) =>
+			path.startsWith(':(glob)')
+				? `:(exclude,glob)${path.slice(':(glob)'.length)}`
+				: `:(exclude)${path}`,
+		),
 	]);
 	const staged = await git(cwd, ['diff', '--cached', '--name-only']);
 	if (!staged)

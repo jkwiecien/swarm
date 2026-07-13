@@ -43,6 +43,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
+import { nativeDelegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -53,7 +54,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -187,12 +188,13 @@ export interface ImplementationPhaseResult {
 export function buildImplementationPrompt(
 	workItem: WorkItem,
 	context: { repo: string; taskId: string; branch: string; baseBranch: string },
+	nativeDelegation = false,
 ): string {
 	const { repo, branch, baseBranch } = context;
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
-		...PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		...GH_IDENTITY_GUARD,
 		'',
 		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
@@ -388,12 +390,16 @@ export async function runImplementationPhase(
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
 					args: [
-						buildImplementationPrompt(workItem, {
-							repo: project.repo,
-							taskId,
-							branch: handle.branch,
-							baseBranch: project.baseBranch,
-						}),
+						buildImplementationPrompt(
+							workItem,
+							{
+								repo: project.repo,
+								taskId,
+								branch: handle.branch,
+								baseBranch: project.baseBranch,
+							},
+							nativeDelegationEnabled(project, 'implementation', cli),
+						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes (including `gh pr create`) acts as the

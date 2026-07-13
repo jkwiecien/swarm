@@ -48,6 +48,7 @@
 
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
+import { nativeDelegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -58,7 +59,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -165,16 +166,19 @@ export interface ReviewPhaseResult {
  * submitted to {@link REVIEW_VERDICT_FILENAME} so this phase can validate the
  * hand-off.
  */
-export function buildReviewPrompt(context: {
-	repo: string;
-	prNumber: string;
-	headSha: string;
-}): string {
+export function buildReviewPrompt(
+	context: {
+		repo: string;
+		prNumber: string;
+		headSha: string;
+	},
+	nativeDelegation = false,
+): string {
 	const { repo, prNumber, headSha } = context;
 	return [
 		'You are a senior code reviewer reviewing a pull request.',
 		'',
-		...PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
@@ -285,7 +289,12 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 					model,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
-					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
+					args: [
+						buildReviewPrompt(
+							{ repo: project.repo, prNumber, headSha },
+							nativeDelegationEnabled(project, 'review', cli),
+						),
+					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes acts as the reviewer persona.
 					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,

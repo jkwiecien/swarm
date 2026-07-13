@@ -45,6 +45,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
+import { nativeDelegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -55,7 +56,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -169,17 +170,20 @@ export interface RespondToCiPhaseResult {
  * comment on the PR, and record which outcome applied to
  * {@link RESPOND_CI_OUTCOME_FILENAME} so this phase can validate the hand-off.
  */
-export function buildRespondToCiPrompt(context: {
-	repo: string;
-	prNumber: string;
-	prBranch: string;
-	headSha: string;
-}): string {
+export function buildRespondToCiPrompt(
+	context: {
+		repo: string;
+		prNumber: string;
+		prBranch: string;
+		headSha: string;
+	},
+	nativeDelegation = false,
+): string {
 	const { repo, prNumber, prBranch, headSha } = context;
 	return [
 		'You are a senior software engineer whose pull request has failing CI checks.',
 		'',
-		...PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
@@ -290,7 +294,12 @@ export async function runRespondToCiPhase(
 					model,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
-					args: [buildRespondToCiPrompt({ repo: project.repo, prNumber, prBranch, headSha })],
+					args: [
+						buildRespondToCiPrompt(
+							{ repo: project.repo, prNumber, prBranch, headSha },
+							nativeDelegationEnabled(project, 'respond-to-ci', cli),
+						),
+					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes (incl. the PR comment) acts as the implementer
 					// persona, not the worker host's own logged-in account.

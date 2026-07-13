@@ -62,6 +62,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
+import { nativeDelegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -72,7 +73,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -304,18 +305,21 @@ async function reportBoardStatus(
  * response ran), and record which outcome applied to
  * {@link RESPOND_OUTCOME_FILENAME} so this phase can validate the hand-off.
  */
-export function buildRespondToReviewPrompt(context: {
-	repo: string;
-	prNumber: string;
-	prBranch: string;
-	reviewId: string;
-}): string {
+export function buildRespondToReviewPrompt(
+	context: {
+		repo: string;
+		prNumber: string;
+		prBranch: string;
+		reviewId: string;
+	},
+	nativeDelegation = false,
+): string {
 	const { repo, prNumber, prBranch, reviewId } = context;
 	return [
 		'You are a senior software engineer responding to a code review on a pull request',
 		'you authored.',
 		'',
-		...PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
@@ -488,7 +492,12 @@ export async function runRespondToReviewPhase(
 					model,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
-					args: [buildRespondToReviewPrompt({ repo: project.repo, prNumber, prBranch, reviewId })],
+					args: [
+						buildRespondToReviewPrompt(
+							{ repo: project.repo, prNumber, prBranch, reviewId },
+							nativeDelegationEnabled(project, 'respond-to-review', cli),
+						),
+					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes (incl. the PR comment reply) acts as the
 					// implementer persona, not the worker host's own logged-in account.
