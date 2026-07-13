@@ -38,6 +38,7 @@
 			"!**/dist",
 			"!**/coverage",
 			"!**/*.json",
+			"!.claude/**/*.md",
 			"!cascade",
 			"!web/src/index.css"
 		]

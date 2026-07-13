@@ -1477,6 +1477,28 @@ describe('processJob', () => {
 			);
 		});
 
+		it('links native child observations to the completed parent run', async () => {
+			const delegation = {
+				contractId: 'docs-update',
+				parentRunId: 'run-1',
+				phase: 'review',
+				agent: 'swarm-doc-editor' as const,
+				model: 'haiku',
+				delegationType: 'documentation-edit' as const,
+				allowedPaths: ['README.md'],
+				outcome: 'completed' as const,
+				reviewDisposition: 'accepted' as const,
+			};
+			phaseImpl = async () => ({ agent: agentResult({ delegations: [delegation] }) });
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ delegations: [delegation] }),
+			);
+		});
+
 		it('records the work item metadata and requested model for a PM-driven phase', async () => {
 			const projectWithAgents = createMockProjectConfig({
 				agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },

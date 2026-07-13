@@ -115,6 +115,24 @@ export const AgentDefaultsSchema = z
 	)
 	.describe('Per-CLI default model — used when a phase omits its own model override');
 
+export const NativeDelegationConfigSchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		model: z.literal('haiku').default('haiku'),
+		minimumSemanticOperations: z.number().int().min(3).default(3),
+		phases: z
+			.object({
+				planning: z.boolean().optional(),
+				implementation: z.boolean().optional(),
+				review: z.boolean().optional(),
+				respondToReview: z.boolean().optional(),
+				respondToCi: z.boolean().optional(),
+				resolveConflicts: z.boolean().optional(),
+			})
+			.default({ implementation: true }),
+	})
+	.describe('Bounded native semantic delegation policy for Claude pipeline phases');
+
 /**
  * Per-phase agent overrides, keyed by the same phase names the trigger/worker
  * layer already uses (`TriggerResult['phase']`, `src/triggers/types.ts`) —
@@ -131,6 +149,7 @@ export const AgentDefaultsSchema = z
 export const AgentsConfigSchema = z
 	.object({
 		defaults: AgentDefaultsSchema.optional(),
+		delegation: NativeDelegationConfigSchema.optional(),
 		planning: AgentConfigSchema.optional(),
 		implementation: AgentConfigSchema.optional(),
 		review: AgentConfigSchema.optional(),
@@ -273,6 +292,7 @@ export const SwarmConfigSchema = z.object({
 export type Credentials = z.infer<typeof CredentialsSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
+export type NativeDelegationConfig = z.infer<typeof NativeDelegationConfigSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type WorktreeRetentionConfig = z.infer<typeof WorktreeRetentionConfigSchema>;

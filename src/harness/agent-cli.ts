@@ -16,6 +16,8 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 
+import type { DelegationObservation } from '@/delegation/native.js';
+import { readDelegationObservations } from '@/delegation/observations.js';
 import { logger } from '@/lib/logger.js';
 import { detectNewConversationId, snapshotConversationIds } from './antigravity-session.js';
 import { type AgentUsage, parseAgentOutput } from './usage.js';
@@ -147,6 +149,8 @@ export interface RunAgentCliOptions {
 	cwd: string;
 	/** Arguments passed to the CLI (prompt, flags, …). */
 	args?: string[];
+	/** Provider-specific flags inserted before output/session/print arguments. */
+	providerArgs?: string[];
 	/**
 	 * Model for this session, passed as `--model <value>` — both `claude` and
 	 * `agy` accept an alias (`sonnet`, `opus`) or a full model name. Omit to run
@@ -265,6 +269,8 @@ export interface AgentCliResult {
 	 * tail of stdout, unless it too was cut off.
 	 */
 	usage?: AgentUsage;
+	/** Native child-agent lifecycle and usage records linked to this parent run. */
+	delegations?: DelegationObservation[];
 }
 
 /**
@@ -408,6 +414,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const args = [
 		...baseArgs,
 		...modelArgs,
+		...(options.providerArgs ?? []),
 		...OUTPUT_FORMAT_ARGS[cli],
 		...sessionArgs,
 		...(printFlag ? [printFlag] : []),
@@ -525,6 +532,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			// Antigravity has no output id, so diff its conversation store — or, on a
 			// resume run, keep the id we resumed with.
 			const sessionId = resolveSessionId(parsed.sessionId);
+			const delegations = readDelegationObservations(options.cwd);
 			const result: AgentCliResult = {
 				cli,
 				exitCode: code,
@@ -537,6 +545,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				outputTruncated: stdout.truncated || stderr.truncated,
 				usage: parsed.usage,
 				sessionId,
+				delegations: delegations.length > 0 ? delegations : undefined,
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,

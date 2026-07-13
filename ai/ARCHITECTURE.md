@@ -74,14 +74,22 @@ Implement it against the same `PMProvider`-shaped interface Cascade uses (`getWo
 
 Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the sole SCM:
 
-Each worker-spawned agent is scoped to one phase. A shared prompt guard forbids pipeline
-agents from invoking the manual `solve-issue` skill, spawning subagents, or continuing
-into later phases; only the worker owns phase hand-offs, personas, and worktrees.
+Each worker-spawned agent is scoped to one phase. A shared prompt guard forbids the manual
+`solve-issue` skill, arbitrary subagents/skills, and later-phase work; only the worker owns
+phase hand-offs, personas, and worktrees. An opted-in Claude phase is launched through the
+project-owned `swarm-phase-coordinator`, whose native tool allowlist exposes only
+`Agent(swarm-doc-editor)`. That Haiku child has Read/Edit only, exact paths are enforced by
+agent-scoped hooks against a structured delegation contract, and the parent phase fails if it
+does not record an accepted/reworked disposition. Provider-neutral policy and observations stay
+outside the Claude adapter, selected through an explicit adapter registry covering every harness
+CLI, so a future provider adapter or orchestrated child-run implementation can reuse them. Native
+Codex and Antigravity support are tracked separately in #184 and #185; unsupported CLIs fail closed
+to the no-subagent prompt guard rather than inheriting Claude semantics.
 
 1. **Planning** — item enters "Planning" status → worktree provisioned → the planning agent writes `proposed_plan.md` → plan posted as a comment on the linked Issue. By default the item stays in "Planning" (a human reviews the plan, then moves it to "ToDo" to greenlight Implementation); `pipeline.planning.autoAdvance` flips that to an automatic move. When `pipeline.planning.autoSplit` is on (default) and the agent judges the item too large for one PR, it also writes `proposed_split.json`: the original item is re-scoped into the smaller **first** task (`proposed_plan.md` is that task's plan) and the remaining work is spawned as sibling items via `PMProvider.createWorkItem`. Each sibling starts in "Planning" (so this same trigger plans it), is tagged `swarm:split-child` — the label `runPlanningPhase` reads to force `autoAdvance` off for that sibling's own run, so a split-off task never moves itself to "ToDo" — and gets a comment explaining the split. This keeps splitting behind the provider-agnostic `PMProvider` (no GitHub Projects specifics leak into the phase).
-2. **Implementation** — item enters "ToDo" → the phase moves it to "In Progress" to report the pickup (a status report, not a trigger) → worktree on the task branch → Claude Code (implementer persona) implements the plan, runs tests, commits, pushes → PR opened, linked back to the Projects item.
-3. **Review** — PR opened / check suite completes with all checks passing → Claude Code (reviewer persona) reviews the diff, posts PR review comments — mirrors Cascade's review-agent trigger on `check_suite` success.
-4. **Respond to review** — by default, the reviewer persona's `changes_requested` review → Claude Code (implementer persona) addresses the batched review comments, pushes a fix, or pushes back with a rationale. `pipeline.respondToReview.skipOnMinors` defaults to true so approvals and comment-only reviews do not consume a separate agent run; set it false to respond to every reviewer-persona verdict. Like Implementation, it reports progress on the board as a status *report*, not a trigger: the card moves to "In progress" while the implementer works and back to "In review" once it has responded (best-effort — a card it can't resolve or move is logged and skipped, never failing the response). Neither status starts a phase, so bouncing the card can't re-fire Review; only a new fix commit does, deduped per head SHA.
+2. **Implementation** — item enters "ToDo" → the phase moves it to "In Progress" to report the pickup → the agent implements/verifies and writes a semantic hand-off → SWARM validates the prepared tree, commits/pushes, opens or reuses the PR, and links it back to the item.
+3. **Review** — PR opened / checks pass → the reviewer agent writes a structured verdict and body → SWARM submits the formal review under the reviewer persona.
+4. **Respond to review** — by default, the reviewer persona's `changes_requested` review → the implementer addresses the batch and writes a structured response → SWARM commits/pushes any fix and posts the response idempotently. `pipeline.respondToReview.skipOnMinors` defaults to true so approvals and comment-only reviews do not consume a separate agent run; set it false to respond to every reviewer-persona verdict. Like Implementation, it reports progress on the board as a status *report*, not a trigger: the card moves to "In progress" while the implementer works and back to "In review" once it has responded (best-effort — a card it can't resolve or move is logged and skipped, never failing the response). Neither status starts a phase, so bouncing the card can't re-fire Review; only a new fix commit does, deduped per head SHA.
 5. **Respond to CI** — a PR's check suite completes with a failing check → worktree on the PR's task branch → Claude Code (implementer persona) inspects the failing checks, fixes the build surgically and pushes (or reports no code change was warranted) — mirrors Cascade's `respond-to-ci` agent. A per-PR fix-attempt cap stops a never-sticking fix from looping (each fix commit is a new SHA, so it re-triggers CI).
 
 ### Trigger wiring (SWARM-53)
@@ -109,6 +117,11 @@ Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-spec
 ## Harness (agent-CLI execution engine)
 
 Once the worker has a provisioned worktree, it hands off to the harness (`src/harness/agent-cli.ts`, `runAgentCli`) to actually run the agent. The harness is deliberately narrow: it spawns `claude` or `antigravity` (Node's `child_process.spawn`, no subprocess library) with the worktree as CWD, streams stdout/stderr line-by-line (optional callbacks + `logger.debug`) while accumulating the full output, and resolves with `{ exitCode, signal, stdout, stderr, durationMs, timedOut }`. A non-zero exit is a normal outcome the caller inspects — only a spawn failure (e.g. the CLI isn't installed) throws. `timeoutMs` and an `AbortSignal` both kill the run (SIGTERM, escalating to SIGKILL). Prompt construction, persona/token selection, and the queue→worktree→harness→cleanup lifecycle live in the worker (SWARM-17), not here.
+
+For enabled native delegation, the worker's Claude adapter adds the trusted coordinator and pins
+`CLAUDE_CODE_SUBAGENT_MODEL=haiku` (Claude's highest-precedence child-model control). The project
+agent definition and hook enforce the native boundary; the generic harness only parses the
+resulting observations before worktree cleanup. Deterministic delivery remains outside both models.
 
 ### Failure handling & rate-limit retries (issue #91)
 

@@ -80,6 +80,38 @@ describe('ProjectConfigSchema', () => {
 		expect(project.agents).toBeUndefined();
 	});
 
+	it('parses bounded native delegation controls with conservative defaults', () => {
+		const base = createMockProjectConfig();
+		const project = validateConfig({
+			projects: [{ ...base, agents: { delegation: { enabled: true } } }],
+		}).projects[0];
+		expect(project.agents?.delegation).toEqual({
+			enabled: true,
+			model: 'haiku',
+			minimumSemanticOperations: 3,
+			phases: { implementation: true },
+		});
+	});
+
+	it('rejects a delegation threshold that would route trivial work', () => {
+		const base = createMockProjectConfig();
+		expect(() =>
+			validateConfig({
+				projects: [
+					{
+						...base,
+						agents: {
+							delegation: {
+								enabled: true,
+								minimumSemanticOperations: 2,
+							},
+						},
+					},
+				],
+			}),
+		).toThrow();
+	});
+
 	it('accepts a per-phase agent CLI/model override', () => {
 		const project = createMockProjectConfig({
 			agents: {

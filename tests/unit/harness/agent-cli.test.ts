@@ -85,6 +85,27 @@ describe('runAgentCli', () => {
 		);
 	});
 
+	it('inserts trusted provider arguments before output/session/print arguments', async () => {
+		const promise = runAgentCli(
+			createMockRunAgentCliOptions({
+				providerArgs: ['--agent', 'swarm-phase-coordinator'],
+				args: ['implement the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await promise;
+
+		expect(spawnMock.mock.calls[0][1]).toEqual([
+			'--dangerously-skip-permissions',
+			'--agent',
+			'swarm-phase-coordinator',
+			'--output-format',
+			'json',
+			'-p',
+			'implement the thing',
+		]);
+	});
+
 	it('assigns and resumes Claude sessions before -p without affecting other CLIs', async () => {
 		const fresh = runAgentCli(
 			createMockRunAgentCliOptions({

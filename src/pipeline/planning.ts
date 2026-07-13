@@ -29,6 +29,7 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 import type { ProjectConfig } from '@/config/schema.js';
+import { nativeDelegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -37,7 +38,7 @@ import {
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
-import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
+import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -215,11 +216,15 @@ export interface PlanningPhaseResult {
  * first (now-smaller) task, and `proposed_split.json` lists the remaining sibling
  * tasks (see {@link PROPOSED_SPLIT_FILENAME}). A right-sized task is left whole.
  */
-export function buildPlanningPrompt(workItem: WorkItem, allowSplit = false): string {
+export function buildPlanningPrompt(
+	workItem: WorkItem,
+	allowSplit = false,
+	nativeDelegation = false,
+): string {
 	const lines = [
 		'You are a senior software architect creating a detailed implementation plan.',
 		'',
-		...PIPELINE_PHASE_GUARD,
+		...pipelinePhaseGuard(nativeDelegation),
 		'',
 		'PLANNING ONLY. Do NOT implement, edit, or create any source files, and do NOT',
 		'run any command that changes the repository. Your sole deliverable is a plan',
@@ -512,7 +517,9 @@ export async function runPlanningPhase(
 			model,
 			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
-			args: [buildPlanningPrompt(workItem, autoSplit)],
+			args: [
+				buildPlanningPrompt(workItem, autoSplit, nativeDelegationEnabled(project, 'planning', cli)),
+			],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			logContext: { taskId, phase: 'planning', workItemId: workItem.id },
 			timeoutMs,

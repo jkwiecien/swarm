@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { and, asc, count, desc, eq, gt, isNotNull, type SQL, sql } from 'drizzle-orm';
-
+import type { DelegationObservation } from '../../delegation/native.js';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { SwarmJob } from '../../queue/jobs.js';
@@ -106,6 +106,7 @@ export interface CompleteRunInput {
 	durationMs?: number;
 	nextRetryAt?: Date | null;
 	usage?: AgentUsage;
+	delegations?: DelegationObservation[];
 	agentSessionId?: string | null;
 }
 
@@ -126,6 +127,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			durationMs: input.durationMs,
 			nextRetryAt: input.nextRetryAt,
 			usage: input.usage,
+			delegations: input.delegations,
 			agentSessionId: input.agentSessionId,
 			completedAt: new Date(),
 		})
@@ -171,6 +173,7 @@ export async function resetRunToRunning(
 			timedOut: false,
 			durationMs: null,
 			usage: null,
+			delegations: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
