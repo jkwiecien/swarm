@@ -80,17 +80,29 @@ describe('ProjectConfigSchema', () => {
 		expect(project.agents).toBeUndefined();
 	});
 
-	it('parses bounded native delegation controls with conservative defaults', () => {
+	it('parses bounded curated delegation controls with conservative defaults', () => {
 		const base = createMockProjectConfig();
 		const project = validateConfig({
 			projects: [{ ...base, agents: { delegation: { enabled: true } } }],
 		}).projects[0];
 		expect(project.agents?.delegation).toEqual({
 			enabled: true,
-			model: 'haiku',
 			minimumSemanticOperations: 3,
 			phases: { implementation: true },
 		});
+	});
+
+	it('accepts per-CLI child models for delegation', () => {
+		const base = createMockProjectConfig();
+		const project = validateConfig({
+			projects: [
+				{
+					...base,
+					agents: { delegation: { enabled: true, lightModels: { codex: 'gpt-5.4-mini' } } },
+				},
+			],
+		}).projects[0];
+		expect(project.agents?.delegation?.lightModels).toEqual({ codex: 'gpt-5.4-mini' });
 	});
 
 	it('rejects a delegation threshold that would route trivial work', () => {

@@ -29,6 +29,18 @@ const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: strin
 	resolveConflicts: { label: 'Resolve Conflicts', code: 'resolveConflicts' },
 };
 
+/**
+ * CLIs that can host a curated delegation *child* (`DELEGATION_CHILD_CAPABLE` in
+ * `src/delegation/native.ts`), with the coded default light model each falls back
+ * to (`DEFAULT_LIGHT_MODEL`). Antigravity is omitted — it can't host a child yet
+ * (#185). The defaults are mirrored here for display only; the server resolves the
+ * effective value.
+ */
+const LIGHT_MODEL_CLIS = [
+	{ cli: 'claude', label: 'Claude', defaultModel: 'haiku' },
+	{ cli: 'codex', label: 'Codex', defaultModel: 'gpt-5.4-mini' },
+] as const;
+
 function getModelDefaultLabel(
 	cli: string,
 	projectDefaults?: Record<string, string | undefined>,
@@ -75,6 +87,10 @@ function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 		const cleaned = cleanAgentConfig(phaseConfig);
 		if (cleaned) cleanAgents[phase] = cleaned;
 	}
+	// Preserve the delegation policy verbatim — the dashboard only edits its
+	// `lightModels`, but `enabled`/`phases`/`minimumSemanticOperations` may be set
+	// in swarm.config.json and must survive an agents-tab save unchanged.
+	if (agents.delegation) cleanAgents.delegation = agents.delegation;
 	return Object.keys(cleanAgents).length > 0 ? cleanAgents : undefined;
 }
 
@@ -337,6 +353,7 @@ interface AgentConfigurationFormProps {
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleLightModelChange: (cli: 'claude' | 'codex', value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -351,6 +368,7 @@ function AgentConfigurationForm({
 	handleCliChange,
 	handleModelChange,
 	handleTimeoutChange,
+	handleLightModelChange,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -360,11 +378,11 @@ function AgentConfigurationForm({
 	errorMessage,
 }: AgentConfigurationFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-			<form onSubmit={handleSubmit} className="space-y-6">
+		<form onSubmit={handleSubmit} className="space-y-6">
+			<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-						Agent Configuration
+						Phases Configuration
 					</h2>
 					<p className="text-xs text-zinc-400 mb-4">
 						Configure which agent CLI and model overrides are used for each pipeline phase. Omitting
@@ -455,40 +473,92 @@ function AgentConfigurationForm({
 						</table>
 					</div>
 				</div>
+			</div>
 
-				{/* Feedback Banners */}
-				{isSuccess && (
-					<div className="p-3 bg-emerald-950/20 border border-emerald-900/30 text-sm text-emerald-400 rounded">
-						Agent configuration saved successfully.
-					</div>
-				)}
+			<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+				<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+					Light Models
+				</h2>
+				<p className="text-xs text-zinc-400 mb-4">
+					The lighter model each CLI uses for bounded curated delegation (the
+					<code className="mx-1 text-zinc-300">swarm delegate</code> child run). Applies only when
+					delegation is enabled for a phase; leave unset to use the coded default. Antigravity
+					cannot host a delegation child yet.
+				</p>
 
-				{isError && (
-					<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
-						Failed to save configuration: {errorMessage}
-					</div>
-				)}
-
-				{/* Action Buttons */}
-				<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
-					<button
-						type="submit"
-						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
-					>
-						{isPending ? 'Saving…' : 'Save Changes'}
-					</button>
-					<button
-						type="button"
-						onClick={handleReset}
-						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
-					>
-						Reset
-					</button>
+				<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+					<table className="w-full text-left border-collapse">
+						<thead>
+							<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
+								<th className="px-4 py-3">Agent CLI</th>
+								<th className="px-4 py-3">Light Model</th>
+							</tr>
+						</thead>
+						<tbody className="divide-y divide-zinc-800/60">
+							{LIGHT_MODEL_CLIS.map(({ cli, label, defaultModel }) => {
+								const selected = agents.delegation?.lightModels?.[cli];
+								return (
+									<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
+										<td className="px-4 py-3.5">
+											<div className="text-sm font-medium text-zinc-200">{label}</div>
+											<div className="text-xs text-zinc-500 font-mono select-all">{cli}</div>
+										</td>
+										<td className="px-4 py-3.5">
+											<select
+												value={selected ?? ''}
+												onChange={(e) => handleLightModelChange(cli, e.target.value)}
+												disabled={isPending}
+												aria-label={`${label} light model`}
+												className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+											>
+												<option value="">Default ({defaultModel})</option>
+												{AGENT_MODELS[cli].map((model) => (
+													<option key={model} value={model}>
+														{model}
+													</option>
+												))}
+											</select>
+										</td>
+									</tr>
+								);
+							})}
+						</tbody>
+					</table>
 				</div>
-			</form>
-		</div>
+			</div>
+
+			{/* Feedback Banners */}
+			{isSuccess && (
+				<div className="p-3 bg-emerald-950/20 border border-emerald-900/30 text-sm text-emerald-400 rounded">
+					Agent configuration saved successfully.
+				</div>
+			)}
+
+			{isError && (
+				<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+					Failed to save configuration: {errorMessage}
+				</div>
+			)}
+
+			{/* Action Buttons */}
+			<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
+				<button
+					type="submit"
+					disabled={isPending || !isDirty}
+					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
+				>
+					{isPending ? 'Saving…' : 'Save Changes'}
+				</button>
+				<button
+					type="button"
+					onClick={handleReset}
+					disabled={isPending || !isDirty}
+					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+				>
+					Reset
+				</button>
+			</div>
+		</form>
 	);
 }
 
@@ -688,6 +758,13 @@ function ProjectDetailRouteComponent() {
 		);
 		if (hasDefaultChange) return true;
 
+		const localLight = agents.delegation?.lightModels ?? {};
+		const dbLight = projectAgents.delegation?.lightModels ?? {};
+		const hasLightChange = (['claude', 'codex'] as const).some(
+			(cli) => (localLight[cli] ?? '') !== (dbLight[cli] ?? ''),
+		);
+		if (hasLightChange) return true;
+
 		return PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase]));
 	}, [project, agents]);
 
@@ -736,6 +813,29 @@ function ProjectDetailRouteComponent() {
 			...prev,
 			[phase]: { ...prev[phase], timeoutMs: Number(value) * 60 * 1000 },
 		}));
+		updateMutation.reset();
+	};
+
+	const handleLightModelChange = (cli: 'claude' | 'codex', value: string) => {
+		setAgents((prev) => {
+			// Preserve the rest of the delegation policy; only touch lightModels. When
+			// no delegation block exists yet, create a disabled one to hold the pin.
+			const delegation = prev.delegation ?? {
+				enabled: false,
+				minimumSemanticOperations: 3,
+				phases: {},
+			};
+			const lightModels = { ...(delegation.lightModels ?? {}) };
+			if (value) lightModels[cli] = value;
+			else delete lightModels[cli];
+			return {
+				...prev,
+				delegation: {
+					...delegation,
+					lightModels: Object.keys(lightModels).length > 0 ? lightModels : undefined,
+				},
+			};
+		});
 		updateMutation.reset();
 	};
 
@@ -932,6 +1032,7 @@ function ProjectDetailRouteComponent() {
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
 					handleTimeoutChange={handleTimeoutChange}
+					handleLightModelChange={handleLightModelChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}

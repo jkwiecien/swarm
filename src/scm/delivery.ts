@@ -7,7 +7,7 @@ import { z } from 'zod';
 import {
 	DELEGATION_EVENTS_FILENAME,
 	DELEGATION_REVIEW_FILENAME,
-	DELEGATION_START_GLOB,
+	DELEGATION_SCRATCH_GLOB,
 } from '../delegation/native.js';
 import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 
@@ -129,7 +129,9 @@ const SCRATCH_PATHSPECS = [
 	PROGRESS_FILENAME,
 	DELEGATION_EVENTS_FILENAME,
 	DELEGATION_REVIEW_FILENAME,
-	`:(glob)${DELEGATION_START_GLOB}`,
+	// Covers the events log, the review file, and per-delegation contract manifests
+	// (`.swarm-delegation-<id>.contract.json`) so delegation scratch never lands in a PR.
+	`:(glob)${DELEGATION_SCRATCH_GLOB}`,
 ] as const;
 
 export class DeliveryDeferredError extends Error {

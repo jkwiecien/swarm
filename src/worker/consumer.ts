@@ -30,10 +30,7 @@ import {
 	resetRunToRunning,
 	storeRunLogs,
 } from '../db/repositories/runsRepository.js';
-import {
-	configureNativeDelegationRun,
-	hasUnreviewedCompletedDelegation,
-} from '../delegation/native.js';
+import { configureDelegationRun, hasUnreviewedCompletedDelegation } from '../delegation/native.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
@@ -498,7 +495,7 @@ function createLiveOutputRunner(
 ): typeof runAgentCli {
 	if (!runId) {
 		return async (options) => {
-			const result = await runAgentCli(configureNativeDelegationRun(options, { project, phase }));
+			const result = await runAgentCli(configureDelegationRun(options, { project, phase }));
 			if (result.exitCode !== 0 || !hasUnreviewedCompletedDelegation(result.delegations)) {
 				return result;
 			}
@@ -546,7 +543,7 @@ function createLiveOutputRunner(
 			else timer ??= setTimeout(flush, 100);
 		};
 		const result = await runAgentCli(
-			configureNativeDelegationRun(
+			configureDelegationRun(
 				{
 					...options,
 					onStdout: (line) => {

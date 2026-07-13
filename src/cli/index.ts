@@ -12,6 +12,7 @@
 
 import * as out from './_shared/output.js';
 import * as config from './commands/config.js';
+import * as delegate from './commands/delegate.js';
 import * as init from './commands/init.js';
 import * as logs from './commands/logs.js';
 import * as start from './commands/start.js';
@@ -29,6 +30,7 @@ const COMMANDS: Record<string, Command> = {
 	status,
 	logs,
 	worktrees,
+	delegate,
 };
 
 const USAGE = `swarm — SWARM operator CLI
@@ -44,7 +46,10 @@ Commands:
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
   worktrees prune  Prune stale per-task worktrees
 
-The worker is not managed here — it runs on the host: npm run dev:worker`;
+The worker is not managed here — it runs on the host: npm run dev:worker
+
+\`swarm delegate <contract-file>\` also exists but is invoked by a pipeline agent,
+not operators: it runs a curated lighter-model child for a bounded documentation edit.`;
 
 /**
  * Parse argv (already stripped of `node` + script path) and run the matching

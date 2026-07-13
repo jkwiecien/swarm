@@ -532,8 +532,12 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			// Antigravity has no output id, so diff its conversation store — or, on a
 			// resume run, keep the id we resumed with.
 			const sessionId = resolveSessionId(parsed.sessionId);
+			// Scope delegation observations by parent run id only — the SWARM-controlled
+			// key the `swarm delegate` command stamps. When it's absent (the no-DB path
+			// where no run row exists, so SWARM_PARENT_RUN_ID is empty), the read falls
+			// through to unscoped, so a completed-but-unreviewed delegation is still
+			// caught rather than silently dropped by a session-id filter it never set.
 			const delegations = readDelegationObservations(options.cwd, {
-				parentSessionId: sessionId,
 				parentRunId: options.env?.SWARM_PARENT_RUN_ID,
 			});
 			const result: AgentCliResult = {

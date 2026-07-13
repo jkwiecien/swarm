@@ -62,7 +62,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { nativeDelegationEnabled } from '@/delegation/native.js';
+import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -312,14 +312,14 @@ export function buildRespondToReviewPrompt(
 		prBranch: string;
 		reviewId: string;
 	},
-	nativeDelegation = false,
+	delegationAllowed = false,
 ): string {
 	const { repo, prNumber, prBranch, reviewId } = context;
 	return [
 		'You are a senior software engineer responding to a code review on a pull request',
 		'you authored.',
 		'',
-		...pipelinePhaseGuard(nativeDelegation),
+		...pipelinePhaseGuard(delegationAllowed),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
@@ -495,7 +495,7 @@ export async function runRespondToReviewPhase(
 					args: [
 						buildRespondToReviewPrompt(
 							{ repo: project.repo, prNumber, prBranch, reviewId },
-							nativeDelegationEnabled(project, 'respond-to-review', cli),
+							delegationEnabled(project, 'respond-to-review', cli),
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

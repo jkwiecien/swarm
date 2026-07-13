@@ -27,8 +27,12 @@ export function readDelegationObservations(
 			}
 		})
 		.filter((observation) => {
-			if (scope?.parentSessionId) return observation.parentSessionId === scope.parentSessionId;
+			// Prefer the run id: it is the SWARM-controlled link the `swarm delegate`
+			// command always stamps (from SWARM_PARENT_RUN_ID), whereas a parent
+			// session id isn't known up front for every CLI (codex/agy assign their
+			// own post-run). Fall back to session id, then to unscoped.
 			if (scope?.parentRunId) return observation.parentRunId === scope.parentRunId;
+			if (scope?.parentSessionId) return observation.parentSessionId === scope.parentSessionId;
 			return true;
 		});
 	const reviewsPath = resolve(cwd, DELEGATION_REVIEW_FILENAME);

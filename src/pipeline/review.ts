@@ -48,7 +48,7 @@
 
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { nativeDelegationEnabled } from '@/delegation/native.js';
+import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -172,13 +172,13 @@ export function buildReviewPrompt(
 		prNumber: string;
 		headSha: string;
 	},
-	nativeDelegation = false,
+	delegationAllowed = false,
 ): string {
 	const { repo, prNumber, headSha } = context;
 	return [
 		'You are a senior code reviewer reviewing a pull request.',
 		'',
-		...pipelinePhaseGuard(nativeDelegation),
+		...pipelinePhaseGuard(delegationAllowed),
 		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
@@ -292,7 +292,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 					args: [
 						buildReviewPrompt(
 							{ repo: project.repo, prNumber, headSha },
-							nativeDelegationEnabled(project, 'review', cli),
+							delegationEnabled(project, 'review', cli),
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

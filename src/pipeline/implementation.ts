@@ -43,7 +43,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { nativeDelegationEnabled } from '@/delegation/native.js';
+import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -188,13 +188,13 @@ export interface ImplementationPhaseResult {
 export function buildImplementationPrompt(
 	workItem: WorkItem,
 	context: { repo: string; taskId: string; branch: string; baseBranch: string },
-	nativeDelegation = false,
+	delegationAllowed = false,
 ): string {
 	const { repo, branch, baseBranch } = context;
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
-		...pipelinePhaseGuard(nativeDelegation),
+		...pipelinePhaseGuard(delegationAllowed),
 		...GH_IDENTITY_GUARD,
 		'',
 		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
@@ -398,7 +398,7 @@ export async function runImplementationPhase(
 								branch: handle.branch,
 								baseBranch: project.baseBranch,
 							},
-							nativeDelegationEnabled(project, 'implementation', cli),
+							delegationEnabled(project, 'implementation', cli),
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
