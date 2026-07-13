@@ -249,6 +249,39 @@ between-runs variant remains a future option to promote only under the reliabili
 criteria above, and the contract and observation shapes are provider-neutral so promoting it needs no
 redefinition. Deterministic delivery (§4) stays outside delegation for every CLI.
 
+### When delegation actually pays off (and when it does not)
+
+Delegation is **not** a default cost win, and it is disabled out of the box for that reason. The
+primary spends tokens writing the contract and reviewing the child's diff, and the child spends its
+own — so the arithmetic only favours delegation when:
+
+    cost(write contract @primary) + cost(review diff @primary) + cost(child @light)  <  cost(do it @primary)
+
+The load-bearing term is the contract. Writing a *complete, precise* contract — every decided fact,
+exact wording, exact placement — is most of the hard thinking; once it's written, the child is
+essentially a typist. So delegation saves only on the **mechanical application**, never on the
+**decision**. It is worthwhile only with a high *apply-to-decide ratio*: one small, already-made
+decision applied across enough surface that the contract is cheap relative to the doing.
+
+- **Pays off**: propagating one decided fact across several docs (e.g. a renamed config key updated
+  consistently in README + ARCHITECTURE + skill docs — one decision, six near-identical edits);
+  regenerating a table/list from a known source across sections; stamping a repetitive doc pattern
+  across many entries.
+- **Does not pay off**: a one- or two-spot edit (contract + review overhead exceeds the edit);
+  anything where *what* to write is still undecided (that's the expensive part and is non-delegable);
+  and — today — anything that isn't documentation, since `documentation-edit` is the only supported
+  `delegationType`. The realistic niche is therefore **multi-file documentation propagation**, which
+  is narrow.
+
+Two better justifications than raw token cost: **context hygiene** (offloading a tedious multi-file
+sweep keeps the primary's context on the actual problem) and **future parallelism** (async children
+would give latency wins — not built yet, since delegation runs inline). The primary's prompt guard
+(`delegationGuardLines`, `src/delegation/native.ts`) encodes this apply-to-decide test so an eligible
+agent self-filters and skips delegations that would not pay off; the `minimumSemanticOperations`
+threshold is the coarse backstop. Enable delegation only for a project with genuinely repetitive
+multi-doc work, and confirm the win by measuring quota per successful task (§9) before trusting it —
+if the numbers don't show a saving on the real workload, leaving it disabled is the correct outcome.
+
 ## 7. Add phase-specific effort and spending controls
 
 Model choice alone does not bound how intensely a model reasons or how long it explores. The

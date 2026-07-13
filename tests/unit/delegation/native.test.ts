@@ -76,6 +76,9 @@ describe('curated delegation policy', () => {
 		expect(enabled).toContain(`$${DELEGATION_ENV.command}`);
 		expect(enabled).toContain('.swarm-delegation-review.json');
 		expect(enabled).toMatch(/Do NOT spawn/i);
+		// Teaches the agent to self-filter delegations that would not pay off.
+		expect(enabled).toMatch(/pay off/i);
+		expect(enabled).toMatch(/apply-to-decide/i);
 	});
 
 	it('validates a structured contract and rejects underspecified requests', () => {
