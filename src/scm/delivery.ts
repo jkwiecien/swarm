@@ -13,6 +13,34 @@ import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 
 const execFileAsync = promisify(execFile);
 
+// Git exports repository-local variables while running hooks. They override
+// `cwd`, so carrying them into a worktree delivery can redirect commands to
+// the hook's repository/index. Preserve transport/auth variables, but always
+// let the requested worktree determine repository location.
+const repositoryLocalGitEnvironment = [
+	'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+	'GIT_CONFIG',
+	'GIT_CONFIG_PARAMETERS',
+	'GIT_OBJECT_DIRECTORY',
+	'GIT_DIR',
+	'GIT_WORK_TREE',
+	'GIT_IMPLICIT_WORK_TREE',
+	'GIT_GRAFT_FILE',
+	'GIT_INDEX_FILE',
+	'GIT_NO_REPLACE_OBJECTS',
+	'GIT_REPLACE_REF_BASE',
+	'GIT_PREFIX',
+	'GIT_INTERNAL_SUPER_PREFIX',
+	'GIT_SHALLOW_FILE',
+	'GIT_COMMON_DIR',
+] as const;
+
+function gitEnvironmentForCwd(): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	for (const key of repositoryLocalGitEnvironment) delete env[key];
+	return env;
+}
+
 export const VerificationSchema = z.object({
 	command: z.string().min(1),
 	outcome: z.literal('passed'),
@@ -161,7 +189,7 @@ export function hasDeliveryProgress(cwd: string): boolean {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync('git', args, { cwd });
+	const { stdout } = await execFileAsync('git', args, { cwd, env: gitEnvironmentForCwd() });
 	return stdout.trim();
 }
 
