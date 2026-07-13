@@ -58,6 +58,7 @@ import {
 } from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueJob } from '../queue/producer.js';
+import { DeliveryDeferredError } from '../scm/delivery.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
@@ -1240,12 +1241,20 @@ async function handlePhaseFailure(
 				// its worktree, so it stays a terminal failure rather than deferring onto
 				// a checkout that's gone.
 				(err.failure.kind === 'timeout' && err.agent !== undefined && err.agent.exitCode !== 0))) ||
-		err instanceof WorktreeAlreadyExistsError;
+		err instanceof WorktreeAlreadyExistsError ||
+		err instanceof DeliveryDeferredError;
 	if (isDeferrable) {
 		const failure: AgentFailure =
-			err instanceof AgentRunError ? err.failure : { kind: 'worktree-exists' };
+			err instanceof AgentRunError
+				? err.failure
+				: err instanceof DeliveryDeferredError
+					? { kind: 'aborted' }
+					: { kind: 'worktree-exists' };
 		const deferred = deferAgentRunError(failure, job, trigger, project.id, error, runId);
-		if (deferred) return deferred;
+		if (deferred) {
+			if (err instanceof DeliveryDeferredError) deferred.resumable = true;
+			return deferred;
+		}
 	}
 
 	logger.error(`Phase failed - ${phaseLabel(trigger.phase)}`, {

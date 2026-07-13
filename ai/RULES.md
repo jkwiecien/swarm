@@ -91,16 +91,16 @@ As above, don't *build* Bitbucket/GitLab providers until they're needed — just
 
 ---
 
-## 4. Claude skills → also expose to Antigravity
+## 4. Project skills → expose to Claude, Antigravity, and Codex
 
-Whenever asked to create a Claude Code skill, it lives at `.claude/skills/<name>/SKILL.md` as usual — **and** must also be made visible to Antigravity, which reads project-scoped skills from `.agents/skills/<name>/SKILL.md`. Don't duplicate the files; symlink the whole skill folder so there's one copy to maintain:
+Whenever asked to create a project skill, keep its canonical copy at `.claude/skills/<name>/SKILL.md` as usual — **and** make it visible to both Antigravity and Codex through their shared project-scoped skills path, `.agents/skills/<name>/SKILL.md`. Don't duplicate the files; symlink the whole skill folder so there's one copy to maintain:
 
 ```bash
 mkdir -p .agents/skills
 ln -s ../../.claude/skills/<name> .agents/skills/<name>
 ```
 
-Do this as part of creating the skill, not as a separate follow-up step — a Claude skill isn't "done" until the Antigravity symlink exists.
+Do this as part of creating the skill, not as a separate follow-up step — a project skill isn't "done" until the `.agents/skills` symlink exists and the same skill is available to all three agents: Claude, Antigravity, and Codex.
 
 ---
 

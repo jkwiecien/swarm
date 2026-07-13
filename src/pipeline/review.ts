@@ -46,9 +46,6 @@
  * would fail the job.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
@@ -58,6 +55,7 @@ import {
 	runAgentCli,
 } from '@/harness/agent-cli.js';
 import { agentRunError } from '@/harness/agent-failure.js';
+import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
 import { PIPELINE_PHASE_GUARD } from '@/pipeline/agent-scope.js';
@@ -67,11 +65,23 @@ import {
 	sessionRunArgs,
 	shouldPreserveForResume,
 } from '@/pipeline/resume.js';
+import {
+	DeliveryDeferredError,
+	deliveryIdentity,
+	HANDOFF_FILENAMES,
+	hasDeliveryProgress,
+	loadDeliveryProgress,
+	ReviewHandoffSchema,
+	readHandoff,
+	resumedDeliveryAgent,
+	type ScmDeliveryProvider,
+	saveDeliveryProgress,
+} from '@/scm/delivery.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the review agent is instructed to write its submitted verdict to, at the worktree root. */
-export const REVIEW_VERDICT_FILENAME = 'review_verdict.txt';
+export const REVIEW_VERDICT_FILENAME = HANDOFF_FILENAMES.review;
 
 /**
  * The verdicts the agent may submit — `gh pr review`'s three event flags. The
@@ -134,6 +144,8 @@ export interface RunReviewPhaseOptions {
 	/** Injectable env-grafting step — defaults to {@link graftEnvironment}; overridden in tests. */
 	graft?: typeof graftEnvironment;
 	/** Injectable reviewer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
+	delivery?: ScmDeliveryProvider;
+	/** @deprecated Compatibility seam for pre-delivery tests; production leaves this unset. */
 	getToken?: typeof getPersonaToken;
 }
 
@@ -163,7 +175,6 @@ export function buildReviewPrompt(context: {
 		'You are a senior code reviewer reviewing a pull request.',
 		'',
 		...PIPELINE_PHASE_GUARD,
-		'',
 		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
@@ -178,8 +189,10 @@ export function buildReviewPrompt(context: {
 		`2. Read the full diff: \`gh pr diff ${prNumber} --repo ${repo}\`. Review ALL changed files, not just the first few.`,
 		'3. Confirm README.md remains accurate for the changes in this PR. If a configuration, architecture, workflow, or user-facing behavior change makes it stale, report the missing README update as a review finding.',
 		'4. Verify before claiming: for each candidate finding, trace the exact failing scenario in the surrounding code of this checkout. Only report issues you can demonstrate — do not invent problems, pad the review with praise, or restate personal preferences as defects.',
-		`5. Submit exactly ONE formal review, non-interactively: write the review body to a scratch file (e.g. review_body.md), then run \`gh pr review ${prNumber} --repo ${repo} --body-file <file>\` with exactly one of \`--approve\` (nothing worth blocking on), \`--request-changes\` (correctness bugs or other issues that must be fixed before merge), or \`--comment\` (non-blocking questions/suggestions only).`,
-		`6. Write the verdict you submitted — exactly one of \`approve\`, \`request-changes\`, or \`comment\`, and nothing else — to a file named "${REVIEW_VERDICT_FILENAME}" at the root of this worktree. Do NOT \`git add\`/commit this file (or the body scratch file) — they are scratch hand-offs read by SWARM, not part of the PR.`,
+		'5. Do not submit a review or perform any GitHub mutation. SWARM submits the decision after you exit.',
+		`In particular, do not run \`gh pr review ${prNumber} --repo ${repo}\`, \`--approve\`, \`--request-changes\`, or \`--comment\`. GH_TOKEN is read-only context authentication; do not run gh auth switch.`,
+		`6. Write "${REVIEW_VERDICT_FILENAME}" as JSON containing verdict (approve, request-changes, or comment), body (the final review body), and optional findings [{title,body}].`,
+		'Do NOT `git add`/commit the hand-off.',
 		'',
 		'Do not merge the PR — a human does that.',
 	].join('\n');
@@ -233,9 +246,10 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
-		getToken = getPersonaToken,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
+	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
+	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'reviewer');
 
 	logger.info(`Phase started - Review — running ${describeAgent(cli, model)}`, {
 		taskId,
@@ -248,8 +262,6 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	// Resolved first: a missing reviewer credential fails the job before any
 	// worktree exists to clean up. Never returned or passed on — it goes straight
 	// into the subprocess env below.
-	const reviewerToken = await getToken(project, 'reviewer');
-
 	// Read-only checkout pinned to the reviewed commit (see the module header for
 	// why detached-at-SHA rather than the PR branch). On a resume retry, reuse the
 	// preserved checkout so the agent continues its session against the same head.
@@ -265,20 +277,23 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const agent = await runAgent({
-			cli,
-			model,
-			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-			cwd: handle.path,
-			args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
-			// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-			// call the agent makes acts as the reviewer persona.
-			env: { GH_TOKEN: reviewerToken },
-			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-			logContext: { taskId, phase: 'review', prNumber, headSha },
-			timeoutMs,
-			signal,
-		});
+		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
+		const agent = resumeDelivery
+			? resumedDeliveryAgent(cli)
+			: await runAgent({
+					cli,
+					model,
+					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+					cwd: handle.path,
+					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha })],
+					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+					// call the agent makes acts as the reviewer persona.
+					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+					logContext: { taskId, phase: 'review', prNumber, headSha },
+					timeoutMs,
+					signal,
+					env: { GH_TOKEN: agentToken },
+				});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
@@ -291,35 +306,45 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			throw error;
 		}
 
-		const verdictPath = join(handle.path, REVIEW_VERDICT_FILENAME);
-		if (!existsSync(verdictPath)) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Review agent (${cli}) did not write ${REVIEW_VERDICT_FILENAME} for PR #${prNumber}`,
-			);
+		if (legacyMode) {
+			if (!existsSync(join(handle.path, REVIEW_VERDICT_FILENAME)))
+				throw new Error(`Review agent (${cli}) did not write ${REVIEW_VERDICT_FILENAME}`);
+			const original = readFileSync(join(handle.path, REVIEW_VERDICT_FILENAME), 'utf8').trim();
+			const raw = original.toLowerCase() as ReviewVerdict;
+			if (!raw) throw new Error(`Review agent (${cli}) wrote an empty ${REVIEW_VERDICT_FILENAME}`);
+			if (!REVIEW_VERDICTS.includes(raw))
+				throw new Error(`Review agent (${cli}) wrote unrecognized verdict '${original}'`);
+			return { verdict: raw, agent };
 		}
-		const rawVerdict = readFileSync(verdictPath, 'utf8').trim();
-		if (rawVerdict.length === 0) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Review agent (${cli}) wrote an empty ${REVIEW_VERDICT_FILENAME} for PR #${prNumber}`,
-			);
-		}
-		// Case-tolerant ("Approve" happens) but otherwise strict: an unknown verdict
-		// means the hand-off contract broke, and pretending the review happened would
-		// stall the pipeline silently.
-		const verdict = rawVerdict.toLowerCase() as ReviewVerdict;
-		if (!REVIEW_VERDICTS.includes(verdict)) {
-			logAgentFailure(taskId, prNumber, agent);
-			throw new Error(
-				`Review agent (${cli}) wrote unrecognized verdict '${rawVerdict}' to ${REVIEW_VERDICT_FILENAME} for PR #${prNumber} (expected one of: ${REVIEW_VERDICTS.join(', ')})`,
-			);
-		}
+		const handoff = readHandoff(handle.path, REVIEW_VERDICT_FILENAME, ReviewHandoffSchema);
+		const delivery =
+			options.delivery ?? (await new GitHubSCMIntegration().deliveryProvider(project, 'reviewer'));
+		const deliveryId = deliveryIdentity(['review', project.repo, prNumber, headSha]);
+		const progress = loadDeliveryProgress(handle.path, deliveryId);
+		saveDeliveryProgress(handle.path, progress);
+		if (!progress.reviewId)
+			progress.reviewId = await delivery.submitReview({
+				prNumber: Number(prNumber),
+				verdict: handoff.verdict,
+				body: handoff.body,
+				deliveryId,
+			});
+		saveDeliveryProgress(handle.path, progress);
+		const verdict = handoff.verdict;
 
 		logger.info('Phase finished - Review', { taskId, prNumber, headSha, verdict });
 
 		return { verdict, agent };
+	} catch (error) {
+		if (!legacyMode && hasDeliveryProgress(handle.path)) {
+			preserveForResume = true;
+			throw new DeliveryDeferredError('Review delivery deferred for retry', { cause: error });
+		}
+		throw error;
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'review phase');
 	}
 }
+
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';

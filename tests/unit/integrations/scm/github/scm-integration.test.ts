@@ -10,10 +10,15 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 	// Pass-through so we can assert the token that would be scoped without a real Octokit.
 	withGitHubToken: vi.fn((_token: string, fn: () => Promise<unknown>) => fn()),
 	enablePullRequestAutoMerge: vi.fn(),
+	getGitHubUserForToken: vi.fn(),
 }));
 
 import { getPersonaToken, getPersonaTokenOrNull } from '@/config/provider.js';
-import { enablePullRequestAutoMerge, withGitHubToken } from '@/integrations/scm/github/client.js';
+import {
+	enablePullRequestAutoMerge,
+	getGitHubUserForToken,
+	withGitHubToken,
+} from '@/integrations/scm/github/client.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 
 const project = createMockProjectConfig();
@@ -97,6 +102,18 @@ describe('GitHubSCMIntegration', () => {
 				message: 'auto-merge enabled',
 			});
 			expect(enablePullRequestAutoMerge).toHaveBeenCalledWith('jkwiecien', 'swarm', 42);
+		});
+	});
+
+	describe('deliveryProvider', () => {
+		it('resolves deterministic commit identity from the selected persona token', async () => {
+			vi.mocked(getPersonaToken).mockResolvedValue('tok-impl');
+			vi.mocked(getGitHubUserForToken).mockResolvedValue('swarm-implementer');
+			const delivery = await scm.deliveryProvider(project, 'implementer');
+			expect(delivery.commitIdentity).toEqual({
+				name: 'swarm-implementer',
+				email: 'swarm-implementer@users.noreply.github.com',
+			});
 		});
 	});
 });
