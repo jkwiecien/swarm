@@ -71,6 +71,7 @@ export function GitHubProjectsMappingForm({
 								value={form.projectId}
 								onChange={(e) => setProjectId(e.target.value)}
 								disabled={isPending}
+								required
 								placeholder="PVT_kwDO…"
 								className={INPUT_CLASS}
 							/>
@@ -89,6 +90,7 @@ export function GitHubProjectsMappingForm({
 								value={form.statusFieldId}
 								onChange={(e) => setStatusFieldId(e.target.value)}
 								disabled={isPending}
+								required
 								placeholder="PVTSSF_lADO…"
 								className={INPUT_CLASS}
 							/>
@@ -113,8 +115,7 @@ export function GitHubProjectsMappingForm({
 						{STATUS_KEYS.map((key) => (
 							<div key={key}>
 								<label htmlFor={`statusOption-${key}`} className={LABEL_CLASS}>
-									{STATUS_KEY_LABELS[key]}{' '}
-									<span className="text-zinc-600 font-mono normal-case">({key})</span>
+									{STATUS_KEY_LABELS[key]} <span className="text-zinc-600 font-mono">({key})</span>
 								</label>
 								<input
 									type="text"
