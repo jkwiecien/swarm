@@ -433,6 +433,43 @@ interface PhaseConfigRowProps {
 }
 
 /**
+ * The Enabled-column cell for one phase: a checkbox for the optional, SCM-driven
+ * phases, or a static "Always on" label for the mandatory ones (Planning,
+ * Implementation, Resolve Conflicts, signalled by `enabled === undefined`). Split
+ * out of {@link PhaseConfigRow} so that row's dependent-selector logic stays the
+ * dominant thing it reads as.
+ */
+function PhaseEnabledCell({
+	phase,
+	label,
+	enabled,
+	enabledDisabled,
+	isPending,
+	handleEnabledChange,
+}: {
+	phase: (typeof PHASES)[number];
+	label: string;
+	enabled?: boolean;
+	enabledDisabled?: boolean;
+	isPending: boolean;
+	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
+}) {
+	if (enabled === undefined) {
+		return <span className="text-xs text-zinc-500">Always on</span>;
+	}
+	return (
+		<input
+			type="checkbox"
+			checked={enabled}
+			disabled={isPending || enabledDisabled}
+			onChange={(e) => handleEnabledChange?.(phase as PipelineTogglePhase, e.target.checked)}
+			aria-label={`${label} enabled`}
+			className="h-4 w-4 accent-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
+		/>
+	);
+}
+
+/**
  * One phase's row of dependent selectors — CLI → Model → Reasoning → Timeout. The
  * Model options come from the selected CLI's catalog; the Reasoning options from
  * the selected model's supported levels (empty → shown "Fixed"/disabled). Split
@@ -452,9 +489,6 @@ function PhaseConfigRow({
 	handleTimeoutChange,
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
-	// Only the optional, SCM-driven phases carry an enable toggle; mandatory rows
-	// (Planning, Implementation, Resolve Conflicts) read "Always on".
-	const isToggleable = enabled !== undefined;
 	const selectedCli = config.cli;
 	const selectedModel = config.model;
 	const selectedReasoning = config.reasoning;
@@ -493,18 +527,14 @@ function PhaseConfigRow({
 				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
 			</td>
 			<td className="px-4 py-3.5">
-				{isToggleable ? (
-					<input
-						type="checkbox"
-						checked={enabled}
-						disabled={isPending || enabledDisabled}
-						onChange={(e) => handleEnabledChange?.(phase as PipelineTogglePhase, e.target.checked)}
-						aria-label={`${phaseLabel.label} enabled`}
-						className="h-4 w-4 accent-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
-					/>
-				) : (
-					<span className="text-xs text-zinc-600">Always on</span>
-				)}
+				<PhaseEnabledCell
+					phase={phase}
+					label={phaseLabel.label}
+					enabled={enabled}
+					enabledDisabled={enabledDisabled}
+					isPending={isPending}
+					handleEnabledChange={handleEnabledChange}
+				/>
 			</td>
 			<td className="px-4 py-3.5">
 				<select
