@@ -1,9 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { Cpu, GitMerge, Play, Settings } from 'lucide-react';
+import { Cpu, GitMerge, Play, Settings, SquareKanban } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { GitHubProjectsMappingForm } from '@/components/projects/github-projects-mapping-form.js';
 import { ProjectRunsPanel } from '@/components/runs/project-runs-panel.js';
+import {
+	type BoardMappingForm,
+	buildGithubProjectsUpdate,
+	isBoardMappingDirty,
+	toBoardMappingForm,
+} from '@/lib/board-mapping.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
@@ -15,6 +22,8 @@ import {
 	type ReasoningLevel,
 	reasoningChoicesFor,
 } from '../../../../src/harness/models.js';
+import type { GitHubProjectsIntegrationConfig } from '../../../../src/integrations/pm/github-projects/config-schema.js';
+import type { PmStatusKey } from '../../../../src/pm/pipeline.js';
 import { rootRoute } from '../__root.js';
 
 const PHASES = [
@@ -801,10 +810,15 @@ function ProjectDetailRouteComponent() {
 	const [maxConcurrentJobs, setMaxConcurrentJobs] = useState('');
 	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
-	const [activeTab, setActiveTab] = useState<'general' | 'agents' | 'pipeline' | 'runs'>('runs');
+	const [activeTab, setActiveTab] = useState<
+		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping'
+	>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
 	const [autoMerge, setAutoMerge] = useState(false);
 	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
+	const [boardMapping, setBoardMapping] = useState<BoardMappingForm>(() =>
+		toBoardMappingForm(undefined),
+	);
 
 	const project = projectQuery.data;
 
@@ -828,6 +842,7 @@ function ProjectDetailRouteComponent() {
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
+			setBoardMapping(toBoardMappingForm(project.githubProjects));
 		}
 	}, [project]);
 
@@ -843,6 +858,7 @@ function ProjectDetailRouteComponent() {
 			maxConcurrentJobs?: number;
 			agents?: AgentsConfig;
 			pipeline?: PipelineConfig;
+			githubProjects?: GitHubProjectsIntegrationConfig;
 		}) => trpcClient.projects.update.mutate(variables),
 		onSuccess: () => {
 			queryClient.invalidateQueries({
@@ -892,6 +908,11 @@ function ProjectDetailRouteComponent() {
 			autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false) ||
 			skipRespondToReviewOnMinors !== (project?.pipeline?.respondToReview?.skipOnMinors ?? true),
 		[project, autoMerge, skipRespondToReviewOnMinors],
+	);
+
+	const isBoardMappingFormDirty = useMemo(
+		() => isBoardMappingDirty(boardMapping, project?.githubProjects),
+		[boardMapping, project],
 	);
 
 	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {
@@ -1018,6 +1039,37 @@ function ProjectDetailRouteComponent() {
 		setAutoMerge(project?.pipeline?.respondToReview?.autoMerge ?? false);
 		setSkipRespondToReviewOnMinors(project?.pipeline?.respondToReview?.skipOnMinors ?? true);
 		updateMutation.reset();
+	};
+
+	const handleBoardMappingProjectId = (value: string) => {
+		setBoardMapping((prev) => ({ ...prev, projectId: value }));
+		updateMutation.reset();
+	};
+
+	const handleBoardMappingStatusFieldId = (value: string) => {
+		setBoardMapping((prev) => ({ ...prev, statusFieldId: value }));
+		updateMutation.reset();
+	};
+
+	const handleBoardMappingStatusOption = (key: PmStatusKey, value: string) => {
+		setBoardMapping((prev) => ({
+			...prev,
+			statusOptions: { ...prev.statusOptions, [key]: value },
+		}));
+		updateMutation.reset();
+	};
+
+	const handleBoardMappingReset = () => {
+		setBoardMapping(toBoardMappingForm(project?.githubProjects));
+		updateMutation.reset();
+	};
+
+	const handleBoardMappingSubmit = (e: React.FormEvent) => {
+		e.preventDefault();
+		updateMutation.mutate({
+			id: projectId,
+			githubProjects: buildGithubProjectsUpdate(boardMapping, project?.githubProjects),
+		});
 	};
 
 	const handleReset = () => {
@@ -1153,6 +1205,21 @@ function ProjectDetailRouteComponent() {
 					<GitMerge className="h-4 w-4 text-violet-400" />
 					Pipeline
 				</button>
+				<button
+					type="button"
+					onClick={() => {
+						setActiveTab('boardMapping');
+						updateMutation.reset();
+					}}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'boardMapping'
+							? 'border-violet-500 text-white bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<SquareKanban className="h-4 w-4 text-violet-400" />
+					Board Mapping
+				</button>
 			</div>
 
 			{activeTab === 'runs' && <ProjectRunsPanel projectId={projectId} />}
@@ -1220,6 +1287,22 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handlePipelineSubmit}
 					handleReset={handlePipelineReset}
 					isDirty={isPipelineDirty}
+					isPending={updateMutation.isPending}
+					isSuccess={updateMutation.isSuccess}
+					isError={updateMutation.isError}
+					errorMessage={updateMutation.error?.message}
+				/>
+			)}
+
+			{activeTab === 'boardMapping' && (
+				<GitHubProjectsMappingForm
+					form={boardMapping}
+					setProjectId={handleBoardMappingProjectId}
+					setStatusFieldId={handleBoardMappingStatusFieldId}
+					setStatusOption={handleBoardMappingStatusOption}
+					handleSubmit={handleBoardMappingSubmit}
+					handleReset={handleBoardMappingReset}
+					isDirty={isBoardMappingFormDirty}
 					isPending={updateMutation.isPending}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
