@@ -801,7 +801,7 @@ function ProjectDetailRouteComponent() {
 	const [maxConcurrentJobs, setMaxConcurrentJobs] = useState('');
 	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
-	const [activeTab, setActiveTab] = useState<'general' | 'agents' | 'pipeline' | 'runs'>('general');
+	const [activeTab, setActiveTab] = useState<'general' | 'agents' | 'pipeline' | 'runs'>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
 	const [autoMerge, setAutoMerge] = useState(false);
 	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
@@ -1096,6 +1096,21 @@ function ProjectDetailRouteComponent() {
 				<button
 					type="button"
 					onClick={() => {
+						setActiveTab('runs');
+						updateMutation.reset();
+					}}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'runs'
+							? 'border-violet-500 text-white bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<Play className="h-4 w-4 text-violet-400" />
+					Runs
+				</button>
+				<button
+					type="button"
+					onClick={() => {
 						setActiveTab('general');
 						updateMutation.reset();
 					}}
@@ -1138,22 +1153,9 @@ function ProjectDetailRouteComponent() {
 					<GitMerge className="h-4 w-4 text-violet-400" />
 					Pipeline
 				</button>
-				<button
-					type="button"
-					onClick={() => {
-						setActiveTab('runs');
-						updateMutation.reset();
-					}}
-					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
-						activeTab === 'runs'
-							? 'border-violet-500 text-white bg-zinc-800/20'
-							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
-					}`}
-				>
-					<Play className="h-4 w-4 text-violet-400" />
-					Runs
-				</button>
 			</div>
+
+			{activeTab === 'runs' && <ProjectRunsPanel projectId={projectId} />}
 
 			{/* Form Card - General Settings */}
 			{activeTab === 'general' && (
@@ -1224,8 +1226,6 @@ function ProjectDetailRouteComponent() {
 					errorMessage={updateMutation.error?.message}
 				/>
 			)}
-
-			{activeTab === 'runs' && <ProjectRunsPanel projectId={projectId} />}
 		</div>
 	);
 }
