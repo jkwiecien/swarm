@@ -6,12 +6,16 @@
  * `web/vitest.config.ts`), mirroring the `board-mapping.ts`/`.test.ts` split.
  */
 
+import type { Credentials } from '../../../src/config/schema.js';
+
 /**
- * The three credential references a project carries (`CredentialsSchema` in
- * `src/config/schema.ts`). The actual env-var keys are project-configured and
- * come from `projects.credentials.list`; the role is the stable discriminator.
+ * The credential references a project carries — derived from the Zod-owned
+ * `CredentialsSchema` (`src/config/schema.ts`) per "Zod is the source of truth"
+ * (`ai/CODING_STANDARDS.md`), so adding/removing a role in the schema surfaces
+ * here as a type error. The actual env-var keys are project-configured and come
+ * from `projects.credentials.list`; the role is the stable discriminator.
  */
-export type CredentialRole = 'implementer' | 'reviewer' | 'webhookSecret';
+export type CredentialRole = keyof Credentials;
 
 /** One entry from `projects.credentials.list` (see `src/api/routers/credentials.ts`). */
 export interface CredentialEntry {

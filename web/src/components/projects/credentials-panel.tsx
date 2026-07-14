@@ -274,7 +274,10 @@ function CredentialField({
 					verifyErrorMsg={verifyMutation.isError ? verifyMutation.error.message : undefined}
 					saveErrorMsg={saveMutation.isError ? saveMutation.error.message : undefined}
 					onValueChange={handleValueChange}
-					onSave={() => saveMutation.mutate(value.trim())}
+					// Trim PATs (pasted tokens often carry a stray newline/space) but
+					// save the webhook secret verbatim — it is an arbitrary HMAC secret
+					// whose surrounding bytes are significant to signature verification.
+					onSave={() => saveMutation.mutate(verifiable ? value.trim() : value)}
 					onVerify={() => verifyMutation.mutate(value.trim())}
 					onCancel={handleCancel}
 					onRequestRemove={onRequestRemove}
@@ -287,6 +290,11 @@ function CredentialField({
 					onEdit={() => {
 						setEditing(true);
 						setValue('');
+						// Mirror handleCancel: a prior Save leaves verifyMutation.data
+						// intact, which would render a stale "✓ Verified as @login" label
+						// and a success-styled Verify button over the now-empty input.
+						verifyMutation.reset();
+						saveMutation.reset();
 					}}
 					onRequestRemove={onRequestRemove}
 				/>
