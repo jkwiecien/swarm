@@ -72,6 +72,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				workItemId: 'WI_42',
 				workItemTitle: 'Fix the widget',
 				workItemUrl: 'https://github.com/jkwiecien/runs-repo/issues/42',
+				engine: 'claude',
 			});
 
 			const row = await getRunByIdFromDb(id);
@@ -83,20 +84,22 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.workItemTitle).toBe('Fix the widget');
 			expect(row?.workItemUrl).toBe('https://github.com/jkwiecien/runs-repo/issues/42');
 			expect(row?.status).toBe('running');
+			// Engine is persisted at creation so the dashboard shows it while running (issue #169).
+			expect(row?.engine).toBe('claude');
 			// Columns only set at completion (or when a model override exists) stay null.
-			expect(row?.engine).toBeNull();
 			expect(row?.model).toBeNull();
 			expect(row?.completedAt).toBeNull();
 			expect(row?.nextRetryAt).toBeNull();
 			expect(row?.startedAt).toBeInstanceOf(Date);
 		});
 
-		it('stores null work-item metadata when it is omitted', async () => {
+		it('stores null work-item metadata and a null engine when they are omitted', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '7', phase: 'review' });
 
 			const row = await getRunByIdFromDb(id);
 			expect(row?.workItemTitle).toBeNull();
 			expect(row?.workItemUrl).toBeNull();
+			expect(row?.engine).toBeNull();
 		});
 
 		it('returns undefined for an unknown run id', async () => {
@@ -206,6 +209,24 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.completedAt).toBeInstanceOf(Date);
 			expect(row?.nextRetryAt).toEqual(nextRetryAt);
 		});
+
+		it('keeps the engine persisted at creation when a deferral omits it (issue #169)', async () => {
+			// A run rate-limited before its agent ran defers with no agent result, so
+			// `completeRun` omits `engine`. The creation-time engine must survive so the
+			// dashboard still shows the CLI for the deferred (retry-pending) run.
+			const id = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '3b',
+				phase: 'review',
+				engine: 'claude',
+			});
+
+			await completeRun(id, { status: 'deferred', error: 'rate limited' });
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('deferred');
+			expect(row?.engine).toBe('claude');
+		});
 	});
 
 	describe('resetRunToRunning', () => {
@@ -235,6 +256,19 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.timedOut).toBe(false);
 			expect(row?.durationMs).toBeNull();
 			expect(row?.usage).toBeNull();
+		});
+
+		it('records the effective engine for the fresh attempt when one is passed', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9b', phase: 'review' });
+			await completeRun(id, { status: 'failed', engine: 'claude', error: 'boom' });
+
+			// The worker resolves and threads the effective CLI on reset (issue #169), so
+			// the row shows it while running rather than clearing to null until completion.
+			await resetRunToRunning(id, undefined, undefined, undefined, undefined, undefined, 'codex');
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('running');
+			expect(row?.engine).toBe('codex');
 		});
 
 		it('returns false when no row matches the id (pruned between defer and retry)', async () => {

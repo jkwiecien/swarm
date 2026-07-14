@@ -95,7 +95,7 @@ export const RESPOND_CI_OUTCOMES = ['fixed', 'no-fix'] as const;
 export type RespondCiOutcome = (typeof RESPOND_CI_OUTCOMES)[number];
 
 /** Claude Code is SWARM's implementer agent — the persona that fixes the build. */
-const DEFAULT_RESPOND_CI_CLI: AgentCli = 'claude';
+export const DEFAULT_RESPOND_CI_CLI: AgentCli = 'claude';
 
 /**
  * Cap on captured agent output, so a chatty/runaway fix run can't grow the

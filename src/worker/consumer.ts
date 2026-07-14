@@ -167,6 +167,18 @@ const RETRY_BUFFER_MS = 60 * 1000;
 export const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
+ * The coded default agent CLI — used when neither a per-job override nor a phase
+ * config names one. Every pipeline phase's own coded default (`DEFAULT_*_CLI` in
+ * `src/pipeline/*.ts`) is `claude`, so this is the CLI a defaulted run actually
+ * launches; keep it in sync if a phase default ever changes. It resolves the
+ * effective engine persisted on the run row (issue #169) and keys the model
+ * fallback maps in {@link resolveModel}. Exported so a unit test can assert it
+ * stays equal to every phase's coded `DEFAULT_*_CLI`, guarding the drift the
+ * "keep in sync" note above warns about (issue #169).
+ */
+export const DEFAULT_ENGINE: AgentCli = 'claude';
+
+/**
  * Resolve the effective default agent timeout: `SWARM_AGENT_TIMEOUT_MS` when it
  * is set to a positive integer, else {@link DEFAULT_AGENT_TIMEOUT_MS}. Exported
  * so the worker entrypoint reuses the exact same value for its stale-run
@@ -363,7 +375,7 @@ function resolveModel(
 	phaseModel?: string,
 ): string {
 	if (phaseModel) return phaseModel;
-	const cli = phaseCli ?? 'claude';
+	const cli = phaseCli ?? DEFAULT_ENGINE;
 	return project.agents?.defaults?.[cli] ?? globalDefaults?.[cli] ?? DEFAULT_MODEL_PER_CLI[cli];
 }
 
@@ -616,9 +628,14 @@ function createLiveOutputRunner(
  * `runPhase`'s own `project.agents?.<phase>?.{cli,model}` lookup once so a run
  * row can record the *requested* model at creation without threading it through
  * `runPhase`'s signature. `model` may be undefined — "the phase's coded default
- * is in effect", the same convention `describeAgent` uses. The `engine` column
- * is set at completion from what actually ran (`AgentCliResult.cli`), so it
- * reads null while a run is `running`.
+ * is in effect", the same convention `describeAgent` uses.
+ *
+ * `engine` is the resolved effective CLI (`cli` with the coded {@link
+ * DEFAULT_ENGINE} applied), persisted on the run row at creation/reset so the
+ * dashboard shows it while a run is still `running` (issue #169); `cli` stays
+ * undefined-preserving because the phase orchestrators expect that (they apply
+ * their own `DEFAULT_*_CLI`). Finalization still records what actually ran
+ * (`AgentCliResult.cli`), confirming or correcting the persisted engine.
  *
  * The model is resolved through the same fallback chain `runPhase` uses
  * (per-phase → project default → global default → coded default), so the
@@ -629,7 +646,13 @@ function agentOverrideFor(
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 	job?: SwarmJob,
-): { cli?: AgentCli; model?: string; reasoning?: ReasoningLevel; timeoutMs?: number } {
+): {
+	cli?: AgentCli;
+	engine: AgentCli;
+	model?: string;
+	reasoning?: ReasoningLevel;
+	timeoutMs?: number;
+} {
 	const phaseConfig = (() => {
 		switch (phase) {
 			case 'planning':
@@ -654,7 +677,13 @@ function agentOverrideFor(
 	const reasoning = resolveReasoning(cli, model, phaseConfig.reasoning, overrideReasoning);
 	// Fall back to the worker's default wall-clock timeout when the project set no
 	// per-phase override, so *every* agent invocation is bounded (issue #165).
-	return { cli, model, reasoning, timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS };
+	return {
+		cli,
+		engine: cli ?? DEFAULT_ENGINE,
+		model,
+		reasoning,
+		timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS,
+	};
 }
 
 /**
@@ -693,6 +722,7 @@ async function tryReuseLatestRun(
 		overrides.model,
 		overrides.timeoutMs,
 		overrides.reasoning ?? null,
+		overrides.engine,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -716,6 +746,7 @@ async function tryResetCarriedRun(
 			overrides.model,
 			overrides.timeoutMs,
 			overrides.reasoning ?? null,
+			overrides.engine,
 		))
 			? runId
 			: undefined;
@@ -828,6 +859,7 @@ async function tryCreateRun(
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
 			prNumber,
 			prTitle: prNumber ? await tryFetchPrTitle(project, prNumber) : undefined,
+			engine: overrides.engine,
 			model: overrides.model,
 			reasoning: overrides.reasoning,
 			timeoutMs: overrides.timeoutMs,

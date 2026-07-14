@@ -1359,6 +1359,9 @@ describe('processJob', () => {
 					workItemTitle: undefined,
 					workItemUrl: undefined,
 					prNumber: '17',
+					// Effective CLI resolved and persisted at creation (issue #169) — the
+					// coded default here, since the review trigger carries no cli override.
+					engine: 'claude',
 					model: 'sonnet',
 					jobPayload: expect.any(Object),
 				}),
@@ -1417,6 +1420,17 @@ describe('processJob', () => {
 
 			expect(resetRunToRunning).not.toHaveBeenCalled();
 			expect(createRun).toHaveBeenCalledOnce();
+		});
+
+		it('records a job cli override as the fresh row engine (issue #169)', async () => {
+			await processJob(
+				createMockGitHubWebhookJob({ cliOverride: 'codex' }),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(createRun).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ engine: 'codex' }),
+			);
 		});
 
 		it.each([

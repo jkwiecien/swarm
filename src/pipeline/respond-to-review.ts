@@ -135,7 +135,7 @@ export const RESPOND_OUTCOMES = ['fixed', 'pushed-back', 'no-findings'] as const
 export type RespondOutcome = (typeof RESPOND_OUTCOMES)[number];
 
 /** Claude Code is SWARM's implementer agent (PROJECT.md §5.4) — the persona that responds. */
-const DEFAULT_RESPOND_CLI: AgentCli = 'claude';
+export const DEFAULT_RESPOND_CLI: AgentCli = 'claude';
 
 /**
  * Cap on captured agent output, so a chatty/runaway respond run can't grow the
