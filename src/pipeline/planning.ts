@@ -24,6 +24,7 @@
  * them the same way the router's enqueue seam did, wired up when they arrive.
  */
 
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -40,6 +41,12 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { logger } from '@/lib/logger.js';
 import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
+import {
+	buildPreplanContract,
+	embedPreplanMarker,
+	evaluatePreplan,
+	isPreplanSkip,
+} from '@/pipeline/preplan.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -72,21 +79,36 @@ export const PROPOSED_SPLIT_FILENAME = 'proposed_split.json';
  */
 export const SPLIT_CHILD_LABEL = 'swarm:split-child';
 
-/** One task a split produces: enough to create/plan it, no more. */
-const SplitTaskSchema = z.object({
+/** The re-scope/rename patch for the original item (the smaller first task). */
+const MainTaskSchema = z.object({
 	title: z.string().trim().min(1),
 	description: z.string(),
 });
 
 /**
+ * One sibling a split produces. Unlike the main task, each sibling carries its
+ * own concise `plan` — written by the parent Planning run while its repository
+ * context is live, so the sibling's own Planning run can reuse it instead of
+ * launching a fresh agent (docs/OPTIMIZATION.md §3, issue #178). The plan is a
+ * self-contained Markdown brief (scope + acceptance criteria, exclusions,
+ * relevant files/symbols, dependencies on preceding siblings, an ordered
+ * outline, and verification guidance — see {@link buildPlanningPrompt}).
+ */
+const SplitSubTaskSchema = z.object({
+	title: z.string().trim().min(1),
+	description: z.string(),
+	plan: z.string().trim().min(1),
+});
+
+/**
  * Shape of {@link PROPOSED_SPLIT_FILENAME}. `mainTask` optionally re-scopes/renames
  * the original item into the smaller first task; `subTasks` are the siblings to
- * spawn (each planned on its own afterwards). Zod is the source of truth for the
+ * spawn (each carrying its own reusable plan). Zod is the source of truth for the
  * on-disk contract (ai/CODING_STANDARDS.md "Zod as source of truth").
  */
 const ProposedSplitSchema = z.object({
-	mainTask: SplitTaskSchema.optional(),
-	subTasks: z.array(SplitTaskSchema).default([]),
+	mainTask: MainTaskSchema.optional(),
+	subTasks: z.array(SplitSubTaskSchema).default([]),
 });
 
 export type ProposedSplit = z.infer<typeof ProposedSplitSchema>;
@@ -205,6 +227,13 @@ export interface PlanningPhaseResult {
 		subTaskItemIds: string[];
 		mainTaskUpdated: boolean;
 	};
+	/**
+	 * True when this run reused a preplanned split-child plan and skipped the
+	 * agent CLI entirely (docs/OPTIMIZATION.md §3). The `agent` result is then a
+	 * synthetic zero-usage record — no worktree was provisioned and no model was
+	 * spent.
+	 */
+	preplanned?: boolean;
 }
 
 /**
@@ -248,16 +277,31 @@ export function buildPlanningPrompt(
 			`  - Write "${PROPOSED_PLAN_FILENAME}" as the plan for ONLY the FIRST task — the`,
 			'    smaller piece this item should become. It may be a re-scoped, renamed version',
 			'    of the original.',
+			'  - You have already explored the repository to plan the first task. REUSE that',
+			'    analysis: write a concise implementation plan for EVERY other task now, while',
+			'    that context is fresh, so each one does not have to re-explore the repo later.',
 			`  - Write "${PROPOSED_SPLIT_FILENAME}" as JSON of this exact shape:`,
 			'      {',
 			'        "mainTask": { "title": "<first task\'s title>", "description": "<its scope>" },',
 			'        "subTasks": [',
-			'          { "title": "<next task>", "description": "<what it covers, self-contained>" }',
+			'          {',
+			'            "title": "<next task>",',
+			'            "description": "<what it covers, self-contained>",',
+			'            "plan": "<concise Markdown implementation plan for this task>"',
+			'          }',
 			'        ]',
 			'      }',
 			'    "mainTask" is OPTIONAL — include it only to rename/re-scope the original item;',
-			'    omit it to keep the original title/description. Each "subTasks" entry is planned',
-			'    separately later, so write a description complete enough to plan on its own.',
+			'    omit it to keep the original title/description.',
+			'    Each "subTasks" entry is a task planned separately later. Write its "description"',
+			'    complete enough to stand on its own, and its "plan" (concise GitHub-flavored',
+			'    Markdown) covering:',
+			'      * self-contained scope and acceptance criteria;',
+			'      * anything intentionally left out of scope;',
+			'      * the relevant files, symbols, and existing patterns to follow;',
+			'      * dependencies on the preceding split tasks (what must land first);',
+			'      * an ordered implementation outline;',
+			'      * focused verification guidance (the checks/tests to run).',
 			`  - Do NOT write "${PROPOSED_SPLIT_FILENAME}" (or write it with an empty`,
 			'    "subTasks" array) when the item is already right-sized — then just write the',
 			`    single "${PROPOSED_PLAN_FILENAME}" as usual.`,
@@ -399,10 +443,23 @@ function readPlanOrThrow(
 /**
  * Apply a split: re-scope/rename the original item into the smaller first task
  * (when the agent asked), then spawn each sibling task in "Planning" — tagged so
- * its own Planning run won't auto-advance, and with a comment explaining the
- * split. Returns the spawned siblings' IDs (in order) and whether the original
- * was patched. Split out of {@link runPlanningPhase} for the same
- * complexity-budget reason as {@link readPlanOrThrow}.
+ * its own Planning run won't auto-advance, with a comment explaining the split,
+ * and with the parent-written plan embedded as a validated preplanned marker in
+ * its issue body ({@link embedPreplanMarker}) so the sibling's own Planning run
+ * reuses that plan instead of launching a fresh agent (docs/OPTIMIZATION.md §3).
+ * Returns the spawned siblings' IDs (in order) and whether the original was
+ * patched. Split out of {@link runPlanningPhase} for the same complexity-budget
+ * reason as {@link readPlanOrThrow}.
+ *
+ * The marker is embedded via a follow-up `updateWorkItem` (not at creation)
+ * because it binds the sibling's own backing-issue URL, which only exists once
+ * the item is created. That embed (contract build + marker update) is wrapped in
+ * a try/catch: a failure there is logged and swallowed so the sibling is still
+ * created (and its split comment posted) — it simply stays unmarked and falls
+ * back to a normal Planning run for that child, rather than failing the whole
+ * parent run mid-loop (which a retry would then duplicate). The `createWorkItem`
+ * and split comment are deliberately outside the catch — those are the split
+ * itself, not the optimization, so their failures must still surface.
  */
 async function applySplit(
 	pm: PMProvider,
@@ -413,14 +470,40 @@ async function applySplit(
 	if (mainPatch) {
 		await pm.updateWorkItem(parent.id, mainPatch);
 	}
+	// One id/timestamp for the whole split, so every child's marker is stamped
+	// with the operation it came from (provenance; see PreplanContract).
+	const splitId = randomUUID();
+	const generatedAt = new Date().toISOString();
 	const subTaskItemIds: string[] = [];
-	for (const sub of split.subTasks) {
+	for (const [childIndex, sub] of split.subTasks.entries()) {
 		const sibling = await pm.createWorkItem({
 			title: sub.title,
 			description: sub.description,
 			status: SIBLING_START_STATUS,
 			labels: [SPLIT_CHILD_LABEL],
 		});
+		try {
+			const contract = buildPreplanContract({
+				splitId,
+				childIndex,
+				parentUrl: parent.url,
+				itemUrl: sibling.url,
+				humanDescription: sub.description,
+				plan: sub.plan,
+				generatedAt,
+			});
+			await pm.updateWorkItem(sibling.id, {
+				description: embedPreplanMarker(sub.description, contract),
+			});
+		} catch (error) {
+			logger.warn('Planning — failed to embed preplan marker; child will re-plan normally', {
+				parentId: parent.id,
+				siblingId: sibling.id,
+				splitId,
+				childIndex,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 		await pm.addComment(sibling.id, splitChildCommentBody(parent));
 		subTaskItemIds.push(sibling.id);
 	}
@@ -468,6 +551,56 @@ async function acquirePlanningWorktree(
 	);
 }
 
+/**
+ * Synthetic agent result for a preplanned run that skipped the CLI entirely:
+ * exit 0, no output, no usage, zero duration. The worker records it as a
+ * completed run that consumed no model quota (`src/worker/consumer.ts`), which
+ * is exactly the saving docs/OPTIMIZATION.md §3 is after.
+ */
+function skippedAgentResult(cli: AgentCli): AgentCliResult {
+	return {
+		cli,
+		exitCode: 0,
+		signal: null,
+		stdout: '',
+		stderr: '',
+		durationMs: 0,
+		timedOut: false,
+		aborted: false,
+		outputTruncated: false,
+	};
+}
+
+/**
+ * Complete a Planning run for a split child that already carries a valid
+ * preplanned plan — post that plan as the plan comment (exactly what a normal
+ * run would post) and honor the status behavior, without provisioning a worktree
+ * or launching the agent. `effectiveAutoAdvance` is already forced off for a
+ * split child, so this never moves the child to "ToDo" (issue #178: the child
+ * remains in Planning and never auto-advances).
+ */
+async function completePreplannedRun(
+	pm: PMProvider,
+	workItem: WorkItem,
+	plan: string,
+	effectiveAutoAdvance: boolean,
+	cli: AgentCli,
+	taskId: string,
+): Promise<PlanningPhaseResult> {
+	const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
+	const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
+	if (movedTo) {
+		await pm.moveWorkItem(workItem.id, movedTo);
+	}
+	logger.info('Phase finished - Planning (preplanned — agent skipped)', {
+		taskId,
+		workItemId: workItem.id,
+		commentId,
+		movedTo,
+	});
+	return { plan, commentId, agent: skippedAgentResult(cli), movedTo, preplanned: true };
+}
+
 export async function runPlanningPhase(
 	options: RunPlanningPhaseOptions,
 ): Promise<PlanningPhaseResult> {
@@ -488,13 +621,49 @@ export async function runPlanningPhase(
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 	} = options;
-	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-
 	// A spawned split-child never auto-advances to "ToDo" on its own — the human
 	// sequences the siblings — so its own Planning run forces autoAdvance off,
 	// whatever the project config says (see SPLIT_CHILD_LABEL).
 	const isSplitChild = workItem.labels.some((l) => l.name === SPLIT_CHILD_LABEL);
 	const effectiveAutoAdvance = autoAdvance && !isSplitChild;
+
+	// A split child whose parent already wrote its plan reuses it — no worktree,
+	// no agent CLI (docs/OPTIMIZATION.md §3). A missing/malformed/stale/mismatched
+	// or operator-invalidated marker falls back to a normal run below. The skip is
+	// gated on isSplitChild: the marker is only ever written on split children, so
+	// a valid marker on a non-split item (e.g. a human removed the label) is not
+	// trusted to auto-advance — it falls through to a normal run.
+	const preplan = evaluatePreplan(workItem);
+	if (isPreplanSkip(preplan)) {
+		if (isSplitChild) {
+			logger.info('Phase started - Planning — reusing preplanned split-child plan', {
+				taskId,
+				workItemId: workItem.id,
+				splitId: preplan.contract.splitId,
+			});
+			return completePreplannedRun(
+				pm,
+				workItem,
+				preplan.contract.plan,
+				effectiveAutoAdvance,
+				cli,
+				taskId,
+			);
+		}
+		logger.warn('Planning — valid preplan marker on a non-split-child item; ignoring', {
+			taskId,
+			workItemId: workItem.id,
+			splitId: preplan.contract.splitId,
+		});
+	} else if (preplan.fallbackReason) {
+		logger.info('Planning — preplanned marker rejected, running agent normally', {
+			taskId,
+			workItemId: workItem.id,
+			reason: preplan.fallbackReason,
+		});
+	}
+
+	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info(`Phase started - Planning — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,
