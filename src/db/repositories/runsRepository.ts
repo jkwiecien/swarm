@@ -46,6 +46,13 @@ export interface CreateRunInput {
 	workItemUrl?: string;
 	prNumber?: string;
 	prTitle?: string;
+	/**
+	 * The effective CLI this run will launch (project phase config plus any job
+	 * override, coded default otherwise), persisted at creation so the dashboard
+	 * shows it while the run is still `running` (issue #169). Finalization
+	 * confirms/updates it from what actually ran.
+	 */
+	engine?: AgentCli;
 	model?: string;
 	/** Explicitly requested reasoning level; null/undefined = CLI default (issue #180). */
 	reasoning?: string;
@@ -68,6 +75,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			workItemUrl: input.workItemUrl,
 			prNumber: input.prNumber,
 			prTitle: input.prTitle,
+			engine: input.engine,
 			model: input.model,
 			reasoning: input.reasoning,
 			timeoutMs: input.timeoutMs,
@@ -145,7 +153,11 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * outcome columns (`engine`/`exitCode`/`timedOut`/`durationMs`/`usage`) so the
  * fresh attempt records its own; `model`/`reasoning` can be updated if a new one
  * is selected (pass `reasoning: null` to clear a now-incompatible level after a
- * CLI/model change; both left as-is when the arg is `undefined`). Returns `true`
+ * CLI/model change; both left as-is when the arg is `undefined`). `engine` is the
+ * effective CLI to record for this attempt (issue #169): a passed value is stored
+ * so the row shows its engine while `running`, and an omitted one clears the
+ * column (the worker repopulates it on pickup, or finalization records what ran).
+ * Returns `true`
  * when a row was updated, `false` when
  * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
  * guard is supplied) — the caller then falls back to `createRun`. Best-effort
@@ -165,6 +177,7 @@ export async function resetRunToRunning(
 	model?: string,
 	timeoutMs?: number,
 	reasoning?: string | null,
+	engine?: AgentCli,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -174,7 +187,7 @@ export async function resetRunToRunning(
 			completedAt: null,
 			error: null,
 			nextRetryAt: null,
-			engine: null,
+			engine: engine ?? null,
 			exitCode: null,
 			timedOut: false,
 			durationMs: null,

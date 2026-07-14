@@ -50,8 +50,10 @@ async function claimRunOrThrow(
 	fromStatus: 'deferred' | 'failed',
 	model?: string,
 	reasoning?: string | null,
+	engine?: z.infer<typeof AgentCliSchema>,
 ): Promise<void> {
-	if (await resetRunToRunning(runId, jobPayload, fromStatus, model, undefined, reasoning)) return;
+	if (await resetRunToRunning(runId, jobPayload, fromStatus, model, undefined, reasoning, engine))
+		return;
 	throw new TRPCError({
 		code: 'CONFLICT',
 		message: 'This run is already retrying. Refresh to see its current status.',
@@ -185,10 +187,25 @@ export const runsRouter = router({
 				input.cli !== undefined || input.model !== undefined || input.reasoning !== undefined;
 			const reasoningForRow = applyingOverride ? (input.reasoning ?? null) : undefined;
 
+			// Engine to persist on the row (issue #169). The retry dialog sends an
+			// explicit `cli` whenever it applies an override, so recording `input.cli`
+			// makes an override CLI visible the instant the row flips to `running`
+			// rather than waiting for the worker to re-resolve it on pickup. A plain
+			// "Retry now" sends no `cli` (`undefined`), so the column clears and the
+			// worker's own reset repopulates the effective CLI when it picks the job up.
+			const engineForRow = input.cli;
+
 			if (run.status === 'deferred') {
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
-				await claimRunOrThrow(run.id, undefined, 'deferred', input.model, reasoningForRow);
+				await claimRunOrThrow(
+					run.id,
+					undefined,
+					'deferred',
+					input.model,
+					reasoningForRow,
+					engineForRow,
+				);
 				// Common case: promote the pending delayed job in place (delay → 0).
 				const promoted = await promoteRetryForRun(
 					input.runId,
@@ -221,7 +238,15 @@ export const runsRouter = router({
 				);
 				// Persist the reconstructed payload onto the already-claimed row, then
 				// enqueue at delay 0.
-				await resetRunToRunning(run.id, job, undefined, input.model, undefined, reasoningForRow);
+				await resetRunToRunning(
+					run.id,
+					job,
+					undefined,
+					input.model,
+					undefined,
+					reasoningForRow,
+					engineForRow,
+				);
 				await enqueueDelayedRetry(job, 0);
 				return { runId: input.runId, status: 'retrying' as const };
 			}
@@ -241,7 +266,7 @@ export const runsRouter = router({
 				input.model,
 				input.reasoning,
 			);
-			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow);
+			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow, engineForRow);
 			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };

@@ -239,6 +239,7 @@ describe('runsRouter', () => {
 				undefined,
 				undefined,
 				undefined,
+				undefined,
 			);
 			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined, undefined);
 		});
@@ -300,6 +301,7 @@ describe('runsRouter', () => {
 				'gemini-3.5-flash',
 				undefined,
 				'high',
+				'antigravity',
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -341,7 +343,39 @@ describe('runsRouter', () => {
 				'opus-4.5',
 				undefined,
 				null,
+				'claude',
 			);
+		});
+
+		it('records the override cli as the row engine, clearing it on a plain retry (issue #169)', async () => {
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			// Override retry: the chosen cli is persisted so the run-detail page shows it
+			// the instant the row flips to `running`, not only after the worker picks it up.
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+			);
+			await caller.retryNow({ runId: 'run-1', cli: 'codex', model: 'gpt-5.6-terra' });
+			expect(vi.mocked(resetRunToRunning).mock.calls.at(-1)?.[6]).toBe('codex');
+
+			// Plain retry (no override): engine arg is undefined, so the reset clears the
+			// column and the worker resolves/repopulates the effective CLI on pickup.
+			vi.mocked(resetRunToRunning).mockClear();
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+			);
+			await caller.retryNow({ runId: 'run-1' });
+			expect(vi.mocked(resetRunToRunning).mock.calls.at(-1)?.[6]).toBeUndefined();
 		});
 
 		it('rejects a failed run if jobPayload is missing', async () => {
@@ -414,6 +448,7 @@ describe('runsRouter', () => {
 			expect(resetRunToRunning).toHaveBeenCalledWith(
 				'run-1',
 				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
+				undefined,
 				undefined,
 				undefined,
 				undefined,
