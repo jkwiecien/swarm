@@ -219,7 +219,9 @@ function RetryNowButton({ run }: { run: RunRow }) {
 									>
 										<option value="">
 											{reasoningOptions.length === 0
-												? 'Fixed'
+												? capabilityFor(selectedCli, selectedModel)?.fixedVariant
+													? 'Fixed'
+													: 'N/A'
 												: (() => {
 														const def = capabilityFor(selectedCli, selectedModel)?.defaultReasoning;
 														return def ? `Default (${capitalizeLevel(def)})` : 'Default';

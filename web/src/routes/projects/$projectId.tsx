@@ -434,10 +434,19 @@ function PhaseConfigRow({
 	const reasoningOptions =
 		selectedCli && selectedModel ? reasoningChoicesFor(selectedCli, selectedModel) : [];
 	const reasoningDisabled = isPending || !selectedModel || reasoningOptions.length === 0;
+	// Empty choices with a fixed variant (antigravity single-variant, e.g. "Thinking")
+	// reads as "Fixed"; empty with no variant (a model with no reasoning knob, e.g.
+	// Claude Haiku) reads as "N/A".
+	const hasFixedVariant =
+		selectedCli && selectedModel
+			? !!capabilityFor(selectedCli, selectedModel)?.fixedVariant
+			: false;
 	const reasoningPlaceholder = !selectedModel
 		? '—'
 		: reasoningOptions.length === 0
-			? 'Fixed'
+			? hasFixedVariant
+				? 'Fixed'
+				: 'N/A'
 			: selectedCli
 				? getReasoningDefaultLabel(selectedCli, selectedModel)
 				: 'Default';
