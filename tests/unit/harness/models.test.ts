@@ -44,7 +44,7 @@ describe('ALL_AGENT_MODELS', () => {
 });
 
 describe('reasoningChoicesFor', () => {
-	it('exposes claude effort levels for every claude model', () => {
+	it('exposes claude effort levels for effort-capable models', () => {
 		expect(reasoningChoicesFor('claude', 'sonnet')).toEqual([
 			'low',
 			'medium',
@@ -52,6 +52,11 @@ describe('reasoningChoicesFor', () => {
 			'xhigh',
 			'max',
 		]);
+	});
+
+	it('exposes no reasoning for Haiku (no --effort support)', () => {
+		expect(reasoningChoicesFor('claude', 'haiku')).toEqual([]);
+		expect(capabilityFor('claude', 'haiku')?.defaultReasoning).toBeNull();
 	});
 
 	it('exposes the per-model antigravity tiers, empty for single-variant models', () => {
@@ -157,7 +162,7 @@ describe('splitAntigravityModel / normalizeModelSelection', () => {
 
 describe('capabilityFor', () => {
 	it('reports the known/default reasoning per model', () => {
-		expect(capabilityFor('claude', 'sonnet')?.defaultReasoning).toBeNull();
+		expect(capabilityFor('claude', 'sonnet')?.defaultReasoning).toBe('high');
 		expect(capabilityFor('codex', 'gpt-5.6-terra')?.defaultReasoning).toBe('medium');
 		expect(capabilityFor('antigravity', 'gemini-3.5-flash')?.defaultReasoning).toBe('medium');
 	});

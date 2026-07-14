@@ -82,29 +82,46 @@ export interface ModelCapability {
 const CLAUDE_EFFORTS = REASONING_LEVELS;
 
 /**
- * `claude --model <alias> --effort <level>`. Aliases resolve to the current
- * model in each tier; effort is a separate flag with claude's own default when
- * omitted (so `defaultReasoning` is `null` — "Default", not a level we assert).
+ * Per-model reasoning support is a **hand-maintained catalog**, not something the
+ * CLIs expose a clean machine-readable list for. Update the `choices`/`default`
+ * below when a provider's model lineup or its reasoning knobs change. A model
+ * with an empty `choices` list exposes **no reasoning control** — the config
+ * schema rejects a reasoning level for it and the dashboard shows the selector
+ * disabled ("Fixed"), the same as an antigravity single-variant model.
+ *
+ * Sources (verified 2026-07, links in PR): Claude effort matrix
+ * (platform.claude.com/docs/build-with-claude/effort — effort supported by
+ * Fable 5 / Opus 4.8 / Sonnet 5, default `high`; **Haiku 4.5 does NOT support
+ * the effort parameter** — it only does budget-based thinking, which SWARM's
+ * `--effort` harness can't drive, so it is non-reasoning here); Codex effort
+ * levels (OpenAI GPT-5.6 Sol/Terra/Luna expose none→max; GPT-5.5/5.4 up to
+ * xhigh; GPT-5.4 mini caps at high).
  */
-const CLAUDE_CAPABILITIES: readonly ModelCapability[] = ['fable', 'opus', 'sonnet', 'haiku'].map(
-	(id) => ({
-		cli: 'claude' as const,
-		id,
-		label: `${id.charAt(0).toUpperCase()}${id.slice(1)}`,
-		reasoningChoices: CLAUDE_EFFORTS,
-		defaultReasoning: null,
-	}),
-);
+
+/** `claude --model <alias> --effort <level>`. Effort defaults to `high` where supported. */
+const CLAUDE_CAPABILITIES: readonly ModelCapability[] = [
+	{ id: 'fable', label: 'Fable', choices: CLAUDE_EFFORTS, default: 'high' as const },
+	{ id: 'opus', label: 'Opus', choices: CLAUDE_EFFORTS, default: 'high' as const },
+	{ id: 'sonnet', label: 'Sonnet', choices: CLAUDE_EFFORTS, default: 'high' as const },
+	// Haiku 4.5 has no `--effort` control (budget-based thinking only) → no reasoning.
+	{ id: 'haiku', label: 'Haiku', choices: [], default: null },
+].map(({ id, label, choices, default: def }) => ({
+	cli: 'claude' as const,
+	id,
+	label,
+	reasoningChoices: choices as readonly ReasoningLevel[],
+	defaultReasoning: def,
+}));
 
 /**
  * `codex --model <id> -c model_reasoning_effort="<level>"`. Codex defaults to
- * `medium`; supported sets are model-specific (Sol/Terra expose the widest
- * range, mini the narrowest — observed on the current host).
+ * `medium`; supported sets are model-specific (the GPT-5.6 family exposes the
+ * widest range up to `max`, GPT-5.5/5.4 up to `xhigh`, mini caps at `high`).
  */
 const CODEX_CAPABILITIES: readonly ModelCapability[] = [
 	{ id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', choices: REASONING_LEVELS },
 	{ id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', choices: REASONING_LEVELS },
-	{ id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', choices: ['low', 'medium', 'high', 'xhigh'] },
+	{ id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', choices: REASONING_LEVELS },
 	{ id: 'gpt-5.5', label: 'GPT-5.5', choices: ['low', 'medium', 'high', 'xhigh'] },
 	{ id: 'gpt-5.4', label: 'GPT-5.4', choices: ['low', 'medium', 'high', 'xhigh'] },
 	{ id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini', choices: ['low', 'medium', 'high'] },
