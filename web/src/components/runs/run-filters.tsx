@@ -28,7 +28,10 @@ export function RunFilters({
 	onClear,
 	showProject = true,
 }: RunFiltersProps) {
-	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
+	// Only the Project selector consumes this list, so skip the fetch when it's
+	// hidden (scoped Runs tab). The global view keeps its default `showProject`,
+	// so it still loads projects.
+	const projectsQuery = useQuery({ ...trpc.projects.list.queryOptions(), enabled: showProject });
 
 	// The project filter is excluded from the "active filters" check when hidden,
 	// so a scoped view's Clear button reflects only its status/phase filters.

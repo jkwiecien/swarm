@@ -6,24 +6,15 @@ import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
 import { runsListRefetchInterval } from '@/lib/runs-refresh.js';
 import { trpc } from '@/lib/trpc.js';
-import type { RunRow } from '@/types/runs.js';
+import { type RunRow, runPhaseFilterSchema, runStatusFilterSchema } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
 
 const PAGE_SIZE = 20;
 
 const runsSearchSchema = z.object({
 	projectId: z.string().optional(),
-	status: z.enum(['running', 'completed', 'failed', 'deferred']).optional(),
-	phase: z
-		.enum([
-			'planning',
-			'implementation',
-			'review',
-			'respond-to-review',
-			'respond-to-ci',
-			'resolve-conflicts',
-		])
-		.optional(),
+	status: runStatusFilterSchema.optional(),
+	phase: runPhaseFilterSchema.optional(),
 	page: z.number().int().positive().optional(),
 });
 

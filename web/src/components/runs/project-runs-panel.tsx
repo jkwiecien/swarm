@@ -5,18 +5,9 @@ import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
 import { runsListRefetchInterval } from '@/lib/runs-refresh.js';
 import { trpc } from '@/lib/trpc.js';
-import type { RunRow } from '@/types/runs.js';
+import type { RunPhaseFilter, RunRow, RunStatusFilter } from '@/types/runs.js';
 
 const PAGE_SIZE = 20;
-
-type StatusFilter = 'running' | 'completed' | 'failed' | 'deferred';
-type PhaseFilter =
-	| 'planning'
-	| 'implementation'
-	| 'review'
-	| 'respond-to-review'
-	| 'respond-to-ci'
-	| 'resolve-conflicts';
 
 interface ProjectRunsPanelProps {
 	projectId: string;
@@ -33,8 +24,8 @@ interface ProjectRunsPanelProps {
  * params — this is a tab inside the project detail page, not a standalone route.
  */
 export function ProjectRunsPanel({ projectId }: ProjectRunsPanelProps) {
-	const [status, setStatus] = useState<StatusFilter>();
-	const [phase, setPhase] = useState<PhaseFilter>();
+	const [status, setStatus] = useState<RunStatusFilter>();
+	const [phase, setPhase] = useState<RunPhaseFilter>();
 	const [page, setPage] = useState(1);
 
 	const runsQuery = useQuery({
@@ -52,11 +43,11 @@ export function ProjectRunsPanel({ projectId }: ProjectRunsPanelProps) {
 
 	// Any filter change resets to the first page, matching the global Runs view.
 	const handleStatusChange = (next: string | undefined) => {
-		setStatus(next as StatusFilter | undefined);
+		setStatus(next as RunStatusFilter | undefined);
 		setPage(1);
 	};
 	const handlePhaseChange = (next: string | undefined) => {
-		setPhase(next as PhaseFilter | undefined);
+		setPhase(next as RunPhaseFilter | undefined);
 		setPage(1);
 	};
 	const handleClearFilters = () => {
