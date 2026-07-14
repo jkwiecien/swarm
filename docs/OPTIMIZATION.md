@@ -80,6 +80,27 @@ normally.
 This converts one repository analysis into plans for the entire split rather than paying for
 one parent analysis plus one full analysis per child.
 
+### Implemented
+
+The parent Planning run now writes a `plan` for every sibling in `proposed_split.json`
+(`SplitSubTaskSchema`, `src/pipeline/planning.ts`) — the prompt asks it to reuse the analysis it
+just did for the first task and cover, per child, self-contained scope + acceptance criteria,
+exclusions, relevant files/symbols, dependencies on preceding siblings, an ordered outline, and
+verification guidance. When it spawns each child, it embeds that plan as a **structured,
+validated preplanned contract** (`PreplanContractSchema`, `src/pipeline/preplan.ts`) in a hidden
+`<!-- swarm-preplan:v1 … -->` marker in the child's issue body — the only state that durably
+travels with a child to its own later Planning run.
+
+The child's Planning run evaluates that marker (`evaluatePreplan`) before touching a worktree: a
+valid marker means it posts the reused plan as its plan comment and completes **without
+provisioning a worktree or launching the agent CLI** (a zero-usage run). Validity is deterministic
+— no classifier model. It falls back to a normal agent run when the marker is missing, malformed,
+fails schema validation, binds a different item (`itemUrl` ≠ the child's URL), was written against
+a since-edited scope (`descriptionHash` mismatch), or an operator applied the `swarm:replan`
+label. A split child still never auto-advances to `ToDo` (the existing `swarm:split-child`
+behavior is unchanged), and the marker is intentionally *not* inferred from that label or a
+free-form comment alone.
+
 ## 4. Move deterministic delivery mechanics out of Implementation
 
 The Implementation agent currently implements and verifies the change, then commits, pushes,

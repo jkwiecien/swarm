@@ -25,8 +25,41 @@ import {
 	runPlanningPhase,
 	SPLIT_CHILD_LABEL,
 } from '@/pipeline/planning.js';
+import { buildPreplanContract, embedPreplanMarker, REPLAN_LABEL } from '@/pipeline/preplan.js';
+import type { UpdateWorkItemPatch, WorkItem } from '@/pm/types.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
+
+/**
+ * Build a split-child work item whose issue body carries a valid preplanned
+ * marker (matching url + description hash) for the given plan. `overrides`
+ * tweaks the item after the marker is embedded — e.g. to break the url binding
+ * or drop the split-child label for the fallback tests.
+ */
+function preplannedChild(
+	plan: string,
+	humanDescription = 'The UI slice, self-contained.',
+	overrides: Partial<WorkItem> = {},
+): WorkItem {
+	const url = 'https://github.com/o/r/issues/42';
+	const contract = buildPreplanContract({
+		splitId: 'split-abc',
+		childIndex: 0,
+		parentUrl: 'https://github.com/o/r/issues/18',
+		itemUrl: url,
+		humanDescription,
+		plan,
+		generatedAt: '2026-07-14T00:00:00.000Z',
+	});
+	return createMockWorkItem({
+		id: 'PVTI_child',
+		title: 'A spawned task',
+		url,
+		description: embedPreplanMarker(humanDescription, contract),
+		labels: [{ id: SPLIT_CHILD_LABEL, name: SPLIT_CHILD_LABEL }],
+		...overrides,
+	});
+}
 
 const WORKTREE_PATH = '/Users/dev/swarm/swarm/.swarm-workspaces/task-18';
 
@@ -66,7 +99,9 @@ function makeDeps() {
 		createWorkItem: vi.fn(async (input) =>
 			createMockWorkItem({ id: `PVTI_${input.title}`, title: input.title, url: input.title }),
 		),
-		updateWorkItem: vi.fn(async () => {}),
+		updateWorkItem: vi.fn<(id: string, patch: UpdateWorkItemPatch) => Promise<void>>(
+			async () => {},
+		),
 	};
 	return {
 		project: createMockProjectConfig(),
@@ -140,8 +175,8 @@ describe('runPlanningPhase', () => {
 		splitContents = JSON.stringify({
 			mainTask: { title: 'First slice', description: 'Just the API' },
 			subTasks: [
-				{ title: 'Second slice', description: 'The UI' },
-				{ title: 'Third slice', description: 'The docs' },
+				{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Build it.' },
+				{ title: 'Third slice', description: 'The docs', plan: '# Docs plan\n\n1. Write it.' },
 			],
 		});
 		const deps = makeDeps();
@@ -153,7 +188,8 @@ describe('runPlanningPhase', () => {
 			description: 'Just the API',
 		});
 
-		// Two siblings created, each in Planning, each carrying the split-child label.
+		// Two siblings created, each in Planning, each carrying the split-child label,
+		// created with the human description (the marker is embedded via a follow-up update).
 		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(2);
 		for (const call of deps.pm.createWorkItem.mock.calls) {
 			expect(call[0]).toMatchObject({ status: 'planning', labels: [SPLIT_CHILD_LABEL] });
@@ -162,6 +198,19 @@ describe('runPlanningPhase', () => {
 			'Second slice',
 			'Third slice',
 		]);
+
+		// Each sibling's body is updated to embed its parent-written plan as a
+		// preplanned marker, so its own Planning run reuses it (issue #178).
+		const secondMarker = deps.pm.updateWorkItem.mock.calls.find(
+			(c) => c[0] === 'PVTI_Second slice',
+		)?.[1];
+		expect(secondMarker?.description).toContain('swarm-preplan:v1');
+		expect(secondMarker?.description).toContain('Build it.');
+		expect(secondMarker?.description).toContain('The UI'); // human description preserved
+		const thirdMarker = deps.pm.updateWorkItem.mock.calls.find(
+			(c) => c[0] === 'PVTI_Third slice',
+		)?.[1];
+		expect(thirdMarker?.description).toContain('Write it.');
 
 		// Each sibling gets an explanatory comment (plus the original's plan comment).
 		const commentTargets = deps.pm.addComment.mock.calls.map((c) => c[0]);
@@ -201,12 +250,20 @@ describe('runPlanningPhase', () => {
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 	});
 
-	it('leaves the original title untouched when the split omits mainTask', async () => {
+	it('leaves the original untouched when the split omits mainTask (but still marks the sibling)', async () => {
 		splitExists = true;
-		splitContents = JSON.stringify({ subTasks: [{ title: 'Only sibling', description: 'Z' }] });
+		splitContents = JSON.stringify({
+			subTasks: [{ title: 'Only sibling', description: 'Z', plan: '# plan\n\nDo Z.' }],
+		});
 		const deps = makeDeps();
 		const result = await runPlanningPhase(deps);
-		expect(deps.pm.updateWorkItem).not.toHaveBeenCalled();
+		// The original item's fields are not patched...
+		expect(deps.pm.updateWorkItem).not.toHaveBeenCalledWith('PVTI_item18', expect.anything());
+		// ...but the sibling's body is still updated to carry its preplanned marker.
+		expect(deps.pm.updateWorkItem).toHaveBeenCalledWith(
+			'PVTI_Only sibling',
+			expect.objectContaining({ description: expect.stringContaining('swarm-preplan:v1') }),
+		);
 		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(1);
 		expect(result.split).toMatchObject({ mainTaskUpdated: false });
 	});
@@ -226,6 +283,74 @@ describe('runPlanningPhase', () => {
 		const deps = makeDeps();
 		await expect(runPlanningPhase(deps)).rejects.toThrow();
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('reuses a preplanned split-child plan: skips the worktree and agent, posts the plan, never advances', async () => {
+		const deps = makeDeps();
+		deps.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
+		const result = await runPlanningPhase({ ...deps, autoAdvance: true });
+
+		// No worktree, no agent CLI — the whole point of the optimization.
+		expect(deps.worktrees.provision).not.toHaveBeenCalled();
+		expect(deps.worktrees.reuse).not.toHaveBeenCalled();
+		expect(deps.runAgent).not.toHaveBeenCalled();
+		expect(deps.graft).not.toHaveBeenCalled();
+
+		// The parent-written plan is posted as this child's plan comment...
+		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
+		expect(deps.pm.addComment.mock.calls[0][1]).toContain('Implement the UI slice.');
+		// ...and a split child never auto-advances, even with autoAdvance on.
+		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+
+		expect(result).toMatchObject({ preplanned: true, movedTo: undefined });
+		expect(result.agent).toMatchObject({ exitCode: 0, durationMs: 0 });
+		expect(result.agent.usage).toBeUndefined();
+	});
+
+	it('falls back to a normal agent run when the preplan marker is malformed', async () => {
+		const deps = makeDeps();
+		deps.workItem = createMockWorkItem({
+			id: 'PVTI_child',
+			url: 'https://github.com/o/r/issues/42',
+			description: 'The UI slice.\n\n<!-- swarm-preplan:v1\n{ not valid json\n-->',
+			labels: [{ id: SPLIT_CHILD_LABEL, name: SPLIT_CHILD_LABEL }],
+		});
+		await runPlanningPhase(deps);
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
+	});
+
+	it("falls back to a normal run when the marker's itemUrl does not match the item", async () => {
+		const deps = makeDeps();
+		// Same marker, but the item's own url differs → the marker isn't ours.
+		deps.workItem = preplannedChild('# plan', 'desc', {
+			url: 'https://github.com/o/r/issues/999',
+		});
+		await runPlanningPhase(deps);
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to a normal run when the human description changed after the plan was generated', async () => {
+		const deps = makeDeps();
+		const child = preplannedChild('# plan', 'Original scope.');
+		// A human edits the visible scope above the marker → hash no longer matches.
+		deps.workItem = {
+			...child,
+			description: child.description.replace('Original scope.', 'Totally different scope now.'),
+		};
+		await runPlanningPhase(deps);
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it('falls back to a normal run when an operator applies the replan label', async () => {
+		const deps = makeDeps();
+		const child = preplannedChild('# plan');
+		deps.workItem = {
+			...child,
+			labels: [...child.labels, { id: REPLAN_LABEL, name: REPLAN_LABEL }],
+		};
+		await runPlanningPhase(deps);
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
@@ -417,6 +542,14 @@ describe('buildPlanningPrompt', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
 		expect(prompt).toContain(PROPOSED_SPLIT_FILENAME);
 		expect(prompt).toMatch(/too large/i);
+	});
+
+	it('asks for a reusable per-child plan when splitting', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
+		expect(prompt).toContain('"plan"');
+		expect(prompt).toMatch(/plan for EVERY other task/i);
+		expect(prompt).toMatch(/acceptance criteria/i);
+		expect(prompt).toMatch(/verification/i);
 	});
 });
 
