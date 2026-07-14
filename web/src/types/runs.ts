@@ -24,6 +24,8 @@ export interface RunRow {
 	phase: string;
 	engine: string | null;
 	model: string | null;
+	/** Explicitly requested reasoning level; null = CLI/model default (issue #180). */
+	reasoning: string | null;
 	status: string;
 	exitCode: number | null;
 	timedOut: boolean;

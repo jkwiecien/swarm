@@ -166,11 +166,18 @@ describe('projectsRepository', () => {
 
 		it('writes the agents block as-is when the config sets one', async () => {
 			const { values } = stubInsert();
+			// A legacy combined antigravity model normalizes to logical id + reasoning
+			// at the config-schema boundary (issue #180); the repo then writes that
+			// normalized shape verbatim.
 			const agents = {
 				planning: { cli: 'antigravity' as const, model: 'Gemini 3.5 Flash (High)' },
 			};
 			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1', agents }));
-			expect(values.mock.calls[0][0]).toMatchObject({ agents });
+			expect(values.mock.calls[0][0]).toMatchObject({
+				agents: {
+					planning: { cli: 'antigravity', model: 'gemini-3.5-flash', reasoning: 'high' },
+				},
+			});
 		});
 	});
 

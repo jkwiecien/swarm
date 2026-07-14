@@ -159,6 +159,7 @@ export function RunsTable({
 								</td>
 								<td className="px-2 py-3 text-sm text-zinc-400 font-mono text-xs">
 									{run.model || '—'}
+									{run.reasoning ? <span className="text-zinc-500"> · {run.reasoning}</span> : null}
 								</td>
 								<td
 									className="px-2 py-3 text-sm text-zinc-400 font-mono text-xs"

@@ -47,6 +47,8 @@ export interface CreateRunInput {
 	prNumber?: string;
 	prTitle?: string;
 	model?: string;
+	/** Explicitly requested reasoning level; null/undefined = CLI default (issue #180). */
+	reasoning?: string;
 	timeoutMs?: number;
 	jobPayload?: SwarmJob;
 }
@@ -67,6 +69,7 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			prNumber: input.prNumber,
 			prTitle: input.prTitle,
 			model: input.model,
+			reasoning: input.reasoning,
 			timeoutMs: input.timeoutMs,
 			jobPayload: input.jobPayload,
 			agentSessionId: id,
@@ -140,8 +143,10 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * dashboard then shows one run whose status flips, not two. Clears the terminal
  * columns a prior settle wrote (`completedAt`/`error`/`nextRetryAt`) and the
  * outcome columns (`engine`/`exitCode`/`timedOut`/`durationMs`/`usage`) so the
- * fresh attempt records its own; `model` can be updated if a new one is selected
- * (otherwise left as-is). Returns `true` when a row was updated, `false` when
+ * fresh attempt records its own; `model`/`reasoning` can be updated if a new one
+ * is selected (pass `reasoning: null` to clear a now-incompatible level after a
+ * CLI/model change; both left as-is when the arg is `undefined`). Returns `true`
+ * when a row was updated, `false` when
  * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
  * guard is supplied) — the caller then falls back to `createRun`. Best-effort
  * like the rest of run tracking: the worker swallows/logs any throw.
@@ -159,6 +164,7 @@ export async function resetRunToRunning(
 	fromStatus?: RunStatus,
 	model?: string,
 	timeoutMs?: number,
+	reasoning?: string | null,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -177,6 +183,7 @@ export async function resetRunToRunning(
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
+			...(reasoning !== undefined ? { reasoning } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });

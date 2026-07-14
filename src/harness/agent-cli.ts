@@ -20,6 +20,7 @@ import type { DelegationObservation } from '@/delegation/native.js';
 import { readDelegationObservations } from '@/delegation/observations.js';
 import { logger } from '@/lib/logger.js';
 import { detectNewConversationId, snapshotConversationIds } from './antigravity-session.js';
+import { type ReasoningLevel, resolveModelLaunch } from './models.js';
 import { type AgentUsage, parseAgentOutput } from './usage.js';
 
 /** Agent CLIs the harness knows how to launch. Source of truth for the set. */
@@ -27,14 +28,16 @@ export const AgentCliSchema = z.enum(['claude', 'antigravity', 'codex']);
 export type AgentCli = z.infer<typeof AgentCliSchema>;
 
 /**
- * Human-readable "cli (model)" label for a phase's start-of-run log line, e.g.
- * `antigravity (Gemini 3.5 Flash (High))`. Omits the parens entirely when no
- * model override is set, rather than naming the CLI's own default — the
- * harness never queries what that default resolves to (see `model` on
- * {@link RunAgentCliOptions}), so there's nothing accurate to print.
+ * Human-readable "cli (model, reasoning)" label for a phase's start-of-run log
+ * line, e.g. `antigravity (gemini-3.5-flash, high)` or `claude (sonnet)`. Omits
+ * the parens entirely when no model override is set, rather than naming the
+ * CLI's own default — the harness never queries what that default resolves to
+ * (see `model` on {@link RunAgentCliOptions}), so there's nothing accurate to
+ * print. Reasoning is appended only when explicitly set.
  */
-export function describeAgent(cli: AgentCli, model?: string): string {
-	return model ? `${cli} (${model})` : cli;
+export function describeAgent(cli: AgentCli, model?: string, reasoning?: ReasoningLevel): string {
+	if (!model) return cli;
+	return reasoning ? `${cli} (${model}, ${reasoning})` : `${cli} (${model})`;
 }
 
 /**
@@ -152,12 +155,21 @@ export interface RunAgentCliOptions {
 	/** Provider-specific flags inserted before output/session/print arguments. */
 	providerArgs?: string[];
 	/**
-	 * Model for this session, passed as `--model <value>` — both `claude` and
-	 * `agy` accept an alias (`sonnet`, `opus`) or a full model name. Omit to run
-	 * on the CLI's own default; the harness doesn't validate the value against a
-	 * fixed list, since the two CLIs' model names don't overlap.
+	 * Logical model for this session (`src/harness/models.ts`) — `claude`/`codex`
+	 * aliases/ids, or an antigravity logical id (`gemini-3.5-flash`). The harness
+	 * resolves it plus {@link reasoning} into the concrete launch args via
+	 * `resolveModelLaunch`: `claude`/`codex` get `--model <id>`, antigravity gets
+	 * `--model "<combined variant>"`. Omit to run on the CLI's own default.
 	 */
 	model?: string;
+	/**
+	 * Normalized reasoning level for this session (`src/harness/models.ts`). Maps
+	 * per-CLI at launch: `claude` → `--effort <level>`, `codex` →
+	 * `-c model_reasoning_effort="<level>"`, `antigravity` → folded into the
+	 * combined `--model` variant string (no flag). Omit to inherit the CLI's own
+	 * default reasoning.
+	 */
+	reasoning?: ReasoningLevel;
 	/**
 	 * Session UUID to *assign* to a fresh run. Only `claude` supports assigning
 	 * an id up front (`--session-id`); `codex` and `agy` generate their own, so
@@ -407,13 +419,19 @@ function buildSessionArgs(
 export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCliResult> {
 	const cli = AgentCliSchema.parse(options.cli);
 	const command = options.command ?? DEFAULT_COMMAND[cli];
-	const modelArgs = options.model ? ['--model', options.model] : [];
+	// Resolve the logical (model, reasoning) into the concrete `--model` value and
+	// per-CLI reasoning args (claude `--effort`, codex `-c model_reasoning_effort`,
+	// antigravity's combined variant string). Re-computed every run — including a
+	// resume — so a continued session keeps its original effective model/reasoning.
+	const launch = resolveModelLaunch(cli, options.model, options.reasoning);
+	const modelArgs = launch.model ? ['--model', launch.model] : [];
 	const resumeId = options.resumeSessionId;
 	const { baseArgs, sessionArgs } = buildSessionArgs(cli, resumeId, options.sessionId);
 	const printFlag = PRINT_FLAG[cli];
 	const args = [
 		...baseArgs,
 		...modelArgs,
+		...launch.providerArgs,
 		...(options.providerArgs ?? []),
 		...OUTPUT_FORMAT_ARGS[cli],
 		...sessionArgs,

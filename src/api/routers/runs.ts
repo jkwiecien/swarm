@@ -10,6 +10,7 @@ import {
 	resetRunToRunning,
 } from '../../db/repositories/runsRepository.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
+import { ReasoningLevelSchema } from '../../harness/models.js';
 import {
 	clearRunCancellation,
 	requestRunCancellation,
@@ -48,8 +49,9 @@ async function claimRunOrThrow(
 	jobPayload: Parameters<typeof resetRunToRunning>[1],
 	fromStatus: 'deferred' | 'failed',
 	model?: string,
+	reasoning?: string | null,
 ): Promise<void> {
-	if (await resetRunToRunning(runId, jobPayload, fromStatus, model)) return;
+	if (await resetRunToRunning(runId, jobPayload, fromStatus, model, undefined, reasoning)) return;
 	throw new TRPCError({
 		code: 'CONFLICT',
 		message: 'This run is already retrying. Refresh to see its current status.',
@@ -68,12 +70,14 @@ function reconstructRetryJob(
 	runId: string,
 	cli?: z.infer<typeof AgentCliSchema>,
 	model?: string,
+	reasoning?: z.infer<typeof ReasoningLevelSchema>,
 ): NonNullable<Parameters<typeof resetRunToRunning>[1]> {
 	const job = { ...jobPayload };
 	job.runId = runId;
 	job.rateLimitRetryAttempt = 0;
 	if (cli) job.cliOverride = cli;
 	if (model) job.modelOverride = model;
+	if (reasoning) job.reasoningOverride = reasoning;
 	return job;
 }
 
@@ -144,6 +148,7 @@ export const runsRouter = router({
 				runId: z.string().min(1),
 				cli: AgentCliSchema.optional(),
 				model: z.string().min(1).optional(),
+				reasoning: ReasoningLevelSchema.optional(),
 			}),
 		)
 		.mutation(async ({ input }) => {
@@ -167,12 +172,30 @@ export const runsRouter = router({
 			// start-check would instantly terminate the fresh attempt.
 			await clearRunCancellation(input.runId);
 
+			// Reasoning to persist on the row (issue #180). When the retry dialog
+			// applies an override (it always sends an explicit `cli`+`model`, and
+			// `reasoning` is authoritative — an omitted level means "Default"), coerce a
+			// missing level to `null` so a stale level is CLEARED rather than left in
+			// place; otherwise the row would keep an old reasoning that no longer
+			// matches the relaunch (`resetRunToRunning` treats `undefined` as
+			// "leave as-is"). A plain "Retry now" with no override at all leaves the
+			// column untouched (`undefined`). The worker re-resolves and resets the
+			// carried row on pickup, but this keeps the row consistent in the meantime.
+			const applyingOverride =
+				input.cli !== undefined || input.model !== undefined || input.reasoning !== undefined;
+			const reasoningForRow = applyingOverride ? (input.reasoning ?? null) : undefined;
+
 			if (run.status === 'deferred') {
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
-				await claimRunOrThrow(run.id, undefined, 'deferred', input.model);
+				await claimRunOrThrow(run.id, undefined, 'deferred', input.model, reasoningForRow);
 				// Common case: promote the pending delayed job in place (delay → 0).
-				const promoted = await promoteRetryForRun(input.runId, input.cli, input.model);
+				const promoted = await promoteRetryForRun(
+					input.runId,
+					input.cli,
+					input.model,
+					input.reasoning,
+				);
 				if (promoted) {
 					return { runId: input.runId, status: 'retrying' as const };
 				}
@@ -189,10 +212,16 @@ export const runsRouter = router({
 						message: `Cannot retry run "${input.runId}" — it was created without a job payload.`,
 					});
 				}
-				const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
+				const job = reconstructRetryJob(
+					run.jobPayload,
+					run.id,
+					input.cli,
+					input.model,
+					input.reasoning,
+				);
 				// Persist the reconstructed payload onto the already-claimed row, then
 				// enqueue at delay 0.
-				await resetRunToRunning(run.id, job, undefined, input.model);
+				await resetRunToRunning(run.id, job, undefined, input.model, undefined, reasoningForRow);
 				await enqueueDelayedRetry(job, 0);
 				return { runId: input.runId, status: 'retrying' as const };
 			}
@@ -205,8 +234,14 @@ export const runsRouter = router({
 					message: `Cannot retry failed run "${input.runId}" — it was created without a job payload.`,
 				});
 			}
-			const job = reconstructRetryJob(run.jobPayload, run.id, input.cli, input.model);
-			await claimRunOrThrow(run.id, job, 'failed', input.model);
+			const job = reconstructRetryJob(
+				run.jobPayload,
+				run.id,
+				input.cli,
+				input.model,
+				input.reasoning,
+			);
+			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow);
 			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };

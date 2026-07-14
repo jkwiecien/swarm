@@ -59,6 +59,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		phase: 'implementation',
 		engine: null,
 		model: null,
+		reasoning: null,
 		status: 'completed',
 		exitCode: 0,
 		timedOut: false,
@@ -231,8 +232,15 @@ describe('runsRouter', () => {
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(resetRunToRunning).toHaveBeenCalledWith('run-1', undefined, 'deferred', undefined);
-			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined);
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				undefined,
+				'deferred',
+				undefined,
+				undefined,
+				undefined,
+			);
+			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined, undefined);
 		});
 
 		it('promotes the pending retry with cli and model overrides for a deferred run', async () => {
@@ -243,14 +251,16 @@ describe('runsRouter', () => {
 			const result = await caller.retryNow({
 				runId: 'run-1',
 				cli: 'antigravity',
-				model: 'Gemini 3.5 Flash (High)',
+				model: 'gemini-3.5-flash',
+				reasoning: 'high',
 			});
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
 			expect(promoteRetryForRun).toHaveBeenCalledWith(
 				'run-1',
 				'antigravity',
-				'Gemini 3.5 Flash (High)',
+				'gemini-3.5-flash',
+				'high',
 			);
 		});
 
@@ -273,7 +283,8 @@ describe('runsRouter', () => {
 			const result = await caller.retryNow({
 				runId: 'run-1',
 				cli: 'antigravity',
-				model: 'Gemini 3.5 Flash (High)',
+				model: 'gemini-3.5-flash',
+				reasoning: 'high',
 			});
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
@@ -281,19 +292,55 @@ describe('runsRouter', () => {
 				'run-1',
 				expect.objectContaining({
 					cliOverride: 'antigravity',
-					modelOverride: 'Gemini 3.5 Flash (High)',
+					modelOverride: 'gemini-3.5-flash',
+					reasoningOverride: 'high',
 					runId: 'run-1',
 				}),
 				'failed',
-				'Gemini 3.5 Flash (High)',
+				'gemini-3.5-flash',
+				undefined,
+				'high',
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({
 					cliOverride: 'antigravity',
-					modelOverride: 'Gemini 3.5 Flash (High)',
+					modelOverride: 'gemini-3.5-flash',
+					reasoningOverride: 'high',
 					runId: 'run-1',
 				}),
 				0,
+			);
+		});
+
+		it('clears a stale reasoning on the row when the dialog applies cli/model but omits reasoning (issue #180)', async () => {
+			// The retry dialog resets reasoning to "Default" (omitted) on any CLI/model
+			// change while still sending an explicit cli+model. The row must then CLEAR
+			// its old reasoning (→ null) so the displayed level matches the relaunch,
+			// rather than keeping a stale value that `resetRunToRunning` would leave as-is.
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload, reasoning: 'high' }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			await caller.retryNow({ runId: 'run-1', cli: 'claude', model: 'opus-4.5' });
+
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ runId: 'run-1' }),
+				'failed',
+				'opus-4.5',
+				undefined,
+				null,
 			);
 		});
 
@@ -367,6 +414,8 @@ describe('runsRouter', () => {
 			expect(resetRunToRunning).toHaveBeenCalledWith(
 				'run-1',
 				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
+				undefined,
+				undefined,
 				undefined,
 				undefined,
 			);

@@ -12,8 +12,30 @@
 
 import { z } from 'zod';
 import { type AgentCli, AgentCliSchema } from '../harness/agent-cli.js';
-import { AGENT_MODELS, ALL_AGENT_MODELS } from '../harness/models.js';
+import {
+	AGENT_MODELS,
+	ALL_AGENT_MODELS,
+	capabilityFor,
+	LEGACY_ANTIGRAVITY_MODELS,
+	ReasoningLevelSchema,
+	splitAntigravityModel,
+} from '../harness/models.js';
 import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/config-schema.js';
+
+/**
+ * A model value is known when it's a logical id for its CLI (or the union, when
+ * `cli` is omitted). Antigravity additionally accepts the legacy combined
+ * display strings (`"Gemini 3.5 Flash (High)"`) previous configs stored, so they
+ * validate unchanged and are normalized to logical id + reasoning on parse.
+ */
+function isKnownModel(cli: AgentCli | undefined, model: string): boolean {
+	const allowed = cli ? AGENT_MODELS[cli] : ALL_AGENT_MODELS;
+	if ((allowed as readonly string[]).includes(model)) return true;
+	if (cli === 'antigravity' || cli === undefined) {
+		return (LEGACY_ANTIGRAVITY_MODELS as readonly string[]).includes(model);
+	}
+	return false;
+}
 
 export const PROJECT_DEFAULTS = {
 	baseBranch: 'main',
@@ -52,21 +74,30 @@ export const CredentialsSchema = z
 	.describe('References to a project GitHub credentials (never the secrets themselves)');
 
 /**
- * Per-phase agent CLI/model override. Both fields are optional — omit `cli` to
- * keep the phase's own coded default (`DEFAULT_PLANNING_CLI` and friends,
- * `src/pipeline/*.ts`), omit `model` to run on that CLI's own default model.
+ * Per-phase agent CLI/model/reasoning override. Every field is optional — omit
+ * `cli` to keep the phase's own coded default (`DEFAULT_PLANNING_CLI` and
+ * friends, `src/pipeline/*.ts`), omit `model` to run on that CLI's own default
+ * model, omit `reasoning` to inherit the effective model's known default (the
+ * CLI's own default when it controls it).
  *
- * `model`, when given, must be one of `AGENT_MODELS[cli]` (`src/harness/models.ts`)
- * — `claude`'s short aliases (`sonnet`, `opus`, …), `agy`'s exact `agy models`
- * display strings (`"Gemini 3.5 Flash (High)"`, …), or `codex`'s short model
- * identifiers (`"gpt-5.6-sol"`, `"gpt-5.4-mini"`, …). When `cli` itself is
- * omitted, `model` is checked against the union of all lists, since the
- * phase's actual coded-default `cli` isn't known at the config-schema layer.
+ * `model`, when given, must be a *logical* model id for its CLI per
+ * `AGENT_MODELS` (`src/harness/models.ts`) — `claude`'s aliases (`sonnet`, …),
+ * `codex`'s short ids (`gpt-5.6-sol`, …), or an antigravity logical id
+ * (`gemini-3.5-flash`, …). When `cli` is omitted, `model` is checked against the
+ * union of all lists. A legacy combined antigravity string (`"Gemini 3.5 Flash
+ * (High)"`) from a pre-#180 config is accepted and normalized on parse into the
+ * logical id plus its `reasoning` level, so it keeps launching that exact
+ * variant.
+ *
+ * `reasoning`, when given, must be a level the effective `(cli, model)` supports
+ * (`ModelCapability.reasoningChoices`) — validated against the model, never as a
+ * free-standing per-CLI string (issue #180).
  */
 export const AgentConfigSchema = z
 	.object({
 		cli: AgentCliSchema.optional(),
 		model: z.string().min(1).optional(),
+		reasoning: ReasoningLevelSchema.optional(),
 		/** A bounded per-phase timeout: 5–45 minutes, stored in milliseconds. */
 		timeoutMs: z
 			.number()
@@ -75,15 +106,33 @@ export const AgentConfigSchema = z
 			.max(45 * 60 * 1000)
 			.optional(),
 	})
+	.transform((agent) => {
+		// Migrate a pre-#180 combined antigravity model string losslessly into
+		// logical model + reasoning. An explicit `reasoning` already on the config
+		// wins over the one recovered from the string.
+		if (agent.cli === 'antigravity' && agent.model) {
+			const split = splitAntigravityModel(agent.model);
+			if (split) {
+				return { ...agent, model: split.model, reasoning: agent.reasoning ?? split.reasoning };
+			}
+		}
+		return agent;
+	})
+	.refine((agent) => !agent.model || isKnownModel(agent.cli, agent.model), {
+		message: 'model must be one of the known models for its cli (src/harness/models.ts)',
+	})
 	.refine(
 		(agent) => {
-			if (!agent.model) return true;
-			const allowed = agent.cli ? AGENT_MODELS[agent.cli] : ALL_AGENT_MODELS;
-			return (allowed as readonly string[]).includes(agent.model);
+			if (!agent.reasoning) return true;
+			// Can't validate reasoning without a concrete (cli, model) to check it against.
+			if (!agent.cli || !agent.model) return false;
+			const cap = capabilityFor(agent.cli, agent.model);
+			if (!cap) return true; // legacy/unknown model — leave the value untouched
+			return (cap.reasoningChoices as readonly string[]).includes(agent.reasoning);
 		},
-		{ message: 'model must be one of the known models for its cli (src/harness/models.ts)' },
+		{ message: 'reasoning must be a level supported by the selected cli/model (issue #180)' },
 	)
-	.describe('Per-phase agent CLI/model override');
+	.describe('Per-phase agent CLI/model/reasoning override');
 
 /**
  * Per-CLI default model — the model used when a phase specifies (or falls back
@@ -94,7 +143,11 @@ export const AgentConfigSchema = z
  *
  * Each key must be a known `AgentCli`, and the value must be valid for that CLI
  * per `AGENT_MODELS` — the same validation `AgentConfigSchema.model` uses, just
- * keyed by CLI instead of by phase.
+ * keyed by CLI instead of by phase. Defaults store a model only, never a
+ * reasoning level: a per-CLI default reasoning can be invalid for another model
+ * the phase selects, so reasoning is resolved against the *effective* model
+ * (per-phase/per-run override → the model's own default), not defaulted per-CLI
+ * (issue #180). A legacy combined antigravity string is still accepted.
  */
 export const AgentDefaultsSchema = z
 	.record(AgentCliSchema, z.string().min(1).optional())
@@ -102,9 +155,7 @@ export const AgentDefaultsSchema = z
 		(defaults) => {
 			for (const [cli, model] of Object.entries(defaults)) {
 				if (!model) continue;
-				const allowed = AGENT_MODELS[cli as AgentCli];
-				if (!allowed) return false;
-				if (!(allowed as readonly string[]).includes(model)) return false;
+				if (!isKnownModel(cli as AgentCli, model)) return false;
 			}
 			return true;
 		},
