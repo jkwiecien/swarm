@@ -12,6 +12,16 @@ import {
 	isBoardMappingDirty,
 	toBoardMappingForm,
 } from '@/lib/board-mapping.js';
+import {
+	buildPipelineEnabledUpdate,
+	isPipelineEnabledDirty,
+	isRespondToReviewLocked,
+	PIPELINE_TOGGLE_PHASES,
+	type PipelineEnabledForm,
+	type PipelineTogglePhase,
+	setPhaseEnabled,
+	toPipelineEnabledForm,
+} from '@/lib/pipeline-enabled.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
@@ -37,6 +47,9 @@ const PHASES = [
 ] as const;
 
 const DEFAULT_TIMEOUT_MINUTES = 30;
+
+/** Phases that expose an enable/disable toggle (the optional, SCM-driven ones). */
+const TOGGLEABLE_PHASES = new Set<string>(PIPELINE_TOGGLE_PHASES);
 
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
 	planning: { label: 'Planning', code: 'planning' },
@@ -408,10 +421,52 @@ interface PhaseConfigRowProps {
 	config: AgentConfig;
 	projectDefaults?: AgentsConfig['defaults'];
 	isPending: boolean;
+	/** Enabled state for the optional phases; `undefined` for mandatory rows. */
+	enabled?: boolean;
+	/** Whether the enable toggle is locked off by a dependency (Review → Respond). */
+	enabledDisabled?: boolean;
+	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+}
+
+/**
+ * The Enabled-column cell for one phase: a checkbox for the optional, SCM-driven
+ * phases, or a static "Always on" label for the mandatory ones (Planning,
+ * Implementation, Resolve Conflicts, signalled by `enabled === undefined`). Split
+ * out of {@link PhaseConfigRow} so that row's dependent-selector logic stays the
+ * dominant thing it reads as.
+ */
+function PhaseEnabledCell({
+	phase,
+	label,
+	enabled,
+	enabledDisabled,
+	isPending,
+	handleEnabledChange,
+}: {
+	phase: (typeof PHASES)[number];
+	label: string;
+	enabled?: boolean;
+	enabledDisabled?: boolean;
+	isPending: boolean;
+	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
+}) {
+	if (enabled === undefined) {
+		return <span className="text-xs text-zinc-500">Always on</span>;
+	}
+	return (
+		<input
+			type="checkbox"
+			checked={enabled}
+			disabled={isPending || enabledDisabled}
+			onChange={(e) => handleEnabledChange?.(phase as PipelineTogglePhase, e.target.checked)}
+			aria-label={`${label} enabled`}
+			className="h-4 w-4 accent-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
+		/>
+	);
 }
 
 /**
@@ -425,6 +480,9 @@ function PhaseConfigRow({
 	config,
 	projectDefaults,
 	isPending,
+	enabled,
+	enabledDisabled,
+	handleEnabledChange,
 	handleCliChange,
 	handleModelChange,
 	handleReasoningChange,
@@ -467,6 +525,16 @@ function PhaseConfigRow({
 			<td className="px-4 py-3.5">
 				<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
 				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
+			</td>
+			<td className="px-4 py-3.5">
+				<PhaseEnabledCell
+					phase={phase}
+					label={phaseLabel.label}
+					enabled={enabled}
+					enabledDisabled={enabledDisabled}
+					isPending={isPending}
+					handleEnabledChange={handleEnabledChange}
+				/>
 			</td>
 			<td className="px-4 py-3.5">
 				<select
@@ -532,6 +600,8 @@ function PhaseConfigRow({
 
 interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
+	pipelineEnabled: PipelineEnabledForm;
+	handleEnabledChange: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
@@ -548,6 +618,8 @@ interface AgentConfigurationFormProps {
 
 function AgentConfigurationForm({
 	agents,
+	pipelineEnabled,
+	handleEnabledChange,
 	handleCliChange,
 	handleModelChange,
 	handleReasoningChange,
@@ -578,6 +650,7 @@ function AgentConfigurationForm({
 							<thead>
 								<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
 									<th className="px-4 py-3">Phase</th>
+									<th className="px-4 py-3">Enabled</th>
 									<th className="px-4 py-3">Agent CLI</th>
 									<th className="px-4 py-3">Model</th>
 									<th className="px-4 py-3">Reasoning</th>
@@ -592,6 +665,15 @@ function AgentConfigurationForm({
 										config={agents[phase] ?? {}}
 										projectDefaults={agents.defaults}
 										isPending={isPending}
+										enabled={
+											TOGGLEABLE_PHASES.has(phase)
+												? pipelineEnabled[phase as PipelineTogglePhase]
+												: undefined
+										}
+										enabledDisabled={
+											phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+										}
+										handleEnabledChange={handleEnabledChange}
 										handleCliChange={handleCliChange}
 										handleModelChange={handleModelChange}
 										handleReasoningChange={handleReasoningChange}
@@ -815,6 +897,9 @@ function ProjectDetailRouteComponent() {
 		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping' | 'credentials'
 	>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
+	const [pipelineEnabled, setPipelineEnabled] = useState<PipelineEnabledForm>(() =>
+		toPipelineEnabledForm(undefined),
+	);
 	const [autoMerge, setAutoMerge] = useState(false);
 	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
 	const [boardMapping, setBoardMapping] = useState<BoardMappingForm>(() =>
@@ -841,6 +926,7 @@ function ProjectDetailRouteComponent() {
 			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
 			setMaxConcurrentJobsError(undefined);
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
+			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
 			setBoardMapping(toBoardMappingForm(project.githubProjects));
@@ -901,8 +987,12 @@ function ProjectDetailRouteComponent() {
 		);
 		if (hasLightChange) return true;
 
-		return PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase]));
-	}, [project, agents]);
+		if (PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase])))
+			return true;
+
+		// The per-phase enable toggles save through this same form.
+		return isPipelineEnabledDirty(pipelineEnabled, project.pipeline);
+	}, [project, agents, pipelineEnabled]);
 
 	const isPipelineDirty = useMemo(
 		() =>
@@ -1005,9 +1095,15 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
+	const handleEnabledChange = (phase: PipelineTogglePhase, enabled: boolean) => {
+		setPipelineEnabled((prev) => setPhaseEnabled(prev, phase, enabled));
+		updateMutation.reset();
+	};
+
 	const handleAgentsReset = () => {
 		if (project) {
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
+			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
 			updateMutation.reset();
 		}
 	};
@@ -1018,6 +1114,7 @@ function ProjectDetailRouteComponent() {
 		updateMutation.mutate({
 			id: projectId,
 			agents: finalAgents,
+			pipeline: buildPipelineEnabledUpdate(pipelineEnabled, project?.pipeline),
 		});
 	};
 
@@ -1273,6 +1370,8 @@ function ProjectDetailRouteComponent() {
 			{activeTab === 'agents' && (
 				<AgentConfigurationForm
 					agents={agents}
+					pipelineEnabled={pipelineEnabled}
+					handleEnabledChange={handleEnabledChange}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
 					handleReasoningChange={handleReasoningChange}
