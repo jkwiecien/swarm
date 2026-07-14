@@ -172,10 +172,23 @@ export const runsRouter = router({
 			// start-check would instantly terminate the fresh attempt.
 			await clearRunCancellation(input.runId);
 
+			// Reasoning to persist on the row (issue #180). When the retry dialog
+			// applies an override (it always sends an explicit `cli`+`model`, and
+			// `reasoning` is authoritative — an omitted level means "Default"), coerce a
+			// missing level to `null` so a stale level is CLEARED rather than left in
+			// place; otherwise the row would keep an old reasoning that no longer
+			// matches the relaunch (`resetRunToRunning` treats `undefined` as
+			// "leave as-is"). A plain "Retry now" with no override at all leaves the
+			// column untouched (`undefined`). The worker re-resolves and resets the
+			// carried row on pickup, but this keeps the row consistent in the meantime.
+			const applyingOverride =
+				input.cli !== undefined || input.model !== undefined || input.reasoning !== undefined;
+			const reasoningForRow = applyingOverride ? (input.reasoning ?? null) : undefined;
+
 			if (run.status === 'deferred') {
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
-				await claimRunOrThrow(run.id, undefined, 'deferred', input.model, input.reasoning);
+				await claimRunOrThrow(run.id, undefined, 'deferred', input.model, reasoningForRow);
 				// Common case: promote the pending delayed job in place (delay → 0).
 				const promoted = await promoteRetryForRun(
 					input.runId,
@@ -208,7 +221,7 @@ export const runsRouter = router({
 				);
 				// Persist the reconstructed payload onto the already-claimed row, then
 				// enqueue at delay 0.
-				await resetRunToRunning(run.id, job, undefined, input.model, undefined, input.reasoning);
+				await resetRunToRunning(run.id, job, undefined, input.model, undefined, reasoningForRow);
 				await enqueueDelayedRetry(job, 0);
 				return { runId: input.runId, status: 'retrying' as const };
 			}
@@ -228,7 +241,7 @@ export const runsRouter = router({
 				input.model,
 				input.reasoning,
 			);
-			await claimRunOrThrow(run.id, job, 'failed', input.model, input.reasoning);
+			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow);
 			await enqueueDelayedRetry(job, 0);
 
 			return { runId: input.runId, status: 'retrying' as const };

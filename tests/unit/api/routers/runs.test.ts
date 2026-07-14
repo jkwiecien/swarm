@@ -312,6 +312,38 @@ describe('runsRouter', () => {
 			);
 		});
 
+		it('clears a stale reasoning on the row when the dialog applies cli/model but omits reasoning (issue #180)', async () => {
+			// The retry dialog resets reasoning to "Default" (omitted) on any CLI/model
+			// change while still sending an explicit cli+model. The row must then CLEAR
+			// its old reasoning (→ null) so the displayed level matches the relaunch,
+			// rather than keeping a stale value that `resetRunToRunning` would leave as-is.
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload, reasoning: 'high' }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			await caller.retryNow({ runId: 'run-1', cli: 'claude', model: 'opus-4.5' });
+
+			expect(resetRunToRunning).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ runId: 'run-1' }),
+				'failed',
+				'opus-4.5',
+				undefined,
+				null,
+			);
+		});
+
 		it('rejects a failed run if jobPayload is missing', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'failed', jobPayload: null }),
