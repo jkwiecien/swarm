@@ -39,9 +39,17 @@ export const REPLAN_LABEL = 'swarm:replan';
 /**
  * Delimiters of the hidden HTML-comment block the contract is embedded in. An
  * HTML comment is invisible in GitHub's rendered issue body, so the marker adds
- * no visible clutter for a human reading the child issue. The `:v1` suffix is
- * part of the open token so a future format revision uses a distinct token an
- * older reader simply won't match (falling back to a normal run).
+ * no visible clutter for a human reading the child issue. (This invisibility is
+ * a cosmetic GitHub-flavored-markdown assumption — Jira/Trello would render the
+ * comment literally; the contract still round-trips correctly via `description`
+ * on any provider.) The `:v1` suffix is part of the open token so a future
+ * format revision uses a distinct token an older reader simply won't match
+ * (falling back to a normal run).
+ *
+ * The payload between the delimiters is base64-encoded (not raw JSON) so the
+ * plan's own content can never collide with the frame: a plan containing `-->`
+ * (a mermaid `A --> B` arrow) or the literal open token would otherwise truncate
+ * or shadow the marker and defeat the optimization on plausible inputs.
  */
 const PREPLAN_MARKER_OPEN = '<!-- swarm-preplan:v1';
 const PREPLAN_MARKER_CLOSE = '-->';
@@ -120,16 +128,20 @@ export function buildPreplanContract(input: {
  * the contract must have been computed over this same `humanDescription`.
  */
 export function embedPreplanMarker(humanDescription: string, contract: PreplanContract): string {
-	const block = `${PREPLAN_MARKER_OPEN}\n${JSON.stringify(contract, null, 2)}\n${PREPLAN_MARKER_CLOSE}`;
+	const payload = Buffer.from(JSON.stringify(contract), 'utf8').toString('base64');
+	const block = `${PREPLAN_MARKER_OPEN}\n${payload}\n${PREPLAN_MARKER_CLOSE}`;
 	const human = humanDescription.trimEnd();
 	return human.length === 0 ? block : `${human}\n\n${block}`;
 }
 
 /**
- * Split a body into its human-authored part and the raw marker JSON, or `null`
- * when no marker is present. Tolerant of trailing content after the close
- * delimiter; uses the last open delimiter so an embedded example in the human
- * text can't shadow the real (appended) marker.
+ * Split a body into its human-authored part and the decoded marker JSON, or
+ * `null` when no marker is present. The payload is base64 between the delimiters
+ * (see {@link embedPreplanMarker}), so it's decoded here before the caller
+ * parses it — the base64 alphabet can't contain the close delimiter, so the
+ * plan's own content never truncates the frame. Tolerant of trailing content
+ * after the close delimiter; uses the last open delimiter so an embedded example
+ * in the human text can't shadow the real (appended) marker.
  */
 function extractPreplanBlock(description: string): { human: string; json: string } | null {
 	const openAt = description.lastIndexOf(PREPLAN_MARKER_OPEN);
@@ -137,9 +149,10 @@ function extractPreplanBlock(description: string): { human: string; json: string
 	const afterOpen = description.slice(openAt + PREPLAN_MARKER_OPEN.length);
 	const closeAt = afterOpen.indexOf(PREPLAN_MARKER_CLOSE);
 	if (closeAt === -1) return null;
+	const payload = afterOpen.slice(0, closeAt).trim();
 	return {
 		human: description.slice(0, openAt).trimEnd(),
-		json: afterOpen.slice(0, closeAt).trim(),
+		json: Buffer.from(payload, 'base64').toString('utf8'),
 	};
 }
 
@@ -166,11 +179,14 @@ export function isPreplanSkip(decision: PreplanDecision): decision is PreplanSki
  * invalidated plans fall back to a normal Planning run").
  */
 export function evaluatePreplan(workItem: WorkItem): PreplanDecision {
+	const block = extractPreplanBlock(workItem.description);
+	// No marker → nothing to reject; a plain item carrying REPLAN_LABEL alone
+	// falls back with a null reason rather than a misleading "rejected" log.
+	if (!block) return { fallbackReason: null };
+
 	if (workItem.labels.some((l) => l.name === REPLAN_LABEL)) {
 		return { fallbackReason: `operator requested replanning (${REPLAN_LABEL})` };
 	}
-	const block = extractPreplanBlock(workItem.description);
-	if (!block) return { fallbackReason: null };
 
 	let contract: PreplanContract;
 	try {

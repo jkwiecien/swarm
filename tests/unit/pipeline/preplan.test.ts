@@ -16,6 +16,11 @@ const ITEM_URL = 'https://github.com/o/r/issues/42';
 const HUMAN = 'Build the UI slice, self-contained.';
 const PLAN = '# UI plan\n\n1. Do the thing.';
 
+/** Build a marker whose payload is `raw` base64-encoded (matching embedPreplanMarker's framing). */
+function markerWith(raw: string): string {
+	return `body\n\n<!-- swarm-preplan:v1\n${Buffer.from(raw, 'utf8').toString('base64')}\n-->`;
+}
+
 function contract(overrides: Partial<PreplanContract> = {}): PreplanContract {
 	return {
 		...buildPreplanContract({
@@ -71,6 +76,27 @@ describe('embedPreplanMarker / evaluatePreplan round-trip', () => {
 		}
 	});
 
+	it('round-trips a plan whose content collides with the marker delimiters', () => {
+		// A base64 payload can't contain `-->` or the open token, so plan content
+		// like mermaid arrows or a literal marker token no longer truncates/shadows
+		// the frame (the blocking review point). All of these must survive intact
+		// and be accepted for the skip path.
+		const nastyPlan = [
+			'# Flow',
+			'```mermaid',
+			'graph TD; stepA --> stepB --> stepC',
+			'```',
+			'Then close the comment like this: -->',
+			'And do NOT confuse it with <!-- swarm-preplan:v1 (a decoy open token).',
+		].join('\n');
+		const c = contract({ plan: nastyPlan });
+		const decision = evaluatePreplan(childWith(c));
+		expect(isPreplanSkip(decision)).toBe(true);
+		if (isPreplanSkip(decision)) {
+			expect(decision.contract.plan).toBe(nastyPlan);
+		}
+	});
+
 	it('handles an empty human description (marker only)', () => {
 		const c = buildPreplanContract({
 			splitId: 's',
@@ -93,18 +119,12 @@ describe('evaluatePreplan fallbacks', () => {
 	});
 
 	it('falls back when the marker JSON is malformed', () => {
-		const item = createMockWorkItem({
-			url: ITEM_URL,
-			description: 'body\n\n<!-- swarm-preplan:v1\n{ nope\n-->',
-		});
+		const item = createMockWorkItem({ url: ITEM_URL, description: markerWith('{ nope') });
 		expect(evaluatePreplan(item)).toEqual({ fallbackReason: 'preplan marker is malformed' });
 	});
 
 	it('falls back when a required field is missing (schema rejects it)', () => {
-		const item = createMockWorkItem({
-			url: ITEM_URL,
-			description: 'body\n\n<!-- swarm-preplan:v1\n{"version":1}\n-->',
-		});
+		const item = createMockWorkItem({ url: ITEM_URL, description: markerWith('{"version":1}') });
 		expect(evaluatePreplan(item)).toEqual({ fallbackReason: 'preplan marker is malformed' });
 	});
 

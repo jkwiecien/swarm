@@ -453,8 +453,13 @@ function readPlanOrThrow(
  *
  * The marker is embedded via a follow-up `updateWorkItem` (not at creation)
  * because it binds the sibling's own backing-issue URL, which only exists once
- * the item is created. A failure to embed leaves the child unmarked, which
- * safely falls back to a normal Planning run for that child.
+ * the item is created. That embed (contract build + marker update) is wrapped in
+ * a try/catch: a failure there is logged and swallowed so the sibling is still
+ * created (and its split comment posted) — it simply stays unmarked and falls
+ * back to a normal Planning run for that child, rather than failing the whole
+ * parent run mid-loop (which a retry would then duplicate). The `createWorkItem`
+ * and split comment are deliberately outside the catch — those are the split
+ * itself, not the optimization, so their failures must still surface.
  */
 async function applySplit(
 	pm: PMProvider,
@@ -477,18 +482,28 @@ async function applySplit(
 			status: SIBLING_START_STATUS,
 			labels: [SPLIT_CHILD_LABEL],
 		});
-		const contract = buildPreplanContract({
-			splitId,
-			childIndex,
-			parentUrl: parent.url,
-			itemUrl: sibling.url,
-			humanDescription: sub.description,
-			plan: sub.plan,
-			generatedAt,
-		});
-		await pm.updateWorkItem(sibling.id, {
-			description: embedPreplanMarker(sub.description, contract),
-		});
+		try {
+			const contract = buildPreplanContract({
+				splitId,
+				childIndex,
+				parentUrl: parent.url,
+				itemUrl: sibling.url,
+				humanDescription: sub.description,
+				plan: sub.plan,
+				generatedAt,
+			});
+			await pm.updateWorkItem(sibling.id, {
+				description: embedPreplanMarker(sub.description, contract),
+			});
+		} catch (error) {
+			logger.warn('Planning — failed to embed preplan marker; child will re-plan normally', {
+				parentId: parent.id,
+				siblingId: sibling.id,
+				splitId,
+				childIndex,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 		await pm.addComment(sibling.id, splitChildCommentBody(parent));
 		subTaskItemIds.push(sibling.id);
 	}
@@ -606,8 +621,6 @@ export async function runPlanningPhase(
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 	} = options;
-	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
-
 	// A spawned split-child never auto-advances to "ToDo" on its own — the human
 	// sequences the siblings — so its own Planning run forces autoAdvance off,
 	// whatever the project config says (see SPLIT_CHILD_LABEL).
@@ -616,30 +629,41 @@ export async function runPlanningPhase(
 
 	// A split child whose parent already wrote its plan reuses it — no worktree,
 	// no agent CLI (docs/OPTIMIZATION.md §3). A missing/malformed/stale/mismatched
-	// or operator-invalidated marker falls back to a normal run below.
+	// or operator-invalidated marker falls back to a normal run below. The skip is
+	// gated on isSplitChild: the marker is only ever written on split children, so
+	// a valid marker on a non-split item (e.g. a human removed the label) is not
+	// trusted to auto-advance — it falls through to a normal run.
 	const preplan = evaluatePreplan(workItem);
 	if (isPreplanSkip(preplan)) {
-		logger.info('Phase started - Planning — reusing preplanned split-child plan', {
+		if (isSplitChild) {
+			logger.info('Phase started - Planning — reusing preplanned split-child plan', {
+				taskId,
+				workItemId: workItem.id,
+				splitId: preplan.contract.splitId,
+			});
+			return completePreplannedRun(
+				pm,
+				workItem,
+				preplan.contract.plan,
+				effectiveAutoAdvance,
+				cli,
+				taskId,
+			);
+		}
+		logger.warn('Planning — valid preplan marker on a non-split-child item; ignoring', {
 			taskId,
 			workItemId: workItem.id,
 			splitId: preplan.contract.splitId,
 		});
-		return completePreplannedRun(
-			pm,
-			workItem,
-			preplan.contract.plan,
-			effectiveAutoAdvance,
-			cli,
-			taskId,
-		);
-	}
-	if (preplan.fallbackReason) {
+	} else if (preplan.fallbackReason) {
 		logger.info('Planning — preplanned marker rejected, running agent normally', {
 			taskId,
 			workItemId: workItem.id,
 			reason: preplan.fallbackReason,
 		});
 	}
+
+	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 
 	logger.info(`Phase started - Planning — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,

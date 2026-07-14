@@ -25,7 +25,13 @@ import {
 	runPlanningPhase,
 	SPLIT_CHILD_LABEL,
 } from '@/pipeline/planning.js';
-import { buildPreplanContract, embedPreplanMarker, REPLAN_LABEL } from '@/pipeline/preplan.js';
+import {
+	buildPreplanContract,
+	embedPreplanMarker,
+	evaluatePreplan,
+	isPreplanSkip,
+	REPLAN_LABEL,
+} from '@/pipeline/preplan.js';
 import type { UpdateWorkItemPatch, WorkItem } from '@/pm/types.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
@@ -59,6 +65,22 @@ function preplannedChild(
 		labels: [{ id: SPLIT_CHILD_LABEL, name: SPLIT_CHILD_LABEL }],
 		...overrides,
 	});
+}
+
+/**
+ * Decode the plan back out of an embedded marker by running it through the same
+ * evaluatePreplan path a child would — `itemUrl` is the created sibling's url
+ * (the createWorkItem mock uses the title as the url).
+ */
+function planFromMarker(description: string, itemUrl: string): string | undefined {
+	const decision = evaluatePreplan(
+		createMockWorkItem({
+			url: itemUrl,
+			description,
+			labels: [{ id: SPLIT_CHILD_LABEL, name: SPLIT_CHILD_LABEL }],
+		}),
+	);
+	return isPreplanSkip(decision) ? decision.contract.plan : undefined;
 }
 
 const WORKTREE_PATH = '/Users/dev/swarm/swarm/.swarm-workspaces/task-18';
@@ -200,17 +222,23 @@ describe('runPlanningPhase', () => {
 		]);
 
 		// Each sibling's body is updated to embed its parent-written plan as a
-		// preplanned marker, so its own Planning run reuses it (issue #178).
+		// preplanned marker, so its own Planning run reuses it (issue #178). The
+		// payload is base64 (see embedPreplanMarker), so assert the plan round-trips
+		// back out via evaluatePreplan rather than looking for it as literal text.
 		const secondMarker = deps.pm.updateWorkItem.mock.calls.find(
 			(c) => c[0] === 'PVTI_Second slice',
 		)?.[1];
 		expect(secondMarker?.description).toContain('swarm-preplan:v1');
-		expect(secondMarker?.description).toContain('Build it.');
 		expect(secondMarker?.description).toContain('The UI'); // human description preserved
+		expect(planFromMarker(secondMarker?.description ?? '', 'Second slice')).toBe(
+			'# UI plan\n\n1. Build it.',
+		);
 		const thirdMarker = deps.pm.updateWorkItem.mock.calls.find(
 			(c) => c[0] === 'PVTI_Third slice',
 		)?.[1];
-		expect(thirdMarker?.description).toContain('Write it.');
+		expect(planFromMarker(thirdMarker?.description ?? '', 'Third slice')).toBe(
+			'# Docs plan\n\n1. Write it.',
+		);
 
 		// Each sibling gets an explanatory comment (plus the original's plan comment).
 		const commentTargets = deps.pm.addComment.mock.calls.map((c) => c[0]);
@@ -285,6 +313,31 @@ describe('runPlanningPhase', () => {
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 
+	it('does not fail the split when embedding a preplan marker throws — the sibling is still created and commented', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			subTasks: [
+				{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Build it.' },
+			],
+		});
+		const deps = makeDeps();
+		// The marker embed is a follow-up updateWorkItem carrying the marker in its
+		// description; make only that call fail. The split itself (createWorkItem +
+		// the split comment) must still succeed — the child just re-plans normally.
+		deps.pm.updateWorkItem = vi.fn<(id: string, patch: UpdateWorkItemPatch) => Promise<void>>(
+			async (_id, patch) => {
+				if (typeof patch.description === 'string' && patch.description.includes('swarm-preplan')) {
+					throw new Error('board rejected the update');
+				}
+			},
+		);
+		const result = await runPlanningPhase({ ...deps, autoAdvance: true });
+
+		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(1);
+		expect(deps.pm.addComment).toHaveBeenCalledWith('PVTI_Second slice', expect.any(String));
+		expect(result.split).toMatchObject({ subTaskItemIds: ['PVTI_Second slice'] });
+	});
+
 	it('reuses a preplanned split-child plan: skips the worktree and agent, posts the plan, never advances', async () => {
 		const deps = makeDeps();
 		deps.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
@@ -351,6 +404,16 @@ describe('runPlanningPhase', () => {
 		};
 		await runPlanningPhase(deps);
 		expect(deps.runAgent).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not skip on a valid marker when the split-child label has been removed (skip is gated on isSplitChild)', async () => {
+		const deps = makeDeps();
+		// A valid marker, but the item is no longer labelled a split child — a human
+		// removed the label. The skip must not fire; it re-plans normally instead.
+		deps.workItem = preplannedChild('# plan', 'desc', { labels: [] });
+		await runPlanningPhase(deps);
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
