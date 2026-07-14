@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { Cpu, GitMerge, Play, Settings, SquareKanban } from 'lucide-react';
+import { Cpu, GitMerge, KeyRound, Play, Settings, SquareKanban } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { CredentialsPanel } from '@/components/projects/credentials-panel.js';
 import { GitHubProjectsMappingForm } from '@/components/projects/github-projects-mapping-form.js';
 import { ProjectRunsPanel } from '@/components/runs/project-runs-panel.js';
 import {
@@ -811,7 +812,7 @@ function ProjectDetailRouteComponent() {
 	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
 	const [activeTab, setActiveTab] = useState<
-		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping'
+		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping' | 'credentials'
 	>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
 	const [autoMerge, setAutoMerge] = useState(false);
@@ -1220,6 +1221,21 @@ function ProjectDetailRouteComponent() {
 					<SquareKanban className="h-4 w-4 text-violet-400" />
 					Board Mapping
 				</button>
+				<button
+					type="button"
+					onClick={() => {
+						setActiveTab('credentials');
+						updateMutation.reset();
+					}}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'credentials'
+							? 'border-violet-500 text-white bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<KeyRound className="h-4 w-4 text-violet-400" />
+					Credentials
+				</button>
 			</div>
 
 			{activeTab === 'runs' && <ProjectRunsPanel projectId={projectId} />}
@@ -1309,6 +1325,8 @@ function ProjectDetailRouteComponent() {
 					errorMessage={updateMutation.error?.message}
 				/>
 			)}
+
+			{activeTab === 'credentials' && <CredentialsPanel projectId={projectId} />}
 		</div>
 	);
 }
