@@ -19,6 +19,12 @@ interface RunsTableProps {
 	currentPage: number;
 	pageSize: number;
 	onPageChange: (page: number) => void;
+	/**
+	 * Whether to render the Project column. `true` for the global `/runs` view;
+	 * `false` for the project-scoped Runs tab, where every row is the same project
+	 * and the freed width goes to the Task / ID column (issue #168).
+	 */
+	showProject?: boolean;
 }
 
 const PR_DRIVEN_PHASES = new Set([
@@ -83,6 +89,7 @@ export function RunsTable({
 	currentPage,
 	pageSize,
 	onPageChange,
+	showProject = true,
 }: RunsTableProps) {
 	const navigate = useNavigate();
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
@@ -106,10 +113,14 @@ export function RunsTable({
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Phase
 							</th>
-							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-								Project
-							</th>
-							<th className="w-[30%] px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+							{showProject && (
+								<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+									Project
+								</th>
+							)}
+							<th
+								className={`${showProject ? 'w-[30%]' : 'w-[40%]'} px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400`}
+							>
 								Task / ID
 							</th>
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -139,10 +150,12 @@ export function RunsTable({
 								<td className="px-2 py-3 text-sm font-semibold text-zinc-100 capitalize">
 									{formatPhase(run.phase)}
 								</td>
-								<td className="px-2 py-3 text-sm text-zinc-300 font-mono">
-									{projectsMap.get(run.projectId)?.name || run.projectId}
-								</td>
-								<td className="w-[30%] px-2 py-3 text-sm">
+								{showProject && (
+									<td className="px-2 py-3 text-sm text-zinc-300 font-mono">
+										{projectsMap.get(run.projectId)?.name || run.projectId}
+									</td>
+								)}
+								<td className={`${showProject ? 'w-[30%]' : 'w-[40%]'} px-2 py-3 text-sm`}>
 									<WorkItemCell run={run} repo={projectsMap.get(run.projectId)?.repo} />
 								</td>
 								<td className="px-2 py-3 text-sm">
