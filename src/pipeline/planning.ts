@@ -122,7 +122,7 @@ export type ProposedSplit = z.infer<typeof ProposedSplitSchema>;
  * covers Planning too (`RunPlanningPhaseOptions.cli` still overrides this per
  * call, for a project that does have Antigravity set up).
  */
-const DEFAULT_PLANNING_CLI: AgentCli = 'claude';
+export const DEFAULT_PLANNING_CLI: AgentCli = 'claude';
 
 /**
  * Status the item moves to when `autoAdvance` is on — the board's "ToDo",

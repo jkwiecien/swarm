@@ -87,7 +87,7 @@ export const OPENED_PR_FILENAME = HANDOFF_FILENAMES.implementation;
 export const BLOCKED_REASON_FILENAME = 'blocked_reason.md';
 
 /** Claude Code is SWARM's implementer agent (PROJECT.md §5.2). */
-const DEFAULT_IMPLEMENTATION_CLI: AgentCli = 'claude';
+export const DEFAULT_IMPLEMENTATION_CLI: AgentCli = 'claude';
 
 /**
  * Status the item moves to as soon as this phase starts, before the agent even

@@ -123,8 +123,11 @@ export interface CompleteRunInput {
 
 /**
  * Finalize a run: set its terminal `status`, `completedAt`, and whichever of the
- * outcome columns the caller passed. Omitted fields are simply left as-is
- * (`engine`/`exitCode` stay null for a run that never produced a result).
+ * outcome columns the caller passed. Omitted fields are simply left as-is:
+ * `exitCode` stays null for a run that never produced a result, and an omitted
+ * `engine` preserves the effective CLI recorded at creation/reset (issue #169)
+ * rather than blanking it — e.g. a deferral before the agent ran keeps showing
+ * the run's engine while it is retry-pending.
  */
 export async function completeRun(runId: string, input: CompleteRunInput): Promise<void> {
 	await getDb()
@@ -157,11 +160,10 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
  * effective CLI to record for this attempt (issue #169): a passed value is stored
  * so the row shows its engine while `running`, and an omitted one clears the
  * column (the worker repopulates it on pickup, or finalization records what ran).
- * Returns `true`
- * when a row was updated, `false` when
- * no row matched (it was pruned, or no longer has `fromStatus` when that atomic
- * guard is supplied) — the caller then falls back to `createRun`. Best-effort
- * like the rest of run tracking: the worker swallows/logs any throw.
+ * Returns `true` when a row was updated, `false` when no row matched (it was
+ * pruned, or no longer has `fromStatus` when that atomic guard is supplied) — the
+ * caller then falls back to `createRun`. Best-effort like the rest of run
+ * tracking: the worker swallows/logs any throw.
  *
  * `startedAt` is bumped to now so the row's age reflects *this* attempt, not the
  * original one: the dashboard's live duration measures the current run, and the

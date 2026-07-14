@@ -172,9 +172,11 @@ export const DEFAULT_AGENT_TIMEOUT_MS = 30 * 60 * 1000;
  * `src/pipeline/*.ts`) is `claude`, so this is the CLI a defaulted run actually
  * launches; keep it in sync if a phase default ever changes. It resolves the
  * effective engine persisted on the run row (issue #169) and keys the model
- * fallback maps in {@link resolveModel}.
+ * fallback maps in {@link resolveModel}. Exported so a unit test can assert it
+ * stays equal to every phase's coded `DEFAULT_*_CLI`, guarding the drift the
+ * "keep in sync" note above warns about (issue #169).
  */
-const DEFAULT_ENGINE: AgentCli = 'claude';
+export const DEFAULT_ENGINE: AgentCli = 'claude';
 
 /**
  * Resolve the effective default agent timeout: `SWARM_AGENT_TIMEOUT_MS` when it

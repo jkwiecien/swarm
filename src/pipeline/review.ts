@@ -95,7 +95,7 @@ export const REVIEW_VERDICTS = ['approve', 'request-changes', 'comment'] as cons
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 
 /** Claude Code is SWARM's review agent (PROJECT.md §5.3) — run as the reviewer persona. */
-const DEFAULT_REVIEW_CLI: AgentCli = 'claude';
+export const DEFAULT_REVIEW_CLI: AgentCli = 'claude';
 
 /**
  * Cap on captured agent output, so a chatty/runaway review run can't grow the

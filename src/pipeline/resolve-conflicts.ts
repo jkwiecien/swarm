@@ -42,6 +42,9 @@ export const ResolveConflictsOutcomeSchema = z.object({
 });
 export type ResolveConflictsOutcome = z.infer<typeof ResolveConflictsOutcomeSchema>;
 
+/** Coded default CLI for the resolve-conflicts phase (mirrors the other phases). */
+export const DEFAULT_RESOLVE_CONFLICTS_CLI: AgentCli = 'claude';
+
 export interface RunResolveConflictsPhaseOptions {
 	project: ProjectConfig;
 	prNumber: string;
@@ -99,7 +102,7 @@ export async function runResolveConflictsPhase(
 		baseBranch,
 		baseSha,
 		taskId,
-		cli = 'claude',
+		cli = DEFAULT_RESOLVE_CONFLICTS_CLI,
 		model,
 		reasoning,
 		sessionId,
