@@ -1,3 +1,27 @@
+import { z } from 'zod';
+
+/**
+ * Run status/phase filter values, mirroring the router's `RunStatusEnum`/
+ * `RunPhaseEnum` (`src/api/routers/runs.ts`). The web package doesn't import
+ * server modules, so these are re-declared here as the single source for the
+ * UI layer — reused by both the global `/runs` route search schema and the
+ * project-scoped Runs panel so a new phase/status only has to be added once.
+ * Zod is the source of truth per `ai/CODING_STANDARDS.md`; the types are
+ * `z.infer`'d rather than hand-written.
+ */
+export const runStatusFilterSchema = z.enum(['running', 'completed', 'failed', 'deferred']);
+export type RunStatusFilter = z.infer<typeof runStatusFilterSchema>;
+
+export const runPhaseFilterSchema = z.enum([
+	'planning',
+	'implementation',
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+]);
+export type RunPhaseFilter = z.infer<typeof runPhaseFilterSchema>;
+
 /**
  * Mirrors `AgentUsage` (`src/harness/usage.ts`) — the web package doesn't
  * import server modules, so this hand-mirrors the shape the same way `RunRow`
