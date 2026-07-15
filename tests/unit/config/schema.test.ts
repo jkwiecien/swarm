@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	AgentConfigSchema,
 	AgentsConfigSchema,
+	CUSTOM_PROMPT_MAX_LENGTH,
 	PipelineConfigSchema,
 	PROJECT_DEFAULTS,
 	ProjectConfigSchema,
@@ -248,6 +249,38 @@ describe('ProjectConfigSchema', () => {
 		expect(() => AgentConfigSchema.parse({ timeoutMs: 45 * 60 * 1000 })).not.toThrow();
 		expect(() => AgentConfigSchema.parse({ timeoutMs: 5 * 60 * 1000 - 1 })).toThrow();
 		expect(() => AgentConfigSchema.parse({ timeoutMs: 45 * 60 * 1000 + 1 })).toThrow();
+	});
+
+	describe('custom prompt (issue #135)', () => {
+		it('leaves prompt unset when omitted', () => {
+			expect(AgentConfigSchema.parse({}).prompt).toBeUndefined();
+		});
+
+		it('trims a custom prompt on parse', () => {
+			expect(AgentConfigSchema.parse({ prompt: '  follow house style  ' }).prompt).toBe(
+				'follow house style',
+			);
+		});
+
+		it('normalizes a whitespace-only prompt to unset (not stored as an override)', () => {
+			expect(AgentConfigSchema.parse({ prompt: '   \n\t ' }).prompt).toBeUndefined();
+			expect(AgentConfigSchema.parse({ prompt: '' }).prompt).toBeUndefined();
+		});
+
+		it('accepts a prompt at the maximum length and rejects one over it', () => {
+			expect(() =>
+				AgentConfigSchema.parse({ prompt: 'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH) }),
+			).not.toThrow();
+			expect(() =>
+				AgentConfigSchema.parse({ prompt: 'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH + 1) }),
+			).toThrow(/at most/);
+		});
+
+		it('measures the bound against the trimmed value', () => {
+			// Over the bound only counting whitespace — trims to the max, so it passes.
+			const padded = `${'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH)}${'  '.repeat(50)}`;
+			expect(() => AgentConfigSchema.parse({ prompt: padded })).not.toThrow();
+		});
 	});
 
 	it('omits worktreeRetention entirely by default', () => {

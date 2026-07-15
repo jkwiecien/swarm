@@ -452,6 +452,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
 				timeoutMs: overrides.timeoutMs,
@@ -468,6 +469,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.resumePmPhase === 'implementation',
 				...session,
@@ -484,6 +486,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -500,6 +503,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -515,6 +519,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -532,6 +537,7 @@ function runPhase(
 				cli: overrides.cli,
 				model: overrides.model,
 				reasoning: overrides.reasoning,
+				customPrompt: overrides.customPrompt,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -652,6 +658,7 @@ function agentOverrideFor(
 	model?: string;
 	reasoning?: ReasoningLevel;
 	timeoutMs?: number;
+	customPrompt?: string;
 } {
 	const phaseConfig = (() => {
 		switch (phase) {
@@ -683,6 +690,9 @@ function agentOverrideFor(
 		model,
 		reasoning,
 		timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS,
+		// The project's optional per-phase custom prompt (issue #135). No default —
+		// absent means the phase composes exactly its static prompt.
+		customPrompt: phaseConfig.prompt,
 	};
 }
 

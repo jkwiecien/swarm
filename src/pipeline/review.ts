@@ -59,8 +59,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
+import { buildReviewPrompt } from '@/pipeline/prompts/review.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -84,6 +83,11 @@ import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the review agent is instructed to write its submitted verdict to, at the worktree root. */
 export const REVIEW_VERDICT_FILENAME = HANDOFF_FILENAMES.review;
+
+// The static review prompt now lives in `src/pipeline/prompts/review.ts` (issue
+// #135); re-exported so existing importers of `@/pipeline/review.js` keep
+// resolving it unchanged.
+export { buildReviewPrompt };
 
 /**
  * The verdicts the agent may submit — `gh pr review`'s three event flags. The
@@ -133,6 +137,12 @@ export interface RunReviewPhaseOptions {
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
 	/**
+	 * Project's optional custom prompt for this phase (`agents.review.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
+	/**
 	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
 	 * (`resumeSessionId`). When resuming, the preserved head-SHA checkout is reused
 	 * so the agent continues its prior session in place.
@@ -158,51 +168,6 @@ export interface ReviewPhaseResult {
 	verdict: ReviewVerdict;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
-}
-
-/**
- * Build the prompt handed to the review agent. It's told this is review-only
- * (findings, never fixes — mirroring Cascade's review agent, which is
- * hard-blocked from editing), to read the PR / linked issue / full diff, to
- * verify findings against the checkout before reporting them, to submit
- * exactly one formal review via `gh pr review`, and to record which verdict it
- * submitted to {@link REVIEW_VERDICT_FILENAME} so this phase can validate the
- * hand-off.
- */
-export function buildReviewPrompt(
-	context: {
-		repo: string;
-		prNumber: string;
-		headSha: string;
-	},
-	delegationAllowed = false,
-): string {
-	const { repo, prNumber, headSha } = context;
-	return [
-		'You are a senior code reviewer reviewing a pull request.',
-		'',
-		...pipelinePhaseGuard(delegationAllowed),
-		...GH_IDENTITY_GUARD,
-		'',
-		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',
-		'in any way. When you find a problem, report it as a review finding — never fix it',
-		'yourself.',
-		'',
-		`This worktree is checked out (detached) at ${headSha}, the head commit of PR`,
-		`#${prNumber} in ${repo} on GitHub.`,
-		'',
-		'Do all of the following, in order:',
-		`1. Read the PR and its discussion: \`gh pr view ${prNumber} --repo ${repo} --comments\`. If the PR body references an issue, read that too (\`gh issue view <n> --repo ${repo} --comments\`) — the issue and any plan posted on it are the ground truth for what was agreed.`,
-		`2. Read the full diff: \`gh pr diff ${prNumber} --repo ${repo}\`. Review ALL changed files, not just the first few.`,
-		'3. Confirm README.md remains accurate for the changes in this PR. If a configuration, architecture, workflow, or user-facing behavior change makes it stale, report the missing README update as a review finding.',
-		'4. Verify before claiming: for each candidate finding, trace the exact failing scenario in the surrounding code of this checkout. Only report issues you can demonstrate — do not invent problems, pad the review with praise, or restate personal preferences as defects.',
-		'5. Do not submit a review or perform any GitHub mutation. SWARM submits the decision after you exit.',
-		`In particular, do not run \`gh pr review ${prNumber} --repo ${repo}\`, \`--approve\`, \`--request-changes\`, or \`--comment\`. GH_TOKEN is read-only context authentication; do not run gh auth switch.`,
-		`6. Write "${REVIEW_VERDICT_FILENAME}" as JSON containing verdict (approve, request-changes, or comment), body (the final review body), and optional findings [{title,body}].`,
-		'Do NOT `git add`/commit the hand-off.',
-		'',
-		'Do not merge the PR — a human does that.',
-	].join('\n');
 }
 
 /**
@@ -248,6 +213,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		cli = DEFAULT_REVIEW_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -299,6 +265,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 						buildReviewPrompt(
 							{ repo: project.repo, prNumber, headSha },
 							delegationEnabled(project, 'review', cli),
+							customPrompt,
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

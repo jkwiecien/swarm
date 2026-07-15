@@ -1,6 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
-import { Cpu, GitMerge, KeyRound, Play, Settings, SquareKanban } from 'lucide-react';
+import {
+	ChevronLeft,
+	ChevronRight,
+	Cpu,
+	GitMerge,
+	KeyRound,
+	Play,
+	Settings,
+	SquareKanban,
+} from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { CredentialsPanel } from '@/components/projects/credentials-panel.js';
@@ -12,6 +21,13 @@ import {
 	isBoardMappingDirty,
 	toBoardMappingForm,
 } from '@/lib/board-mapping.js';
+import {
+	CUSTOM_PROMPT_MAX_LENGTH,
+	customPromptError,
+	isCustomPromptDirty,
+	normalizeCustomPrompt,
+	PHASE_SYSTEM_PROMPT_SUMMARY,
+} from '@/lib/phase-prompt.js';
 import {
 	buildPipelineEnabledUpdate,
 	isPipelineEnabledDirty,
@@ -107,6 +123,50 @@ function capitalize(value: string): string {
 }
 
 /**
+ * The placeholder shown in a phase's Reasoning selector: "—" with no model, the
+ * model's default level when it exposes a choice, else "Fixed" (a single-variant
+ * model) or "N/A" (no reasoning knob at all). Extracted so the detail component's
+ * cognitive complexity stays within budget.
+ */
+function reasoningPlaceholderLabel(
+	cli: AgentCli | undefined,
+	model: string | undefined,
+	optionCount: number,
+): string {
+	if (!cli || !model) return '—';
+	if (optionCount > 0) return getReasoningDefaultLabel(cli, model);
+	return capabilityFor(cli, model)?.fixedVariant ? 'Fixed' : 'N/A';
+}
+
+/**
+ * Derive the dependent CLI/Model/Reasoning/Timeout selector state for a phase's
+ * config — the Model list depends on the CLI, the Reasoning list on the model.
+ * Pulled out of {@link PhaseSettingsDetail} to keep its cognitive complexity
+ * within budget.
+ */
+function phaseFieldState(config: AgentConfig, isPending: boolean) {
+	const selectedCli = config.cli;
+	const selectedModel = config.model;
+	const reasoningOptions =
+		selectedCli && selectedModel ? reasoningChoicesFor(selectedCli, selectedModel) : [];
+	return {
+		selectedCli,
+		selectedModel,
+		selectedReasoning: config.reasoning,
+		timeoutMinutes:
+			config.timeoutMs != null ? config.timeoutMs / (60 * 1000) : DEFAULT_TIMEOUT_MINUTES,
+		modelOptions: selectedCli ? MODEL_CAPABILITIES[selectedCli] : [],
+		reasoningOptions,
+		reasoningDisabled: isPending || !selectedModel || reasoningOptions.length === 0,
+		reasoningPlaceholder: reasoningPlaceholderLabel(
+			selectedCli,
+			selectedModel,
+			reasoningOptions.length,
+		),
+	};
+}
+
+/**
  * Normalize a stored per-phase config for display: a legacy combined antigravity
  * model string (`"Gemini 3.5 Flash (High)"`) becomes its logical id + reasoning
  * so the Model and Reasoning selectors render the right selections. Non-legacy
@@ -133,7 +193,8 @@ function isPhaseConfigDirty(local: AgentConfig = {}, db: AgentConfig = {}): bool
 		(local.cli ?? '') !== (db.cli ?? '') ||
 		(local.model ?? '') !== (dbModel ?? '') ||
 		(local.reasoning ?? '') !== (dbReasoning ?? '') ||
-		(local.timeoutMs ?? '') !== (db.timeoutMs ?? '')
+		(local.timeoutMs ?? '') !== (db.timeoutMs ?? '') ||
+		isCustomPromptDirty(local.prompt, db.prompt)
 	);
 }
 
@@ -160,11 +221,21 @@ function cleanAgentConfig({
 	model,
 	reasoning,
 	timeoutMs,
+	prompt,
 }: AgentConfig): AgentConfig | undefined {
-	if (!cli && !model && !reasoning && !timeoutMs) return undefined;
+	// Whitespace-only prompt is not a meaningful override (issue #135) — drop it so
+	// it's neither persisted nor counted as a set value here.
+	const normalizedPrompt = normalizeCustomPrompt(prompt);
+	if (!cli && !model && !reasoning && !timeoutMs && !normalizedPrompt) return undefined;
 	// Reasoning is meaningless without a model to validate it against — drop it if
 	// the model was cleared, so a stale level can't reach the server.
-	return { cli, model, reasoning: model ? reasoning : undefined, timeoutMs };
+	return {
+		cli,
+		model,
+		reasoning: model ? reasoning : undefined,
+		timeoutMs,
+		prompt: normalizedPrompt,
+	};
 }
 
 interface GeneralSettingsFormProps {
@@ -416,20 +487,51 @@ function GeneralSettingsForm({
 	);
 }
 
+/** Shared select/input recipe (ai/DESIGN_SYSTEM.md §4), factored to a const. */
+const FIELD_CLASS =
+	'block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow';
+
+/** Shared field label recipe (ai/DESIGN_SYSTEM.md §4). */
+const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
+
+/** Card wrapper recipe shared by the phase-detail sections. */
+const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm';
+
+/** Display labels for the agent CLIs, used in the phase-row summary. */
+const CLI_LABELS: Record<AgentCli, string> = {
+	claude: 'Claude',
+	antigravity: 'Antigravity',
+	codex: 'Codex',
+};
+
+/**
+ * A one-line summary of a phase's current CLI/model/reasoning/timeout override
+ * for the navigation row — "Coded defaults" when nothing is set, else the set
+ * values joined (e.g. "Claude · Sonnet · High · 30m"). The custom prompt is
+ * surfaced separately as a badge, not folded into this string.
+ */
+function phaseConfigSummary(config: AgentConfig): string {
+	const parts: string[] = [];
+	if (config.cli) {
+		parts.push(CLI_LABELS[config.cli]);
+		if (config.model) parts.push(modelLabel(config.cli, config.model));
+		if (config.reasoning) parts.push(capitalize(config.reasoning));
+	}
+	if (config.timeoutMs != null) parts.push(`${config.timeoutMs / (60 * 1000)}m`);
+	return parts.length > 0 ? parts.join(' · ') : 'Coded defaults';
+}
+
 interface PhaseConfigRowProps {
 	phase: (typeof PHASES)[number];
 	config: AgentConfig;
-	projectDefaults?: AgentsConfig['defaults'];
 	isPending: boolean;
 	/** Enabled state for the optional phases; `undefined` for mandatory rows. */
 	enabled?: boolean;
 	/** Whether the enable toggle is locked off by a dependency (Review → Respond). */
 	enabledDisabled?: boolean;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
-	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+	/** Open the phase-detail screen for this row. */
+	onSelect: (phase: (typeof PHASES)[number]) => void;
 }
 
 /**
@@ -463,6 +565,9 @@ function PhaseEnabledCell({
 			checked={enabled}
 			disabled={isPending || enabledDisabled}
 			onChange={(e) => handleEnabledChange?.(phase as PipelineTogglePhase, e.target.checked)}
+			// The row navigates on click; keep the toggle from bubbling up to it
+			// (ai/DESIGN_SYSTEM.md: trailing row action calls stopPropagation).
+			onClick={(e) => e.stopPropagation()}
 			aria-label={`${label} enabled`}
 			className="h-4 w-4 accent-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
 		/>
@@ -470,61 +575,36 @@ function PhaseEnabledCell({
 }
 
 /**
- * One phase's row of dependent selectors — CLI → Model → Reasoning → Timeout. The
- * Model options come from the selected CLI's catalog; the Reasoning options from
- * the selected model's supported levels (empty → shown "Fixed"/disabled). Split
- * out of the table body so each cell's dependent logic stays readable.
+ * One phase's navigation row in the Agent Configuration summary: phase identity,
+ * its Enabled toggle (optional phases only), a one-line summary of the current
+ * override, a "Custom prompt" badge when one is set, and a trailing chevron. The
+ * whole row is clickable and keyboard-focusable and opens the phase-detail screen
+ * (ai/DESIGN_SYSTEM.md blesses whole-row-click navigation as long as the trailing
+ * per-row action — here the Enabled checkbox — stops propagation).
  */
 function PhaseConfigRow({
 	phase,
 	config,
-	projectDefaults,
 	isPending,
 	enabled,
 	enabledDisabled,
 	handleEnabledChange,
-	handleCliChange,
-	handleModelChange,
-	handleReasoningChange,
-	handleTimeoutChange,
+	onSelect,
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
-	const selectedCli = config.cli;
-	const selectedModel = config.model;
-	const selectedReasoning = config.reasoning;
-	// Stored in ms, but the dashboard exposes the 30-minute project default in
-	// whole minutes. An unset value still inherits that default.
-	const timeoutMinutes =
-		config.timeoutMs != null ? config.timeoutMs / (60 * 1000) : DEFAULT_TIMEOUT_MINUTES;
-	const modelOptions = selectedCli ? MODEL_CAPABILITIES[selectedCli] : [];
-	// Reasoning depends on both CLI and model. An empty list means the model
-	// exposes no choice (an antigravity single-variant model, or no model selected
-	// yet) — the selector is shown disabled/informational.
-	const reasoningOptions =
-		selectedCli && selectedModel ? reasoningChoicesFor(selectedCli, selectedModel) : [];
-	const reasoningDisabled = isPending || !selectedModel || reasoningOptions.length === 0;
-	// Empty choices with a fixed variant (antigravity single-variant, e.g. "Thinking")
-	// reads as "Fixed"; empty with no variant (a model with no reasoning knob, e.g.
-	// Claude Haiku) reads as "N/A".
-	const hasFixedVariant =
-		selectedCli && selectedModel
-			? !!capabilityFor(selectedCli, selectedModel)?.fixedVariant
-			: false;
-	const reasoningPlaceholder = !selectedModel
-		? '—'
-		: reasoningOptions.length === 0
-			? hasFixedVariant
-				? 'Fixed'
-				: 'N/A'
-			: selectedCli
-				? getReasoningDefaultLabel(selectedCli, selectedModel)
-				: 'Default';
-
+	const hasCustomPrompt = normalizeCustomPrompt(config.prompt) !== undefined;
 	return (
-		<tr className="hover:bg-zinc-800/40 transition-colors">
+		// Mouse users can click anywhere on the row; keyboard/AT users reach the
+		// explicit button in the trailing cell (which is what actually carries the
+		// accessible name and focus — a role="button" <tr> trips Biome a11y and is
+		// worse for AT than a real control).
+		<tr
+			onClick={() => onSelect(phase)}
+			className="hover:bg-zinc-800/40 focus-within:bg-zinc-800/40 cursor-pointer transition-colors"
+		>
 			<td className="px-4 py-3.5">
 				<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
-				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
+				<div className="text-xs text-zinc-500 font-mono">{phaseLabel.code}</div>
 			</td>
 			<td className="px-4 py-3.5">
 				<PhaseEnabledCell
@@ -537,75 +617,252 @@ function PhaseConfigRow({
 				/>
 			</td>
 			<td className="px-4 py-3.5">
-				<select
-					value={selectedCli ?? ''}
-					onChange={(e) => handleCliChange(phase, e.target.value)}
-					disabled={isPending}
-					className="block w-full max-w-[200px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow"
-				>
-					<option value="">Default (Unset)</option>
-					<option value="claude">Claude</option>
-					<option value="antigravity">Antigravity</option>
-					<option value="codex">Codex</option>
-				</select>
+				<div className="flex flex-wrap items-center gap-2">
+					<span className="text-sm text-zinc-300">{phaseConfigSummary(config)}</span>
+					{hasCustomPrompt && (
+						<span className="px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300 bg-violet-950/40 border border-violet-900/40 rounded">
+							Custom prompt
+						</span>
+					)}
+				</div>
 			</td>
-			<td className="px-4 py-3.5">
-				<select
-					value={selectedModel ?? ''}
-					onChange={(e) => handleModelChange(phase, e.target.value)}
-					disabled={isPending || !selectedCli}
-					className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+			<td className="px-4 py-3.5 text-right">
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						onSelect(phase);
+					}}
+					aria-label={`Configure ${phaseLabel.label} phase`}
+					className="inline-flex items-center justify-center rounded p-1 text-zinc-500 hover:text-zinc-200 focus:outline-none focus:ring-1 focus:ring-violet-500 transition-colors"
 				>
-					<option value="">
-						{selectedCli ? getModelDefaultLabel(selectedCli, projectDefaults) : 'Default (Unset)'}
-					</option>
-					{modelOptions.map((model) => (
-						<option key={model.id} value={model.id}>
-							{model.label}
-						</option>
-					))}
-				</select>
-			</td>
-			<td className="px-4 py-3.5">
-				<select
-					value={selectedReasoning ?? ''}
-					onChange={(e) => handleReasoningChange(phase, e.target.value)}
-					disabled={reasoningDisabled}
-					aria-label={`${phaseLabel.label} reasoning level`}
-					className="block w-full max-w-[200px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 transition-shadow"
-				>
-					<option value="">{reasoningPlaceholder}</option>
-					{reasoningOptions.map((level) => (
-						<option key={level} value={level}>
-							{capitalize(level)}
-						</option>
-					))}
-				</select>
-			</td>
-			<td className="px-4 py-3.5">
-				<input
-					type="number"
-					min="5"
-					max="45"
-					value={timeoutMinutes}
-					onChange={(e) => handleTimeoutChange(phase, e.target.value)}
-					disabled={isPending}
-					aria-label={`${phaseLabel.label} timeout in minutes`}
-					className="block w-full max-w-[160px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 font-mono"
-				/>
+					<ChevronRight className="h-4 w-4" aria-hidden="true" />
+				</button>
 			</td>
 		</tr>
+	);
+}
+
+interface PhaseSettingsDetailProps {
+	phase: (typeof PHASES)[number];
+	config: AgentConfig;
+	projectDefaults?: AgentsConfig['defaults'];
+	isPending: boolean;
+	enabled?: boolean;
+	enabledDisabled?: boolean;
+	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
+	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
+	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
+	onBack: () => void;
+}
+
+/**
+ * The per-phase detail screen: the CLI/Model/Reasoning/Timeout selectors that
+ * used to live inline in the summary row, plus a read-only summary of the phase's
+ * fixed SWARM system prompt and the editable, optional Custom prompt (issue
+ * #135). It shares the route's `agents` state and the single Save/Reset model
+ * (rendered by {@link AgentConfigurationForm}) — nothing here saves on its own.
+ */
+function PhaseSettingsDetail({
+	phase,
+	config,
+	projectDefaults,
+	isPending,
+	enabled,
+	enabledDisabled,
+	handleEnabledChange,
+	handleCliChange,
+	handleModelChange,
+	handleReasoningChange,
+	handleTimeoutChange,
+	handlePromptChange,
+	onBack,
+}: PhaseSettingsDetailProps) {
+	const phaseLabel = PHASE_LABELS[phase];
+	const {
+		selectedCli,
+		selectedModel,
+		selectedReasoning,
+		timeoutMinutes,
+		modelOptions,
+		reasoningOptions,
+		reasoningDisabled,
+		reasoningPlaceholder,
+	} = phaseFieldState(config, isPending);
+
+	const promptValue = config.prompt ?? '';
+	const promptErr = customPromptError(promptValue);
+	const promptLength = (normalizeCustomPrompt(promptValue) ?? '').length;
+
+	return (
+		<div className="space-y-6">
+			<button
+				type="button"
+				onClick={onBack}
+				className="inline-flex items-center gap-1 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+			>
+				<ChevronLeft className="h-4 w-4" aria-hidden="true" />
+				Back to Agent Configuration
+			</button>
+
+			<div className={`${CARD_CLASS} space-y-5`}>
+				<div>
+					<h2 className="text-sm font-semibold text-zinc-200">{phaseLabel.label}</h2>
+					<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
+				</div>
+
+				{enabled !== undefined && (
+					<div className="flex items-center gap-2">
+						<PhaseEnabledCell
+							phase={phase}
+							label={phaseLabel.label}
+							enabled={enabled}
+							enabledDisabled={enabledDisabled}
+							isPending={isPending}
+							handleEnabledChange={handleEnabledChange}
+						/>
+						<span className="text-xs text-zinc-400">
+							Phase enabled
+							{enabledDisabled ? ' (locked off while Review is disabled)' : ''}
+						</span>
+					</div>
+				)}
+
+				<div className="grid gap-5 sm:grid-cols-2">
+					<div>
+						<label htmlFor={`${phase}-cli`} className={LABEL_CLASS}>
+							Agent CLI
+						</label>
+						<select
+							id={`${phase}-cli`}
+							value={selectedCli ?? ''}
+							onChange={(e) => handleCliChange(phase, e.target.value)}
+							disabled={isPending}
+							className={FIELD_CLASS}
+						>
+							<option value="">Default (Unset)</option>
+							<option value="claude">Claude</option>
+							<option value="antigravity">Antigravity</option>
+							<option value="codex">Codex</option>
+						</select>
+					</div>
+					<div>
+						<label htmlFor={`${phase}-model`} className={LABEL_CLASS}>
+							Model
+						</label>
+						<select
+							id={`${phase}-model`}
+							value={selectedModel ?? ''}
+							onChange={(e) => handleModelChange(phase, e.target.value)}
+							disabled={isPending || !selectedCli}
+							className={`${FIELD_CLASS} font-mono`}
+						>
+							<option value="">
+								{selectedCli
+									? getModelDefaultLabel(selectedCli, projectDefaults)
+									: 'Default (Unset)'}
+							</option>
+							{modelOptions.map((model) => (
+								<option key={model.id} value={model.id}>
+									{model.label}
+								</option>
+							))}
+						</select>
+					</div>
+					<div>
+						<label htmlFor={`${phase}-reasoning`} className={LABEL_CLASS}>
+							Reasoning
+						</label>
+						<select
+							id={`${phase}-reasoning`}
+							value={selectedReasoning ?? ''}
+							onChange={(e) => handleReasoningChange(phase, e.target.value)}
+							disabled={reasoningDisabled}
+							className={FIELD_CLASS}
+						>
+							<option value="">{reasoningPlaceholder}</option>
+							{reasoningOptions.map((level) => (
+								<option key={level} value={level}>
+									{capitalize(level)}
+								</option>
+							))}
+						</select>
+					</div>
+					<div>
+						<label htmlFor={`${phase}-timeout`} className={LABEL_CLASS}>
+							Timeout (minutes)
+						</label>
+						<input
+							id={`${phase}-timeout`}
+							type="number"
+							min="5"
+							max="45"
+							value={timeoutMinutes}
+							onChange={(e) => handleTimeoutChange(phase, e.target.value)}
+							disabled={isPending}
+							className={`${FIELD_CLASS} font-mono`}
+						/>
+					</div>
+				</div>
+			</div>
+
+			<div className={`${CARD_CLASS} space-y-2`}>
+				<h2 className="text-sm font-semibold text-zinc-200">Built-in system prompt</h2>
+				<p className="text-xs text-zinc-400">
+					This phase always runs with SWARM's fixed instructions, which you can't edit here:
+				</p>
+				<p className="text-sm text-zinc-300 bg-zinc-900/40 border border-zinc-800 rounded p-3">
+					{PHASE_SYSTEM_PROMPT_SUMMARY[phase]}
+				</p>
+			</div>
+
+			<div className={`${CARD_CLASS} space-y-2`}>
+				<label htmlFor={`${phase}-prompt`} className={LABEL_CLASS}>
+					Custom prompt (optional)
+				</label>
+				<p className="text-xs text-zinc-400">
+					Appended to the built-in phase instructions above as an additional "Project instructions"
+					section. It supplements — never overrides — them, and is empty by default; leave it blank
+					to keep the default behavior.
+				</p>
+				<textarea
+					id={`${phase}-prompt`}
+					value={promptValue}
+					onChange={(e) => handlePromptChange(phase, e.target.value)}
+					disabled={isPending}
+					rows={8}
+					placeholder="e.g. Prefer our internal utility modules over adding new dependencies."
+					aria-invalid={promptErr ? true : undefined}
+					className={`${FIELD_CLASS} font-mono resize-y`}
+				/>
+				{promptErr ? (
+					<p className="text-xs text-red-400">{promptErr}</p>
+				) : (
+					<p className="text-xs text-zinc-500">
+						{promptLength.toLocaleString()} / {CUSTOM_PROMPT_MAX_LENGTH.toLocaleString()} characters
+					</p>
+				)}
+			</div>
+		</div>
 	);
 }
 
 interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
 	pipelineEnabled: PipelineEnabledForm;
+	/** The phase whose detail screen is open, or `null` for the summary table. */
+	selectedPhase: (typeof PHASES)[number] | null;
+	onSelectPhase: (phase: (typeof PHASES)[number]) => void;
+	onBack: () => void;
 	handleEnabledChange: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
+	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleLightModelChange: (cli: 'claude' | 'codex', value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
@@ -616,14 +873,25 @@ interface AgentConfigurationFormProps {
 	errorMessage?: string;
 }
 
+/**
+ * Agent Configuration tab. Shows the per-phase summary table (each row navigates
+ * to its detail screen) plus the global Light Models table, or — when a phase is
+ * selected — that phase's detail screen. Both views live in one `<form>` and
+ * share a single Save/Reset and the route's `agents`/`pipeline` state, so there
+ * is no second competing save model (issue #135, #119).
+ */
 function AgentConfigurationForm({
 	agents,
 	pipelineEnabled,
+	selectedPhase,
+	onSelectPhase,
+	onBack,
 	handleEnabledChange,
 	handleCliChange,
 	handleModelChange,
 	handleReasoningChange,
 	handleTimeoutChange,
+	handlePromptChange,
 	handleLightModelChange,
 	handleSubmit,
 	handleReset,
@@ -635,108 +903,130 @@ function AgentConfigurationForm({
 }: AgentConfigurationFormProps) {
 	return (
 		<form onSubmit={handleSubmit} className="space-y-6">
-			<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-				<div>
-					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-						Phases Configuration
-					</h2>
-					<p className="text-xs text-zinc-400 mb-4">
-						Configure which agent CLI and model overrides are used for each pipeline phase. Omitting
-						values will default to the pipeline's coded default settings.
-					</p>
+			{selectedPhase ? (
+				<PhaseSettingsDetail
+					phase={selectedPhase}
+					config={agents[selectedPhase] ?? {}}
+					projectDefaults={agents.defaults}
+					isPending={isPending}
+					enabled={
+						TOGGLEABLE_PHASES.has(selectedPhase)
+							? pipelineEnabled[selectedPhase as PipelineTogglePhase]
+							: undefined
+					}
+					enabledDisabled={
+						selectedPhase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+					}
+					handleEnabledChange={handleEnabledChange}
+					handleCliChange={handleCliChange}
+					handleModelChange={handleModelChange}
+					handleReasoningChange={handleReasoningChange}
+					handleTimeoutChange={handleTimeoutChange}
+					handlePromptChange={handlePromptChange}
+					onBack={onBack}
+				/>
+			) : (
+				<>
+					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+						<div>
+							<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+								Phases Configuration
+							</h2>
+							<p className="text-xs text-zinc-400 mb-4">
+								Select a phase to configure its agent CLI, model, and an optional custom prompt.
+								Unset values fall back to the pipeline's coded defaults.
+							</p>
 
-					<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-						<table className="w-full text-left border-collapse">
-							<thead>
-								<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-									<th className="px-4 py-3">Phase</th>
-									<th className="px-4 py-3">Enabled</th>
-									<th className="px-4 py-3">Agent CLI</th>
-									<th className="px-4 py-3">Model</th>
-									<th className="px-4 py-3">Reasoning</th>
-									<th className="px-4 py-3">Timeout (min)</th>
-								</tr>
-							</thead>
-							<tbody className="divide-y divide-zinc-800/60">
-								{PHASES.map((phase) => (
-									<PhaseConfigRow
-										key={phase}
-										phase={phase}
-										config={agents[phase] ?? {}}
-										projectDefaults={agents.defaults}
-										isPending={isPending}
-										enabled={
-											TOGGLEABLE_PHASES.has(phase)
-												? pipelineEnabled[phase as PipelineTogglePhase]
-												: undefined
-										}
-										enabledDisabled={
-											phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
-										}
-										handleEnabledChange={handleEnabledChange}
-										handleCliChange={handleCliChange}
-										handleModelChange={handleModelChange}
-										handleReasoningChange={handleReasoningChange}
-										handleTimeoutChange={handleTimeoutChange}
-									/>
-								))}
-							</tbody>
-						</table>
+							<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+								<table className="w-full text-left border-collapse">
+									<thead>
+										<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
+											<th className="px-4 py-3">Phase</th>
+											<th className="px-4 py-3">Enabled</th>
+											<th className="px-4 py-3">Configuration</th>
+											<th className="px-4 py-3">
+												<span className="sr-only">Open</span>
+											</th>
+										</tr>
+									</thead>
+									<tbody className="divide-y divide-zinc-800/60">
+										{PHASES.map((phase) => (
+											<PhaseConfigRow
+												key={phase}
+												phase={phase}
+												config={agents[phase] ?? {}}
+												isPending={isPending}
+												enabled={
+													TOGGLEABLE_PHASES.has(phase)
+														? pipelineEnabled[phase as PipelineTogglePhase]
+														: undefined
+												}
+												enabledDisabled={
+													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+												}
+												handleEnabledChange={handleEnabledChange}
+												onSelect={onSelectPhase}
+											/>
+										))}
+									</tbody>
+								</table>
+							</div>
+						</div>
 					</div>
-				</div>
-			</div>
 
-			<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-				<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-					Light Models
-				</h2>
-				<p className="text-xs text-zinc-400 mb-4">
-					The lighter model each CLI uses for bounded curated delegation (the
-					<code className="mx-1 text-zinc-300">swarm delegate</code> child run). Applies only when
-					delegation is enabled for a phase; leave unset to use the coded default. Antigravity
-					cannot host a delegation child yet.
-				</p>
+					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+						<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+							Light Models
+						</h2>
+						<p className="text-xs text-zinc-400 mb-4">
+							The lighter model each CLI uses for bounded curated delegation (the
+							<code className="mx-1 text-zinc-300">swarm delegate</code> child run). Applies only
+							when delegation is enabled for a phase; leave unset to use the coded default.
+							Antigravity cannot host a delegation child yet.
+						</p>
 
-				<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-					<table className="w-full text-left border-collapse">
-						<thead>
-							<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-								<th className="px-4 py-3">Agent CLI</th>
-								<th className="px-4 py-3">Light Model</th>
-							</tr>
-						</thead>
-						<tbody className="divide-y divide-zinc-800/60">
-							{LIGHT_MODEL_CLIS.map(({ cli, label, defaultModel }) => {
-								const selected = agents.delegation?.lightModels?.[cli];
-								return (
-									<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
-										<td className="px-4 py-3.5">
-											<div className="text-sm font-medium text-zinc-200">{label}</div>
-											<div className="text-xs text-zinc-500 font-mono select-all">{cli}</div>
-										</td>
-										<td className="px-4 py-3.5">
-											<select
-												value={selected ?? ''}
-												onChange={(e) => handleLightModelChange(cli, e.target.value)}
-												disabled={isPending}
-												aria-label={`${label} light model`}
-												className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
-											>
-												<option value="">Default ({defaultModel})</option>
-												{AGENT_MODELS[cli].map((model) => (
-													<option key={model} value={model}>
-														{model}
-													</option>
-												))}
-											</select>
-										</td>
+						<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+							<table className="w-full text-left border-collapse">
+								<thead>
+									<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
+										<th className="px-4 py-3">Agent CLI</th>
+										<th className="px-4 py-3">Light Model</th>
 									</tr>
-								);
-							})}
-						</tbody>
-					</table>
-				</div>
-			</div>
+								</thead>
+								<tbody className="divide-y divide-zinc-800/60">
+									{LIGHT_MODEL_CLIS.map(({ cli, label, defaultModel }) => {
+										const selected = agents.delegation?.lightModels?.[cli];
+										return (
+											<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
+												<td className="px-4 py-3.5">
+													<div className="text-sm font-medium text-zinc-200">{label}</div>
+													<div className="text-xs text-zinc-500 font-mono select-all">{cli}</div>
+												</td>
+												<td className="px-4 py-3.5">
+													<select
+														value={selected ?? ''}
+														onChange={(e) => handleLightModelChange(cli, e.target.value)}
+														disabled={isPending}
+														aria-label={`${label} light model`}
+														className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
+													>
+														<option value="">Default ({defaultModel})</option>
+														{AGENT_MODELS[cli].map((model) => (
+															<option key={model} value={model}>
+																{model}
+															</option>
+														))}
+													</select>
+												</td>
+											</tr>
+										);
+									})}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				</>
+			)}
 
 			{/* Feedback Banners */}
 			{isSuccess && (
@@ -897,6 +1187,10 @@ function ProjectDetailRouteComponent() {
 		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping' | 'credentials'
 	>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
+	// Which phase's detail screen is open in the Agent Configuration tab, or null
+	// for the summary table (issue #135). Purely view state — the edits themselves
+	// live in `agents` and save through the one shared mutation.
+	const [selectedPhase, setSelectedPhase] = useState<(typeof PHASES)[number] | null>(null);
 	const [pipelineEnabled, setPipelineEnabled] = useState<PipelineEnabledForm>(() =>
 		toPipelineEnabledForm(undefined),
 	);
@@ -1068,6 +1362,16 @@ function ProjectDetailRouteComponent() {
 		setAgents((prev) => ({
 			...prev,
 			[phase]: { ...prev[phase], timeoutMs: Number(value) * 60 * 1000 },
+		}));
+		updateMutation.reset();
+	};
+
+	const handlePromptChange = (phase: keyof AgentsConfig, value: string) => {
+		// Store the raw textarea value while editing; it's trimmed/dropped-if-blank
+		// on save and in the dirty check (issue #135).
+		setAgents((prev) => ({
+			...prev,
+			[phase]: { ...prev[phase], prompt: value },
 		}));
 		updateMutation.reset();
 	};
@@ -1371,11 +1675,15 @@ function ProjectDetailRouteComponent() {
 				<AgentConfigurationForm
 					agents={agents}
 					pipelineEnabled={pipelineEnabled}
+					selectedPhase={selectedPhase}
+					onSelectPhase={setSelectedPhase}
+					onBack={() => setSelectedPhase(null)}
 					handleEnabledChange={handleEnabledChange}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
 					handleReasoningChange={handleReasoningChange}
 					handleTimeoutChange={handleTimeoutChange}
+					handlePromptChange={handlePromptChange}
 					handleLightModelChange={handleLightModelChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}

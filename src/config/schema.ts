@@ -21,6 +21,7 @@ import {
 	splitAntigravityModel,
 } from '../harness/models.js';
 import { githubProjectsConfigSchema } from '../integrations/pm/github-projects/config-schema.js';
+import { CUSTOM_PROMPT_MAX_LENGTH, normalizeCustomPrompt } from './custom-prompt.js';
 
 /**
  * A model value is known when it's a logical id for its CLI (or the union, when
@@ -36,6 +37,11 @@ function isKnownModel(cli: AgentCli | undefined, model: string): boolean {
 	}
 	return false;
 }
+
+// The per-phase custom-prompt bound and normalizer live in a dependency-free
+// leaf (issue #135) so the web bundle can import them without pulling this
+// schema's Node-only transitive deps; re-exported here for existing callers.
+export { CUSTOM_PROMPT_MAX_LENGTH, normalizeCustomPrompt };
 
 export const PROJECT_DEFAULTS = {
 	baseBranch: 'main',
@@ -105,8 +111,21 @@ export const AgentConfigSchema = z
 			.min(5 * 60 * 1000)
 			.max(45 * 60 * 1000)
 			.optional(),
+		/**
+		 * Optional project-owned instructions appended to this phase's SWARM
+		 * prompt (issue #135). Supplements — never replaces or weakens — the
+		 * phase's static instructions and guards. Trimmed on parse; whitespace-only
+		 * collapses to unset, and the composer adds nothing when it's absent, so a
+		 * project without one produces exactly today's prompt.
+		 */
+		prompt: z.string().optional(),
 	})
 	.transform((agent) => {
+		// Whitespace-only is not a meaningful override — normalize it away so it's
+		// neither stored nor composed (issue #135). Mutate in place (rather than
+		// spreading a `prompt` key onto the result) so the inferred output keeps
+		// `prompt` optional, matching every other field.
+		agent.prompt = normalizeCustomPrompt(agent.prompt);
 		// Migrate a pre-#180 combined antigravity model string losslessly into
 		// logical model + reasoning. An explicit `reasoning` already on the config
 		// wins over the one recovered from the string.
@@ -120,6 +139,10 @@ export const AgentConfigSchema = z
 	})
 	.refine((agent) => !agent.model || isKnownModel(agent.cli, agent.model), {
 		message: 'model must be one of the known models for its cli (src/harness/models.ts)',
+	})
+	.refine((agent) => !agent.prompt || agent.prompt.length <= CUSTOM_PROMPT_MAX_LENGTH, {
+		message: `prompt must be at most ${CUSTOM_PROMPT_MAX_LENGTH} characters (issue #135)`,
+		path: ['prompt'],
 	})
 	.refine(
 		(agent) => {

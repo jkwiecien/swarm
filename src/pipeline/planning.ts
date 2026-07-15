@@ -40,13 +40,17 @@ import {
 import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { logger } from '@/lib/logger.js';
-import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
 import {
 	buildPreplanContract,
 	embedPreplanMarker,
 	evaluatePreplan,
 	isPreplanSkip,
 } from '@/pipeline/preplan.js';
+import {
+	buildPlanningPrompt,
+	PROPOSED_PLAN_FILENAME,
+	PROPOSED_SPLIT_FILENAME,
+} from '@/pipeline/prompts/planning.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -58,17 +62,10 @@ import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
-/** The file the planning agent is instructed to write its plan to, at the worktree root. */
-export const PROPOSED_PLAN_FILENAME = 'proposed_plan.md';
-
-/**
- * The file the planning agent writes when it decides the task is too large for
- * a single PR and should be split (see {@link buildPlanningPrompt}). Absent (or
- * empty `subTasks`) means "no split — plan as a single task". Read-and-validated
- * by {@link readProposedSplit}; `proposed_plan.md` still carries the plan for the
- * (now-smaller) first task the original item becomes.
- */
-export const PROPOSED_SPLIT_FILENAME = 'proposed_split.json';
+// The static planning prompt and the hand-off filenames it names now live in
+// `src/pipeline/prompts/planning.ts` (issue #135); re-exported here so existing
+// importers of `@/pipeline/planning.js` keep resolving them unchanged.
+export { buildPlanningPrompt, PROPOSED_PLAN_FILENAME, PROPOSED_SPLIT_FILENAME };
 
 /**
  * Label applied to every sibling item Planning spawns when it splits a task.
@@ -182,6 +179,12 @@ export interface RunPlanningPhaseOptions {
 	model?: string;
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
+	/**
+	 * Project's optional custom prompt for this phase (`agents.planning.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
 	/** Deterministic Claude session handle assigned by the run row. */
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
@@ -234,93 +237,6 @@ export interface PlanningPhaseResult {
 	 * spent.
 	 */
 	preplanned?: boolean;
-}
-
-/**
- * Build the prompt handed to the planning agent. It's told to explore the repo
- * and write a step-by-step implementation plan to `proposed_plan.md` — and, since
- * this is a read-only phase, explicitly *not* to modify code or implement
- * anything (mirroring Cascade's planning agent, which is read/write-to-PM only).
- *
- * When `allowSplit` is on (the project's `pipeline.planning.autoSplit`), the
- * agent is additionally told to judge whether the work is too large for a single
- * focused PR and, if so, to split it: `proposed_plan.md` then covers only the
- * first (now-smaller) task, and `proposed_split.json` lists the remaining sibling
- * tasks (see {@link PROPOSED_SPLIT_FILENAME}). A right-sized task is left whole.
- */
-export function buildPlanningPrompt(
-	workItem: WorkItem,
-	allowSplit = false,
-	delegationAllowed = false,
-): string {
-	const lines = [
-		'You are a senior software architect creating a detailed implementation plan.',
-		'',
-		...pipelinePhaseGuard(delegationAllowed),
-		'',
-		'PLANNING ONLY. Do NOT implement, edit, or create any source files, and do NOT',
-		'run any command that changes the repository. Your sole deliverable is a plan',
-		`(the file(s) named below at the root of this worktree — nothing else).`,
-		'',
-		'Explore this repository to understand its existing patterns and conventions,',
-		'then write a concrete, step-by-step implementation plan for the work item below.',
-		'The plan must cover: the files to add/change, the approach, the testing strategy,',
-		'and anything intentionally left out of scope.',
-	];
-
-	if (allowSplit) {
-		lines.push(
-			'',
-			'FIRST, judge the size of this work item. If it is too large to implement well',
-			'in a single focused pull request, SPLIT it into smaller, independently-shippable',
-			'tasks ordered so each builds on the last:',
-			`  - Write "${PROPOSED_PLAN_FILENAME}" as the plan for ONLY the FIRST task — the`,
-			'    smaller piece this item should become. It may be a re-scoped, renamed version',
-			'    of the original.',
-			'  - You have already explored the repository to plan the first task. REUSE that',
-			'    analysis: write a concise implementation plan for EVERY other task now, while',
-			'    that context is fresh, so each one does not have to re-explore the repo later.',
-			`  - Write "${PROPOSED_SPLIT_FILENAME}" as JSON of this exact shape:`,
-			'      {',
-			'        "mainTask": { "title": "<first task\'s title>", "description": "<its scope>" },',
-			'        "subTasks": [',
-			'          {',
-			'            "title": "<next task>",',
-			'            "description": "<what it covers, self-contained>",',
-			'            "plan": "<concise Markdown implementation plan for this task>"',
-			'          }',
-			'        ]',
-			'      }',
-			'    "mainTask" is OPTIONAL — include it only to rename/re-scope the original item;',
-			'    omit it to keep the original title/description.',
-			'    Each "subTasks" entry is a task planned separately later. Write its "description"',
-			'    complete enough to stand on its own, and its "plan" (concise GitHub-flavored',
-			'    Markdown) covering:',
-			'      * self-contained scope and acceptance criteria;',
-			'      * anything intentionally left out of scope;',
-			'      * the relevant files, symbols, and existing patterns to follow;',
-			'      * dependencies on the preceding split tasks (what must land first);',
-			'      * an ordered implementation outline;',
-			'      * focused verification guidance (the checks/tests to run).',
-			`  - Do NOT write "${PROPOSED_SPLIT_FILENAME}" (or write it with an empty`,
-			'    "subTasks" array) when the item is already right-sized — then just write the',
-			`    single "${PROPOSED_PLAN_FILENAME}" as usual.`,
-		);
-	}
-
-	lines.push(
-		'',
-		`Write the plan to a file named "${PROPOSED_PLAN_FILENAME}" at the root of this`,
-		'worktree, as GitHub-flavored Markdown.',
-		'',
-		'--- WORK ITEM ---',
-		`Title: ${workItem.title}`,
-		`URL: ${workItem.url}`,
-		'',
-		'Description:',
-		workItem.description || '(no description provided)',
-	);
-	return lines.join('\n');
 }
 
 /**
@@ -612,6 +528,7 @@ export async function runPlanningPhase(
 		cli = DEFAULT_PLANNING_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
@@ -692,7 +609,14 @@ export async function runPlanningPhase(
 			reasoning,
 			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
-			args: [buildPlanningPrompt(workItem, autoSplit, delegationEnabled(project, 'planning', cli))],
+			args: [
+				buildPlanningPrompt(
+					workItem,
+					autoSplit,
+					delegationEnabled(project, 'planning', cli),
+					customPrompt,
+				),
+			],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			logContext: { taskId, phase: 'planning', workItemId: workItem.id },
 			timeoutMs,

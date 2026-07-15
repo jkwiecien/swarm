@@ -27,7 +27,7 @@ import {
 } from '../scm/delivery.js';
 import { GitWorktreeManager } from '../worker/git-worktree-manager.js';
 import { graftEnvironment } from '../worktree/graft.js';
-import { pipelinePhaseGuard } from './agent-scope.js';
+import { buildResolveConflictsPrompt } from './prompts/resolve-conflicts.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -36,6 +36,11 @@ import {
 } from './resume.js';
 
 export const RESOLVE_CONFLICTS_OUTCOME_FILENAME = HANDOFF_FILENAMES.resolveConflicts;
+
+// The static resolve-conflicts prompt now lives in
+// `src/pipeline/prompts/resolve-conflicts.ts` (issue #135); re-exported so
+// existing importers of `@/pipeline/resolve-conflicts.js` keep resolving it.
+export { buildResolveConflictsPrompt };
 export const ResolveConflictsOutcomeSchema = z.object({
 	status: z.literal('resolved'),
 	mergeCommitSha: z.string().min(7),
@@ -57,6 +62,12 @@ export interface RunResolveConflictsPhaseOptions {
 	model?: string;
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
+	/**
+	 * Project's optional custom prompt for this phase (`agents.resolveConflicts.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
 	/** Assign a fresh session id (`sessionId`) or resume from one on retry (`resumeSessionId`). */
 	sessionId?: string;
 	resumeSessionId?: string;
@@ -66,29 +77,6 @@ export interface RunResolveConflictsPhaseOptions {
 	runAgent?: typeof runAgentCli;
 	graft?: typeof graftEnvironment;
 	delivery?: ScmDeliveryProvider;
-}
-
-export function buildResolveConflictsPrompt(
-	input: Pick<
-		RunResolveConflictsPhaseOptions,
-		'project' | 'prNumber' | 'prBranch' | 'headSha' | 'baseBranch' | 'baseSha'
-	>,
-	delegationAllowed = false,
-): string {
-	return [
-		'You are the implementer assigned only to SWARM’s Resolve Conflicts phase.',
-		...pipelinePhaseGuard(delegationAllowed),
-		`PR #${input.prNumber} in ${input.project.repo} has confirmed merge conflicts.`,
-		`Its branch is "${input.prBranch}" and the observed head was ${input.headSha}. The current base is "${input.baseBranch}" at ${input.baseSha}.`,
-		'Fetch origin. Before changing anything, verify origin/' +
-			input.prBranch +
-			' is still exactly ' +
-			input.headSha +
-			'; if not, stop and fail without pushing.',
-		`Merge origin/${input.baseBranch} into the checked-out PR branch with a normal merge (never rebase and never force-push). Resolve every conflict while preserving both changes' intent.`,
-		'Run the relevant lint, type-check, and tests. Do not commit, push, comment, or perform any GitHub mutation; leave the fully resolved merge in the working tree for SWARM.',
-		`Write ${RESOLVE_CONFLICTS_OUTCOME_FILENAME} as JSON with status:"resolved", body (the concise result comment), and verification [{command,outcome:"passed"}].`,
-	].join('\n\n');
 }
 
 export async function runResolveConflictsPhase(
@@ -105,6 +93,7 @@ export async function runResolveConflictsPhase(
 		cli = DEFAULT_RESOLVE_CONFLICTS_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -156,6 +145,7 @@ export async function runResolveConflictsPhase(
 								baseSha,
 							},
 							delegationEnabled(project, 'resolve-conflicts', cli),
+							customPrompt,
 						),
 					],
 					maxOutputBytes: 1_000_000,
