@@ -37,6 +37,16 @@ export function customPromptError(value: string): string | undefined {
 }
 
 /**
+ * Whether any of the supplied raw prompt values is over the persisted bound.
+ * Mirrors `customPromptError` across every phase so the Agent Configuration form
+ * can block Save client-side instead of letting an over-limit prompt fail
+ * server-side (issue #135). `undefined`/whitespace-only values are acceptable.
+ */
+export function anyCustomPromptError(values: Array<string | undefined>): boolean {
+	return values.some((value) => customPromptError(value ?? '') !== undefined);
+}
+
+/**
  * Whether the locally-edited prompt differs from what's stored, comparing the
  * normalized forms so "  " vs unset (and "x " vs "x") don't read as dirty — the
  * same normalization the schema persists.

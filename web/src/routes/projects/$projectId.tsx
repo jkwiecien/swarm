@@ -22,6 +22,7 @@ import {
 	toBoardMappingForm,
 } from '@/lib/board-mapping.js';
 import {
+	anyCustomPromptError,
 	CUSTOM_PROMPT_MAX_LENGTH,
 	customPromptError,
 	isCustomPromptDirty,
@@ -604,7 +605,7 @@ function PhaseConfigRow({
 		>
 			<td className="px-4 py-3.5">
 				<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
-				<div className="text-xs text-zinc-500 font-mono">{phaseLabel.code}</div>
+				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
 			</td>
 			<td className="px-4 py-3.5">
 				<PhaseEnabledCell
@@ -867,6 +868,8 @@ interface AgentConfigurationFormProps {
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
+	/** True when any phase's custom prompt is over the bound — blocks Save. */
+	hasPromptError: boolean;
 	isPending: boolean;
 	isSuccess: boolean;
 	isError: boolean;
@@ -896,6 +899,7 @@ function AgentConfigurationForm({
 	handleSubmit,
 	handleReset,
 	isDirty,
+	hasPromptError,
 	isPending,
 	isSuccess,
 	isError,
@@ -1045,7 +1049,7 @@ function AgentConfigurationForm({
 			<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
 				<button
 					type="submit"
-					disabled={isPending || !isDirty}
+					disabled={isPending || !isDirty || hasPromptError}
 					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
 				>
 					{isPending ? 'Saving…' : 'Save Changes'}
@@ -1288,6 +1292,13 @@ function ProjectDetailRouteComponent() {
 		return isPipelineEnabledDirty(pipelineEnabled, project.pipeline);
 	}, [project, agents, pipelineEnabled]);
 
+	// An over-limit custom prompt on any phase would only fail server-side; surface
+	// it client-side so Save is blocked and the field error is the sole feedback.
+	const hasAgentPromptError = useMemo(
+		() => anyCustomPromptError(PHASES.map((phase) => agents[phase]?.prompt)),
+		[agents],
+	);
+
 	const isPipelineDirty = useMemo(
 		() =>
 			autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false) ||
@@ -1414,6 +1425,9 @@ function ProjectDetailRouteComponent() {
 
 	const handleAgentsSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
+		// Save is disabled while a prompt is over-limit, but guard here too so an
+		// Enter-to-submit from a field can't bypass the client-side bound (issue #135).
+		if (hasAgentPromptError) return;
 		const finalAgents = cleanAgentsConfig(agents);
 		updateMutation.mutate({
 			id: projectId,
@@ -1688,6 +1702,7 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
+					hasPromptError={hasAgentPromptError}
 					isPending={updateMutation.isPending}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}

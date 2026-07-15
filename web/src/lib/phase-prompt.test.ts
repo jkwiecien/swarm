@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	anyCustomPromptError,
 	CUSTOM_PROMPT_MAX_LENGTH,
 	customPromptError,
 	isCustomPromptDirty,
@@ -38,6 +39,24 @@ describe('customPromptError', () => {
 
 	it('measures the trimmed length, so trailing whitespace does not trip it', () => {
 		expect(customPromptError(`${'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH)}     `)).toBeUndefined();
+	});
+});
+
+describe('anyCustomPromptError', () => {
+	it('is false when every value is unset or within bound', () => {
+		expect(anyCustomPromptError([])).toBe(false);
+		expect(anyCustomPromptError([undefined, '', '   ', 'ok'])).toBe(false);
+		expect(anyCustomPromptError(['a'.repeat(CUSTOM_PROMPT_MAX_LENGTH)])).toBe(false);
+	});
+
+	it('is true when any one value is over the bound', () => {
+		expect(anyCustomPromptError(['ok', undefined, 'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH + 1)])).toBe(
+			true,
+		);
+	});
+
+	it('measures the trimmed length, so trailing whitespace does not trip it', () => {
+		expect(anyCustomPromptError([`${'a'.repeat(CUSTOM_PROMPT_MAX_LENGTH)}   `])).toBe(false);
 	});
 });
 
