@@ -18,6 +18,7 @@
 
 import type { AgentDefaults, ProjectConfig } from '../config/schema.js';
 import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
+import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
 	appendRunOutputEvents,
@@ -44,6 +45,7 @@ import {
 	isReasoningLevel,
 	type ReasoningLevel,
 } from '../harness/models.js';
+import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
 import { describeError } from '../lib/errors.js';
@@ -1320,6 +1322,32 @@ async function handlePhaseFailure(
 	runId: string | undefined,
 ): Promise<JobOutcome> {
 	const error = err instanceof Error ? err.message : String(err);
+
+	// If the failure looks like a missing binary, permission issue, or authentication/login failure,
+	// run capability discovery immediately to refresh the dashboard status.
+	const isLaunchOrAuthFailure =
+		error.includes('Failed to launch') ||
+		error.includes('ENOENT') ||
+		error.includes('permission denied') ||
+		error.includes('not found') ||
+		error.includes('authenticated') ||
+		error.includes('login') ||
+		error.includes('auth') ||
+		(err instanceof AgentRunError && err.failure.kind === 'error');
+
+	if (isLaunchOrAuthFailure) {
+		void discoverCliQuotas()
+			.then(async (snapshots) => {
+				for (const snapshot of snapshots) {
+					await upsertCliQuota(snapshot.cli, snapshot.status, snapshot);
+				}
+			})
+			.catch((discoverErr) => {
+				logger.error('Failed to run recovery quota discovery after launch failure', {
+					error: String(discoverErr),
+				});
+			});
+	}
 
 	// A user asked to terminate this run (issue #166): its abort must settle as a
 	// terminal, user-initiated failure — never a deferral, which would re-enqueue

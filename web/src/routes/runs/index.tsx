@@ -27,7 +27,7 @@ function RunsRouteComponent() {
 
 	const handleFilterChange = (updates: Partial<RunsSearch>) => {
 		navigate({
-			search: (old) => {
+			search: (old: any) => {
 				const next = { ...old, ...updates };
 				if (!('page' in updates)) {
 					next.page = undefined;

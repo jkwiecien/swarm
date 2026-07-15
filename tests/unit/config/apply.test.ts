@@ -8,6 +8,12 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 vi.mock('@/db/repositories/credentialsRepository.js', () => ({
 	writeProjectCredential: vi.fn(async () => undefined),
 }));
+vi.mock('@/harness/quota-discovery.js', () => ({
+	discoverCliQuotas: vi.fn(async () => []),
+}));
+vi.mock('@/db/repositories/cliQuotasRepository.js', () => ({
+	upsertCliQuota: vi.fn(async () => undefined),
+}));
 
 import { applyConfig } from '@/config/apply.js';
 import { SwarmConfigSchema } from '@/config/schema.js';

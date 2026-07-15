@@ -120,6 +120,13 @@
       "when": 1783947817151,
       "tag": "0016_mysterious_wrecking_crew",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784143278550,
+      "tag": "0017_rare_maximus",
+      "breakpoints": true
     }
   ]
 }

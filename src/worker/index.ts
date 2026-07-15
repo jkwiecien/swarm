@@ -12,11 +12,13 @@ import '../integrations/entrypoint.js';
 
 import { Worker } from 'bullmq';
 import { runMigrations } from '../db/migrate.js';
+import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
 import { listAllProjectsFromDb } from '../db/repositories/projectsRepository.js';
 import {
 	failOrphanedRunningRuns,
 	failStaleRunningRuns,
 } from '../db/repositories/runsRepository.js';
+import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
@@ -164,6 +166,24 @@ async function resetProjectSlots(): Promise<void> {
 
 await resetProjectSlots();
 
+async function runQuotaDiscovery(cheap = false): Promise<void> {
+	try {
+		logger.debug('Starting CLI capability/quota discovery...', { cheap });
+		const snapshots = await discoverCliQuotas(cheap);
+		for (const snapshot of snapshots) {
+			await upsertCliQuota(snapshot.cli, snapshot.status, snapshot);
+		}
+		logger.debug('CLI capability/quota discovery completed and persisted.');
+	} catch (err) {
+		logger.error('Failed to run CLI capability/quota discovery', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+// Run full discovery once immediately on startup
+await runQuotaDiscovery(false);
+
 const worker = new Worker(
 	QUEUE_NAME,
 	// Job data is untrusted at this boundary (anything could have been pushed to
@@ -293,6 +313,12 @@ const staleRunSweepInterval = setInterval(() => {
 }, staleRunSweepIntervalMs);
 staleRunSweepInterval.unref();
 
+const HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const quotaDiscoveryInterval = setInterval(() => {
+	void runQuotaDiscovery(true);
+}, HEARTBEAT_INTERVAL_MS);
+quotaDiscoveryInterval.unref();
+
 // On shutdown (Ctrl+C sends SIGINT; a `kill`/supervisor sends SIGTERM), abort
 // the in-flight agent run (it completes as `phase-failed`; each phase runs its
 // own worktree cleanup in a `finally`), then let worker.close() wait for the
@@ -302,6 +328,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		logger.debug(`Received ${signal} — aborting in-flight agent run and closing worker`);
 		clearInterval(sweepInterval);
 		clearInterval(staleRunSweepInterval);
+		clearInterval(quotaDiscoveryInterval);
 		shutdown.abort();
 		void cancellationSubscription.close();
 		void closeRunCancellationRedis();

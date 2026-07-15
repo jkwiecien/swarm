@@ -4,6 +4,12 @@ vi.mock('@/db/repositories/appSettingsRepository.js', () => ({
 	getAppSettings: vi.fn(),
 	updateAppSettings: vi.fn(),
 }));
+vi.mock('@/harness/quota-discovery.js', () => ({
+	discoverCliQuotas: vi.fn(async () => []),
+}));
+vi.mock('@/db/repositories/cliQuotasRepository.js', () => ({
+	upsertCliQuota: vi.fn(async () => undefined),
+}));
 
 import { settingsRouter } from '@/api/routers/settings.js';
 import type { AppSettings } from '@/config/app-settings.js';
