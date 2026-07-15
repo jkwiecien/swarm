@@ -27,7 +27,6 @@ import {
 	customPromptError,
 	isCustomPromptDirty,
 	normalizeCustomPrompt,
-	PHASE_SYSTEM_PROMPT_SUMMARY,
 } from '@/lib/phase-prompt.js';
 import {
 	buildPipelineEnabledUpdate,
@@ -811,21 +810,11 @@ function PhaseSettingsDetail({
 			</div>
 
 			<div className={`${CARD_CLASS} space-y-2`}>
-				<h2 className="text-sm font-semibold text-zinc-200">Built-in system prompt</h2>
-				<p className="text-xs text-zinc-400">
-					This phase always runs with SWARM's fixed instructions, which you can't edit here:
-				</p>
-				<p className="text-sm text-zinc-300 bg-zinc-900/40 border border-zinc-800 rounded p-3">
-					{PHASE_SYSTEM_PROMPT_SUMMARY[phase]}
-				</p>
-			</div>
-
-			<div className={`${CARD_CLASS} space-y-2`}>
-				<label htmlFor={`${phase}-prompt`} className={LABEL_CLASS}>
+				<label htmlFor={`${phase}-prompt`} className="block text-sm font-semibold text-zinc-200">
 					Custom prompt (optional)
 				</label>
 				<p className="text-xs text-zinc-400">
-					Appended to the built-in phase instructions above as an additional "Project instructions"
+					Appended to SWARM's built-in phase instructions as an additional "Project instructions"
 					section. It supplements — never overrides — them, and is empty by default; leave it blank
 					to keep the default behavior.
 				</p>

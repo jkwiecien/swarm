@@ -5,18 +5,7 @@ import {
 	customPromptError,
 	isCustomPromptDirty,
 	normalizeCustomPrompt,
-	PHASE_SYSTEM_PROMPT_SUMMARY,
-	type PhaseKey,
 } from './phase-prompt.js';
-
-const ALL_PHASES: PhaseKey[] = [
-	'planning',
-	'implementation',
-	'review',
-	'respondToReview',
-	'respondToCi',
-	'resolveConflicts',
-];
 
 describe('normalizeCustomPrompt', () => {
 	it('trims and treats blank/whitespace-only as unset', () => {
@@ -67,13 +56,5 @@ describe('isCustomPromptDirty', () => {
 		expect(isCustomPromptDirty('', undefined)).toBe(false);
 		expect(isCustomPromptDirty('x', undefined)).toBe(true);
 		expect(isCustomPromptDirty('x', 'y')).toBe(true);
-	});
-});
-
-describe('PHASE_SYSTEM_PROMPT_SUMMARY', () => {
-	it('has a non-empty read-only summary for every phase', () => {
-		for (const phase of ALL_PHASES) {
-			expect(PHASE_SYSTEM_PROMPT_SUMMARY[phase]?.length ?? 0).toBeGreaterThan(0);
-		}
 	});
 });

@@ -13,15 +13,6 @@ import {
 
 export { CUSTOM_PROMPT_MAX_LENGTH, normalizeCustomPrompt };
 
-/** The six configurable phases, in display order — the keys of `agents.<phase>`. */
-export type PhaseKey =
-	| 'planning'
-	| 'implementation'
-	| 'review'
-	| 'respondToReview'
-	| 'respondToCi'
-	| 'resolveConflicts';
-
 /**
  * A validation message for a raw Custom-prompt textarea value, or `undefined`
  * when it's acceptable. Only the persisted (trimmed) length is bounded — trailing
@@ -57,25 +48,3 @@ export function isCustomPromptDirty(
 ): boolean {
 	return (normalizeCustomPrompt(local) ?? '') !== (normalizeCustomPrompt(stored) ?? '');
 }
-
-/**
- * A concise, read-only description of the fixed SWARM system prompt each phase
- * runs with — shown on the phase-detail screen so the user understands what
- * their custom prompt is appended to, without exposing the (non-editable) prompt
- * text itself. Not the prompt verbatim: a summary of what SWARM instructs the
- * agent to do in that phase.
- */
-export const PHASE_SYSTEM_PROMPT_SUMMARY: Record<PhaseKey, string> = {
-	planning:
-		'SWARM instructs a read-only architect agent to explore the repository and write a step-by-step implementation plan (and, when task-splitting is on, to split an over-large item), without editing any source.',
-	implementation:
-		'SWARM instructs an engineer agent to implement the work item against its plan, verify with lint/type-check/tests, and hand the prepared change back for SWARM to deliver — it does not push or open the PR itself.',
-	review:
-		'SWARM instructs a review-only agent to read the PR, linked issue, and full diff, verify each finding against the checkout, and record a verdict — never editing code or submitting the review itself.',
-	respondToReview:
-		'SWARM instructs the PR author agent to sync the branch, address every review point as a fix or a reasoned push-back, verify any fix, and always reply on the PR — SWARM delivers the response.',
-	respondToCi:
-		'SWARM instructs the PR author agent to sync the branch, inspect the failing checks, fix the build surgically (or report that no code change is warranted), and verify locally — SWARM delivers the outcome.',
-	resolveConflicts:
-		'SWARM instructs an implementer agent to merge the base branch into the conflicted PR branch, resolve every conflict preserving both sides, and verify — leaving the resolved merge for SWARM to deliver.',
-};
