@@ -73,8 +73,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
+import { buildRespondToReviewPrompt } from '@/pipeline/prompts/respond-to-review.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -101,6 +100,11 @@ import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the respond agent is instructed to write its outcome to, at the worktree root. */
 export const RESPOND_OUTCOME_FILENAME = HANDOFF_FILENAMES.respondToReview;
+
+// The static respond-to-review prompt now lives in
+// `src/pipeline/prompts/respond-to-review.ts` (issue #135); re-exported so
+// existing importers of `@/pipeline/respond-to-review.js` keep resolving it.
+export { buildRespondToReviewPrompt };
 
 /**
  * Status the card moves to while the implementer responds — the board's "In
@@ -186,6 +190,12 @@ export interface RunRespondToReviewPhaseOptions {
 	model?: string;
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
+	/**
+	 * Project's optional custom prompt for this phase (`agents.respondToReview.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
 	/**
 	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
 	 * (`resumeSessionId`). When resuming, the preserved PR-branch checkout is
@@ -298,58 +308,6 @@ async function reportBoardStatus(
 }
 
 /**
- * Build the prompt handed to the respond agent. It's told it authored the PR
- * and is answering its reviewer: sync the branch first, read the pinned review
- * (summary body plus its batched line comments — the review API, not the issue
- * comment stream), address every point — including minor/nit suggestions, not
- * just blocking ones — as either a fix or a reasoned push-back, verify fixes
- * before pushing, ALWAYS reply on the PR (a point-by-point answer if the
- * review raised anything, otherwise a short thank-you so a human can see the
- * response ran), and record which outcome applied to
- * {@link RESPOND_OUTCOME_FILENAME} so this phase can validate the hand-off.
- */
-export function buildRespondToReviewPrompt(
-	context: {
-		repo: string;
-		prNumber: string;
-		prBranch: string;
-		reviewId: string;
-	},
-	delegationAllowed = false,
-): string {
-	const { repo, prNumber, prBranch, reviewId } = context;
-	return [
-		'You are a senior software engineer responding to a code review on a pull request',
-		'you authored.',
-		'',
-		...pipelinePhaseGuard(delegationAllowed),
-		...GH_IDENTITY_GUARD,
-		'',
-		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
-		`#${prNumber} in ${repo} on GitHub. A reviewer has submitted a review — it may`,
-		'request changes, just comment, or approve with suggestions attached. Respond to it',
-		'regardless of verdict: an approval is not a reason to stay silent.',
-		'',
-		'Do all of the following, in order:',
-		`1. Sync the branch with what the reviewer saw: \`git pull --ff-only origin ${prBranch}\`. If this fails for any reason (diverged branch, deleted remote branch, network error), stop and exit non-zero rather than responding against stale code.`,
-		`2. Read the submitted review you are responding to: \`gh api repos/${repo}/pulls/${prNumber}/reviews/${reviewId}\` for its summary body, and \`gh api repos/${repo}/pulls/${prNumber}/reviews/${reviewId}/comments\` for its line comments. Read the PR discussion for context too: \`gh pr view ${prNumber} --repo ${repo} --comments\`.`,
-		'3. Address EVERY point the review raises — including minor/nit suggestions, not',
-		'   just blocking "changes requested" items; a valid nit is worth fixing even on an',
-		'   approval. For each point, either:',
-		'   - fix the code (keep the fix surgical — only go broader when the reviewer clearly asks for it), or',
-		'   - if the point is mistaken, push back: no code change, but a clear rationale in your reply below.',
-		'   If the review raised no specific points at all (e.g. a plain approval with',
-		'   nothing to fix or question), skip straight to step 5.',
-		'4. If you changed code, run lint, type-check, and relevant tests. Do not commit, push, comment, or perform any GitHub mutation.',
-		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is read-only context authentication and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
-		`5. Write "${RESPOND_OUTCOME_FILENAME}" as JSON with outcome (fixed, pushed-back, or no-findings), body (the point-by-point PR reply), optional commitSubject when fixed, and verification [{command,outcome:"passed"}].`,
-		'The outcome strings are exactly `fixed`, `pushed-back`, and `no-findings`. The body must ALWAYS reply on the PR point by point; with no findings, post a short comment thanking the reviewer — never skip this step, even when there is nothing to fix.',
-		'',
-		'Do not merge the PR, and do not submit a review of your own — you are the author.',
-	].join('\n');
-}
-
-/**
  * Log a failed respond run's captured output before the phase throws, so the
  * worker that marks the job failed has the agent's own stdout/stderr to
  * diagnose *why* — the thrown Error carries only a message. Output is already
@@ -436,6 +394,7 @@ export async function runRespondToReviewPhase(
 		cli = DEFAULT_RESPOND_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -505,6 +464,7 @@ export async function runRespondToReviewPhase(
 						buildRespondToReviewPrompt(
 							{ repo: project.repo, prNumber, prBranch, reviewId },
 							delegationEnabled(project, 'respond-to-review', cli),
+							customPrompt,
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

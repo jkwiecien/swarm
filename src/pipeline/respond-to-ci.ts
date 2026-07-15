@@ -56,8 +56,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
+import { buildRespondToCiPrompt } from '@/pipeline/prompts/respond-to-ci.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -82,6 +81,11 @@ import { graftEnvironment } from '@/worktree/graft.js';
 
 /** The file the CI-fix agent is instructed to write its outcome to, at the worktree root. */
 export const RESPOND_CI_OUTCOME_FILENAME = HANDOFF_FILENAMES.respondToCi;
+
+// The static respond-to-CI prompt now lives in
+// `src/pipeline/prompts/respond-to-ci.ts` (issue #135); re-exported so existing
+// importers of `@/pipeline/respond-to-ci.js` keep resolving it unchanged.
+export { buildRespondToCiPrompt };
 
 /**
  * The outcomes the agent may report. `fixed` means it pushed at least one fix
@@ -139,6 +143,12 @@ export interface RunRespondToCiPhaseOptions {
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
 	/**
+	 * Project's optional custom prompt for this phase (`agents.respondToCi.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
+	/**
 	 * Session id to assign to a fresh run (`sessionId`) or resume from on a retry
 	 * (`resumeSessionId`). When resuming, the preserved PR-branch checkout is
 	 * reused so the agent continues its prior session (and any partial fixes) in place.
@@ -163,47 +173,6 @@ export interface RespondToCiPhaseResult {
 	outcome: RespondCiOutcome;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
-}
-
-/**
- * Build the prompt handed to the CI-fix agent. It's told it authored the PR and
- * its CI is failing: sync the branch first, inspect the failing checks (the
- * Actions logs for the pinned head SHA, not a guess), fix the build surgically
- * or report that no code change is warranted, verify locally before pushing,
- * comment on the PR, and record which outcome applied to
- * {@link RESPOND_CI_OUTCOME_FILENAME} so this phase can validate the hand-off.
- */
-export function buildRespondToCiPrompt(
-	context: {
-		repo: string;
-		prNumber: string;
-		prBranch: string;
-		headSha: string;
-	},
-	delegationAllowed = false,
-): string {
-	const { repo, prNumber, prBranch, headSha } = context;
-	return [
-		'You are a senior software engineer whose pull request has failing CI checks.',
-		'',
-		...pipelinePhaseGuard(delegationAllowed),
-		...GH_IDENTITY_GUARD,
-		'',
-		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,
-		`#${prNumber} in ${repo} on GitHub. Its check suite completed with at least one`,
-		`failing check on commit ${headSha}.`,
-		'',
-		'Do all of the following, in order:',
-		`1. Sync the branch with what CI ran: \`git pull --ff-only origin ${prBranch}\`. If this fails for any reason (diverged branch, deleted remote branch, network error), stop and exit non-zero rather than fixing stale code.`,
-		`2. Find out what failed: \`gh pr checks ${prNumber} --repo ${repo}\` for the check summary, then read the failing run's logs — \`gh run view <run-id> --repo ${repo} --log-failed\` (list runs for the commit with \`gh run list --repo ${repo} --commit ${headSha}\`). Read the PR discussion for context too: \`gh pr view ${prNumber} --repo ${repo} --comments\`.`,
-		'3. Diagnose the failure and fix it. Keep the fix surgical — change only what the failing checks require; do not refactor unrelated code. If the failure is not something a code change should address (a flaky test, transient infra, or a check unrelated to this PR), make NO code change.',
-		'4. If you changed code, run lint, type-check, and relevant tests. Do not commit, push, comment, or perform any GitHub mutation.',
-		`Do not run \`git push origin ${prBranch}\` or \`gh pr comment ${prNumber} --repo ${repo}\`; GH_TOKEN is read-only context authentication and you must not run gh auth switch. Do NOT \`git add\`/commit the hand-off.`,
-		`5. Write "${RESPOND_CI_OUTCOME_FILENAME}" as JSON containing outcome (fixed or no-fix), body (the PR explanation), optional commitSubject when fixed, and verification [{command,outcome:"passed"}].`,
-		'The outcome strings are exactly `fixed` and `no-fix`.',
-		'',
-		'Do not merge the PR, and do not review it — you are the author.',
-	].join('\n');
 }
 
 /**
@@ -251,6 +220,7 @@ export async function runRespondToCiPhase(
 		cli = DEFAULT_RESPOND_CI_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		timeoutMs,
@@ -304,6 +274,7 @@ export async function runRespondToCiPhase(
 						buildRespondToCiPrompt(
 							{ repo: project.repo, prNumber, prBranch, headSha },
 							delegationEnabled(project, 'respond-to-ci', cli),
+							customPrompt,
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh

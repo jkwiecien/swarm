@@ -54,8 +54,10 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import { GH_IDENTITY_GUARD } from '@/pipeline/agent-auth.js';
-import { pipelinePhaseGuard } from '@/pipeline/agent-scope.js';
+import {
+	BLOCKED_REASON_FILENAME,
+	buildImplementationPrompt,
+} from '@/pipeline/prompts/implementation.js';
 import {
 	acquireResumableWorktree,
 	cleanupUnlessPreserved,
@@ -83,8 +85,10 @@ import { graftEnvironment } from '@/worktree/graft.js';
 /** The file the implementation agent is instructed to write the opened PR's URL to, at the worktree root. */
 export const OPENED_PR_FILENAME = HANDOFF_FILENAMES.implementation;
 
-/** A concise, agent-written explanation when implementation is blocked by a prerequisite. */
-export const BLOCKED_REASON_FILENAME = 'blocked_reason.md';
+// The static implementation prompt and its blocked-reason filename now live in
+// `src/pipeline/prompts/implementation.ts` (issue #135); re-exported so existing
+// importers of `@/pipeline/implementation.js` keep resolving them unchanged.
+export { BLOCKED_REASON_FILENAME, buildImplementationPrompt };
 
 /** Claude Code is SWARM's implementer agent (PROJECT.md §5.2). */
 export const DEFAULT_IMPLEMENTATION_CLI: AgentCli = 'claude';
@@ -142,6 +146,12 @@ export interface RunImplementationPhaseOptions {
 	model?: string;
 	/** Reasoning level for the agent's session. Omit for the CLI/model default (issue #180). */
 	reasoning?: ReasoningLevel;
+	/**
+	 * Project's optional custom prompt for this phase (`agents.implementation.prompt`,
+	 * issue #135) — appended to the static SWARM prompt as a supplement-only
+	 * section. Omit for today's prompt exactly.
+	 */
+	customPrompt?: string;
 	/** Deterministic Claude session handle assigned by the run row. */
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
@@ -179,54 +189,6 @@ export interface ImplementationPhaseResult {
 	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
-}
-
-/**
- * Build the prompt handed to the implementation agent. It's told to implement the
- * work item (following the plan the Planning phase posted on the linked Issue),
- * verify with lint/typecheck/tests, commit, push the task branch, open a PR
- * against the base branch whose body closes the issue, and finally record the
- * opened PR's URL to {@link OPENED_PR_FILENAME} so this phase can link it back.
- */
-export function buildImplementationPrompt(
-	workItem: WorkItem,
-	context: { repo: string; taskId: string; branch: string; baseBranch: string },
-	delegationAllowed = false,
-): string {
-	const { repo, branch, baseBranch } = context;
-	return [
-		'You are a senior software engineer implementing a work item end to end.',
-		'',
-		...pipelinePhaseGuard(delegationAllowed),
-		...GH_IDENTITY_GUARD,
-		'',
-		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
-		'worktree whose root is your current working directory. The repository is',
-		`${repo} on GitHub.`,
-		'',
-		'Do all of the following, in order:',
-		`1. Read the linked issue and plan with \`gh issue view ${context.taskId} --repo ${repo} --comments\`, then explore the repository and implement it.`,
-		"3. Definition of enough: meet the work item's agreed acceptance criteria with the smallest durable change. Do not add speculative features, broad refactors, or exhaustive test coverage merely because adjacent code is untested. Add or update focused tests for changed stable behavior, regressions, public/critical paths, and bug fixes; leave volatile or explicitly out-of-scope coverage alone unless the issue/plan requires it.",
-		'4. Run the project lint, type-check, and the relevant tests; fix whatever they surface before continuing.',
-		'5. Do not commit, push, open a pull request, or run any GitHub mutation. SWARM delivers the prepared tree after you exit.',
-		`Specifically, do not run \`git push -u origin ${branch}\` or \`gh pr create --base ${baseBranch} --head ${branch}\`; SWARM constructs the PR with \`Closes #${context.taskId}\`. GH_TOKEN is read-only context authentication; do not run gh auth switch.`,
-		`6. Write "${OPENED_PR_FILENAME}" as JSON with: summary (PR-ready text), verification (an array of {command,outcome:"passed"}), commitSubject (a conventional-commit subject), limitations (an array), and readyForDelivery:true. Do not track this file.`,
-		'Do NOT `git add`/commit the hand-off file.',
-		`If a genuine external prerequisite blocks implementation (for example, a required PR has not merged), do not open a placeholder PR. Instead, write a concise, human-readable explanation and the actionable next step to "${BLOCKED_REASON_FILENAME}" at the worktree root, then stop. Do NOT commit that file.`,
-		'',
-		'After step 7, STOP immediately and exit. Do not wait for a review, review the PR,',
-		'respond to a review, post any additional PR comment, or invoke another agent.',
-		'SWARM runs Review and Respond-to-review as separate phases after you exit.',
-		'',
-		'Do not merge the PR — a human does that. Keep the change scoped to the work item.',
-		'',
-		'--- WORK ITEM ---',
-		`Title: ${workItem.title}`,
-		`URL: ${workItem.url}`,
-		'',
-		'Description:',
-		workItem.description || '(no description provided)',
-	].join('\n');
 }
 
 /**
@@ -344,6 +306,7 @@ export async function runImplementationPhase(
 		cli = DEFAULT_IMPLEMENTATION_CLI,
 		model,
 		reasoning,
+		customPrompt,
 		sessionId,
 		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
@@ -405,6 +368,7 @@ export async function runImplementationPhase(
 								baseBranch: project.baseBranch,
 							},
 							delegationEnabled(project, 'implementation', cli),
+							customPrompt,
 						),
 					],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
