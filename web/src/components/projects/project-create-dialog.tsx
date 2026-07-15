@@ -88,7 +88,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 							<button
 								type="button"
 								onClick={handleAutofill}
-								className="text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors shrink-0"
+								className="text-zinc-500 hover:text-violet-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors shrink-0"
 								aria-label="Autofill from repository URL"
 							>
 								<RefreshCw className="w-4 h-4" />
