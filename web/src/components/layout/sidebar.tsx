@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useRouterState } from '@tanstack/react-router';
-import { FolderGit2, Play, Plus, Settings } from 'lucide-react';
+import { FolderGit2, Gauge, Play, Plus, Settings } from 'lucide-react';
 import { useState } from 'react';
 import { ProjectCreateDialog } from '@/components/projects/project-create-dialog.js';
 import { trpc } from '@/lib/trpc.js';
@@ -97,19 +97,34 @@ export function Sidebar() {
 					</Link>
 				</nav>
 			</div>
-			<div className="flex items-center gap-2 border-t border-zinc-850 p-4">
-				<span
-					className={
-						pingQuery.isSuccess
-							? 'h-2 w-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/10'
-							: pingQuery.isError
-								? 'h-2 w-2 rounded-full bg-red-500 ring-4 ring-red-500/10'
-								: 'h-2 w-2 rounded-full bg-zinc-600 ring-4 ring-zinc-600/10'
-					}
-				/>
-				<span className="text-xs text-zinc-500">
-					{pingQuery.isSuccess ? 'Connected' : pingQuery.isError ? 'Disconnected' : 'Connecting…'}
-				</span>
+			<div>
+				<div className="px-2 pb-2">
+					<Link
+						to="/quota"
+						className={
+							currentPath.startsWith('/quota')
+								? 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium bg-zinc-800/40 text-zinc-100'
+								: 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800/40'
+						}
+					>
+						<Gauge className="h-4 w-4" />
+						CLI Quota
+					</Link>
+				</div>
+				<div className="flex items-center gap-2 border-t border-zinc-850 p-4">
+					<span
+						className={
+							pingQuery.isSuccess
+								? 'h-2 w-2 rounded-full bg-emerald-500 ring-4 ring-emerald-500/10'
+								: pingQuery.isError
+									? 'h-2 w-2 rounded-full bg-red-500 ring-4 ring-red-500/10'
+									: 'h-2 w-2 rounded-full bg-zinc-600 ring-4 ring-zinc-600/10'
+						}
+					/>
+					<span className="text-xs text-zinc-500">
+						{pingQuery.isSuccess ? 'Connected' : pingQuery.isError ? 'Disconnected' : 'Connecting…'}
+					</span>
+				</div>
 			</div>
 			<ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
 		</div>

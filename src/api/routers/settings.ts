@@ -1,5 +1,7 @@
 import { AppSettingsSchema } from '../../config/app-settings.js';
 import { getAppSettings, updateAppSettings } from '../../db/repositories/appSettingsRepository.js';
+import { upsertCliQuota } from '../../db/repositories/cliQuotasRepository.js';
+import { discoverCliQuotas } from '../../harness/quota-discovery.js';
 import { publicProcedure, router } from '../trpc.js';
 
 /**
@@ -16,6 +18,15 @@ export const settingsRouter = router({
 	}),
 
 	update: publicProcedure.input(AppSettingsSchema).mutation(async ({ input }) => {
-		return await updateAppSettings(input);
+		const result = await updateAppSettings(input);
+		try {
+			const snapshots = await discoverCliQuotas();
+			for (const snapshot of snapshots) {
+				await upsertCliQuota(snapshot.cli, snapshot.status, snapshot);
+			}
+		} catch (err) {
+			// Don't fail settings update
+		}
+		return result;
 	}),
 });
