@@ -535,11 +535,11 @@ interface PhaseConfigRowProps {
 }
 
 /**
- * The Enabled-column cell for one phase: a checkbox for the optional, SCM-driven
- * phases, or a static "Always on" label for the mandatory ones (Planning,
- * Implementation, Resolve Conflicts, signalled by `enabled === undefined`). Split
- * out of {@link PhaseConfigRow} so that row's dependent-selector logic stays the
- * dominant thing it reads as.
+ * The Enabled-column cell for one phase: a toggle switch for the optional,
+ * SCM-driven phases, or a static "Always on" label for the mandatory ones
+ * (Planning, Implementation, Resolve Conflicts, signalled by
+ * `enabled === undefined`). Split out of {@link PhaseConfigRow} so that row's
+ * dependent-selector logic stays the dominant thing it reads as.
  */
 function PhaseEnabledCell({
 	phase,
@@ -560,17 +560,24 @@ function PhaseEnabledCell({
 		return <span className="text-xs text-zinc-500">Always on</span>;
 	}
 	return (
-		<input
-			type="checkbox"
-			checked={enabled}
+		<button
+			type="button"
+			role="switch"
+			aria-checked={enabled}
+			aria-label={`${label} enabled`}
 			disabled={isPending || enabledDisabled}
-			onChange={(e) => handleEnabledChange?.(phase as PipelineTogglePhase, e.target.checked)}
 			// The row navigates on click; keep the toggle from bubbling up to it
 			// (ai/DESIGN_SYSTEM.md: trailing row action calls stopPropagation).
-			onClick={(e) => e.stopPropagation()}
-			aria-label={`${label} enabled`}
-			className="h-4 w-4 accent-violet-600 disabled:opacity-50 disabled:cursor-not-allowed"
-		/>
+			onClick={(e) => {
+				e.stopPropagation();
+				handleEnabledChange?.(phase as PipelineTogglePhase, !enabled);
+			}}
+			className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-[#0F0F11] disabled:opacity-50 disabled:cursor-not-allowed ${enabled ? 'bg-violet-600' : 'bg-zinc-700'}`}
+		>
+			<span
+				className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`}
+			/>
+		</button>
 	);
 }
 
