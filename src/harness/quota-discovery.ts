@@ -17,7 +17,7 @@ export async function isBinaryRunnable(
 	args: string[] = ['--version'],
 ): Promise<boolean> {
 	try {
-		await execFileAsync(command, [], { timeout: 2000 });
+		await execFileAsync(command, args, { timeout: 2000 });
 		return true;
 	} catch (err: any) {
 		// If command exited with 0/non-zero but exists, it might succeed or fail,
@@ -25,10 +25,10 @@ export async function isBinaryRunnable(
 		if (err && err.code === 'ENOENT') {
 			return false;
 		}
-		// Some binaries might need version flag or exit non-zero for other reasons,
-		// let's try running with version flag.
+		// Some binaries might not support the version flag or exit non-zero,
+		// let's try running without arguments as a fallback.
 		try {
-			await execFileAsync(command, args, { timeout: 2000 });
+			await execFileAsync(command, [], { timeout: 2000 });
 			return true;
 		} catch {
 			return false;

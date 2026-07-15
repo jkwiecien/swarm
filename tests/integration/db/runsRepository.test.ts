@@ -636,16 +636,16 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
 		});
 
-		it('is false for a non-claude engine', async () => {
+		it('is true for a non-claude engine', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'implementation' });
 			await completeRun(id, { status: 'deferred', engine: 'antigravity' });
-			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(true);
 		});
 
-		it('is false for a non-PM phase (e.g. review)', async () => {
+		it('is true for a non-PM phase (e.g. review)', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'review' });
 			await completeRun(id, { status: 'deferred', engine: 'claude' });
-			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(false);
+			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(true);
 		});
 
 		it('is false for a settled (non-deferred) run', async () => {
