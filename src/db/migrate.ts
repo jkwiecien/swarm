@@ -2,13 +2,11 @@
  * In-process schema migration — applies any pending Drizzle migrations against
  * the live database from *inside* the worker process, at startup.
  *
- * Why this exists (not just the `db:migrate` npm-script prefix): the dev worker
- * runs under `tsx --watch`, which restarts the node process on every source
- * change — and SWARM edits its own repo, so the pipeline restarts the worker
- * constantly. The `npm run db:migrate && … --watch …` prefix runs only on the
- * first invocation, never on a watch restart. So a restart that picks up new
- * schema-referencing code before its migration is applied left the worker
- * running *ahead* of the DB: every `runs` insert/select failed with
+ * Why this exists (not just the `db:migrate` npm-script prefix): the worker can
+ * be launched directly, from compiled output, or through the opt-in
+ * `dev:worker:watch` command. A watch restart does not rerun the npm prefix. A
+ * process that picks up new schema-referencing code before its migration is
+ * applied would run *ahead* of the DB: every `runs` insert/select would fail with
  * `column "…" does not exist`, silently (run tracking is best-effort), and the
  * phase ran but never appeared in the dashboard. Applying migrations here — on
  * every process start, watch restart included — closes that window.

@@ -19,15 +19,25 @@ export async function reenqueueDeferred(
 ): Promise<void> {
 	try {
 		const parsed = SwarmJobSchema.parse(data);
+		// Retry intent is derived from this outcome. Do not let a stale flag from an
+		// earlier queued job turn a pre-provisioning capacity retry into a branch
+		// resume.
+		const { resumePmPhase: _resumePmPhase, resumeSession: _resumeSession, ...job } = parsed;
 		const next: SwarmJob = {
-			...parsed,
-			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
+			...job,
+			rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1,
 			// Carry the originating run row forward (issue #136) so the retry resets
 			// that same row instead of inserting a second one. `outcome.runId` wins
 			// over any stale value on `parsed` (they match on a retry; only the
 			// outcome knows the row a fresh webhook's first run just created).
 			...(outcome.runId ? { runId: outcome.runId } : {}),
-			...(parsed.type === 'github-projects' &&
+			// A first concurrency deferral happens before the phase provisions its
+			// worktree or moves an Implementation card to In progress. Its retry is a
+			// fresh board dispatch and must create the task branch normally. A run id
+			// means a prior attempt started, so keep its PM resume path even if a later
+			// concurrency retry itself did not run the agent.
+			...((outcome.resumable || outcome.runId !== undefined) &&
+			job.type === 'github-projects' &&
 			(outcome.phase === 'planning' || outcome.phase === 'implementation')
 				? { resumePmPhase: outcome.phase }
 				: {}),

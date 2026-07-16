@@ -37,6 +37,7 @@ import { reenqueueDeferred } from './deferred-retry.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
+import { resolveWorkerLockOptions } from './runtime-options.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -58,24 +59,7 @@ if (!Number.isInteger(concurrency) || concurrency < 1) {
 	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${rawConcurrency}'`);
 }
 
-// BullMQ holds a per-job lock and renews it on a timer at ~half this interval
-// while the phase runs. A phase is a multi-minute agent CLI run, so the lock is
-// renewed many times over its life — the only thing this duration has to exceed
-// is the worst-case gap *between* renewals, i.e. how long the single-threaded
-// event loop can stall (two concurrent chatty agents saturating CPU, a GC
-// pause, a Redis blip) before a renewal fires. BullMQ's 30s default is far too
-// tight for that: a brief event-loop starvation slips one renewal past 30s, the
-// lock expires, the stalled-checker reclaims the job, and — with
-// `maxStalledCount: 0` — it fails outright with no retry, silently losing an
-// in-flight review (observed live: PR review dropped when the lock could not be
-// renewed). Default to 5 min of headroom; override via env for a heavier host.
-const rawLockDuration = optionalEnv('SWARM_WORKER_LOCK_DURATION_MS', String(5 * 60 * 1000));
-const lockDuration = Number(rawLockDuration);
-if (!Number.isInteger(lockDuration) || lockDuration < 1) {
-	throw new Error(
-		`SWARM_WORKER_LOCK_DURATION_MS must be a positive integer, got '${rawLockDuration}'`,
-	);
-}
+const { lockDuration, lockRenewTime } = resolveWorkerLockOptions();
 
 const rawSweepInterval = optionalEnv('SWARM_WORKTREE_SWEEP_INTERVAL_MS', String(60 * 60 * 1000));
 const sweepIntervalMs = Number(rawSweepInterval);
@@ -121,13 +105,10 @@ const STALE_RUN_MARGIN_MS = 10 * 60 * 1000;
 const registry = createTriggerRegistry();
 registerBuiltInTriggers(registry);
 
-// Bring the DB schema up to date before serving any job. The `db:migrate` npm
-// prefix runs only on the first `dev:worker` invocation; `tsx --watch` restarts
-// (frequent — SWARM edits its own repo) skip it, so without this a restart onto
-// newer schema-referencing code runs ahead of the DB and every `runs` write/read
-// fails silently (run tracking is best-effort) — the phase runs but never shows
-// in the dashboard. Fatal on failure: a schema-mismatched worker is the exact
-// bug this guards against, so crash loudly rather than serve jobs blind.
+// Bring the DB schema up to date before serving any job. This is required for
+// direct/source starts and the opt-in `dev:worker:watch` mode alike; a restarted
+// process must never run newer schema-referencing code against an older DB.
+// Fatal on failure: crash loudly rather than serve jobs with broken run history.
 try {
 	await runMigrations();
 } catch (err) {
@@ -213,6 +194,7 @@ const worker = new Worker(
 		// renewal past the deadline and get the running phase reclaimed as stalled
 		// (see SWARM_WORKER_LOCK_DURATION_MS above).
 		lockDuration,
+		lockRenewTime,
 		// Agent runs aren't idempotent (see processJob's doc comment), so a job
 		// interrupted by process death must fail visibly rather than be re-queued
 		// by the stalled-job checker and silently re-run on restart. A stall that
@@ -255,6 +237,9 @@ worker.on('failed', (job, err) => {
 // unhandled 'error' event would crash the process.
 worker.on('error', (err) => {
 	logger.error('Worker queue error', { error: err.message });
+});
+worker.on('lockRenewalFailed', (jobIds) => {
+	logger.error('Worker failed to renew active job locks', { jobIds });
 });
 
 // Subscribe to user-initiated run terminations from the dashboard (issue #166):

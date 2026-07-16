@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError } from '@/harness/agent-failure.js';
+import { logger } from '@/lib/logger.js';
 import type { PMProvider } from '@/pm/types.js';
+import { DeliveryDeferredError } from '@/scm/delivery.js';
 import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 import {
 	createMockGitHubParsedEvent,
@@ -272,6 +274,25 @@ describe('processJob', () => {
 
 		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 		expect(phaseCalls).toHaveLength(1);
+	});
+
+	it('leaves a fresh Implementation retry free to create its task branch after a capacity deferral', async () => {
+		acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '216', workItem };
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning(trigger),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-deferred',
+			phase: 'implementation',
+			resumable: false,
+			runId: undefined,
+		});
+		expect(phaseCalls).toEqual([]);
 	});
 
 	it('fails an at-limit job after its shared retry budget is exhausted', async () => {
@@ -1178,6 +1199,39 @@ describe('processJob', () => {
 		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
 		expect(outcome.attempt).toBe(0);
 		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000);
+	});
+
+	it('defers delivery failures with their underlying cause and an honest log label', async () => {
+		const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+		phaseImpl = async () => {
+			throw new DeliveryDeferredError('Implementation delivery deferred for retry', {
+				cause: new Error("pre-push hook failed: Cannot find package 'react'"),
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({
+				phase: 'implementation',
+				taskId: '216',
+				workItem: createMockWorkItem(),
+			}),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-deferred',
+			resumable: true,
+			reason:
+				"Implementation delivery deferred for retry ← pre-push hook failed: Cannot find package 'react'",
+		});
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining('delivery failed'),
+			expect.objectContaining({
+				error:
+					"Implementation delivery deferred for retry ← pre-push hook failed: Cannot find package 'react'",
+			}),
+		);
+		warn.mockRestore();
 	});
 
 	it('fails an aborted phase once the retry budget is exhausted', async () => {

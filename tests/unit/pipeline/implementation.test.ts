@@ -148,6 +148,13 @@ describe('runImplementationPhase', () => {
 		});
 	});
 
+	it('creates the task branch for a fresh retry deferred before provisioning', async () => {
+		const deps = makeDeps();
+		await runImplementationPhase({ ...deps, resumeExistingBranch: false });
+
+		expect(deps.worktrees.provision).toHaveBeenCalledWith('19');
+	});
+
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
 		const deps = makeDeps();
 		const signal = new AbortController().signal;

@@ -85,13 +85,12 @@ npm run dev:worker            # start the worker on the host (or: npm run build 
 ```
 `swarm start`, `npm run dev:dashboard`, `npm run dev:worker`, and their production
 start variants apply pending committed migrations before serving requests or processing
-jobs. The worker also applies them **in-process on every (re)start** — the npm-script
-prefix runs only on the first invocation, but `tsx --watch` restarts the node process on
-each source change (frequent, since SWARM edits its own repo), so without the in-process
-step a restart onto newer schema-referencing code would run ahead of the DB and silently
-fail every run-history write (the phase runs but never appears in the dashboard). A
-schema-mismatched worker refuses to start. The explicit `npm run db:migrate` step remains
-useful for setup and maintenance, and is safe to run repeatedly.
+jobs. `dev:worker` is intentionally stable: source edits do not restart it and abort a
+live agent. Use `npm run dev:worker:watch` only while developing the worker itself and
+when no real pipeline run is active. The worker also applies migrations **in-process on
+every start**, so either mode refuses to serve jobs against a stale schema. The explicit
+`npm run db:migrate` step remains useful for setup and maintenance, and is safe to run
+repeatedly.
 
 The dashboard can be run in two modes:
 
@@ -174,7 +173,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
 | `SWARM_WORKER_CONCURRENCY` | `1` | Worker-global maximum number of jobs running at once (`src/worker/index.ts`). Must be a positive integer or startup throws. Each project's `maxConcurrentJobs` additionally caps that project's in-flight jobs, so its effective limit is the smaller of the two values. |
 | `SWARM_MAX_JOB_AGE_MS` | `86400000` (24h) | Maximum age of a BullMQ job when the worker begins processing it (`src/worker/job-freshness.ts`). Older webhook or retry jobs are acknowledged as stale without starting an agent, preventing an offline worker from replaying board work completed manually. Must be a positive integer or startup throws. |
-| `SWARM_WORKER_LOCK_DURATION_MS` | `300000` (5m) | BullMQ job-lock duration (`src/worker/index.ts`). The lock is renewed at ~half this interval while a phase runs, so it only has to exceed the worst-case event-loop stall between renewals — well above BullMQ's 30s default, so a brief CPU/GC/Redis hiccup can't get an in-flight run reclaimed as stalled (and, with `maxStalledCount: 0`, failed with no retry). Must be a positive integer or startup throws. |
+| `SWARM_WORKER_LOCK_DURATION_MS` | `900000` (15m) | BullMQ job-lock duration (`src/worker/runtime-options.ts`). Locks are renewed at least every 30s (or half the duration for a shorter override), while the longer expiry tolerates a sleeping laptop, event-loop starvation, or a transient Redis interruption without falsely reclaiming a still-running agent as stalled. Must be a positive integer or startup throws. |
 | `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
 | `SWARM_AGENT_TIMEOUT_MS` | `1800000` (30m) | Default wall-clock timeout applied to **every** phase/agent run when the project sets no per-phase `agents.<phase>.timeoutMs` (`src/worker/consumer.ts`). The harness kills a run that exceeds it (SIGTERM, then SIGKILL after a 5s grace) so a hung agent can't hold a worker slot indefinitely. A genuinely-interrupted timeout is then **deferred and resumed** (the agent continues its prior CLI session in the preserved worktree — see the "Agent session resume" bullet under [Architecture at a glance](#architecture-at-a-glance-mvp)), bounded by the same retry cap as a rate-limit; only a run that trapped SIGTERM and still exited 0 is finalized `failed`. A per-phase `timeoutMs` in `swarm.config.json` overrides it. Must be a positive integer or startup throws. |
 | `SWARM_DELEGATION_ENABLED` | `true` | Global emergency switch for curated semantic delegation. The literal `false` disables it for every project/phase; projects remain opted out unless `agents.delegation.enabled` and a phase flag are also true. |
