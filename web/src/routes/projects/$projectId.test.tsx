@@ -166,6 +166,31 @@ describe('PhaseConfigRow', () => {
 		expect(switches[0].getAttribute('aria-label')).toBe('Review enabled');
 	});
 
+	it('renders Implementation (unplanned) row as always-on with auto-advance N/A', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow
+						phase="implementationUnplanned"
+						config={mockConfig}
+						isPending={false}
+						enabled={undefined}
+						autoAdvance={undefined}
+						onSelect={() => {}}
+					/>
+				</tbody>
+			</table>,
+		);
+
+		expect(screen.getByText('Implementation (unplanned)')).toBeDefined();
+		expect(screen.getByText('implementationUnplanned')).toBeDefined();
+		expect(screen.getByText('Always on')).toBeDefined();
+		expect(screen.getByText('N/A')).toBeDefined();
+
+		// No enable or auto-advance toggle for this mandatory, non-advancing phase.
+		expect(screen.queryByRole('switch')).toBeNull();
+	});
+
 	it('calls onSelect when clicking the row itself, but not when clicking the toggle', () => {
 		const handleSelect = vi.fn();
 		const handleEnabledChange = vi.fn();
@@ -258,6 +283,39 @@ describe('PhaseSettingsDetail', () => {
 		expect(switchElement.getAttribute('aria-checked')).toBe('true');
 		expect(screen.getByText('Enabled')).toBeDefined();
 		expect(screen.getByText('Always on')).toBeDefined();
+	});
+
+	it('renders the always-on switch and explanatory note for Implementation (unplanned)', () => {
+		render(
+			<PhaseSettingsDetail
+				phase="implementationUnplanned"
+				config={mockConfig}
+				isPending={false}
+				enabled={undefined}
+				autoAdvance={undefined}
+				handleCliChange={() => {}}
+				handleModelChange={() => {}}
+				handleReasoningChange={() => {}}
+				handleTimeoutChange={() => {}}
+				handlePromptChange={() => {}}
+				onBack={() => {}}
+			/>,
+		);
+
+		expect(
+			screen.getByRole('heading', { level: 2, name: 'Implementation (unplanned)' }),
+		).toBeDefined();
+
+		// Always-on, non-advancing: a single disabled Enabled switch, no auto-advance.
+		const switches = screen.getAllByRole('switch') as HTMLButtonElement[];
+		expect(switches).toHaveLength(1);
+		expect(switches[0].disabled).toBe(true);
+		expect(switches[0].getAttribute('aria-checked')).toBe('true');
+		expect(screen.getByText('Always on')).toBeDefined();
+
+		expect(
+			screen.getByText(/Used only when Implementation was not preceded by a Planning run/),
+		).toBeDefined();
 	});
 
 	it('renders Auto-advance toggle switch when autoAdvance is defined', () => {
