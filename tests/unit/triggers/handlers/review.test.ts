@@ -95,7 +95,11 @@ const handler = createReviewTrigger();
 
 function ctx(
 	overrides: Partial<Parameters<typeof createMockGitHubParsedEvent>[0]> = {},
-	extra: { recheckAttempt?: number; deliveryId?: string } = {},
+	extra: {
+		recheckAttempt?: number;
+		deliveryId?: string;
+		continuationDispatchClaimed?: boolean;
+	} = {},
 ): TriggerContext {
 	return {
 		project: PROJECT,
@@ -451,6 +455,26 @@ describe('review trigger', () => {
 		it('does not claim for an unreviewable event', async () => {
 			await handler.handle(ctx({ ...reviewable, isDraft: true }));
 			expect(claimReviewDispatch).not.toHaveBeenCalled();
+		});
+
+		it('reuses the held claim (no re-claim) for a prioritized continuation retry', async () => {
+			// A concurrency-deferred Review carries `continuationDispatchClaimed`: the
+			// PR+SHA claim is already held (refreshed) from its original dispatch, so
+			// re-claiming within that TTL would drop this retry as a duplicate (#214).
+			const result = await handler.handle(ctx(reviewable, { continuationDispatchClaimed: true }));
+
+			expect(result).toEqual({
+				phase: 'review',
+				taskId: '42',
+				prNumber: '42',
+				headSha: 'abc123',
+			});
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+		});
+
+		it('still claims when the continuation flag is absent (unchanged behavior)', async () => {
+			await handler.handle(ctx(reviewable));
+			expect(claimReviewDispatch).toHaveBeenCalledOnce();
 		});
 	});
 });

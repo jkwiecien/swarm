@@ -4,6 +4,7 @@ import { isRunCancellationRequested } from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry, removePendingRetryForRun } from '../queue/producer.js';
 import type { JobOutcome } from './consumer.js';
+import { registerPendingContinuation } from './pending-continuations.js';
 
 /**
  * Hand a deferred run back to BullMQ. A dashboard termination can arrive after
@@ -43,6 +44,10 @@ export async function reenqueueDeferred(
 			// the deferral was a resumable one (rate-limit/timeout). Separate from
 			// `resumePmPhase`, which is only the github-projects board-dispatch signal.
 			...(outcome.resumable ? { resumeSession: true } : {}),
+			// A prioritized continuation (issue #214) already holds its dispatch dedup
+			// claim; tell the retry's handler to reuse it rather than re-claim (which,
+			// fired within the refreshed TTL, would drop the run as a duplicate).
+			...(outcome.continuationDispatchClaimed ? { continuationDispatchClaimed: true } : {}),
 		};
 
 		if (outcome.runId && (await isRunCancellationRequested(outcome.runId))) {
@@ -53,7 +58,7 @@ export async function reenqueueDeferred(
 			return;
 		}
 
-		await enqueueDelayedRetry(next, outcome.retryDelayMs);
+		const retryJobId = await enqueueDelayedRetry(next, outcome.retryDelayMs);
 
 		// If termination raced the queue hand-off, its queue scan may have run
 		// before the retry existed. The durable marker makes that ordering visible
@@ -65,6 +70,19 @@ export async function reenqueueDeferred(
 				runId: outcome.runId,
 			});
 			return;
+		}
+
+		// Register a prioritized continuation (issue #214) so a freed project slot can
+		// promote its delayed retry ahead of new board work. Best-effort and after the
+		// cancellation checks: the delayed retry above is the safety net if the
+		// registry write is lost, and a terminated run must not be re-registered.
+		if (outcome.pendingContinuation && retryJobId) {
+			await registerPendingContinuation(parsed.projectId, {
+				jobId: retryJobId,
+				taskId: outcome.taskId,
+				phase: outcome.phase,
+				enqueuedAt: Date.now(),
+			});
 		}
 
 		logger.debug('Rate-limited phase re-enqueued for retry', {

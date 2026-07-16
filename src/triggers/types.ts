@@ -46,6 +46,13 @@ export type TriggerContext = {
 	 * The `runs` row this job re-runs (issue #136).
 	 */
 	runId?: string;
+	/**
+	 * Set on a concurrency-deferred continuation's prioritized retry (issue #214):
+	 * the dispatch dedup slot is already held from the original dispatch attempt,
+	 * so the handler reuses that claim instead of re-claiming (which, fired within
+	 * the refreshed claim TTL, would drop the run as a duplicate).
+	 */
+	continuationDispatchClaimed?: boolean;
 } & (
 	| { source: 'github'; event: GitHubParsedEvent }
 	| { source: 'github-projects'; event: GitHubProjectsParsedEvent }

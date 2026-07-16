@@ -95,6 +95,15 @@ const jobBase = z.object({
 	 * launched. Rides `...jobPayload` spreads through deferred/manual retries.
 	 */
 	reasoningOverride: ReasoningLevelSchema.optional(),
+	/**
+	 * Set on a concurrency-deferred continuation's retry (issue #214): its dispatch
+	 * dedup slot was already claimed by the original dispatch attempt, so the
+	 * re-dispatch must NOT re-claim it — a prioritized retry fires within the
+	 * (refreshed) claim TTL, and re-claiming would drop the run as a duplicate. The
+	 * `pr-review` handler reads it to reuse the held claim instead of calling
+	 * `claimReviewDispatch`. Board jobs never set it.
+	 */
+	continuationDispatchClaimed: z.boolean().optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

@@ -294,6 +294,19 @@ export const PipelineConfigSchema = z
 			})
 			.optional(),
 		respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
+		/**
+		 * When a continuation of already-active pipeline work is blocked *solely* by
+		 * this project's concurrency limit, prioritize it over fresh
+		 * Planning/Implementation work once a slot frees, instead of sending it
+		 * through the generic rate-limit retry delay (issue #214). Unset (or the
+		 * whole `pipeline` block omitted) defaults to `true`; set `false` to preserve
+		 * the prior best-effort/FIFO scheduling for maximum new-work throughput.
+		 *
+		 * This task wires it for the Review continuation only (`trigger.phase ===
+		 * 'review'`); the remaining SCM-driven continuations keep today's 6-minute
+		 * concurrency deferral until the follow-up widens the predicate.
+		 */
+		prioritizeContinuations: z.boolean().optional(),
 	})
 	.refine(
 		(pipeline) => pipeline.review?.enabled !== false || pipeline.respondToReview?.enabled === false,

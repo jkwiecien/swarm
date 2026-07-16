@@ -16,13 +16,24 @@ vi.mock('@/queue/producer.js', () => ({
 	removePendingRetryForRun: (runId: string) => removePendingRetryForRun(runId),
 }));
 
+// The pending-continuation registry (issue #214): a prioritized continuation is
+// registered here so a freed slot can promote it. Mocked at the boundary so the
+// test needs no Redis and can assert what was registered.
+const registerPendingContinuation = vi.fn(async (_projectId: string, _entry: unknown) => {});
+vi.mock('@/worker/pending-continuations.js', () => ({
+	registerPendingContinuation: (projectId: string, entry: unknown) =>
+		registerPendingContinuation(projectId, entry),
+}));
+
 const { reenqueueDeferred } = await import('@/worker/deferred-retry.js');
 
 describe('reenqueueDeferred', () => {
 	beforeEach(() => {
 		isRunCancellationRequested.mockReset();
 		enqueueDelayedRetry.mockClear();
+		enqueueDelayedRetry.mockResolvedValue('retry-1');
 		removePendingRetryForRun.mockClear();
+		registerPendingContinuation.mockClear();
 	});
 
 	it('removes a retry when termination lands in the pre-enqueue window', async () => {
@@ -158,5 +169,76 @@ describe('reenqueueDeferred', () => {
 			}),
 			60_000,
 		);
+	});
+
+	it('threads continuationDispatchClaimed and registers a prioritized Review continuation', async () => {
+		enqueueDelayedRetry.mockResolvedValue('retry-42');
+
+		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '17',
+			retryDelayMs: 6 * 60 * 1000,
+			reason: "Project 'swarm' is at its concurrent-job limit",
+			attempt: 0,
+			resumable: false,
+			runId: 'run-1',
+			continuationDispatchClaimed: true,
+			pendingContinuation: true,
+		});
+
+		// The retry carries the reuse-the-held-claim flag so its handler skips re-claiming.
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({ continuationDispatchClaimed: true }),
+			6 * 60 * 1000,
+		);
+		// It is registered under the project with the id enqueueDelayedRetry returned.
+		expect(registerPendingContinuation).toHaveBeenCalledExactlyOnceWith('swarm', {
+			jobId: 'retry-42',
+			taskId: '17',
+			phase: 'review',
+			enqueuedAt: expect.any(Number),
+		});
+	});
+
+	it('does not thread the flag or register when the outcome is not a pending continuation', async () => {
+		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '17',
+			retryDelayMs: 6 * 60 * 1000,
+			reason: 'rate limited',
+			attempt: 0,
+			resumable: false,
+			runId: 'run-1',
+		});
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ continuationDispatchClaimed: true }),
+			6 * 60 * 1000,
+		);
+		expect(registerPendingContinuation).not.toHaveBeenCalled();
+	});
+
+	it('does not register a pending continuation for a run terminated in the enqueue window', async () => {
+		// The retry was enqueued then removed by the terminator race; it must not be
+		// registered as pending (it no longer exists).
+		isRunCancellationRequested.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '17',
+			retryDelayMs: 6 * 60 * 1000,
+			reason: "Project 'swarm' is at its concurrent-job limit",
+			attempt: 0,
+			resumable: false,
+			runId: 'run-1',
+			continuationDispatchClaimed: true,
+			pendingContinuation: true,
+		});
+
+		expect(removePendingRetryForRun).toHaveBeenCalledWith('run-1');
+		expect(registerPendingContinuation).not.toHaveBeenCalled();
 	});
 });

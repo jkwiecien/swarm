@@ -66,11 +66,16 @@ import {
 	USER_TERMINATION_MESSAGE,
 } from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueJob } from '../queue/producer.js';
+import { enqueueJob, promoteJobById } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
+import {
+	buildReviewDispatchKey,
+	refreshReviewDispatchClaim,
+} from '../triggers/review-dispatch-dedup.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
+import { takeNextPendingContinuation } from './pending-continuations.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
@@ -128,6 +133,20 @@ export type JobOutcome =
 			 * deferral on a fresh webhook).
 			 */
 			runId?: string;
+			/**
+			 * Set when this is a prioritized continuation deferral (issue #214): its
+			 * dispatch dedup claim is being held open, so `reenqueueDeferred` threads
+			 * `continuationDispatchClaimed` onto the retry job — the handler reuses the
+			 * held claim rather than re-claiming (which would drop the run as a duplicate).
+			 */
+			continuationDispatchClaimed?: boolean;
+			/**
+			 * Set when this deferral should be retained in the pending-continuation
+			 * registry (issue #214), so a freed project slot promotes its delayed retry
+			 * ahead of new board work. `reenqueueDeferred` registers it after enqueuing
+			 * the fallback retry.
+			 */
+			pendingContinuation?: boolean;
 	  };
 
 /**
@@ -160,6 +179,15 @@ const MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_RETRY_DELAY_MS = 30 * 60 * 1000;
 /** Fire slightly *after* the reported reset so quota is actually back. */
 const RETRY_BUFFER_MS = 60 * 1000;
+
+/**
+ * TTL the review-dispatch claim is refreshed to while a Review is held as a
+ * pending continuation (issue #214). Comfortably outlives the fallback delayed
+ * retry ({@link MIN_RETRY_DELAY_MS}) so the claim never lapses while the
+ * continuation waits — no sibling `opened`/`check_suite` event can steal it, and
+ * the prioritized retry reuses the still-live claim rather than re-claiming.
+ */
+const PENDING_CONTINUATION_CLAIM_TTL_SEC = Math.ceil(MIN_RETRY_DELAY_MS / 1000) + 120;
 
 /**
  * Coded default wall-clock timeout applied to *every* phase/agent invocation
@@ -349,6 +377,94 @@ function deferForConcurrencyLimit(
 		// re-enqueue keeps resetting the same row rather than orphaning it.
 		runId: job.runId,
 	};
+}
+
+/**
+ * Handle a job blocked by the project's concurrency limit — `processJob`'s
+ * pre-run deferral path, split out so that function stays within the complexity
+ * budget (the file already splits helpers this way).
+ *
+ * A Review blocked *solely* by concurrency (issue #214), when
+ * `prioritizeContinuations` is on, is retained as a *pending continuation*
+ * rather than sent through the generic 6-minute backoff: a run row is created
+ * now so the blocked Review shows as `deferred` on the dashboard (the
+ * concurrency defer otherwise happens before any row exists), its PR+SHA
+ * dispatch claim is refreshed so no sibling event can steal it while it waits,
+ * and the outcome is marked so (a) the retry reuses the held claim rather than
+ * re-claiming and (b) `reenqueueDeferred` registers it for
+ * promote-on-slot-release. `prioritizeContinuations: false`, or any non-`review`
+ * phase, keeps the prior FIFO/backoff behavior exactly (no row, no claim
+ * refresh, no registration). Returns the `phase-deferred` outcome, or a terminal
+ * `phase-failed` once the shared retry budget is exhausted.
+ */
+async function handleConcurrencyDeferral(
+	job: SwarmJob,
+	trigger: TriggerResult,
+	project: ProjectConfig,
+): Promise<JobOutcome> {
+	const deferred = deferForConcurrencyLimit(job, trigger, project.id);
+	if (!deferred) {
+		const error = `Project '${project.id}' remained at its concurrent-job limit until the retry budget was exhausted`;
+		await reportPhaseFailureToBoardOrPr(trigger, project, error);
+		// Terminal failure on the pre-try/catch path: flip the reused row to `failed`
+		// so the dashboard stops offering Retry now (which would 409 — no pending job
+		// survives). No-ops for a fresh webhook with no row yet.
+		await finalizeRun(job.runId, { status: 'failed', error });
+		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
+	}
+
+	// Retain a concurrency-blocked Review as a pending continuation (issue #214),
+	// prioritized over new board work once a slot frees. Only the `review` phase is
+	// eligible in this task; the other SCM continuations keep today's backoff.
+	if (project.pipeline?.prioritizeContinuations !== false && trigger.phase === 'review') {
+		// Create the run row now so the blocked Review is observable as `deferred`
+		// instead of invisible until the fallback delay fires.
+		const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
+		if (runId) deferred.runId = runId;
+		deferred.continuationDispatchClaimed = true;
+		deferred.pendingContinuation = true;
+		// Hold the PR+SHA claim open past the fallback retry window so no sibling
+		// event steals it while the continuation is pending; the retry reuses it.
+		await refreshReviewDispatchClaim(
+			buildReviewDispatchKey(project.repo, trigger.prNumber, trigger.headSha),
+			PENDING_CONTINUATION_CLAIM_TTL_SEC,
+		);
+	}
+
+	// A retry job carries its originating row (`deferred.runId`); this pre-try/catch
+	// path must finalize that row here or it stays stuck `deferred` with the prior
+	// attempt's stale `nextRetryAt`. Refreshes status=`deferred` + recomputes
+	// `nextRetryAt`; no-ops when there is no row (a fresh non-continuation webhook).
+	await finalizeFailedRun(deferred.runId, deferred, undefined);
+	return deferred;
+}
+
+/**
+ * After a project slot frees, promote the oldest pending continuation for that
+ * project (issue #214) so it runs ahead of new board work — the fix for issue
+ * #213. Best-effort and fully swallowed: a registry/queue hiccup must never turn
+ * a settled run into a failed job, and the continuation's own fallback delayed
+ * retry still fires. A no-op when nothing is pending — the freed slot then goes
+ * to whatever the queue serves next; no slot is ever reserved.
+ */
+async function promoteNextPendingContinuation(projectId: string): Promise<void> {
+	try {
+		const next = await takeNextPendingContinuation(projectId);
+		if (!next) return;
+		const promoted = await promoteJobById(next.jobId);
+		logger.debug('pending-continuation: slot freed — promoted a blocked continuation', {
+			projectId,
+			jobId: next.jobId,
+			taskId: next.taskId,
+			phase: next.phase,
+			promoted,
+		});
+	} catch (err) {
+		logger.warn('pending-continuation: promote after slot release failed', {
+			projectId,
+			error: describeError(err),
+		});
+	}
 }
 
 /**
@@ -1388,6 +1504,7 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				recheckAttempt: job.recheckAttempt,
 				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
 				runId: job.runId,
+				continuationDispatchClaimed: job.continuationDispatchClaimed,
 				source: 'github',
 				event: job.event,
 			}
@@ -1397,6 +1514,7 @@ function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerCont
 				recheckAttempt: job.recheckAttempt,
 				rateLimitRetryAttempt: job.rateLimitRetryAttempt,
 				runId: job.runId,
+				continuationDispatchClaimed: job.continuationDispatchClaimed,
 				resumePmPhase: job.resumePmPhase,
 				source: 'github-projects',
 				event: job.event,
@@ -1563,25 +1681,10 @@ export async function processJob(
 	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
 	if (!slot.acquired) {
 		inFlightTaskIds.delete(trigger.taskId);
-		const deferred = deferForConcurrencyLimit(job, trigger, project.id);
-		if (deferred) {
-			// A retry job carries its originating row (`job.runId`); this early
-			// return sits outside the try/catch below, so finalize the carried row
-			// here or it stays stuck `deferred` with the *previous* attempt's stale
-			// `nextRetryAt`. `finalizeFailedRun` refreshes status=`deferred` +
-			// recomputes `nextRetryAt` from `retryDelayMs`, and no-ops when there is
-			// no row (a fresh webhook, which defers before `tryCreateRun`).
-			await finalizeFailedRun(job.runId, deferred, undefined);
-			return deferred;
-		}
-
-		const error = `Project '${project.id}' remained at its concurrent-job limit until the retry budget was exhausted`;
-		await reportPhaseFailureToBoardOrPr(trigger, project, error);
-		// Terminal failure on the same pre-try/catch path: flip the reused row to
-		// `failed` so the dashboard stops offering Retry now (which would 409 — no
-		// pending job survives). No-ops for a fresh webhook with no row yet.
-		await finalizeRun(job.runId, { status: 'failed', error });
-		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
+		// Pre-run deferral (concurrency limit): may retain a Review as a pending
+		// continuation (issue #214) or fall back to the generic backoff — either way
+		// it sits outside the try/catch below, so it finalizes its own run row.
+		return handleConcurrencyDeferral(job, trigger, project);
 	}
 
 	let runId: string | undefined;
@@ -1690,7 +1793,16 @@ export async function processJob(
 		// a later legitimate dispatch for the same task — a genuine retry, or a
 		// re-run after this one finished — isn't blocked. A deferred job is
 		// re-enqueued and re-enters `processJob` fresh, past this release.
-		if (slot.tracked) await releaseProjectSlot(project.id);
+		if (slot.tracked) {
+			await releaseProjectSlot(project.id);
+			// A slot just freed — promote the oldest pending continuation for this
+			// project (issue #214) so a Review blocked only by concurrency runs ahead
+			// of new board work, instead of waiting out its fallback backoff. No-op
+			// when nothing is pending or the policy is off; never reserves a slot.
+			if (project.pipeline?.prioritizeContinuations !== false) {
+				await promoteNextPendingContinuation(project.id);
+			}
+		}
 		inFlightTaskIds.delete(trigger.taskId);
 	}
 }
