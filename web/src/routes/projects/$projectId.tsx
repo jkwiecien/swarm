@@ -550,7 +550,7 @@ interface PhaseConfigRowProps {
  * `enabled === undefined`). Split out of {@link PhaseConfigRow} so that row's
  * dependent-selector logic stays the dominant thing it reads as.
  */
-function PhaseEnabledCell({
+export function PhaseEnabledCell({
 	phase,
 	label,
 	enabled,
@@ -579,7 +579,7 @@ function PhaseEnabledCell({
 }
 
 /** A compact design-system switch shared by the phase controls. */
-function PhaseToggleSwitch({
+export function PhaseToggleSwitch({
 	checked,
 	label,
 	disabled,
@@ -620,7 +620,7 @@ function PhaseToggleSwitch({
  * (ai/DESIGN_SYSTEM.md blesses whole-row-click navigation as long as the trailing
  * per-row action — here the Enabled switch — stops propagation).
  */
-function PhaseConfigRow({
+export function PhaseConfigRow({
 	phase,
 	config,
 	isPending,
@@ -722,7 +722,7 @@ interface PhaseSettingsDetailProps {
  * #135). It shares the route's `agents` state and the single Save/Reset model
  * (rendered by {@link AgentConfigurationForm}) — nothing here saves on its own.
  */
-function PhaseSettingsDetail({
+export function PhaseSettingsDetail({
 	phase,
 	config,
 	projectDefaults,
