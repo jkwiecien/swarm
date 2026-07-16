@@ -60,7 +60,7 @@ function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
 					target="_blank"
 					rel="noopener noreferrer"
 					onClick={stopPropagation}
-					className="inline-flex items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline"
+					className="inline-flex self-start items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline"
 				>
 					PR #{run.prNumber}
 					<ExternalLink className="h-3 w-3" />
@@ -71,7 +71,7 @@ function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
 					target="_blank"
 					rel="noopener noreferrer"
 					onClick={stopPropagation}
-					className="inline-flex items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
+					className="inline-flex self-start items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
 				>
 					{workItemLabel(workItemRef)}
 					<ExternalLink className="h-3 w-3" />
