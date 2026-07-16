@@ -147,6 +147,16 @@ export function isAutoAdvancePhase(phase: string): phase is PipelineAutoAdvanceP
 	return (AUTO_ADVANCE_PHASES as readonly string[]).includes(phase);
 }
 
+/**
+ * Return the stored auto-advance setting that controls a displayed phase.
+ * Implementation (unplanned) is a dispatch-time variant of Implementation, so
+ * it intentionally shares Implementation's single persisted setting.
+ */
+export function autoAdvanceConfigPhase(phase: string): PipelineAutoAdvancePhase | undefined {
+	if (phase === 'implementationUnplanned') return 'implementation';
+	return isAutoAdvancePhase(phase) ? phase : undefined;
+}
+
 /** Summary string describing the auto-advance behavior for the phase and its setting. */
 export function autoAdvanceSummary(phase: string, enabled: boolean | undefined): string {
 	if (enabled === undefined) return 'N/A';

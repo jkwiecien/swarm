@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelineConfig } from '../../../src/config/schema.js';
 import {
+	autoAdvanceConfigPhase,
 	autoAdvanceSummary,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
@@ -238,6 +239,18 @@ describe('isAutoAdvancePhase', () => {
 		expect(isAutoAdvancePhase('respondToReview')).toBe(false);
 		expect(isAutoAdvancePhase('respondToCi')).toBe(false);
 		expect(isAutoAdvancePhase('resolveConflicts')).toBe(false);
+	});
+});
+
+describe('autoAdvanceConfigPhase', () => {
+	it('maps Implementation (unplanned) to Implementation’s shared setting', () => {
+		expect(autoAdvanceConfigPhase('implementationUnplanned')).toBe('implementation');
+	});
+
+	it('returns the stored phase for supported phases and nothing for others', () => {
+		expect(autoAdvanceConfigPhase('planning')).toBe('planning');
+		expect(autoAdvanceConfigPhase('implementation')).toBe('implementation');
+		expect(autoAdvanceConfigPhase('review')).toBeUndefined();
 	});
 });
 

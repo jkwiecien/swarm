@@ -29,9 +29,9 @@ import {
 	normalizeCustomPrompt,
 } from '@/lib/phase-prompt.js';
 import {
+	autoAdvanceConfigPhase,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
-	isAutoAdvancePhase,
 	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
@@ -647,6 +647,7 @@ export function PhaseConfigRow({
 	onSelect,
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
+	const autoAdvancePhase = autoAdvanceConfigPhase(phase);
 	const hasCustomPrompt = normalizeCustomPrompt(config.prompt) !== undefined;
 	return (
 		// Mouse users can click anywhere on the row; keyboard/AT users reach the
@@ -680,7 +681,7 @@ export function PhaseConfigRow({
 						label={`${phaseLabel.label} auto-advance`}
 						disabled={isPending}
 						onChange={() =>
-							handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
+							autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
 						}
 					/>
 				)}
@@ -766,6 +767,7 @@ export function PhaseSettingsDetail({
 	onBack,
 }: PhaseSettingsDetailProps) {
 	const phaseLabel = PHASE_LABELS[phase];
+	const autoAdvancePhase = autoAdvanceConfigPhase(phase);
 	const {
 		selectedCli,
 		selectedModel,
@@ -837,7 +839,7 @@ export function PhaseSettingsDetail({
 								label={`${phaseLabel.label} auto-advance`}
 								disabled={isPending}
 								onChange={() =>
-									handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
+									autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
 								}
 							/>
 							<span>
@@ -1019,6 +1021,10 @@ function AgentConfigurationForm({
 	isError,
 	errorMessage,
 }: AgentConfigurationFormProps) {
+	const selectedAutoAdvancePhase = selectedPhase
+		? autoAdvanceConfigPhase(selectedPhase)
+		: undefined;
+
 	return (
 		<form onSubmit={handleSubmit} className="space-y-6">
 			{selectedPhase ? (
@@ -1036,9 +1042,7 @@ function AgentConfigurationForm({
 						selectedPhase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 					}
 					autoAdvance={
-						selectedPhase && isAutoAdvancePhase(selectedPhase)
-							? pipelineAutoAdvance[selectedPhase]
-							: undefined
+						selectedAutoAdvancePhase ? pipelineAutoAdvance[selectedAutoAdvancePhase] : undefined
 					}
 					handleEnabledChange={handleEnabledChange}
 					handleAutoAdvanceChange={handleAutoAdvanceChange}
@@ -1075,28 +1079,31 @@ function AgentConfigurationForm({
 										</tr>
 									</thead>
 									<tbody className="divide-y divide-zinc-800/60">
-										{PHASES.map((phase) => (
-											<PhaseConfigRow
-												key={phase}
-												phase={phase}
-												config={agents[phase] ?? {}}
-												isPending={isPending}
-												enabled={
-													TOGGLEABLE_PHASES.has(phase)
-														? pipelineEnabled[phase as PipelineTogglePhase]
-														: undefined
-												}
-												enabledDisabled={
-													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
-												}
-												autoAdvance={
-													isAutoAdvancePhase(phase) ? pipelineAutoAdvance[phase] : undefined
-												}
-												handleEnabledChange={handleEnabledChange}
-												handleAutoAdvanceChange={handleAutoAdvanceChange}
-												onSelect={onSelectPhase}
-											/>
-										))}
+										{PHASES.map((phase) => {
+											const autoAdvancePhase = autoAdvanceConfigPhase(phase);
+											return (
+												<PhaseConfigRow
+													key={phase}
+													phase={phase}
+													config={agents[phase] ?? {}}
+													isPending={isPending}
+													enabled={
+														TOGGLEABLE_PHASES.has(phase)
+															? pipelineEnabled[phase as PipelineTogglePhase]
+															: undefined
+													}
+													enabledDisabled={
+														phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+													}
+													autoAdvance={
+														autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
+													}
+													handleEnabledChange={handleEnabledChange}
+													handleAutoAdvanceChange={handleAutoAdvanceChange}
+													onSelect={onSelectPhase}
+												/>
+											);
+										})}
 									</tbody>
 								</table>
 							</div>
