@@ -252,7 +252,7 @@ export const runsRouter = router({
 					reasoningForRow,
 					engineForRow,
 				);
-				await enqueueDelayedRetry(job, 0);
+				await enqueueDelayedRetry(job, 0, { unique: true });
 				return { runId: input.runId, status: 'retrying' as const };
 			}
 
@@ -273,7 +273,7 @@ export const runsRouter = router({
 				input.reasoning,
 			);
 			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow, engineForRow);
-			await enqueueDelayedRetry(job, 0);
+			await enqueueDelayedRetry(job, 0, { unique: true });
 
 			return { runId: input.runId, status: 'retrying' as const };
 		}),

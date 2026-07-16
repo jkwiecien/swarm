@@ -148,19 +148,27 @@ export async function scheduleCoalescedJob(
  * That restores per-attempt idempotency: should BullMQ's `completed` event ever
  * fire twice for one job, the second re-enqueue reuses the id and BullMQ drops it
  * (rather than stacking a duplicate retry) — the drop we normally avoid becomes
- * the dedup we want. With no delivery id there's nothing stable to key on, so we
- * fall back to a time+random unique id. Either way the id is colon-free (BullMQ
- * reserves `:` for its own namespacing), same constraint as
+ * the dedup we want. A manually reconstructed retry instead requests a unique
+ * id: the retained completed job for its old attempt must not suppress the new
+ * operator-requested run. With no delivery id there's nothing stable to key on,
+ * so we also fall back to a time+random unique id. Either way the id is colon-free
+ * (BullMQ reserves `:` for its own namespacing), same constraint as
  * {@link scheduleCoalescedJob}.
  */
 export async function enqueueDelayedRetry(
 	job: SwarmJob,
 	delayMs: number,
+	options?: { unique?: boolean },
 ): Promise<string | undefined> {
 	const attempt = job.rateLimitRetryAttempt ?? 0;
-	const jobId = job.deliveryId
+	const retryBaseId = job.deliveryId
 		? `retry_${job.type}_${job.deliveryId.replace(/:/g, '_')}_attempt${attempt}`
-		: `retry_${job.type}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+		: `retry_${job.type}`;
+	const jobId = options?.unique
+		? `${retryBaseId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+		: job.deliveryId
+			? retryBaseId
+			: `${retryBaseId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 	const priority = priorityFor(job);
 	const added = await getQueue().add(job.type, job, {
 		jobId,

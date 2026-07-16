@@ -312,6 +312,7 @@ describe('runsRouter', () => {
 					runId: 'run-1',
 				}),
 				0,
+				{ unique: true },
 			);
 		});
 
@@ -331,10 +332,12 @@ describe('runsRouter', () => {
 					resumePmPhase: 'implementation',
 				}),
 				0,
+				{ unique: true },
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.not.objectContaining({ implementationBranchProvisioned: true }),
 				0,
+				{ unique: true },
 			);
 		});
 
@@ -481,6 +484,7 @@ describe('runsRouter', () => {
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({ runId: 'run-1' }),
 				0,
+				{ unique: true },
 			);
 		});
 

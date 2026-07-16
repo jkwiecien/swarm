@@ -305,6 +305,16 @@ describe('enqueueDelayedRetry', () => {
 		expect(opts?.jobId).not.toContain(':');
 	});
 
+	it('uses a fresh id for a manually reconstructed retry', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({ deliveryId: 'delivery-1' });
+
+		await enqueueDelayedRetry(job, 0, { unique: true });
+
+		const [, , opts] = add.mock.calls[0];
+		expect(opts?.jobId).toMatch(/^retry_github_delivery-1_attempt0_\d+_/);
+	});
+
 	it('demotes a retried github-projects job below the default priority', async () => {
 		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
 		const job = createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 1 });
