@@ -46,9 +46,11 @@ describe('LiveOutputViewer', () => {
 		const { rerender } = render(<LiveOutputViewer events={[event]} {...viewerProps} />);
 		const output = screen.getByTestId('live-output-scrollbox');
 
-		expect(screen.getByLabelText('Disable auto-scroll')).toBeDefined();
-		fireEvent.click(screen.getByLabelText('Disable auto-scroll'));
-		expect(screen.getByLabelText('Enable auto-scroll')).toBeDefined();
+		const toggle = screen.getByLabelText('Disable auto-scroll');
+		expect(toggle.querySelector('.lucide-play')).not.toBeNull();
+		fireEvent.click(toggle);
+		const disabledToggle = screen.getByLabelText('Enable auto-scroll');
+		expect(disabledToggle.querySelector('.lucide-pause')).not.toBeNull();
 
 		output.scrollTop = 123;
 		rerender(<LiveOutputViewer events={[event, { ...event, id: 2 }]} {...viewerProps} />);

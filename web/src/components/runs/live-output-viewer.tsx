@@ -94,9 +94,9 @@ export function LiveOutputViewer({
 					}`}
 				>
 					{autoScroll ? (
-						<Pause className="h-4 w-4" aria-hidden="true" />
-					) : (
 						<Play className="h-4 w-4" aria-hidden="true" />
+					) : (
+						<Pause className="h-4 w-4" aria-hidden="true" />
 					)}
 				</button>
 			</div>
