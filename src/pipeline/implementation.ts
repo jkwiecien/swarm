@@ -375,6 +375,11 @@ export async function runImplementationPhase(
 								taskId,
 								branch: handle.branch,
 								baseBranch: project.baseBranch,
+								// Antigravity's `agy --print` runs from its own scratch dir, not this
+								// worktree (issue #226), so name the absolute path in the prompt and
+								// require edits/hand-off be written there. Claude/Codex run from `cwd`,
+								// so it stays unset and their prompt is unchanged.
+								worktreePath: cli === 'antigravity' ? handle.path : undefined,
 							},
 							delegationEnabled(project, 'implementation', cli),
 							customPrompt,

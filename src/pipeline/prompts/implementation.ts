@@ -33,20 +33,49 @@ export const BLOCKED_REASON_FILENAME = 'blocked_reason.md';
  */
 export function buildImplementationPrompt(
 	workItem: WorkItem,
-	context: { repo: string; taskId: string; branch: string; baseBranch: string },
+	context: {
+		repo: string;
+		taskId: string;
+		branch: string;
+		baseBranch: string;
+		/**
+		 * Absolute path of the provisioned worktree, named explicitly in the prompt
+		 * when the agent's process does not run *from* it. Set only for Antigravity
+		 * (issue #226): `agy --print` runs from its own scratch dir rather than the
+		 * `cwd` SWARM spawns it with, so "your current working directory" would be a
+		 * lie there. Claude/Codex do inherit `cwd`, so it stays unset for them and
+		 * their prompt is unchanged.
+		 */
+		worktreePath?: string;
+	},
 	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
-	const { repo, branch, baseBranch } = context;
+	const { repo, branch, baseBranch, worktreePath } = context;
+	// When the worktree path is named, the agent must not trust its own working
+	// directory: point every edit, command, and hand-off file at that absolute
+	// path, so SWARM's delivery validation finds the hand-off where it looks.
+	const worktreeLocation = worktreePath
+		? [
+				`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
+				`worktree at the absolute path ${worktreePath}. The repository is ${repo} on GitHub.`,
+				`Your process's working directory may be a different, unrelated directory — do not`,
+				`rely on it. Make every repository edit, run every command, and write every hand-off`,
+				`file (including "${OPENED_PR_FILENAME}" and "${BLOCKED_REASON_FILENAME}") inside`,
+				`${worktreePath}. SWARM only reads files from there.`,
+			]
+		: [
+				`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
+				'worktree whose root is your current working directory. The repository is',
+				`${repo} on GitHub.`,
+			];
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
 		...pipelinePhaseGuard(delegationAllowed),
 		...GH_IDENTITY_GUARD,
 		'',
-		`You are on branch "${branch}", a fresh branch cut from "${baseBranch}" in a git`,
-		'worktree whose root is your current working directory. The repository is',
-		`${repo} on GitHub.`,
+		...worktreeLocation,
 		'',
 		'Do all of the following, in order:',
 		`1. Read the linked issue and plan with \`gh issue view ${context.taskId} --repo ${repo} --comments\`, then explore the repository and implement it.`,
