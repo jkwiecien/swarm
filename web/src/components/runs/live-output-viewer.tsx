@@ -26,7 +26,11 @@ export function LiveOutputViewer({
 	uiTruncated,
 }: LiveOutputViewerProps) {
 	const endRef = useRef<HTMLDivElement>(null);
-	useEffect(() => endRef.current?.scrollIntoView({ block: 'nearest' }));
+	useEffect(() => {
+		// Effects may only return a cleanup function. Some browser implementations
+		// return a value from scrollIntoView(), so do not return that expression.
+		endRef.current?.scrollIntoView({ block: 'nearest' });
+	});
 
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-zinc-950 overflow-hidden shadow-sm">

@@ -34,6 +34,7 @@ import {
 	resolveAgentTimeoutMs,
 } from './consumer.js';
 import { reenqueueDeferred } from './deferred-retry.js';
+import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 
@@ -91,6 +92,11 @@ if (!Number.isInteger(sweepIntervalMs) || sweepIntervalMs < 1) {
 // value) alongside the other worker knobs, rather than only when the first job
 // runs.
 const agentTimeoutMs = resolveAgentTimeoutMs();
+
+// A worker can be deliberately offline while Redis keeps accepting webhooks.
+// Those old board states are no longer actionable when it comes back, so do
+// not let a restart replay work the operator already completed manually.
+const maxJobAgeMs = resolveMaxJobAgeMs();
 
 // How often the worker sweeps for stale `running` rows (a phase whose process
 // died while the worker kept serving jobs — its finalize never landed). Cheap
@@ -188,7 +194,18 @@ const worker = new Worker(
 	QUEUE_NAME,
 	// Job data is untrusted at this boundary (anything could have been pushed to
 	// Redis) — validate before acting on it.
-	async (job) => processJob(SwarmJobSchema.parse(job.data), registry, shutdown.signal),
+	async (job) => {
+		if (isJobStale(job.timestamp, maxJobAgeMs)) {
+			logger.warn('Discarded stale queued job', {
+				jobId: job.id,
+				name: job.name,
+				ageMs: Date.now() - job.timestamp,
+				maxJobAgeMs,
+			});
+			return { status: 'no-trigger' } as const;
+		}
+		return await processJob(SwarmJobSchema.parse(job.data), registry, shutdown.signal);
+	},
 	{
 		connection: parseRedisUrl(requireEnv('REDIS_URL')),
 		concurrency,
