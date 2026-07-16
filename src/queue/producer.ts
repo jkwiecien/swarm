@@ -9,7 +9,7 @@
  * enqueue seams share one connection, plus a single `add()` helper they call.
  */
 
-import { type Job, Queue } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import type { AgentCli } from '../harness/agent-cli.js';
 import type { ReasoningLevel } from '../harness/models.js';
 import { requireEnv } from '../lib/env.js';
@@ -242,6 +242,32 @@ export async function promoteRetryForRun(
 		return true;
 	}
 	return false;
+}
+
+/**
+ * Promote a delayed BullMQ job to `waiting` by its id — the pending-continuation
+ * promotion primitive (issue #214), alongside {@link promoteRetryForRun}. When a
+ * project slot frees, `processJob` takes the oldest pending continuation
+ * (`src/worker/pending-continuations.ts`) and promotes its delayed fallback retry
+ * so the worker's next free thread picks it up immediately (github priority beats
+ * board priority) instead of after the 6-minute backoff.
+ *
+ * Returns `true` when the job was promoted (`delayed` → `waiting`) or is already
+ * runnable (`waiting` — its delay elapsed, so it will run imminently on its own);
+ * `false` when no such job exists (reaped, or already active/completed) — nothing
+ * to promote, and the freed slot simply goes to whatever the queue serves next.
+ * No slot is ever reserved: we only promote an already-enqueued retry of a real,
+ * already-dispatched event.
+ */
+export async function promoteJobById(jobId: string): Promise<boolean> {
+	const job = await Job.fromId(getQueue(), jobId);
+	if (!job) return false;
+	const state = await job.getState();
+	if (state === 'delayed') {
+		await job.promote();
+		return true;
+	}
+	return state === 'waiting';
 }
 
 /**

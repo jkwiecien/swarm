@@ -408,6 +408,24 @@ describe('PipelineConfigSchema', () => {
 		).toBe(false);
 		expect(PipelineConfigSchema.safeParse({ review: { enabled: false } }).success).toBe(false);
 	});
+
+	it('leaves prioritizeContinuations unset by default (read as on)', () => {
+		// Absent → undefined; read sites treat `!== false` as the default-on switch.
+		expect(PipelineConfigSchema.parse({}).prioritizeContinuations).toBeUndefined();
+	});
+
+	it('accepts an explicit prioritizeContinuations boolean', () => {
+		expect(PipelineConfigSchema.parse({ prioritizeContinuations: false })).toMatchObject({
+			prioritizeContinuations: false,
+		});
+		expect(PipelineConfigSchema.parse({ prioritizeContinuations: true })).toMatchObject({
+			prioritizeContinuations: true,
+		});
+	});
+
+	it('rejects a non-boolean prioritizeContinuations', () => {
+		expect(PipelineConfigSchema.safeParse({ prioritizeContinuations: 'yes' }).success).toBe(false);
+	});
 });
 
 describe('validateConfig', () => {

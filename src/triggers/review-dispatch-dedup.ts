@@ -124,6 +124,33 @@ export async function claimReviewDispatch(
 }
 
 /**
+ * Refresh (extend) a live claim's TTL without re-claiming — the counterpart used
+ * to hold a claim open while its dispatch is deferred as a *pending continuation*
+ * (issue #214). A Review blocked solely by project concurrency keeps its PR+SHA
+ * claim so no sibling `opened`/`check_suite` event can steal it while it waits,
+ * and its prioritized retry (fired well within this refreshed TTL) reuses the
+ * held claim rather than re-claiming — so exactly one Review still runs per
+ * PR/head SHA across the initial webhook and its retry.
+ *
+ * `SET key value EX ttl` (no `NX`): extends the existing claim, or re-establishes
+ * it if it lapsed a moment ago, so the pending continuation is never dropped as a
+ * duplicate. Best-effort — errors are logged, never thrown (same posture as
+ * {@link releaseReviewDispatch}); the claim's own TTL and the fallback delayed
+ * retry are the safety nets.
+ */
+export async function refreshReviewDispatchClaim(key: string, ttlSec: number): Promise<void> {
+	const namespacedKey = `${KEY_NS}${key}`;
+	try {
+		await getRedis().set(namespacedKey, 'pr-review-pending', 'EX', ttlSec);
+	} catch (err) {
+		logger.warn('review-dispatch dedup: claim refresh failed (TTL will reap)', {
+			reviewDispatchKey: key,
+			error: String(err),
+		});
+	}
+}
+
+/**
  * Release a claim taken by {@link claimReviewDispatch} — the claim's counterpart,
  * for the case where a dispatch is abandoned *before the review is submitted* so
  * the next legitimate trigger for the same PR+SHA needn't wait out the TTL. That

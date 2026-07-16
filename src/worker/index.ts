@@ -35,6 +35,7 @@ import {
 } from './consumer.js';
 import { reenqueueDeferred } from './deferred-retry.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
+import { clearPendingContinuations } from './pending-continuations.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 import { resolveWorkerLockOptions } from './runtime-options.js';
@@ -143,7 +144,16 @@ const shutdown = new AbortController();
 async function resetProjectSlots(): Promise<void> {
 	try {
 		const projects = await listAllProjectsFromDb();
-		await Promise.all(projects.map((project) => resetProjectSlot(project.id)));
+		// Clear the slot counters *and* the pending-continuation registry (issue
+		// #214) leaked by a crashed single-worker process. A previously pending
+		// continuation still has its fallback delayed BullMQ retry in Redis, so this
+		// loses only the prompt-promote wake-up, never the retry itself.
+		await Promise.all(
+			projects.flatMap((project) => [
+				resetProjectSlot(project.id),
+				clearPendingContinuations(project.id),
+			]),
+		);
 	} catch (err) {
 		logger.error('Failed to reset project concurrency counters at startup', {
 			error: err instanceof Error ? err.message : String(err),

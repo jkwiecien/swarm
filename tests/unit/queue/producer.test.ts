@@ -8,7 +8,7 @@ import {
 // Mock BullMQ's Queue so nothing touches Redis — capture constructor args and
 // the add()/close() calls the producer makes. Hoisted so the vi.mock factory
 // (itself hoisted above imports) can reference them.
-const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
+const { QueueMock, add, close, getDelayed, getWaiting, fromId } = vi.hoisted(() => {
 	// Typed with add()'s (name, data, opts) signature so `mock.calls[0]` is a
 	// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
 	const add =
@@ -32,6 +32,15 @@ const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
 	};
 	const getDelayed = vi.fn<() => Promise<MockJob[]>>();
 	const getWaiting = vi.fn<() => Promise<MockJob[]>>();
+	// `Job.fromId(queue, id)` — the lookup `promoteJobById` uses. Resolves a job
+	// exposing `getState`/`promote`, or `undefined` for a reaped/absent id.
+	const fromId =
+		vi.fn<
+			(
+				queue: unknown,
+				jobId: string,
+			) => Promise<{ getState: () => Promise<string>; promote: () => Promise<void> } | undefined>
+		>();
 	// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
 	// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
 	// `calls[0]` fails to typecheck.
@@ -46,10 +55,10 @@ const { QueueMock, add, close, getDelayed, getWaiting } = vi.hoisted(() => {
 			getWaiting: typeof getWaiting;
 		}
 	>(() => ({ add, close, getDelayed, getWaiting }));
-	return { QueueMock, add, close, getDelayed, getWaiting };
+	return { QueueMock, add, close, getDelayed, getWaiting, fromId };
 });
 
-vi.mock('bullmq', () => ({ Queue: QueueMock }));
+vi.mock('bullmq', () => ({ Queue: QueueMock, Job: { fromId } }));
 
 // The producer holds a lazy Queue singleton at module scope; resetModules gives
 // each test a fresh one so "constructed once" assertions aren't cross-polluted.
@@ -64,6 +73,8 @@ beforeEach(() => {
 	getDelayed.mockResolvedValue([]);
 	getWaiting.mockReset();
 	getWaiting.mockResolvedValue([]);
+	fromId.mockReset();
+	fromId.mockResolvedValue(undefined);
 	process.env.REDIS_URL = 'redis://localhost:6379';
 });
 
@@ -364,6 +375,43 @@ describe('promoteRetryForRun', () => {
 		const { promoteRetryForRun } = await import('@/queue/producer.js');
 
 		expect(await promoteRetryForRun('run-42')).toBe(false);
+	});
+});
+
+describe('promoteJobById', () => {
+	it('promotes a delayed job by id and returns true', async () => {
+		const promote = vi.fn().mockResolvedValue(undefined);
+		fromId.mockResolvedValue({ getState: async () => 'delayed', promote });
+		const { promoteJobById } = await import('@/queue/producer.js');
+
+		expect(await promoteJobById('retry-1')).toBe(true);
+		expect(fromId).toHaveBeenCalledWith(expect.anything(), 'retry-1');
+		expect(promote).toHaveBeenCalledOnce();
+	});
+
+	it('returns false when no job matches the id (reaped or never existed)', async () => {
+		fromId.mockResolvedValue(undefined);
+		const { promoteJobById } = await import('@/queue/producer.js');
+
+		expect(await promoteJobById('gone')).toBe(false);
+	});
+
+	it('returns true without promoting a job already waiting (its delay elapsed)', async () => {
+		const promote = vi.fn().mockResolvedValue(undefined);
+		fromId.mockResolvedValue({ getState: async () => 'waiting', promote });
+		const { promoteJobById } = await import('@/queue/producer.js');
+
+		expect(await promoteJobById('retry-2')).toBe(true);
+		expect(promote).not.toHaveBeenCalled();
+	});
+
+	it('returns false for a job no longer runnable (already active/completed)', async () => {
+		const promote = vi.fn().mockResolvedValue(undefined);
+		fromId.mockResolvedValue({ getState: async () => 'active', promote });
+		const { promoteJobById } = await import('@/queue/producer.js');
+
+		expect(await promoteJobById('retry-3')).toBe(false);
+		expect(promote).not.toHaveBeenCalled();
 	});
 });
 

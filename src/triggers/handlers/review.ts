@@ -517,11 +517,23 @@ export function createReviewTrigger(): TriggerHandler {
 			// so there is never a legitimate second dispatch for the same PR+SHA to
 			// contend for it.
 			const dispatchKey = buildReviewDispatchKey(ctx.project.repo, prNumber, headSha);
-			const claimed = await claimReviewDispatch(dispatchKey, 'pr-review', {
-				prNumber,
-				headSha,
-			});
-			if (!claimed) return null;
+			// A prioritized continuation retry (issue #214) already holds this PR+SHA
+			// claim from its original dispatch attempt — the concurrency deferral
+			// refreshed the claim's TTL and is holding it open. Re-claiming now (well
+			// within that TTL) would see the still-live claim and drop this Review as a
+			// duplicate, so reuse the held claim instead of re-claiming.
+			if (ctx.continuationDispatchClaimed) {
+				logger.debug('review: reusing held dispatch claim for a prioritized continuation retry', {
+					prNumber,
+					headSha,
+				});
+			} else {
+				const claimed = await claimReviewDispatch(dispatchKey, 'pr-review', {
+					prNumber,
+					headSha,
+				});
+				if (!claimed) return null;
+			}
 
 			if (disposition.kind === 'respond-to-ci') {
 				return dispatchRespondToCi(ctx.project, event, prNumber, headSha, disposition.failedChecks);
