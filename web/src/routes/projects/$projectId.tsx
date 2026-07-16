@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createRoute, Link } from '@tanstack/react-router';
+import { createRoute, Link, useNavigate } from '@tanstack/react-router';
 import {
 	ChevronLeft,
 	ChevronRight,
@@ -45,6 +45,15 @@ import {
 	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
 } from '@/lib/pipeline-enabled.js';
+import {
+	agentConfigSearch,
+	PROJECT_PHASES as PHASES,
+	type ProjectTab,
+	phaseDetailSearch,
+	projectDetailSearchSchema,
+	resolveActiveTab,
+	tabSearch,
+} from '@/lib/project-nav.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
@@ -59,16 +68,6 @@ import {
 import type { GitHubProjectsIntegrationConfig } from '../../../../src/integrations/pm/github-projects/config-schema.js';
 import type { PmStatusKey } from '../../../../src/pm/pipeline.js';
 import { rootRoute } from '../__root.js';
-
-const PHASES = [
-	'planning',
-	'implementationUnplanned',
-	'implementation',
-	'review',
-	'respondToReview',
-	'respondToCi',
-	'resolveConflicts',
-] as const;
 
 const DEFAULT_TIMEOUT_MINUTES = 30;
 
@@ -967,8 +966,8 @@ interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
 	pipelineEnabled: PipelineEnabledForm;
 	pipelineAutoAdvance: PipelineAutoAdvanceForm;
-	/** The phase whose detail screen is open, or `null` for the summary table. */
-	selectedPhase: (typeof PHASES)[number] | null;
+	/** The phase whose detail screen is open, or `undefined` for the summary table. */
+	selectedPhase: (typeof PHASES)[number] | undefined;
 	onSelectPhase: (phase: (typeof PHASES)[number]) => void;
 	onBack: () => void;
 	handleEnabledChange: (phase: PipelineTogglePhase, enabled: boolean) => void;
@@ -1304,7 +1303,34 @@ function PipelineSettingsForm({
 
 function ProjectDetailRouteComponent() {
 	const { projectId } = projectDetailRoute.useParams();
+	// The active tab and the open Agent Configuration phase live in the URL so each
+	// transition is a real browser-history entry: opening a phase detail nests it
+	// under the Agent Configuration summary, and browser Back returns there rather
+	// than escaping to the previous page (issue #210).
+	const search = projectDetailRoute.useSearch();
+	const navigate = useNavigate();
 	const queryClient = useQueryClient();
+
+	const activeTab = resolveActiveTab(search);
+	const selectedPhase = search.phase;
+
+	// Switching tabs clears any success/error banner and drops the open phase
+	// detail (its search is replaced). Opening/closing a phase preserves the banner
+	// — it's a move within the Agent Configuration tab, not a context switch.
+	const goToTab = (tab: ProjectTab) => {
+		updateMutation.reset();
+		navigate({ to: '/projects/$projectId', params: { projectId }, search: tabSearch(tab) });
+	};
+	const openPhase = (phase: (typeof PHASES)[number]) => {
+		navigate({
+			to: '/projects/$projectId',
+			params: { projectId },
+			search: phaseDetailSearch(phase),
+		});
+	};
+	const backToAgentConfig = () => {
+		navigate({ to: '/projects/$projectId', params: { projectId }, search: agentConfigSearch() });
+	};
 
 	const projectQuery = useQuery({
 		...trpc.projects.getById.queryOptions({ id: projectId }),
@@ -1319,14 +1345,7 @@ function ProjectDetailRouteComponent() {
 	const [maxConcurrentJobs, setMaxConcurrentJobs] = useState('');
 	const [maxConcurrentJobsError, setMaxConcurrentJobsError] = useState<string>();
 
-	const [activeTab, setActiveTab] = useState<
-		'general' | 'agents' | 'pipeline' | 'runs' | 'boardMapping' | 'credentials'
-	>('runs');
 	const [agents, setAgents] = useState<AgentsConfig>({});
-	// Which phase's detail screen is open in the Agent Configuration tab, or null
-	// for the summary table (issue #135). Purely view state — the edits themselves
-	// live in `agents` and save through the one shared mutation.
-	const [selectedPhase, setSelectedPhase] = useState<(typeof PHASES)[number] | null>(null);
 	const [pipelineEnabled, setPipelineEnabled] = useState<PipelineEnabledForm>(() =>
 		toPipelineEnabledForm(undefined),
 	);
@@ -1711,10 +1730,7 @@ function ProjectDetailRouteComponent() {
 			<div className="flex border-b border-zinc-800">
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('runs');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('runs')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'runs'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1726,10 +1742,7 @@ function ProjectDetailRouteComponent() {
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('general');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('general')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'general'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1741,10 +1754,7 @@ function ProjectDetailRouteComponent() {
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('agents');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('agents')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'agents'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1756,10 +1766,7 @@ function ProjectDetailRouteComponent() {
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('pipeline');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('pipeline')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'pipeline'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1771,10 +1778,7 @@ function ProjectDetailRouteComponent() {
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('boardMapping');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('boardMapping')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'boardMapping'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1786,10 +1790,7 @@ function ProjectDetailRouteComponent() {
 				</button>
 				<button
 					type="button"
-					onClick={() => {
-						setActiveTab('credentials');
-						updateMutation.reset();
-					}}
+					onClick={() => goToTab('credentials')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'credentials'
 							? 'border-violet-500 text-white bg-zinc-800/20'
@@ -1839,8 +1840,8 @@ function ProjectDetailRouteComponent() {
 					pipelineEnabled={pipelineEnabled}
 					pipelineAutoAdvance={pipelineAutoAdvance}
 					selectedPhase={selectedPhase}
-					onSelectPhase={setSelectedPhase}
-					onBack={() => setSelectedPhase(null)}
+					onSelectPhase={openPhase}
+					onBack={backToAgentConfig}
 					handleEnabledChange={handleEnabledChange}
 					handleAutoAdvanceChange={handleAutoAdvanceChange}
 					handleCliChange={handleCliChange}
@@ -1906,5 +1907,6 @@ function ProjectDetailRouteComponent() {
 export const projectDetailRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/projects/$projectId',
+	validateSearch: (search) => projectDetailSearchSchema.parse(search),
 	component: ProjectDetailRouteComponent,
 });
