@@ -51,6 +51,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 			setRepoRoot('');
 			setRepoUrl('');
 			setUrlError('');
+			setShowPathHelp(false);
 			onOpenChange(false);
 		},
 	});
@@ -64,6 +65,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 		mutation.reset();
 		setRepoUrl('');
 		setUrlError('');
+		setShowPathHelp(false);
 		onOpenChange(false);
 	};
 
@@ -184,7 +186,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 									/>
 
 									{/* The actual popover */}
-									<div className="absolute left-0 top-full mt-2 z-50 w-72 bg-zinc-900 border border-zinc-850 rounded-lg shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-150">
+									<div className="absolute left-0 md:left-auto md:right-0 top-full mt-2 z-50 w-72 bg-zinc-900 border border-zinc-850 rounded-lg shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-150">
 										<h4 className="text-xs font-semibold text-zinc-300 mb-3 tracking-wide uppercase">
 											Find your repo's local path
 										</h4>
