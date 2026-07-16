@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { RefreshCw } from 'lucide-react';
+import { Info, RefreshCw } from 'lucide-react';
 import type React from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { parseRepoUrl } from '@/lib/parse-repo-url.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { Modal, ModalFooter } from '../ui/modal.js';
@@ -19,6 +19,24 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 	const [repoRoot, setRepoRoot] = useState('');
 	const [repoUrl, setRepoUrl] = useState('');
 	const [urlError, setUrlError] = useState('');
+	const [showPathHelp, setShowPathHelp] = useState(false);
+
+	// Close the path-help popover on Escape without also dismissing the whole
+	// Modal. The Modal registers a bubble-phase window keydown listener that
+	// closes it on Escape (ui/modal.tsx); registering here in the capture phase
+	// runs first, and stopImmediatePropagation() prevents the Modal's listener
+	// from firing so only the popover closes.
+	useEffect(() => {
+		if (!showPathHelp) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') {
+				e.stopImmediatePropagation();
+				setShowPathHelp(false);
+			}
+		};
+		window.addEventListener('keydown', onKey, { capture: true });
+		return () => window.removeEventListener('keydown', onKey, { capture: true });
+	}, [showPathHelp]);
 
 	const mutation = useMutation({
 		mutationFn: (newProject: { id: string; name: string; repo: string; repoRoot: string }) =>
@@ -33,6 +51,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 			setRepoRoot('');
 			setRepoUrl('');
 			setUrlError('');
+			setShowPathHelp(false);
 			onOpenChange(false);
 		},
 	});
@@ -46,6 +65,7 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 		mutation.reset();
 		setRepoUrl('');
 		setUrlError('');
+		setShowPathHelp(false);
 		onOpenChange(false);
 	};
 
@@ -141,12 +161,84 @@ export function ProjectCreateDialog({ open, onOpenChange }: ProjectCreateDialogP
 						/>
 					</div>
 					<div>
-						<label
-							htmlFor="project-reporoot"
-							className="block text-xs font-medium text-zinc-400 mb-1"
-						>
-							Repo Root <span className="text-red-500">*</span>
-						</label>
+						<div className="relative flex items-center gap-1.5 mb-1">
+							<label htmlFor="project-reporoot" className="block text-xs font-medium text-zinc-400">
+								Repo Local Path <span className="text-red-500">*</span>
+							</label>
+							<button
+								type="button"
+								onClick={() => setShowPathHelp((v) => !v)}
+								className="text-zinc-500 hover:text-violet-400 p-0.5 rounded hover:bg-zinc-800/60 transition-colors"
+								aria-label="How to find the repo's local path"
+								aria-expanded={showPathHelp}
+							>
+								<Info className="w-3.5 h-3.5" />
+							</button>
+
+							{showPathHelp && (
+								<>
+									{/* Click-outside backdrop */}
+									<button
+										type="button"
+										className="fixed inset-0 z-40 cursor-default focus:outline-none"
+										onClick={() => setShowPathHelp(false)}
+										aria-label="Close help"
+									/>
+
+									{/* The actual popover */}
+									<div className="absolute left-0 md:left-auto md:right-0 top-full mt-2 z-50 w-72 bg-zinc-900 border border-zinc-850 rounded-lg shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-150">
+										<h4 className="text-xs font-semibold text-zinc-300 mb-3 tracking-wide uppercase">
+											Find your repo's local path
+										</h4>
+										<div className="space-y-3 text-left text-xs text-zinc-400">
+											<div>
+												<p className="text-zinc-300 mb-1">macOS / Linux</p>
+												<p>
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														cd
+													</code>{' '}
+													into the repo, then run{' '}
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														pwd
+													</code>{' '}
+													and copy the output.
+												</p>
+											</div>
+											<div>
+												<p className="text-zinc-300 mb-1">Windows (PowerShell)</p>
+												<p>
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														cd
+													</code>{' '}
+													into the repo, then run{' '}
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														pwd
+													</code>{' '}
+													and copy the output.
+												</p>
+											</div>
+											<div>
+												<p className="text-zinc-300 mb-1">Windows (Command Prompt)</p>
+												<p>
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														cd
+													</code>{' '}
+													into the repo, then run{' '}
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														cd
+													</code>{' '}
+													with no arguments or{' '}
+													<code className="font-mono text-zinc-200 bg-zinc-950 px-1 py-0.5 rounded">
+														echo %cd%
+													</code>
+													.
+												</p>
+											</div>
+										</div>
+									</div>
+								</>
+							)}
+						</div>
 						<input
 							type="text"
 							id="project-reporoot"
