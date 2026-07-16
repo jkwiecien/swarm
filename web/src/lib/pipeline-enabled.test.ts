@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelineConfig } from '../../../src/config/schema.js';
 import {
+	autoAdvanceSummary,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	isAutoAdvancePhase,
 	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
+	setAutoAdvanceEnabled,
 	setPhaseEnabled,
 	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
@@ -188,5 +191,47 @@ describe('isPipelineEnabledDirty', () => {
 				undefined,
 			),
 		).toBe(true);
+	});
+});
+
+describe('setAutoAdvanceEnabled', () => {
+	it('sets the auto-advance value for a phase without mutating the input', () => {
+		const form = { planning: false, implementation: true };
+		const result = setAutoAdvanceEnabled(form, 'planning', true);
+		expect(result).toEqual({ planning: true, implementation: true });
+		expect(form).toEqual({ planning: false, implementation: true });
+	});
+});
+
+describe('isAutoAdvancePhase', () => {
+	it('correctly identifies planning and implementation as auto-advance phases', () => {
+		expect(isAutoAdvancePhase('planning')).toBe(true);
+		expect(isAutoAdvancePhase('implementation')).toBe(true);
+	});
+
+	it('rejects other phases', () => {
+		expect(isAutoAdvancePhase('review')).toBe(false);
+		expect(isAutoAdvancePhase('respondToReview')).toBe(false);
+		expect(isAutoAdvancePhase('respondToCi')).toBe(false);
+		expect(isAutoAdvancePhase('resolveConflicts')).toBe(false);
+	});
+});
+
+describe('autoAdvanceSummary', () => {
+	it('returns N/A when enabled is undefined', () => {
+		expect(autoAdvanceSummary('planning', undefined)).toBe('N/A');
+		expect(autoAdvanceSummary('implementation', undefined)).toBe('N/A');
+	});
+
+	it('returns planning summary for true/false', () => {
+		expect(autoAdvanceSummary('planning', true)).toBe('On — moves to ToDo after posting the plan');
+		expect(autoAdvanceSummary('planning', false)).toBe('Off — stays in Planning');
+	});
+
+	it('returns implementation summary for true/false', () => {
+		expect(autoAdvanceSummary('implementation', true)).toBe(
+			'On — moves to In review after opening the PR',
+		);
+		expect(autoAdvanceSummary('implementation', false)).toBe('Off — stays in progress');
 	});
 });

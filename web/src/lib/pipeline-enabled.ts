@@ -132,3 +132,26 @@ export function isPipelineAutoAdvanceDirty(
 	const stored = toPipelineAutoAdvanceForm(pipeline);
 	return AUTO_ADVANCE_PHASES.some((phase) => form[phase] !== stored[phase]);
 }
+
+/** Toggle one phase's auto-advance flag. */
+export function setAutoAdvanceEnabled(
+	form: PipelineAutoAdvanceForm,
+	phase: PipelineAutoAdvancePhase,
+	enabled: boolean,
+): PipelineAutoAdvanceForm {
+	return { ...form, [phase]: enabled };
+}
+
+/** Whether the given phase supports auto-advance. */
+export function isAutoAdvancePhase(phase: string): phase is PipelineAutoAdvancePhase {
+	return (AUTO_ADVANCE_PHASES as readonly string[]).includes(phase);
+}
+
+/** Summary string describing the auto-advance behavior for the phase and its setting. */
+export function autoAdvanceSummary(phase: string, enabled: boolean | undefined): string {
+	if (enabled === undefined) return 'N/A';
+	if (phase === 'planning') {
+		return enabled ? 'On — moves to ToDo after posting the plan' : 'Off — stays in Planning';
+	}
+	return enabled ? 'On — moves to In review after opening the PR' : 'Off — stays in progress';
+}

@@ -29,8 +29,10 @@ import {
 	normalizeCustomPrompt,
 } from '@/lib/phase-prompt.js';
 import {
+	autoAdvanceSummary,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	isAutoAdvancePhase,
 	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
@@ -39,6 +41,7 @@ import {
 	type PipelineAutoAdvancePhase,
 	type PipelineEnabledForm,
 	type PipelineTogglePhase,
+	setAutoAdvanceEnabled,
 	setPhaseEnabled,
 	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
@@ -71,7 +74,6 @@ const DEFAULT_TIMEOUT_MINUTES = 30;
 
 /** Phases that expose an enable/disable toggle (the optional, SCM-driven ones). */
 const TOGGLEABLE_PHASES = new Set<string>(PIPELINE_TOGGLE_PHASES);
-const AUTO_ADVANCE_PHASE_SET = new Set<string>(['planning', 'implementation']);
 
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
 	planning: { label: 'Planning', code: 'planning' },
@@ -541,14 +543,6 @@ interface PhaseConfigRowProps {
 	onSelect: (phase: (typeof PHASES)[number]) => void;
 }
 
-function autoAdvanceSummary(phase: (typeof PHASES)[number], enabled: boolean | undefined): string {
-	if (enabled === undefined) return 'N/A';
-	if (phase === 'planning') {
-		return enabled ? 'On — moves to ToDo after posting the plan' : 'Off — stays in Planning';
-	}
-	return enabled ? 'On — moves to In review after opening the PR' : 'Off — stays in progress';
-}
-
 /**
  * The Enabled-column cell for one phase: a toggle switch for the optional,
  * SCM-driven phases, or a static "Always on" label for the mandatory ones
@@ -967,8 +961,8 @@ function AgentConfigurationForm({
 						selectedPhase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 					}
 					autoAdvance={
-						AUTO_ADVANCE_PHASE_SET.has(selectedPhase)
-							? pipelineAutoAdvance[selectedPhase as PipelineAutoAdvancePhase]
+						selectedPhase && isAutoAdvancePhase(selectedPhase)
+							? pipelineAutoAdvance[selectedPhase]
 							: undefined
 					}
 					handleEnabledChange={handleEnabledChange}
@@ -1021,9 +1015,7 @@ function AgentConfigurationForm({
 													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 												}
 												autoAdvance={
-													AUTO_ADVANCE_PHASE_SET.has(phase)
-														? pipelineAutoAdvance[phase as PipelineAutoAdvancePhase]
-														: undefined
+													isAutoAdvancePhase(phase) ? pipelineAutoAdvance[phase] : undefined
 												}
 												handleEnabledChange={handleEnabledChange}
 												onSelect={onSelectPhase}
@@ -1480,7 +1472,7 @@ function ProjectDetailRouteComponent() {
 	};
 
 	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
-		setPipelineAutoAdvance((prev) => ({ ...prev, [phase]: enabled }));
+		setPipelineAutoAdvance((prev) => setAutoAdvanceEnabled(prev, phase, enabled));
 		updateMutation.reset();
 	};
 
