@@ -89,6 +89,7 @@ describe('reenqueueDeferred', () => {
 			reason: 'rate limited',
 			attempt: 0,
 			resumable: true,
+			pmPhaseStarted: true,
 			runId: 'run-1',
 		});
 
@@ -98,20 +99,63 @@ describe('reenqueueDeferred', () => {
 		);
 	});
 
-	it('keeps PM resume when an interrupted Implementation is deferred by capacity again', async () => {
-		await reenqueueDeferred('job-1', createMockGitHubProjectsWebhookJob(), {
-			status: 'phase-deferred',
-			phase: 'implementation',
-			taskId: '216',
-			retryDelayMs: 60_000,
-			reason: "Project 'swarm' is at its concurrent-job limit",
-			attempt: 1,
-			resumable: false,
-			runId: 'run-1',
-		});
+	it('keeps manual PM retry dispatch intent through a later concurrency deferral', async () => {
+		await reenqueueDeferred(
+			'job-1',
+			createMockGitHubProjectsWebhookJob({
+				runId: 'run-1',
+				resumePmPhase: 'implementation',
+			}),
+			{
+				status: 'phase-deferred',
+				phase: 'implementation',
+				taskId: '216',
+				retryDelayMs: 60_000,
+				reason: "Project 'swarm' is at its concurrent-job limit",
+				attempt: 1,
+				resumable: false,
+				runId: 'run-1',
+			},
+		);
 
 		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-			expect.objectContaining({ resumePmPhase: 'implementation' }),
+			expect.objectContaining({
+				resumePmPhase: 'implementation',
+				runId: 'run-1',
+			}),
+			60_000,
+		);
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ implementationBranchProvisioned: true }),
+			60_000,
+		);
+	});
+
+	it('preserves an explicit branch checkpoint through concurrency deferral', async () => {
+		await reenqueueDeferred(
+			'job-1',
+			createMockGitHubProjectsWebhookJob({
+				runId: 'run-1',
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
+			{
+				status: 'phase-deferred',
+				phase: 'implementation',
+				taskId: '216',
+				retryDelayMs: 60_000,
+				reason: "Project 'swarm' is at its concurrent-job limit",
+				attempt: 1,
+				resumable: false,
+				runId: 'run-1',
+			},
+		);
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
 			60_000,
 		);
 	});

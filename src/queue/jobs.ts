@@ -53,6 +53,13 @@ const jobBase = z.object({
 	 */
 	resumePmPhase: z.enum(['planning', 'implementation']).optional(),
 	/**
+	 * Durable proof that Implementation successfully provisioned its task branch.
+	 * A manual retry needs `resumePmPhase` to preserve dispatch intent after the
+	 * card moved to In progress, but must not reuse a branch unless provisioning
+	 * actually completed.
+	 */
+	implementationBranchProvisioned: z.boolean().optional(),
+	/**
 	 * Set on a deferred retry that should *continue the prior agent session*
 	 * rather than start fresh (a `rate-limit`/`timeout` deferral, any phase, any
 	 * CLI). When set, the consumer threads {@link agentSessionId} into the phase

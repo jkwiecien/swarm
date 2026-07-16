@@ -205,6 +205,11 @@ export async function resetRunToRunning(
 	return rows.length > 0;
 }
 
+/** Persist a newer retry checkpoint without changing the run's lifecycle state. */
+export async function updateRunJobPayload(runId: string, jobPayload: SwarmJob): Promise<void> {
+	await getDb().update(runs).set({ jobPayload }).where(eq(runs.id, runId));
+}
+
 /**
  * Atomically finalize a run as user-terminated (issue #166): flip it to `failed`
  * with the explicit user-termination `reason`, stamp `completedAt`, and clear the

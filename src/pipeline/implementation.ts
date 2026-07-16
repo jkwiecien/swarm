@@ -164,6 +164,8 @@ export interface RunImplementationPhaseOptions {
 	autoAdvance?: boolean;
 	/** Resume a deferred implementation from its existing task branch. */
 	resumeExistingBranch?: boolean;
+	/** Called once the task branch worktree has been acquired successfully. */
+	onBranchProvisioned?: () => Promise<void>;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -311,6 +313,7 @@ export async function runImplementationPhase(
 		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		resumeExistingBranch = false,
+		onBranchProvisioned,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -345,6 +348,7 @@ export async function runImplementationPhase(
 		resumeSessionId,
 		resumeExistingBranch,
 	);
+	await onBranchProvisioned?.();
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);

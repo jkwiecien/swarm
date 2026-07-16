@@ -155,6 +155,18 @@ describe('runImplementationPhase', () => {
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('19');
 	});
 
+	it('records branch provisioning only after worktree acquisition succeeds', async () => {
+		const deps = makeDeps();
+		const onBranchProvisioned = vi.fn(async () => {});
+
+		await runImplementationPhase({ ...deps, onBranchProvisioned });
+
+		expect(onBranchProvisioned).toHaveBeenCalledOnce();
+		expect(vi.mocked(deps.worktrees.provision).mock.invocationCallOrder[0]).toBeLessThan(
+			onBranchProvisioned.mock.invocationCallOrder[0],
+		);
+	});
+
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
 		const deps = makeDeps();
 		const signal = new AbortController().signal;

@@ -73,6 +73,7 @@ vi.mock('@/queue/producer.js', () => ({
 const createRun = vi.fn(async (_input: unknown) => 'run-1');
 const completeRun = vi.fn(async (_id: string, _input: unknown) => {});
 const storeRunLogs = vi.fn(async (_id: string, _stdout: string, _stderr: string) => {});
+const updateRunJobPayload = vi.fn(async (_id: string, _job: unknown) => {});
 const getLatestRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => undefined,
 );
@@ -84,6 +85,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	createRun: (input: unknown) => createRun(input),
 	completeRun: (id: string, input: unknown) => completeRun(id, input),
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
+	updateRunJobPayload: (id: string, job: unknown) => updateRunJobPayload(id, job),
 	getLatestRunForTask: (projectId: string, taskId: string, phase: string) =>
 		getLatestRunForTask(projectId, taskId, phase),
 	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
@@ -224,6 +226,8 @@ describe('processJob', () => {
 		completeRun.mockResolvedValue(undefined);
 		storeRunLogs.mockClear();
 		storeRunLogs.mockResolvedValue(undefined);
+		updateRunJobPayload.mockClear();
+		updateRunJobPayload.mockResolvedValue(undefined);
 		resetRunToRunning.mockClear();
 		resetRunToRunning.mockResolvedValue(true);
 		getRunByIdFromDb.mockClear();
@@ -381,16 +385,47 @@ describe('processJob', () => {
 		expect(seen[0].resumePmPhase).toBe('implementation');
 	});
 
-	it('reuses the implementation branch for a resumed PM implementation', async () => {
+	it('reuses the implementation branch only with a provisioning checkpoint', async () => {
 		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
 		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
 
 		await processJob(
-			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation' }),
+			createMockGitHubProjectsWebhookJob({
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
 			registryReturning(trigger),
 		);
 
 		expect(phaseCalls[0].args.resumeExistingBranch).toBe(true);
+	});
+
+	it('does not treat PM resume dispatch intent as proof that a branch exists', async () => {
+		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(
+			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation', runId: 'run-1' }),
+			registryReturning(trigger),
+		);
+
+		expect(phaseCalls[0].args.resumeExistingBranch).toBe(false);
+	});
+
+	it('persists the explicit branch checkpoint after Implementation provisions', async () => {
+		phaseImpl = async (_phase, args) => {
+			await (args.onBranchProvisioned as () => Promise<void>)();
+			throw new Error('failed after provisioning');
+		};
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(updateRunJobPayload).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({ implementationBranchProvisioned: true }),
+		);
 	});
 
 	it('threads the fresh run row id as the sessionId on a first PM run (nothing to resume)', async () => {

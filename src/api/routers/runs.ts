@@ -70,6 +70,7 @@ async function claimRunOrThrow(
 function reconstructRetryJob(
 	jobPayload: NonNullable<Parameters<typeof resetRunToRunning>[1]>,
 	runId: string,
+	phase: string,
 	cli?: z.infer<typeof AgentCliSchema>,
 	model?: string,
 	reasoning?: z.infer<typeof ReasoningLevelSchema>,
@@ -77,6 +78,9 @@ function reconstructRetryJob(
 	const job = { ...jobPayload };
 	job.runId = runId;
 	job.rateLimitRetryAttempt = 0;
+	if (job.type === 'github-projects' && (phase === 'planning' || phase === 'implementation')) {
+		job.resumePmPhase = phase;
+	}
 	if (cli) job.cliOverride = cli;
 	if (model) job.modelOverride = model;
 	if (reasoning) job.reasoningOverride = reasoning;
@@ -232,6 +236,7 @@ export const runsRouter = router({
 				const job = reconstructRetryJob(
 					run.jobPayload,
 					run.id,
+					run.phase,
 					input.cli,
 					input.model,
 					input.reasoning,
@@ -262,6 +267,7 @@ export const runsRouter = router({
 			const job = reconstructRetryJob(
 				run.jobPayload,
 				run.id,
+				run.phase,
 				input.cli,
 				input.model,
 				input.reasoning,

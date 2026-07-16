@@ -30,6 +30,7 @@ import {
 	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
+	updateRunJobPayload,
 } from '../db/repositories/runsRepository.js';
 import { configureDelegationRun, hasUnreviewedCompletedDelegation } from '../delegation/native.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
@@ -113,6 +114,12 @@ export type JobOutcome =
 			 * whether the captured `agentSessionId` is kept on the deferred row.
 			 */
 			resumable: boolean;
+			/**
+			 * True when a PM-driven phase was actually entered before it deferred.
+			 * This preserves board dispatch intent without implying that
+			 * Implementation successfully provisioned its task branch.
+			 */
+			pmPhaseStarted?: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
 			 * created/reused for this job. Carried onto the re-enqueued job so the
@@ -298,6 +305,9 @@ function deferAgentRunError(
 		// this is no longer gated to claude or the PM phases; a run whose session
 		// wasn't captured simply persists no id and retries from scratch.
 		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
+		pmPhaseStarted:
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
 	};
 }
 
@@ -478,6 +488,19 @@ function runPhase(
 		sessionId: job.resumeSession ? undefined : job.agentSessionId,
 		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
 	};
+	const markImplementationBranchProvisioned = async (): Promise<void> => {
+		job.implementationBranchProvisioned = true;
+		if (!runId) return;
+		try {
+			await updateRunJobPayload(runId, job);
+		} catch (err) {
+			logger.error('Failed to persist Implementation branch checkpoint', {
+				runId,
+				taskId: trigger.taskId,
+				error: describeError(err),
+			});
+		}
+	};
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -507,7 +530,8 @@ function runPhase(
 				reasoning: overrides.reasoning,
 				customPrompt: overrides.customPrompt,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
-				resumeExistingBranch: job.resumePmPhase === 'implementation',
+				resumeExistingBranch: job.implementationBranchProvisioned === true,
+				onBranchProvisioned: markImplementationBranchProvisioned,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
