@@ -1,7 +1,7 @@
 /**
  * Pending-continuation registry, Redis-backed (issue #214).
  *
- * A continuation of already-active pipeline work (this task: a `review`) that is
+ * An SCM-driven continuation of already-active pipeline work that is
  * blocked *solely* by a project's concurrency limit is retained here as a
  * *pending continuation* rather than being buried under the generic rate-limit
  * backoff. When any of the project's slots frees, `processJob` promotes the

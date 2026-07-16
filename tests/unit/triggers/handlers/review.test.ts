@@ -301,6 +301,27 @@ describe('review trigger', () => {
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
 		});
 
+		it('reuses both held claims on a prioritized Respond-to-CI retry', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+
+			const result = await handler.handle(
+				ctx(
+					{ ...base, headSha: 'cafe', prBranch: 'issue-9' },
+					{ continuationDispatchClaimed: true },
+				),
+			);
+
+			expect(result).toEqual({
+				phase: 'respond-to-ci',
+				taskId: '9-ci',
+				prNumber: '9',
+				prBranch: 'issue-9',
+				headSha: 'cafe',
+			});
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(claimRespondToCiAttempt).not.toHaveBeenCalled();
+		});
+
 		it('skips Respond-to-CI when the phase is disabled', async () => {
 			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
 			const project = createMockProjectConfig({ pipeline: { respondToCi: { enabled: false } } });

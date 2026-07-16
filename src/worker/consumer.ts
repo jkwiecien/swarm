@@ -70,11 +70,20 @@ import { enqueueJob, promoteJobById } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import {
+	buildConflictResolutionKey,
+	refreshConflictResolutionClaim,
+} from '../triggers/resolve-conflicts-dedup.js';
+import {
 	buildReviewDispatchKey,
 	refreshReviewDispatchClaim,
 	releaseReviewDispatch,
 } from '../triggers/review-dispatch-dedup.js';
-import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
+import {
+	isPrioritizedContinuationPhase,
+	type TriggerContext,
+	type TriggerPhase,
+	type TriggerResult,
+} from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import { takeNextPendingContinuation } from './pending-continuations.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
@@ -385,15 +394,15 @@ function deferForConcurrencyLimit(
  * pre-run deferral path, split out so that function stays within the complexity
  * budget (the file already splits helpers this way).
  *
- * A Review blocked *solely* by concurrency (issue #214), when
+ * An SCM-driven continuation blocked *solely* by concurrency (issues #214/#219), when
  * `prioritizeContinuations` is on, is retained as a *pending continuation*
  * rather than sent through the generic 6-minute backoff: a run row is created
- * now so the blocked Review shows as `deferred` on the dashboard (the
- * concurrency defer otherwise happens before any row exists), its PR+SHA
- * dispatch claim is refreshed so no sibling event can steal it while it waits,
+ * now so the blocked phase shows as `deferred` on the dashboard (the
+ * concurrency defer otherwise happens before any row exists), its dispatch
+ * claim is refreshed when it has one,
  * and the outcome is marked so (a) the retry reuses the held claim rather than
  * re-claiming and (b) `reenqueueDeferred` registers it for
- * promote-on-slot-release. `prioritizeContinuations: false`, or any non-`review`
+ * promote-on-slot-release. `prioritizeContinuations: false`, or any new-work
  * phase, keeps the prior FIFO/backoff behavior exactly (no row, no claim
  * refresh, no registration). Returns the `phase-deferred` outcome, or a terminal
  * `phase-failed` once the shared retry budget is exhausted.
@@ -414,22 +423,35 @@ async function handleConcurrencyDeferral(
 		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 	}
 
-	// Retain a concurrency-blocked Review as a pending continuation (issue #214),
-	// prioritized over new board work once a slot frees. Only the `review` phase is
-	// eligible in this task; the other SCM continuations keep today's backoff.
-	if (project.pipeline?.prioritizeContinuations !== false && trigger.phase === 'review') {
-		// Create the run row now so the blocked Review is observable as `deferred`
+	// Retain a concurrency-blocked SCM phase as a pending continuation,
+	// prioritized over new board work once a slot frees.
+	if (
+		project.pipeline?.prioritizeContinuations !== false &&
+		isPrioritizedContinuationPhase(trigger.phase)
+	) {
+		// Create the run row now so the blocked phase is observable as `deferred`
 		// instead of invisible until the fallback delay fires.
 		const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
 		if (runId) deferred.runId = runId;
 		deferred.continuationDispatchClaimed = true;
 		deferred.pendingContinuation = true;
-		// Hold the PR+SHA claim open past the fallback retry window so no sibling
-		// event steals it while the continuation is pending; the retry reuses it.
-		await refreshReviewDispatchClaim(
-			buildReviewDispatchKey(project.repo, trigger.prNumber, trigger.headSha),
-			PENDING_CONTINUATION_CLAIM_TTL_SEC,
-		);
+		if (trigger.phase === 'review' || trigger.phase === 'respond-to-ci') {
+			// Review and Respond-to-CI share the PR+SHA dispatch slot.
+			await refreshReviewDispatchClaim(
+				buildReviewDispatchKey(project.repo, trigger.prNumber, trigger.headSha),
+				PENDING_CONTINUATION_CLAIM_TTL_SEC,
+			);
+		} else if (trigger.phase === 'resolve-conflicts') {
+			await refreshConflictResolutionClaim(
+				buildConflictResolutionKey(
+					project.repo,
+					trigger.prNumber,
+					trigger.headSha,
+					trigger.baseSha,
+				),
+				PENDING_CONTINUATION_CLAIM_TTL_SEC,
+			);
+		}
 	}
 
 	// A retry job carries its originating row (`deferred.runId`); this pre-try/catch
@@ -1697,9 +1719,9 @@ export async function processJob(
 	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
 	if (!slot.acquired) {
 		inFlightTaskIds.delete(trigger.taskId);
-		// Pre-run deferral (concurrency limit): may retain a Review as a pending
-		// continuation (issue #214) or fall back to the generic backoff — either way
-		// it sits outside the try/catch below, so it finalizes its own run row.
+		// Pre-run deferral (concurrency limit): may retain an SCM-driven phase as a
+		// pending continuation (issues #214/#219) or fall back to the generic backoff
+		// — either way it sits outside the try/catch below and finalizes its own row.
 		return handleConcurrencyDeferral(job, trigger, project);
 	}
 
@@ -1812,7 +1834,7 @@ export async function processJob(
 		if (slot.tracked) {
 			await releaseProjectSlot(project.id);
 			// A slot just freed — promote the oldest pending continuation for this
-			// project (issue #214) so a Review blocked only by concurrency runs ahead
+			// project (issues #214/#219) so SCM work blocked only by concurrency runs ahead
 			// of new board work, instead of waiting out its fallback backoff. No-op
 			// when nothing is pending or the policy is off; never reserves a slot.
 			if (project.pipeline?.prioritizeContinuations !== false) {

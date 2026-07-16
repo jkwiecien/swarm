@@ -27,7 +27,11 @@ vi.mock('@/integrations/scm/github/personas.js', () => ({
 	isSwarmBot: vi.fn((login: string) => login.startsWith('swarm-')),
 }));
 vi.mock('@/queue/producer.js', () => ({ scheduleCoalescedJob }));
-vi.mock('@/triggers/resolve-conflicts-dedup.js', () => ({ claimConflictResolution }));
+vi.mock('@/triggers/resolve-conflicts-dedup.js', () => ({
+	claimConflictResolution,
+	buildConflictResolutionKey: (repo: string, prNumber: string, headSha: string, baseSha: string) =>
+		`${repo}:${prNumber}:${headSha}:${baseSha}`,
+}));
 
 import { createResolveConflictsTrigger } from '@/triggers/handlers/resolve-conflicts.js';
 
@@ -113,6 +117,20 @@ describe('resolve-conflicts trigger', () => {
 		const result = await createResolveConflictsTrigger().handle({
 			...mergedEvent,
 			runId: 'existing-run-id',
+			event: { ...mergedEvent.event, conflictPrNumber: '42' },
+		});
+		expect(claimConflictResolution).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			phase: 'resolve-conflicts',
+			prNumber: '42',
+			taskId: '42-conflicts',
+		});
+	});
+
+	it('reuses the held conflict claim on a prioritized continuation retry', async () => {
+		const result = await createResolveConflictsTrigger().handle({
+			...mergedEvent,
+			continuationDispatchClaimed: true,
 			event: { ...mergedEvent.event, conflictPrNumber: '42' },
 		});
 		expect(claimConflictResolution).not.toHaveBeenCalled();

@@ -80,6 +80,14 @@ vi.mock('@/worker/pending-continuations.js', () => ({
 	takeNextPendingContinuation: (projectId: string) => takeNextPendingContinuation(projectId),
 }));
 
+const refreshConflictResolutionClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
+vi.mock('@/triggers/resolve-conflicts-dedup.js', () => ({
+	refreshConflictResolutionClaim: (key: string, ttlSec: number) =>
+		refreshConflictResolutionClaim(key, ttlSec),
+	buildConflictResolutionKey: (repo: string, prNumber: string, headSha: string, baseSha: string) =>
+		`${repo}:${prNumber}:${headSha}:${baseSha}`,
+}));
+
 const refreshReviewDispatchClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
 const releaseReviewDispatch = vi.fn(async (_key: string) => {});
 vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
@@ -233,6 +241,29 @@ const REVIEW_TRIGGER: TriggerResult = {
 	prNumber: '17',
 	headSha: 'deadbeef',
 };
+const RESPOND_TO_REVIEW_TRIGGER: TriggerResult = {
+	phase: 'respond-to-review',
+	taskId: '17-respond',
+	prNumber: '17',
+	prBranch: 'issue-17',
+	reviewId: '555',
+};
+const RESPOND_TO_CI_TRIGGER: TriggerResult = {
+	phase: 'respond-to-ci',
+	taskId: '17-ci',
+	prNumber: '17',
+	prBranch: 'issue-17',
+	headSha: 'deadbeef',
+};
+const RESOLVE_CONFLICTS_TRIGGER: TriggerResult = {
+	phase: 'resolve-conflicts',
+	taskId: '17-conflicts',
+	prNumber: '17',
+	prBranch: 'issue-17',
+	headSha: 'deadbeef',
+	baseBranch: 'main',
+	baseSha: 'cafebabe',
+};
 
 describe('processJob', () => {
 	beforeEach(() => {
@@ -248,6 +279,7 @@ describe('processJob', () => {
 		promoteJobById.mockResolvedValue(true);
 		takeNextPendingContinuation.mockClear();
 		takeNextPendingContinuation.mockResolvedValue(null);
+		refreshConflictResolutionClaim.mockClear();
 		refreshReviewDispatchClaim.mockClear();
 		releaseReviewDispatch.mockClear();
 		createRun.mockClear();
@@ -373,6 +405,71 @@ describe('processJob', () => {
 			expect(releaseProjectSlot).not.toHaveBeenCalled();
 		});
 
+		it.each([
+			['Respond-to-review', RESPOND_TO_REVIEW_TRIGGER],
+			['Respond-to-CI', RESPOND_TO_CI_TRIGGER],
+			['Resolve-conflicts', RESOLVE_CONFLICTS_TRIGGER],
+		] as const)('retains a concurrency-blocked %s phase as an observable pending continuation', async (_label, trigger) => {
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+
+			const outcome = await processJob(createMockGitHubWebhookJob(), registryReturning(trigger));
+
+			expect(outcome).toMatchObject({
+				status: 'phase-deferred',
+				phase: trigger.phase,
+				taskId: trigger.taskId,
+				continuationDispatchClaimed: true,
+				pendingContinuation: true,
+				runId: 'run-1',
+			});
+			expect(createRun).toHaveBeenCalledOnce();
+			expect(phaseCalls).toEqual([]);
+		});
+
+		it('refreshes the Respond-to-CI PR+SHA claim without refreshing Respond-to-review', async () => {
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+			await processJob(createMockGitHubWebhookJob(), registryReturning(RESPOND_TO_CI_TRIGGER));
+
+			expect(refreshReviewDispatchClaim).toHaveBeenCalledWith(
+				`${PROJECT.repo}:17:deadbeef`,
+				expect.any(Number),
+			);
+
+			refreshReviewDispatchClaim.mockClear();
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+			await processJob(createMockGitHubWebhookJob(), registryReturning(RESPOND_TO_REVIEW_TRIGGER));
+
+			expect(refreshReviewDispatchClaim).not.toHaveBeenCalled();
+			expect(refreshConflictResolutionClaim).not.toHaveBeenCalled();
+		});
+
+		it('refreshes the Resolve-conflicts head/base claim while pending', async () => {
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(RESOLVE_CONFLICTS_TRIGGER));
+
+			expect(refreshConflictResolutionClaim).toHaveBeenCalledWith(
+				`${PROJECT.repo}:17:deadbeef:cafebabe`,
+				expect.any(Number),
+			);
+		});
+
+		it('retains a continuation when a project with multiple slots is fully occupied', async () => {
+			projectLookup = () => createMockProjectConfig({ maxConcurrentJobs: 2 });
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(RESPOND_TO_CI_TRIGGER),
+			);
+
+			expect(acquireProjectSlot).toHaveBeenCalledWith(PROJECT.id, 2);
+			expect(outcome).toMatchObject({
+				status: 'phase-deferred',
+				pendingContinuation: true,
+			});
+		});
+
 		it('does not retain a non-review phase (implementation) as a pending continuation', async () => {
 			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 			const workItem = createMockWorkItem({ statusId: '61e4505c' });
@@ -438,27 +535,29 @@ describe('processJob', () => {
 			expect(outcome.status).toBe('phase-succeeded');
 		});
 
-		it('preserves the prior FIFO/backoff behavior when prioritizeContinuations is false', async () => {
+		it.each([
+			REVIEW_TRIGGER,
+			RESPOND_TO_REVIEW_TRIGGER,
+			RESPOND_TO_CI_TRIGGER,
+			RESOLVE_CONFLICTS_TRIGGER,
+		])('preserves prior FIFO/backoff behavior for $phase when prioritization is false', async (trigger) => {
 			projectLookup = () =>
 				createMockProjectConfig({ pipeline: { prioritizeContinuations: false } });
 			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 
-			const outcome = await processJob(
-				createMockGitHubWebhookJob(),
-				registryReturning(REVIEW_TRIGGER),
-			);
+			const outcome = await processJob(createMockGitHubWebhookJob(), registryReturning(trigger));
 
 			expect(outcome).toMatchObject({
 				status: 'phase-deferred',
-				phase: 'review',
+				phase: trigger.phase,
 				retryDelayMs: 6 * 60 * 1000,
 			});
 			if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
-			// No continuation machinery: no run row, no claim refresh, no marking.
 			expect(outcome.continuationDispatchClaimed).toBeUndefined();
 			expect(outcome.pendingContinuation).toBeUndefined();
 			expect(createRun).not.toHaveBeenCalled();
 			expect(refreshReviewDispatchClaim).not.toHaveBeenCalled();
+			expect(refreshConflictResolutionClaim).not.toHaveBeenCalled();
 		});
 
 		it('does not promote on slot release when prioritizeContinuations is false', async () => {
