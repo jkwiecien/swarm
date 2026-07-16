@@ -1,12 +1,49 @@
 import { describe, expect, it } from 'vitest';
 import type { PipelineConfig } from '../../../src/config/schema.js';
 import {
+	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
 	setPhaseEnabled,
+	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
 } from './pipeline-enabled.js';
+
+describe('auto-advance form mapping', () => {
+	it('uses the coded Planning-off and Implementation-on defaults', () => {
+		expect(toPipelineAutoAdvanceForm(undefined)).toEqual({ planning: false, implementation: true });
+	});
+
+	it('reads explicit values and reports only changed values as dirty', () => {
+		const pipeline: PipelineConfig = {
+			planning: { autoAdvance: true },
+			implementation: { autoAdvance: false },
+		};
+		const form = toPipelineAutoAdvanceForm(pipeline);
+		expect(form).toEqual({ planning: true, implementation: false });
+		expect(isPipelineAutoAdvanceDirty(form, pipeline)).toBe(false);
+		expect(isPipelineAutoAdvanceDirty({ ...form, planning: false }, pipeline)).toBe(true);
+	});
+
+	it('updates only auto-advance while preserving unrelated pipeline settings', () => {
+		const existing: PipelineConfig = {
+			planning: { autoAdvance: true, autoSplit: false },
+			implementation: { autoAdvance: false },
+			review: { enabled: false },
+			respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
+			respondToCi: { enabled: false },
+		};
+		expect(
+			buildPipelineAutoAdvanceUpdate({ planning: false, implementation: true }, existing),
+		).toEqual({
+			...existing,
+			planning: { autoAdvance: false, autoSplit: false },
+			implementation: { autoAdvance: true },
+		});
+	});
+});
 
 describe('toPipelineEnabledForm', () => {
 	it('defaults every phase to enabled when config is undefined', () => {

@@ -29,13 +29,18 @@ import {
 	normalizeCustomPrompt,
 } from '@/lib/phase-prompt.js';
 import {
+	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
 	PIPELINE_TOGGLE_PHASES,
+	type PipelineAutoAdvanceForm,
+	type PipelineAutoAdvancePhase,
 	type PipelineEnabledForm,
 	type PipelineTogglePhase,
 	setPhaseEnabled,
+	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
 } from '@/lib/pipeline-enabled.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
@@ -66,6 +71,7 @@ const DEFAULT_TIMEOUT_MINUTES = 30;
 
 /** Phases that expose an enable/disable toggle (the optional, SCM-driven ones). */
 const TOGGLEABLE_PHASES = new Set<string>(PIPELINE_TOGGLE_PHASES);
+const AUTO_ADVANCE_PHASE_SET = new Set<string>(['planning', 'implementation']);
 
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
 	planning: { label: 'Planning', code: 'planning' },
@@ -530,8 +536,17 @@ interface PhaseConfigRowProps {
 	/** Whether the enable toggle is locked off by a dependency (Review → Respond). */
 	enabledDisabled?: boolean;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
+	autoAdvance?: boolean;
 	/** Open the phase-detail screen for this row. */
 	onSelect: (phase: (typeof PHASES)[number]) => void;
+}
+
+function autoAdvanceSummary(phase: (typeof PHASES)[number], enabled: boolean | undefined): string {
+	if (enabled === undefined) return 'N/A';
+	if (phase === 'planning') {
+		return enabled ? 'On — moves to ToDo after posting the plan' : 'Off — stays in Planning';
+	}
+	return enabled ? 'On — moves to In review after opening the PR' : 'Off — stays in progress';
 }
 
 /**
@@ -596,6 +611,7 @@ function PhaseConfigRow({
 	enabled,
 	enabledDisabled,
 	handleEnabledChange,
+	autoAdvance,
 	onSelect,
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
@@ -622,6 +638,9 @@ function PhaseConfigRow({
 					isPending={isPending}
 					handleEnabledChange={handleEnabledChange}
 				/>
+			</td>
+			<td className="px-4 py-3.5 text-xs text-zinc-400">
+				{autoAdvanceSummary(phase, autoAdvance)}
 			</td>
 			<td className="px-4 py-3.5">
 				<div className="flex flex-wrap items-center gap-2">
@@ -658,6 +677,8 @@ interface PhaseSettingsDetailProps {
 	enabled?: boolean;
 	enabledDisabled?: boolean;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
+	autoAdvance?: boolean;
+	handleAutoAdvanceChange?: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
@@ -681,6 +702,8 @@ function PhaseSettingsDetail({
 	enabled,
 	enabledDisabled,
 	handleEnabledChange,
+	autoAdvance,
+	handleAutoAdvanceChange,
 	handleCliChange,
 	handleModelChange,
 	handleReasoningChange,
@@ -736,6 +759,28 @@ function PhaseSettingsDetail({
 							{enabledDisabled ? ' (locked off while Review is disabled)' : ''}
 						</span>
 					</div>
+				)}
+
+				{autoAdvance !== undefined && (
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+						<input
+							type="checkbox"
+							checked={autoAdvance}
+							onChange={(event) =>
+								handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, event.target.checked)
+							}
+							disabled={isPending}
+							className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+						/>
+						<span>
+							<span className="block text-sm font-medium text-zinc-200">Auto-advance</span>
+							<span className="block text-xs text-zinc-400 mt-1">
+								{phase === 'planning'
+									? 'Move to ToDo after SWARM posts the plan.'
+									: 'Move to In review after SWARM opens the pull request.'}
+							</span>
+						</span>
+					</label>
 				)}
 
 				<div className="grid gap-5 sm:grid-cols-2">
@@ -850,11 +895,13 @@ function PhaseSettingsDetail({
 interface AgentConfigurationFormProps {
 	agents: AgentsConfig;
 	pipelineEnabled: PipelineEnabledForm;
+	pipelineAutoAdvance: PipelineAutoAdvanceForm;
 	/** The phase whose detail screen is open, or `null` for the summary table. */
 	selectedPhase: (typeof PHASES)[number] | null;
 	onSelectPhase: (phase: (typeof PHASES)[number]) => void;
 	onBack: () => void;
 	handleEnabledChange: (phase: PipelineTogglePhase, enabled: boolean) => void;
+	handleAutoAdvanceChange: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
 	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
@@ -882,10 +929,12 @@ interface AgentConfigurationFormProps {
 function AgentConfigurationForm({
 	agents,
 	pipelineEnabled,
+	pipelineAutoAdvance,
 	selectedPhase,
 	onSelectPhase,
 	onBack,
 	handleEnabledChange,
+	handleAutoAdvanceChange,
 	handleCliChange,
 	handleModelChange,
 	handleReasoningChange,
@@ -917,7 +966,13 @@ function AgentConfigurationForm({
 					enabledDisabled={
 						selectedPhase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 					}
+					autoAdvance={
+						AUTO_ADVANCE_PHASE_SET.has(selectedPhase)
+							? pipelineAutoAdvance[selectedPhase as PipelineAutoAdvancePhase]
+							: undefined
+					}
 					handleEnabledChange={handleEnabledChange}
+					handleAutoAdvanceChange={handleAutoAdvanceChange}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
 					handleReasoningChange={handleReasoningChange}
@@ -943,6 +998,7 @@ function AgentConfigurationForm({
 										<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
 											<th className="px-4 py-3">Phase</th>
 											<th className="px-4 py-3">Enabled</th>
+											<th className="px-4 py-3">Auto-advance</th>
 											<th className="px-4 py-3">Configuration</th>
 											<th className="px-4 py-3">
 												<span className="sr-only">Open</span>
@@ -963,6 +1019,11 @@ function AgentConfigurationForm({
 												}
 												enabledDisabled={
 													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+												}
+												autoAdvance={
+													AUTO_ADVANCE_PHASE_SET.has(phase)
+														? pipelineAutoAdvance[phase as PipelineAutoAdvancePhase]
+														: undefined
 												}
 												handleEnabledChange={handleEnabledChange}
 												onSelect={onSelectPhase}
@@ -1194,6 +1255,9 @@ function ProjectDetailRouteComponent() {
 	const [pipelineEnabled, setPipelineEnabled] = useState<PipelineEnabledForm>(() =>
 		toPipelineEnabledForm(undefined),
 	);
+	const [pipelineAutoAdvance, setPipelineAutoAdvance] = useState<PipelineAutoAdvanceForm>(() =>
+		toPipelineAutoAdvanceForm(undefined),
+	);
 	const [autoMerge, setAutoMerge] = useState(false);
 	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
 	const [boardMapping, setBoardMapping] = useState<BoardMappingForm>(() =>
@@ -1221,6 +1285,7 @@ function ProjectDetailRouteComponent() {
 			setMaxConcurrentJobsError(undefined);
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
+			setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
 			setBoardMapping(toBoardMappingForm(project.githubProjects));
@@ -1285,8 +1350,11 @@ function ProjectDetailRouteComponent() {
 			return true;
 
 		// The per-phase enable toggles save through this same form.
-		return isPipelineEnabledDirty(pipelineEnabled, project.pipeline);
-	}, [project, agents, pipelineEnabled]);
+		return (
+			isPipelineEnabledDirty(pipelineEnabled, project.pipeline) ||
+			isPipelineAutoAdvanceDirty(pipelineAutoAdvance, project.pipeline)
+		);
+	}, [project, agents, pipelineEnabled, pipelineAutoAdvance]);
 
 	// An over-limit custom prompt on any phase would only fail server-side; surface
 	// it client-side so Save is blocked and the field error is the sole feedback.
@@ -1411,10 +1479,16 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
+	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
+		setPipelineAutoAdvance((prev) => ({ ...prev, [phase]: enabled }));
+		updateMutation.reset();
+	};
+
 	const handleAgentsReset = () => {
 		if (project) {
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
+			setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
 			updateMutation.reset();
 		}
 	};
@@ -1428,7 +1502,10 @@ function ProjectDetailRouteComponent() {
 		updateMutation.mutate({
 			id: projectId,
 			agents: finalAgents,
-			pipeline: buildPipelineEnabledUpdate(pipelineEnabled, project?.pipeline),
+			pipeline: buildPipelineAutoAdvanceUpdate(
+				pipelineAutoAdvance,
+				buildPipelineEnabledUpdate(pipelineEnabled, project?.pipeline),
+			),
 		});
 	};
 
@@ -1685,10 +1762,12 @@ function ProjectDetailRouteComponent() {
 				<AgentConfigurationForm
 					agents={agents}
 					pipelineEnabled={pipelineEnabled}
+					pipelineAutoAdvance={pipelineAutoAdvance}
 					selectedPhase={selectedPhase}
 					onSelectPhase={setSelectedPhase}
 					onBack={() => setSelectedPhase(null)}
 					handleEnabledChange={handleEnabledChange}
+					handleAutoAdvanceChange={handleAutoAdvanceChange}
 					handleCliChange={handleCliChange}
 					handleModelChange={handleModelChange}
 					handleReasoningChange={handleReasoningChange}

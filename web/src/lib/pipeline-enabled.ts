@@ -17,6 +17,26 @@ export type PipelineTogglePhase = (typeof PIPELINE_TOGGLE_PHASES)[number];
  */
 export type PipelineEnabledForm = Record<PipelineTogglePhase, boolean>;
 
+/** The two mandatory phases that can automatically advance the board. */
+export const AUTO_ADVANCE_PHASES = ['planning', 'implementation'] as const;
+
+export type PipelineAutoAdvancePhase = (typeof AUTO_ADVANCE_PHASES)[number];
+
+export type PipelineAutoAdvanceForm = Record<PipelineAutoAdvancePhase, boolean>;
+
+/**
+ * Project the two per-phase auto-advance overrides onto the dashboard form,
+ * retaining the pipeline's coded defaults when no override is stored.
+ */
+export function toPipelineAutoAdvanceForm(
+	pipeline: PipelineConfig | undefined,
+): PipelineAutoAdvanceForm {
+	return {
+		planning: pipeline?.planning?.autoAdvance ?? false,
+		implementation: pipeline?.implementation?.autoAdvance ?? true,
+	};
+}
+
 /**
  * Project the stored pipeline config onto the flat form state. An unset `enabled`
  * defaults to `true` (the phase runs unless explicitly disabled — matching the
@@ -78,6 +98,23 @@ export function buildPipelineEnabledUpdate(
 	};
 }
 
+/**
+ * Merge the dashboard's Planning and Implementation auto-advance values into a
+ * complete pipeline payload. The other fields must survive because
+ * `projects.update` replaces the top-level pipeline object rather than merging
+ * its nested values.
+ */
+export function buildPipelineAutoAdvanceUpdate(
+	form: PipelineAutoAdvanceForm,
+	existing: PipelineConfig | undefined,
+): PipelineConfig {
+	return {
+		...existing,
+		planning: { ...existing?.planning, autoAdvance: form.planning },
+		implementation: { ...existing?.implementation, autoAdvance: form.implementation },
+	};
+}
+
 /** Whether the form differs from the stored pipeline config. */
 export function isPipelineEnabledDirty(
 	form: PipelineEnabledForm,
@@ -85,4 +122,13 @@ export function isPipelineEnabledDirty(
 ): boolean {
 	const stored = toPipelineEnabledForm(pipeline);
 	return PIPELINE_TOGGLE_PHASES.some((phase) => form[phase] !== stored[phase]);
+}
+
+/** Whether either auto-advance selection differs from its effective stored value. */
+export function isPipelineAutoAdvanceDirty(
+	form: PipelineAutoAdvanceForm,
+	pipeline: PipelineConfig | undefined,
+): boolean {
+	const stored = toPipelineAutoAdvanceForm(pipeline);
+	return AUTO_ADVANCE_PHASES.some((phase) => form[phase] !== stored[phase]);
 }
