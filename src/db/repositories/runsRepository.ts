@@ -205,6 +205,11 @@ export async function resetRunToRunning(
 	return rows.length > 0;
 }
 
+/** Persist a newer retry checkpoint without changing the run's lifecycle state. */
+export async function updateRunJobPayload(runId: string, jobPayload: SwarmJob): Promise<void> {
+	await getDb().update(runs).set({ jobPayload }).where(eq(runs.id, runId));
+}
+
 /**
  * Atomically finalize a run as user-terminated (issue #166): flip it to `failed`
  * with the explicit user-termination `reason`, stamp `completedAt`, and clear the
@@ -357,7 +362,7 @@ export async function getRunOutputEvents(
  * Fail every run still marked `running` — called once at worker startup. A
  * freshly-booted worker owns no in-flight run (the MVP runs a single worker,
  * and this runs before it starts pulling jobs), so any `running` row is a
- * zombie: a phase whose process died — a crash, or the frequent `tsx --watch`
+ * zombie: a phase whose process died — a crash, or an opt-in `tsx --watch`
  * restart — before it wrote its terminal status. Left alone those rows show as
  * "running" in the dashboard forever though nothing is running. Flip them to
  * `failed` with an explanatory `error` and a `completedAt`, and return the

@@ -30,6 +30,7 @@ import {
 	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
+	updateRunJobPayload,
 } from '../db/repositories/runsRepository.js';
 import { configureDelegationRun, hasUnreviewedCompletedDelegation } from '../delegation/native.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
@@ -113,6 +114,12 @@ export type JobOutcome =
 			 * whether the captured `agentSessionId` is kept on the deferred row.
 			 */
 			resumable: boolean;
+			/**
+			 * True when a PM-driven phase was actually entered before it deferred.
+			 * This preserves board dispatch intent without implying that
+			 * Implementation successfully provisioned its task branch.
+			 */
+			pmPhaseStarted?: boolean;
 			/**
 			 * The `runs` row this deferral belongs to (issue #136), when one was
 			 * created/reused for this job. Carried onto the re-enqueued job so the
@@ -200,6 +207,8 @@ export function resolveAgentTimeoutMs(raw = process.env.SWARM_AGENT_TIMEOUT_MS):
 /** The effective default agent timeout, resolved once at module load. */
 const AGENT_TIMEOUT_MS = resolveAgentTimeoutMs();
 
+type DeferrableFailure = AgentFailure | { kind: 'delivery' };
+
 /**
  * Turn a deferrable failure into a clamped retry delay. An `aborted` run (the
  * worker's own shutdown killed it — a dev `--watch` restart, a deploy, a
@@ -208,10 +217,11 @@ const AGENT_TIMEOUT_MS = resolveAgentTimeoutMs();
  * already finished restarting, so the only reason to wait at all is the same
  * dedup-claim floor a rate-limit retry respects.
  */
-function retryDelayForFailure(failure: AgentFailure, now: number): number {
+function retryDelayForFailure(failure: DeferrableFailure, now: number): number {
 	if (
 		failure.kind === 'aborted' ||
 		failure.kind === 'capacity' ||
+		failure.kind === 'delivery' ||
 		failure.kind === 'worktree-exists' ||
 		// A timeout has no "resets at…" hint and needs no long wait — the run
 		// simply ran long; retry after the same dedup-claim floor as an abort.
@@ -224,6 +234,23 @@ function retryDelayForFailure(failure: AgentFailure, now: number): number {
 	return Math.min(MAX_RETRY_DELAY_MS, Math.max(MIN_RETRY_DELAY_MS, raw));
 }
 
+function deferredPhaseMessage(failure: DeferrableFailure, phase: TriggerPhase): string {
+	switch (failure.kind) {
+		case 'aborted':
+			return `Phase stopped - ${phaseLabel(phase)} — worker shutdown, deferring retry`;
+		case 'capacity':
+			return `Phase stopped - ${phaseLabel(phase)} — model at capacity, deferring short retry`;
+		case 'delivery':
+			return `Phase stopped - ${phaseLabel(phase)} — delivery failed, deferring retry`;
+		case 'worktree-exists':
+			return `Phase stopped - ${phaseLabel(phase)} — worktree already exists, deferring retry`;
+		case 'timeout':
+			return `Phase stopped - ${phaseLabel(phase)} — timed out, deferring resume retry`;
+		default:
+			return `Phase stopped - ${phaseLabel(phase)} — rate-limited, deferring retry`;
+	}
+}
+
 /**
  * Handle a deferrable {@link AgentRunError} (`rate-limit`, `capacity`, or `aborted`) —
  * `processJob`'s one non-terminal failure path, split out to keep that
@@ -233,7 +260,7 @@ function retryDelayForFailure(failure: AgentFailure, now: number): number {
  * `phase-failed` logging/return).
  */
 function deferAgentRunError(
-	failure: AgentFailure,
+	failure: DeferrableFailure,
 	job: SwarmJob,
 	trigger: TriggerResult,
 	projectId: string,
@@ -254,26 +281,15 @@ function deferAgentRunError(
 	}
 
 	const retryDelayMs = retryDelayForFailure(failure, Date.now());
-	logger.warn(
-		failure.kind === 'aborted'
-			? `Phase stopped - ${phaseLabel(trigger.phase)} — worker shutdown, deferring retry`
-			: failure.kind === 'capacity'
-				? `Phase stopped - ${phaseLabel(trigger.phase)} — model at capacity, deferring short retry`
-				: failure.kind === 'worktree-exists'
-					? `Phase stopped - ${phaseLabel(trigger.phase)} — worktree already exists, deferring retry`
-					: failure.kind === 'timeout'
-						? `Phase stopped - ${phaseLabel(trigger.phase)} — timed out, deferring resume retry`
-						: `Phase stopped - ${phaseLabel(trigger.phase)} — rate-limited, deferring retry`,
-		{
-			projectId,
-			phase: trigger.phase,
-			taskId: trigger.taskId,
-			attempt,
-			retryDelayMs,
-			resetHint: failure.resetHint,
-			error,
-		},
-	);
+	logger.warn(deferredPhaseMessage(failure, trigger.phase), {
+		projectId,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		attempt,
+		retryDelayMs,
+		resetHint: 'resetHint' in failure ? failure.resetHint : undefined,
+		error,
+	});
 	return {
 		status: 'phase-deferred',
 		phase: trigger.phase,
@@ -289,6 +305,9 @@ function deferAgentRunError(
 		// this is no longer gated to claude or the PM phases; a run whose session
 		// wasn't captured simply persists no id and retries from scratch.
 		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
+		pmPhaseStarted:
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
 	};
 }
 
@@ -469,6 +488,19 @@ function runPhase(
 		sessionId: job.resumeSession ? undefined : job.agentSessionId,
 		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
 	};
+	const markImplementationBranchProvisioned = async (): Promise<void> => {
+		job.implementationBranchProvisioned = true;
+		if (!runId) return;
+		try {
+			await updateRunJobPayload(runId, job);
+		} catch (err) {
+			logger.error('Failed to persist Implementation branch checkpoint', {
+				runId,
+				taskId: trigger.taskId,
+				error: describeError(err),
+			});
+		}
+	};
 	switch (trigger.phase) {
 		case 'planning':
 			return runPlanningPhase({
@@ -498,7 +530,8 @@ function runPhase(
 				reasoning: overrides.reasoning,
 				customPrompt: overrides.customPrompt,
 				autoAdvance: project.pipeline?.implementation?.autoAdvance,
-				resumeExistingBranch: job.resumePmPhase === 'implementation',
+				resumeExistingBranch: job.implementationBranchProvisioned === true,
+				onBranchProvisioned: markImplementationBranchProvisioned,
 				...session,
 				timeoutMs: overrides.timeoutMs,
 				signal,
@@ -1377,7 +1410,11 @@ async function handlePhaseFailure(
 	project: ProjectConfig,
 	runId: string | undefined,
 ): Promise<JobOutcome> {
-	const error = err instanceof Error ? err.message : String(err);
+	// Delivery errors deliberately wrap a resumable checkpoint around the
+	// underlying push/hook/API failure. Preserve that cause chain in the run row,
+	// dashboard, and logs instead of reducing every incident to the opaque
+	// "delivery deferred" wrapper.
+	const error = describeError(err);
 
 	// If the failure looks like a missing binary, permission issue, or authentication/login failure,
 	// run capability discovery immediately to refresh the dashboard status.
@@ -1453,11 +1490,11 @@ async function handlePhaseFailure(
 		err instanceof WorktreeAlreadyExistsError ||
 		err instanceof DeliveryDeferredError;
 	if (isDeferrable) {
-		const failure: AgentFailure =
+		const failure: DeferrableFailure =
 			err instanceof AgentRunError
 				? err.failure
 				: err instanceof DeliveryDeferredError
-					? { kind: 'aborted' }
+					? { kind: 'delivery' }
 					: { kind: 'worktree-exists' };
 		const deferred = deferAgentRunError(failure, job, trigger, project.id, error, runId);
 		if (deferred) {

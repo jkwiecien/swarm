@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMockGitHubWebhookJob } from '../../helpers/factories.js';
+import {
+	createMockGitHubProjectsWebhookJob,
+	createMockGitHubWebhookJob,
+} from '../../helpers/factories.js';
 
 const isRunCancellationRequested = vi.fn<(runId: string) => Promise<boolean>>();
 vi.mock('@/queue/cancellation.js', () => ({
@@ -58,5 +61,102 @@ describe('reenqueueDeferred', () => {
 		});
 
 		expect(enqueueDelayedRetry).not.toHaveBeenCalled();
+	});
+
+	it('retries a concurrency-deferred Implementation as a fresh board dispatch', async () => {
+		await reenqueueDeferred('job-1', createMockGitHubProjectsWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'implementation',
+			taskId: '216',
+			retryDelayMs: 60_000,
+			reason: "Project 'swarm' is at its concurrent-job limit",
+			attempt: 0,
+			resumable: false,
+		});
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ resumePmPhase: expect.anything(), resumeSession: true }),
+			60_000,
+		);
+	});
+
+	it('keeps PM resume and branch reuse for an interrupted Implementation', async () => {
+		await reenqueueDeferred('job-1', createMockGitHubProjectsWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'implementation',
+			taskId: '216',
+			retryDelayMs: 60_000,
+			reason: 'rate limited',
+			attempt: 0,
+			resumable: true,
+			pmPhaseStarted: true,
+			runId: 'run-1',
+		});
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({ resumePmPhase: 'implementation', resumeSession: true }),
+			60_000,
+		);
+	});
+
+	it('keeps manual PM retry dispatch intent through a later concurrency deferral', async () => {
+		await reenqueueDeferred(
+			'job-1',
+			createMockGitHubProjectsWebhookJob({
+				runId: 'run-1',
+				resumePmPhase: 'implementation',
+			}),
+			{
+				status: 'phase-deferred',
+				phase: 'implementation',
+				taskId: '216',
+				retryDelayMs: 60_000,
+				reason: "Project 'swarm' is at its concurrent-job limit",
+				attempt: 1,
+				resumable: false,
+				runId: 'run-1',
+			},
+		);
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumePmPhase: 'implementation',
+				runId: 'run-1',
+			}),
+			60_000,
+		);
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ implementationBranchProvisioned: true }),
+			60_000,
+		);
+	});
+
+	it('preserves an explicit branch checkpoint through concurrency deferral', async () => {
+		await reenqueueDeferred(
+			'job-1',
+			createMockGitHubProjectsWebhookJob({
+				runId: 'run-1',
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
+			{
+				status: 'phase-deferred',
+				phase: 'implementation',
+				taskId: '216',
+				retryDelayMs: 60_000,
+				reason: "Project 'swarm' is at its concurrent-job limit",
+				attempt: 1,
+				resumable: false,
+				runId: 'run-1',
+			},
+		);
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
+			60_000,
+		);
 	});
 });

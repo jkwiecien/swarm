@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError } from '@/harness/agent-failure.js';
+import { logger } from '@/lib/logger.js';
 import type { PMProvider } from '@/pm/types.js';
+import { DeliveryDeferredError } from '@/scm/delivery.js';
 import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 import {
 	createMockGitHubParsedEvent,
@@ -71,6 +73,7 @@ vi.mock('@/queue/producer.js', () => ({
 const createRun = vi.fn(async (_input: unknown) => 'run-1');
 const completeRun = vi.fn(async (_id: string, _input: unknown) => {});
 const storeRunLogs = vi.fn(async (_id: string, _stdout: string, _stderr: string) => {});
+const updateRunJobPayload = vi.fn(async (_id: string, _job: unknown) => {});
 const getLatestRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => undefined,
 );
@@ -82,6 +85,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	createRun: (input: unknown) => createRun(input),
 	completeRun: (id: string, input: unknown) => completeRun(id, input),
 	storeRunLogs: (id: string, stdout: string, stderr: string) => storeRunLogs(id, stdout, stderr),
+	updateRunJobPayload: (id: string, job: unknown) => updateRunJobPayload(id, job),
 	getLatestRunForTask: (projectId: string, taskId: string, phase: string) =>
 		getLatestRunForTask(projectId, taskId, phase),
 	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
@@ -222,6 +226,8 @@ describe('processJob', () => {
 		completeRun.mockResolvedValue(undefined);
 		storeRunLogs.mockClear();
 		storeRunLogs.mockResolvedValue(undefined);
+		updateRunJobPayload.mockClear();
+		updateRunJobPayload.mockResolvedValue(undefined);
 		resetRunToRunning.mockClear();
 		resetRunToRunning.mockResolvedValue(true);
 		getRunByIdFromDb.mockClear();
@@ -272,6 +278,25 @@ describe('processJob', () => {
 
 		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 		expect(phaseCalls).toHaveLength(1);
+	});
+
+	it('leaves a fresh Implementation retry free to create its task branch after a capacity deferral', async () => {
+		acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '216', workItem };
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning(trigger),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-deferred',
+			phase: 'implementation',
+			resumable: false,
+			runId: undefined,
+		});
+		expect(phaseCalls).toEqual([]);
 	});
 
 	it('fails an at-limit job after its shared retry budget is exhausted', async () => {
@@ -360,16 +385,47 @@ describe('processJob', () => {
 		expect(seen[0].resumePmPhase).toBe('implementation');
 	});
 
-	it('reuses the implementation branch for a resumed PM implementation', async () => {
+	it('reuses the implementation branch only with a provisioning checkpoint', async () => {
 		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
 		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
 
 		await processJob(
-			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation' }),
+			createMockGitHubProjectsWebhookJob({
+				resumePmPhase: 'implementation',
+				implementationBranchProvisioned: true,
+			}),
 			registryReturning(trigger),
 		);
 
 		expect(phaseCalls[0].args.resumeExistingBranch).toBe(true);
+	});
+
+	it('does not treat PM resume dispatch intent as proof that a branch exists', async () => {
+		const workItem = createMockWorkItem({ statusId: '47fc9ee4' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(
+			createMockGitHubProjectsWebhookJob({ resumePmPhase: 'implementation', runId: 'run-1' }),
+			registryReturning(trigger),
+		);
+
+		expect(phaseCalls[0].args.resumeExistingBranch).toBe(false);
+	});
+
+	it('persists the explicit branch checkpoint after Implementation provisions', async () => {
+		phaseImpl = async (_phase, args) => {
+			await (args.onBranchProvisioned as () => Promise<void>)();
+			throw new Error('failed after provisioning');
+		};
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		const trigger: TriggerResult = { phase: 'implementation', taskId: '10', workItem };
+
+		await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
+
+		expect(updateRunJobPayload).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({ implementationBranchProvisioned: true }),
+		);
 	});
 
 	it('threads the fresh run row id as the sessionId on a first PM run (nothing to resume)', async () => {
@@ -1178,6 +1234,39 @@ describe('processJob', () => {
 		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
 		expect(outcome.attempt).toBe(0);
 		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000);
+	});
+
+	it('defers delivery failures with their underlying cause and an honest log label', async () => {
+		const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+		phaseImpl = async () => {
+			throw new DeliveryDeferredError('Implementation delivery deferred for retry', {
+				cause: new Error("pre-push hook failed: Cannot find package 'react'"),
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({
+				phase: 'implementation',
+				taskId: '216',
+				workItem: createMockWorkItem(),
+			}),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-deferred',
+			resumable: true,
+			reason:
+				"Implementation delivery deferred for retry ← pre-push hook failed: Cannot find package 'react'",
+		});
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining('delivery failed'),
+			expect.objectContaining({
+				error:
+					"Implementation delivery deferred for retry ← pre-push hook failed: Cannot find package 'react'",
+			}),
+		);
+		warn.mockRestore();
 	});
 
 	it('fails an aborted phase once the retry budget is exhausted', async () => {

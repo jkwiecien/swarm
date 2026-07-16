@@ -116,7 +116,7 @@ A matched handler returns a `TriggerResult` naming the phase plus its resolved i
 Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-specific and already correct:
 
 - Main repo at `~/swarm/{project-name}/`, worktrees under `~/swarm/{project-name}/.swarm-workspaces/task-<id>/`.
-- `git worktree add` per task; config/caches and the `cascade` sibling-checkout pointer (`.env`, `node_modules`, `cascade`, build caches) grafted in via symlinks with **absolute** targets — a relative link would dangle at the worktree's `.swarm-workspaces/<name>/` depth (see `ai/RULES.md` §1).
+- `git worktree add` per task; config/caches and the `cascade` sibling-checkout pointer (`.env`, root and nested package dependencies such as `node_modules` / `web/node_modules`, `cascade`, build caches) grafted in via symlinks with **absolute** targets — a relative link would dangle at the worktree's `.swarm-workspaces/<name>/` depth (see `ai/RULES.md` §1).
 - `git worktree remove --force` on completion.
 - Stale `task-<id>` worktrees left behind by interrupted runs are reclaimed by a retention sweep running periodically in the background of the worker process, or manually on-demand via `swarm worktrees prune`. The sweep preserves up to a configurable number of most-recently-active worktrees (defined by `worktreeRetention.maxWorktrees` in the project config, defaulting to 10), checking against a Redis-backed "worktree lease" and local cleanliness (`git status`) to ensure in-flight and dirty worktrees are never pruned.
 
@@ -135,11 +135,17 @@ worktree cleanup. Deterministic delivery remains outside every model.
 
 ### Failure handling & rate-limit retries (issue #91)
 
-A phase whose agent exits non-zero throws, and `processJob` turns that into a `phase-failed` `JobOutcome` rather than rethrowing — an agent run isn't idempotent, so a BullMQ retry storm is worse than surfacing the failure (the phase already logged the agent's stdout/stderr, and the `attempts: 3` default only ever fires for the infra throws that happen *before* the agent runs). The exceptions are transient failures: a **usage/session-limit** hit where the agent never did any work, or an **aborted** run where the worker itself shuts down mid-phase.
+A phase whose agent exits non-zero throws, and `processJob` turns that into a `phase-failed` `JobOutcome` rather than rethrowing — an agent run isn't idempotent, so a BullMQ retry storm is worse than surfacing the failure (the phase already logged the agent's stdout/stderr, and the `attempts: 3` default only ever fires for the infra throws that happen *before* the agent runs). The exceptions are transient failures: a **usage/session-limit** hit where the agent never did any work, an **aborted** run where the worker itself shuts down mid-phase, or a deterministic-delivery failure after the agent has already produced a valid checkpoint. Delivery deferrals preserve the worktree and expose the wrapped push/hook/API cause in the run rather than misreporting it as a worker shutdown.
 
 `src/harness/agent-failure.ts` classifies a failed run (`classifyAgentFailure` → `rate-limit` | `timeout` | `aborted` | `stalled` | `error`). On a `rate-limit` or `aborted` error, `processJob` returns a `phase-deferred` outcome with a computed delay instead of `phase-failed`; the worker entrypoint (`src/worker/index.ts`) re-enqueues the job (delayed, fresh job id, `rateLimitRetryAttempt` bumped) via `enqueueDelayedRetry`, capped by retry budgets. The retry delay is floored above the review-dispatch-dedup TTL.
 
 A retry **reuses the originating `runs` row** rather than inserting a second one (issues #136 and #146): the `phase-deferred` outcome carries the run's `runId`, `reenqueueDeferred` threads it onto the re-enqueued job (`jobBase.runId` in `src/queue/jobs.ts`), and on dequeue `processJob` resets that row to `running` (clearing `completedAt`/`error`/`nextRetryAt` and the outcome columns) instead of creating a new one. A fresh webhook that intentionally reruns a deferred or failed task/phase also claims and resets its latest terminal row, so automatic retries, manual retries, and user-triggered reruns all remain one logical dashboard run. A **manual "Retry now"** (the `runs.retryNow` tRPC mutation, offered for both `deferred` and `failed` runs) atomically claims the terminal row before retrying. Deferred runs promote their pending BullMQ job via `promoteRetryForRun`, which resets `rateLimitRetryAttempt` to 0 (bypassing the automatic cap); failed runs reconstruct an immediate job from the row's persisted `jobPayload`. The status-conditioned claim prevents concurrent automatic/manual retries from starting the same row twice.
+
+PM retry dispatch intent is separate from Implementation branch reuse. Manual and automatic retries
+carry `resumePmPhase` so an item already reporting "In progress" still re-enters its original phase,
+while `implementationBranchProvisioned` is persisted only after successful task-worktree acquisition.
+The retry uses the existing branch only when that explicit checkpoint is present; a run row by itself
+never proves that provisioning happened.
 
 ### User-initiated termination (issue #166)
 

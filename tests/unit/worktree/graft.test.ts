@@ -52,15 +52,17 @@ describe('graftEnvironment', () => {
 
 	it('symlinks the default set with absolute, realpath-resolved targets', () => {
 		const nodeModules = seedSource('node_modules', 'dir');
+		const webNodeModules = seedSource('web/node_modules', 'dir');
 		const env = seedSource('.env', 'file');
 
 		const results = graftEnvironment(repoRoot, worktreeDir);
 
-		for (const name of ['node_modules', '.env']) {
+		for (const name of ['node_modules', 'web/node_modules', '.env']) {
 			const link = join(worktreeDir, name);
 			expect(lstatSync(link).isSymbolicLink()).toBe(true);
 		}
 		expect(readlinkSync(join(worktreeDir, 'node_modules'))).toBe(nodeModules);
+		expect(readlinkSync(join(worktreeDir, 'web/node_modules'))).toBe(webNodeModules);
 		expect(readlinkSync(join(worktreeDir, '.env'))).toBe(env);
 		expect(results.find((r) => r.path === 'node_modules')?.status).toBe('linked');
 		// cascade wasn't seeded, so it's an optional miss.
@@ -198,6 +200,11 @@ describe('graftEnvironment', () => {
 	});
 
 	it('exposes the mandated default graft set', () => {
-		expect(DEFAULT_GRAFT_ENTRIES.map((e) => e.path)).toEqual(['node_modules', '.env', 'cascade']);
+		expect(DEFAULT_GRAFT_ENTRIES.map((e) => e.path)).toEqual([
+			'node_modules',
+			'web/node_modules',
+			'.env',
+			'cascade',
+		]);
 	});
 });

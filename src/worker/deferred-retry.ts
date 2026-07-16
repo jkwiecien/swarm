@@ -19,15 +19,23 @@ export async function reenqueueDeferred(
 ): Promise<void> {
 	try {
 		const parsed = SwarmJobSchema.parse(data);
+		// Retry intent is derived from this outcome. Do not let a stale flag from an
+		// earlier queued job turn a pre-provisioning capacity retry into a branch
+		// resume.
+		const { resumePmPhase, resumeSession: _resumeSession, ...job } = parsed;
 		const next: SwarmJob = {
-			...parsed,
-			rateLimitRetryAttempt: (parsed.rateLimitRetryAttempt ?? 0) + 1,
+			...job,
+			rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1,
 			// Carry the originating run row forward (issue #136) so the retry resets
 			// that same row instead of inserting a second one. `outcome.runId` wins
 			// over any stale value on `parsed` (they match on a retry; only the
 			// outcome knows the row a fresh webhook's first run just created).
 			...(outcome.runId ? { runId: outcome.runId } : {}),
-			...(parsed.type === 'github-projects' &&
+			// Keep PM dispatch intent when this attempt already carried it, or when
+			// the outcome explicitly says the phase started. Branch reuse is governed
+			// by the separate durable provisioning checkpoint on `job`.
+			...((outcome.pmPhaseStarted || resumePmPhase !== undefined) &&
+			job.type === 'github-projects' &&
 			(outcome.phase === 'planning' || outcome.phase === 'implementation')
 				? { resumePmPhase: outcome.phase }
 				: {}),

@@ -41,6 +41,7 @@ import {
 	promoteRetryForRun,
 	removePendingRetryForRun,
 } from '@/queue/producer.js';
+import { createMockGitHubProjectsWebhookJob } from '../../../helpers/factories.js';
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -310,6 +311,29 @@ describe('runsRouter', () => {
 					reasoningOverride: 'high',
 					runId: 'run-1',
 				}),
+				0,
+			);
+		});
+
+		it('marks a failed PM retry for dispatch without inventing a branch checkpoint', async () => {
+			const mockPayload = createMockGitHubProjectsWebhookJob();
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			await caller.retryNow({ runId: 'run-1' });
+
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.objectContaining({
+					runId: 'run-1',
+					resumePmPhase: 'implementation',
+				}),
+				0,
+			);
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.not.objectContaining({ implementationBranchProvisioned: true }),
 				0,
 			);
 		});
