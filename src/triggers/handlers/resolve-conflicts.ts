@@ -3,7 +3,7 @@ import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integrat
 import { logger } from '../../lib/logger.js';
 import { scheduleCoalescedJob } from '../../queue/producer.js';
 import type { GitHubParsedEvent } from '../../router/adapters/github.js';
-import { claimConflictResolution } from '../resolve-conflicts-dedup.js';
+import { buildConflictResolutionKey, claimConflictResolution } from '../resolve-conflicts-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 
 const RECHECK_DELAY_MS = 30_000;
@@ -56,8 +56,19 @@ export function createResolveConflictsTrigger(): TriggerHandler {
 			}
 			if (candidate.mergeable) return null;
 
-			const stateKey = `${ctx.project.repo}:${candidate.number}:${candidate.headSha}:${candidate.baseSha}`;
-			if (!ctx.runId && !(await claimConflictResolution(stateKey))) return null;
+			const stateKey = buildConflictResolutionKey(
+				ctx.project.repo,
+				String(candidate.number),
+				candidate.headSha,
+				candidate.baseSha,
+			);
+			if (
+				!ctx.runId &&
+				!ctx.continuationDispatchClaimed &&
+				!(await claimConflictResolution(stateKey))
+			) {
+				return null;
+			}
 			return {
 				phase: 'resolve-conflicts',
 				taskId: `${candidate.number}-conflicts`,

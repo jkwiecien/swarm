@@ -69,6 +69,18 @@ export type TriggerPhase =
 	| 'respond-to-ci'
 	| 'resolve-conflicts';
 
+const PRIORITIZED_CONTINUATION_PHASES: ReadonlySet<TriggerPhase> = new Set([
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+]);
+
+/** Whether a phase continues SCM-driven work already in flight. */
+export function isPrioritizedContinuationPhase(phase: TriggerPhase): boolean {
+	return PRIORITIZED_CONTINUATION_PHASES.has(phase);
+}
+
 /**
  * The `taskId` every result carries — the identifier the phase's worktree is
  * provisioned under (`task-<id>`), which is the linked issue/PR number.

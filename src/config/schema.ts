@@ -302,9 +302,8 @@ export const PipelineConfigSchema = z
 		 * whole `pipeline` block omitted) defaults to `true`; set `false` to preserve
 		 * the prior best-effort/FIFO scheduling for maximum new-work throughput.
 		 *
-		 * This task wires it for the Review continuation only (`trigger.phase ===
-		 * 'review'`); the remaining SCM-driven continuations keep today's 6-minute
-		 * concurrency deferral until the follow-up widens the predicate.
+		 * Applies to Review, Respond-to-review, Respond-to-CI, and
+		 * Resolve-conflicts; Planning and Implementation remain new board work.
 		 */
 		prioritizeContinuations: z.boolean().optional(),
 	})

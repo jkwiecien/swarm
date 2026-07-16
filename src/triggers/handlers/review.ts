@@ -392,11 +392,11 @@ function resolveDisposition(
 
 /**
  * Turn a resolved `respond-to-ci` disposition into a dispatch. The PR+SHA dedup
- * slot is already claimed by the caller; this adds the per-PR fix-attempt cap
- * (`claimRespondToCiAttempt`) — the guard the per-SHA dedup can't provide, since
- * each fix commit is a new SHA — and requires the PR branch the fix is pushed
- * to. Returns `null` (not a dispatch) when the cap is hit or the branch is
- * missing, leaving the failing PR to a human.
+ * slot is already claimed by the caller; a fresh dispatch adds the per-PR
+ * fix-attempt cap (`claimRespondToCiAttempt`) — the guard the per-SHA dedup
+ * can't provide, since each fix commit is a new SHA. A prioritized retry reuses
+ * the attempt already counted before its concurrency deferral. Returns `null`
+ * (not a dispatch) when the cap is hit or the PR branch is missing.
  */
 async function dispatchRespondToCi(
 	project: ProjectConfig,
@@ -404,6 +404,7 @@ async function dispatchRespondToCi(
 	prNumber: string,
 	headSha: string,
 	failedChecks: string[],
+	continuationDispatchClaimed: boolean,
 ): Promise<TriggerResult | null> {
 	if (!event.prBranch) {
 		// A `check_suite` payload should carry its PR's head ref; without it the
@@ -415,15 +416,19 @@ async function dispatchRespondToCi(
 		return null;
 	}
 
-	const attemptKey = buildRespondToCiAttemptKey(project.repo, prNumber);
-	const { allowed, attempt } = await claimRespondToCiAttempt(attemptKey, { prNumber, headSha });
-	if (!allowed) return null;
+	let attempt: number | undefined;
+	if (!continuationDispatchClaimed) {
+		const attemptKey = buildRespondToCiAttemptKey(project.repo, prNumber);
+		const claim = await claimRespondToCiAttempt(attemptKey, { prNumber, headSha });
+		if (!claim.allowed) return null;
+		attempt = claim.attempt;
+	}
 
 	logger.debug('respond-to-ci: dispatching Respond-to-CI phase', {
 		prNumber,
 		headSha,
 		prBranch: event.prBranch,
-		attempt,
+		...(attempt === undefined ? {} : { attempt }),
 		failedChecks,
 	});
 	// Suffixed, not bare `prNumber` — see the matching comment in
@@ -536,7 +541,14 @@ export function createReviewTrigger(): TriggerHandler {
 			}
 
 			if (disposition.kind === 'respond-to-ci') {
-				return dispatchRespondToCi(ctx.project, event, prNumber, headSha, disposition.failedChecks);
+				return dispatchRespondToCi(
+					ctx.project,
+					event,
+					prNumber,
+					headSha,
+					disposition.failedChecks,
+					ctx.continuationDispatchClaimed === true,
+				);
 			}
 
 			logger.debug('review: dispatching Review phase', { prNumber, headSha });

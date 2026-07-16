@@ -68,6 +68,20 @@ describe('respond-to-review trigger', () => {
 			});
 		});
 
+		it('re-dispatches the same review once on a prioritized continuation retry', async () => {
+			const result = await handler.handle({
+				...ctx(),
+				continuationDispatchClaimed: true,
+			});
+			expect(result).toEqual({
+				phase: 'respond-to-review',
+				taskId: '17-respond',
+				prNumber: '17',
+				prBranch: 'issue-17',
+				reviewId: '555',
+			});
+		});
+
 		it('dispatches when no pipeline config is present', async () => {
 			const result = await handler.handle({ ...ctx(), project: createMockProjectConfig() });
 			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
