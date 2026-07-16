@@ -61,8 +61,8 @@ import type { PmStatusKey } from '../../../../src/pm/pipeline.js';
 import { rootRoute } from '../__root.js';
 
 const PHASES = [
-	'implementationUnplanned',
 	'planning',
+	'implementationUnplanned',
 	'implementation',
 	'review',
 	'respondToReview',
