@@ -593,6 +593,94 @@ describe('processJob', () => {
 		});
 	});
 
+	describe('implementation-unplanned config selection', () => {
+		const implementationTrigger = (): TriggerResult => ({
+			phase: 'implementation',
+			taskId: '10',
+			workItem: createMockWorkItem(),
+		});
+
+		it('uses the unplanned config and records it when no Planning run exists', async () => {
+			projectLookup = () =>
+				createMockProjectConfig({
+					agents: {
+						implementation: { cli: 'claude', model: 'sonnet' },
+						implementationUnplanned: {
+							cli: 'codex',
+							model: 'gpt-5.6-terra',
+							reasoning: 'max',
+						},
+					},
+				});
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger()),
+			);
+
+			expect(getLatestRunForTask).toHaveBeenCalledWith(PROJECT.id, '10', 'planning');
+			expect(phaseCalls[0].args).toMatchObject({
+				cli: 'codex',
+				model: 'gpt-5.6-terra',
+				reasoning: 'max',
+			});
+			expect(createRun).toHaveBeenCalledWith(
+				expect.objectContaining({ engine: 'codex', model: 'gpt-5.6-terra', reasoning: 'max' }),
+			);
+		});
+
+		it('uses the normal config after Planning ran and when the unplanned config is unset', async () => {
+			const projectWithVariant = createMockProjectConfig({
+				agents: {
+					implementation: { cli: 'claude', model: 'opus' },
+					implementationUnplanned: { cli: 'codex', model: 'gpt-5.6-terra' },
+				},
+			});
+			projectLookup = () => projectWithVariant;
+			getLatestRunForTask.mockImplementationOnce(async () => ({ id: 'planning-run' }) as never);
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger()),
+			);
+			expect(phaseCalls[0].args).toMatchObject({ cli: 'claude', model: 'opus' });
+
+			phaseCalls.length = 0;
+			projectLookup = () =>
+				createMockProjectConfig({ agents: { implementation: { cli: 'claude', model: 'opus' } } });
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger()),
+			);
+			expect(phaseCalls[0].args).toMatchObject({ cli: 'claude', model: 'opus' });
+		});
+
+		it('assumes planned when the planning history lookup fails', async () => {
+			projectLookup = () =>
+				createMockProjectConfig({
+					agents: {
+						implementation: { cli: 'claude', model: 'opus' },
+						implementationUnplanned: { cli: 'codex', model: 'gpt-5.6-terra' },
+					},
+				});
+			getLatestRunForTask.mockRejectedValueOnce(new Error('postgres down'));
+
+			await expect(
+				processJob(
+					createMockGitHubProjectsWebhookJob(),
+					registryReturning(implementationTrigger()),
+				),
+			).resolves.toMatchObject({ status: 'phase-succeeded' });
+			expect(phaseCalls[0].args).toMatchObject({ cli: 'claude', model: 'opus' });
+		});
+
+		it('does not query planning history for non-implementation phases', async () => {
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(getLatestRunForTask).not.toHaveBeenCalledWith(PROJECT.id, '17', 'planning');
+		});
+	});
+
 	it('passes undefined cli and the default model when the project has no agents override, leaving phase on coded default CLI but resolving default model', async () => {
 		const trigger: TriggerResult = {
 			phase: 'planning',

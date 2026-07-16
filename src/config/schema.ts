@@ -230,6 +230,10 @@ export const DelegationConfigSchema = z
  * `defaults` sets a per-CLI default model (e.g. `{ claude: "sonnet" }`) — the
  * fallback when a phase specifies (or inherits) a CLI but doesn't set its own
  * `model`. Without it, the CLI runs with its own built-in default.
+ *
+ * `implementationUnplanned` is a config-only Implementation variant used when
+ * no Planning run exists for the same work item. It falls back to
+ * `implementation` when omitted; it is not a pipeline phase.
  */
 export const AgentsConfigSchema = z
 	.object({
@@ -237,6 +241,7 @@ export const AgentsConfigSchema = z
 		delegation: DelegationConfigSchema.optional(),
 		planning: AgentConfigSchema.optional(),
 		implementation: AgentConfigSchema.optional(),
+		implementationUnplanned: AgentConfigSchema.optional(),
 		review: AgentConfigSchema.optional(),
 		respondToReview: AgentConfigSchema.optional(),
 		respondToCi: AgentConfigSchema.optional(),

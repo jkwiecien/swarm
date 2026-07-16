@@ -335,6 +335,19 @@ describe('AgentsConfigSchema', () => {
 		expect(AgentsConfigSchema.safeParse({ review: { model: 'opus' } }).success).toBe(true);
 	});
 
+	it('accepts an implementationUnplanned override and validates its model for the cli', () => {
+		expect(
+			AgentsConfigSchema.safeParse({
+				implementationUnplanned: { cli: 'codex', model: 'gpt-5.6-terra', reasoning: 'max' },
+			}).success,
+		).toBe(true);
+		expect(
+			AgentsConfigSchema.safeParse({
+				implementationUnplanned: { cli: 'codex', model: 'opus' },
+			}).success,
+		).toBe(false);
+	});
+
 	it('accepts valid defaults block', () => {
 		expect(
 			AgentsConfigSchema.safeParse({
