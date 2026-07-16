@@ -61,6 +61,7 @@ import type { PmStatusKey } from '../../../../src/pm/pipeline.js';
 import { rootRoute } from '../__root.js';
 
 const PHASES = [
+	'implementationUnplanned',
 	'planning',
 	'implementation',
 	'review',
@@ -75,12 +76,26 @@ const DEFAULT_TIMEOUT_MINUTES = 30;
 const TOGGLEABLE_PHASES = new Set<string>(PIPELINE_TOGGLE_PHASES);
 
 const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
+	implementationUnplanned: {
+		label: 'Implementation (unplanned)',
+		code: 'implementationUnplanned',
+	},
 	planning: { label: 'Planning', code: 'planning' },
 	implementation: { label: 'Implementation', code: 'implementation' },
 	review: { label: 'Review', code: 'review' },
 	respondToReview: { label: 'Respond to Review', code: 'respondToReview' },
 	respondToCi: { label: 'Respond to CI', code: 'respondToCi' },
 	resolveConflicts: { label: 'Resolve Conflicts', code: 'resolveConflicts' },
+};
+
+/**
+ * Optional one-line explanation shown under a phase's detail heading. Most phases
+ * need none; `implementationUnplanned` is a dispatch-time variant, so it clarifies
+ * when its config actually applies.
+ */
+const PHASE_DESCRIPTIONS: Partial<Record<(typeof PHASES)[number], string>> = {
+	implementationUnplanned:
+		'Used only when Implementation was not preceded by a Planning run for this item; otherwise the Implementation configuration applies.',
 };
 
 /**
@@ -716,6 +731,17 @@ interface PhaseSettingsDetailProps {
 }
 
 /**
+ * Renders a phase's optional explanatory note (from {@link PHASE_DESCRIPTIONS}),
+ * or nothing when the phase has none. Kept out of {@link PhaseSettingsDetail} so
+ * that component's cognitive complexity stays within budget.
+ */
+function PhaseDetailNote({ phase }: { phase: (typeof PHASES)[number] }) {
+	const description = PHASE_DESCRIPTIONS[phase];
+	if (!description) return null;
+	return <p className="text-xs text-zinc-400">{description}</p>;
+}
+
+/**
  * The per-phase detail screen: the CLI/Model/Reasoning/Timeout selectors that
  * used to live inline in the summary row, plus a read-only summary of the phase's
  * fixed SWARM system prompt and the editable, optional Custom prompt (issue
@@ -771,6 +797,8 @@ export function PhaseSettingsDetail({
 					<h2 className="text-sm font-semibold text-zinc-200">{phaseLabel.label}</h2>
 					<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
 				</div>
+
+				<PhaseDetailNote phase={phase} />
 
 				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
 					<div className="flex items-start gap-3">
