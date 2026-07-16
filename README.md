@@ -264,7 +264,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 **`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
 - **`defaults`** — optional map of `cli` -> default `model` override for the whole project. This is the tier above the **global** `agents.defaults` (see [Global settings](#global-settings-app_settings)). Defaults store a **model only**, never a reasoning level (a per-CLI default reasoning can be invalid for another model — see the `reasoning` field below).
 - **`delegation`** — optional curated semantic-delegation policy (SWARM-orchestrated child runs). It is off unless `enabled: true`; `lightModels` optionally pins the lighter child model per CLI (`{ claude, codex }`, defaulting to Claude→`haiku`, Codex→`gpt-5.4-mini`); `minimumSemanticOperations` defaults to `3` and cannot be lower; and `phases` is a boolean map using the phase keys below (default `{ implementation: true }`). Both this project policy and the global environment switch (`SWARM_DELEGATION_ENABLED`) must allow the phase, and the phase's CLI must be child-capable (Claude or Codex; Antigravity is unsupported, #185). No `.claude/agents` definitions are needed — the child is launched and enforced by SWARM (`swarm delegate`), not a CLI native subagent.
-- **Phases** — `planning`, `implementation`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object:
+- **Phases** — `planning`, `implementation`, `implementationUnplanned`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object. `implementationUnplanned` applies only when an Implementation run has no prior Planning run-history row for the same item; it falls back to `implementation` when unset, preserving current behavior, and is a dispatch-time config variant rather than a pipeline phase:
   | Field | Purpose |
   | --- | --- |
   | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
@@ -291,7 +291,7 @@ App-wide settings that apply across **every** project, as opposed to the per-pro
 
 **`agents.defaults`** — the **global** per-CLI default model: a map of `cli` (`claude` / `antigravity` / `codex`) → default `model`, each validated for that CLI per `src/harness/models.ts` (same rules as the project-level `agents.defaults`).
 
-The worker resolves the model for a phase through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
+Before the four-tier chain runs, Implementation selects `agents.implementationUnplanned` for work items with no prior Planning run-history row, otherwise `agents.implementation`; an unset unplanned variant falls back to `implementation`. The worker then resolves the model for the selected config through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
 
 1. the phase's own `model` (project `agents.<phase>.model`);
 2. the **project** default — project `agents.defaults[cli]`;

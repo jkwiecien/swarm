@@ -382,6 +382,24 @@ function resolveModel(
 }
 
 /**
+ * Check whether Planning already ran for this work item. The history lookup is
+ * best-effort: an error assumes planning occurred so dispatch keeps using the
+ * established Implementation config rather than changing behavior on a DB hiccup.
+ */
+async function wasPrecededByPlanning(projectId: string, taskId: string): Promise<boolean> {
+	try {
+		return (await getLatestRunForTask(projectId, taskId, 'planning')) !== undefined;
+	} catch (err) {
+		logger.error('Failed to check for a prior planning run (assuming planned)', {
+			projectId,
+			taskId,
+			error: describeError(err),
+		});
+		return true;
+	}
+}
+
+/**
  * Resolve the *explicitly requested* reasoning level for a phase — per-run
  * `reasoningOverride` → per-phase config, and nothing else. Unlike `model`,
  * reasoning has no per-CLI defaults tier: a default level valid for one model
@@ -429,12 +447,19 @@ function runPhase(
 	job: SwarmJob,
 	runId: string | undefined,
 	signal?: AbortSignal,
+	implementationUnplanned = false,
 ): Promise<{
 	agent: AgentCliResult;
 	movedTo?: PmStatusKey;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 }> {
-	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+	const overrides = agentOverrideFor(
+		project,
+		globalDefaults,
+		trigger.phase,
+		job,
+		implementationUnplanned,
+	);
 	const runAgent = createLiveOutputRunner(runId, project, trigger.phase);
 	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
 	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
@@ -654,6 +679,7 @@ function agentOverrideFor(
 	globalDefaults: AgentDefaults | undefined,
 	phase: TriggerPhase,
 	job?: SwarmJob,
+	implementationUnplanned = false,
 ): {
 	cli?: AgentCli;
 	engine: AgentCli;
@@ -667,7 +693,9 @@ function agentOverrideFor(
 			case 'planning':
 				return project.agents?.planning ?? {};
 			case 'implementation':
-				return project.agents?.implementation ?? {};
+				return implementationUnplanned
+					? (project.agents?.implementationUnplanned ?? project.agents?.implementation ?? {})
+					: (project.agents?.implementation ?? {});
 			case 'review':
 				return project.agents?.review ?? {};
 			case 'respond-to-review':
@@ -722,11 +750,18 @@ async function tryReuseLatestRun(
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
+	implementationUnplanned = false,
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
 	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
-	const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+	const overrides = agentOverrideFor(
+		project,
+		globalDefaults,
+		trigger.phase,
+		job,
+		implementationUnplanned,
+	);
 	const claimed = await resetRunToRunning(
 		prior.id,
 		{ ...job, runId: prior.id },
@@ -746,11 +781,18 @@ async function tryResetCarriedRun(
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
+	implementationUnplanned = false,
 ): Promise<string | undefined> {
 	const runId = job.runId;
 	if (!runId) return undefined;
 	try {
-		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+		const overrides = agentOverrideFor(
+			project,
+			globalDefaults,
+			trigger.phase,
+			job,
+			implementationUnplanned,
+		);
 		return (await resetRunToRunning(
 			runId,
 			job,
@@ -824,6 +866,7 @@ async function reuseRunRow(
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
+	implementationUnplanned = false,
 ): Promise<string | undefined> {
 	const existingRunId = job.runId;
 	if (existingRunId) {
@@ -836,10 +879,10 @@ async function reuseRunRow(
 				error: describeError(err),
 			});
 		}
-		return tryResetCarriedRun(project, globalDefaults, trigger, job);
+		return tryResetCarriedRun(project, globalDefaults, trigger, job, implementationUnplanned);
 	}
 	try {
-		return await tryReuseLatestRun(project, globalDefaults, trigger, job);
+		return await tryReuseLatestRun(project, globalDefaults, trigger, job, implementationUnplanned);
 	} catch (err) {
 		logger.error('Failed to reuse terminal run row (creating a new one)', {
 			projectId: project.id,
@@ -856,12 +899,25 @@ async function tryCreateRun(
 	globalDefaults: AgentDefaults | undefined,
 	trigger: TriggerResult,
 	job: SwarmJob,
+	implementationUnplanned = false,
 ): Promise<string | undefined> {
-	const reusedRunId = await reuseRunRow(project, globalDefaults, trigger, job);
+	const reusedRunId = await reuseRunRow(
+		project,
+		globalDefaults,
+		trigger,
+		job,
+		implementationUnplanned,
+	);
 	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
-		const overrides = agentOverrideFor(project, globalDefaults, trigger.phase, job);
+		const overrides = agentOverrideFor(
+			project,
+			globalDefaults,
+			trigger.phase,
+			job,
+			implementationUnplanned,
+		);
 		const runId = await createRun({
 			projectId: project.id,
 			taskId: trigger.taskId,
@@ -1506,17 +1562,28 @@ export async function processJob(
 		// per job, best-effort: a DB hiccup falls through to the coded defaults rather
 		// than failing the run.
 		const globalDefaults = await loadGlobalDefaults();
+		const implementationUnplanned =
+			trigger.phase === 'implementation' &&
+			!(await wasPrecededByPlanning(project.id, trigger.taskId));
 
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-		runId = await tryCreateRun(project, globalDefaults, trigger, job);
+		runId = await tryCreateRun(project, globalDefaults, trigger, job, implementationUnplanned);
 
 		// Make this run cancellable by id and honour a cancellation that already
 		// landed (a deferred run terminated as its retry was dequeued).
 		await beginRunCancellationTracking(runId, runAbort);
 
-		const result = await runPhase(trigger, project, globalDefaults, job, runId, runAbort.signal);
+		const result = await runPhase(
+			trigger,
+			project,
+			globalDefaults,
+			job,
+			runId,
+			runAbort.signal,
+			implementationUnplanned,
+		);
 		// A run the harness killed for exceeding its wall-clock timeout is a terminal
 		// failure, even in the rare case the agent trapped SIGTERM and still exited 0
 		// before SIGKILL (so the phase read a stale/partial hand-off and "succeeded").
