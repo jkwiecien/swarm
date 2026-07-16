@@ -304,10 +304,10 @@ Reasoning (issue #180) is **not** part of this model chain: it is resolved separ
 
 Today the web dashboard exposes a **subset** of settings:
 
-- **Projects** — create a project (`id`, `name`, `repo`, `repoRoot`) and delete one, plus per-project **General Settings** (`repo`, `repoRoot`, `worktreeRoot`, `baseBranch`, `branchPrefix`), **Agent Configuration** (a per-phase summary table where each row opens a phase-details screen for that phase's `cli`/`model`/`reasoning`/timeout, its enable toggle, and an optional custom `prompt` appended to SWARM's built-in phase instructions — plus the project-level `agents.defaults`), and the Respond-to-review auto-merge/minor-review controls.
+- **Projects** — create a project (`id`, `name`, `repo`, `repoRoot`) and delete one, plus per-project **General Settings** (`repo`, `repoRoot`, `worktreeRoot`, `baseBranch`, `branchPrefix`), **Agent Configuration** (a per-phase summary table where each row opens a phase-details screen for that phase's `cli`/`model`/`reasoning`/timeout, its enable toggle, an optional custom `prompt`, and Planning/Implementation's auto-advance toggle — plus the project-level `agents.defaults`), and the Respond-to-review auto-merge/minor-review controls.
 - **Settings** — a top-level, app-wide **Settings** screen (sidebar → *Settings → General*) for [global settings](#global-settings-app_settings). Its only section today is **Default Agent Models** — the global per-CLI default model for Claude / Antigravity / Codex (writes `agents.defaults` via the `settings` tRPC router); leaving a CLI on its default option clears the global default so the coded default applies.
 
-The board mapping (`githubProjects`), credentials, pipeline controls other than Respond-to-review auto-merge/minor-review handling, and all general/env settings are **not** yet editable in the UI — change those in `swarm.config.json` / `.env` and re-apply. Credentials management and further global-settings sections are on the phase-6 backlog (see [Status](#status)).
+The board mapping (`githubProjects`), credentials, pipeline controls other than Planning/Implementation auto-advance and Respond-to-review auto-merge/minor-review handling, and all general/env settings are **not** yet editable in the UI — change those in `swarm.config.json` / `.env` and re-apply. Credentials management and further global-settings sections are on the phase-6 backlog (see [Status](#status)).
 
 ## Status
 
@@ -342,7 +342,7 @@ Early implementation. Summary by area:
 - On `check_suite` completion, the `pr-review` handler aggregates *every* check on the head SHA (via the Actions API) rather than trusting the single suite's own conclusion — reviewing, routing a failed suite to Respond-to-CI, or deferring with a coalesced ~30s recheck (`scheduleCoalescedJob`, #63) when the Actions API lags webhook delivery.
 - A cross-process dedup claim (`src/triggers/review-dispatch-dedup.ts`, SWARM-62) — a Redis `SET NX EX` keyed on `owner/repo:pr:headSha`, failing closed if Redis is down — ensures a PR that opens *and* then passes its checks is acted on once per commit, not once per event. The respond-to-ci path shares that slot and adds a per-PR fix-attempt cap (`src/triggers/respond-to-ci-attempts.ts`) so a fix that never makes CI green can't loop forever.
 - Revised from live end-to-end testing:
-  - Planning no longer moves the item at all — a human reviews the plan and moves it to "ToDo" themselves.
+  - Planning no longer moves the item by default — a human reviews the plan and moves it to "ToDo" themselves, unless `autoAdvance` is enabled in the project settings.
   - Implementation triggers on "ToDo" rather than "In progress" — the phase itself moves the item to "In progress" as a status report once it picks up the task, not as the trigger (`src/pm/pipeline.ts`).
   - The Board view's drag-and-drop fires a `reordered` action with no field-value data, not `edited` as originally assumed — the router/trigger now accept `reordered` too, guarded by a Redis-backed dedup (`pm-status-dedup.ts`) against the harmless within-column reorders it also fires on.
 
