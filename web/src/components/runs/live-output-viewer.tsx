@@ -1,5 +1,5 @@
-import { AlertTriangle } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { AlertTriangle, Pause, Play } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface LiveOutputEvent {
 	id: number;
@@ -25,12 +25,15 @@ export function LiveOutputViewer({
 	serverTruncated,
 	uiTruncated,
 }: LiveOutputViewerProps) {
-	const endRef = useRef<HTMLDivElement>(null);
+	const outputRef = useRef<HTMLDivElement>(null);
+	const [autoScroll, setAutoScroll] = useState(true);
+	const latestEventId = events[events.length - 1]?.id;
+
 	useEffect(() => {
-		// Effects may only return a cleanup function. Some browser implementations
-		// return a value from scrollIntoView(), so do not return that expression.
-		endRef.current?.scrollIntoView({ block: 'nearest' });
-	});
+		if (!autoScroll || latestEventId === undefined) return;
+		const output = outputRef.current;
+		if (output) output.scrollTop = output.scrollHeight;
+	}, [autoScroll, latestEventId]);
 
 	return (
 		<div className="border border-zinc-800 rounded-lg bg-zinc-950 overflow-hidden shadow-sm">
@@ -50,30 +53,52 @@ export function LiveOutputViewer({
 						: 'Older entries are hidden in this browser to keep rendering responsive. Reload to inspect from the beginning.'}
 				</div>
 			)}
-			<div className="max-h-[600px] min-h-[300px] overflow-auto p-4 font-mono text-xs leading-relaxed">
-				{events.length === 0 ? (
-					<div className="flex min-h-[250px] items-center justify-center italic text-zinc-500">
-						{isLoading ? 'Loading live output…' : 'No CLI output captured yet.'}
-					</div>
-				) : (
-					events.map((event) => (
-						<div
-							key={event.id}
-							className="grid grid-cols-[7.5rem_3.5rem_1fr] gap-2 whitespace-pre-wrap"
-						>
-							<time className="select-none text-zinc-600">
-								{new Date(event.emittedAt).toLocaleTimeString()}
-							</time>
-							<span className={event.stream === 'stderr' ? 'text-red-400' : 'text-sky-400'}>
-								{event.stream}
-							</span>
-							<span className={event.stream === 'stderr' ? 'text-red-300' : 'text-zinc-300'}>
-								{event.content}
-							</span>
+			<div className="relative h-[600px]">
+				<div
+					ref={outputRef}
+					data-testid="live-output-scrollbox"
+					className="h-full overflow-auto p-4 pb-14 font-mono text-xs leading-relaxed"
+				>
+					{events.length === 0 ? (
+						<div className="flex h-full items-center justify-center italic text-zinc-500">
+							{isLoading ? 'Loading live output…' : 'No CLI output captured yet.'}
 						</div>
-					))
-				)}
-				<div ref={endRef} />
+					) : (
+						events.map((event) => (
+							<div
+								key={event.id}
+								className="grid grid-cols-[7.5rem_3.5rem_1fr] gap-2 whitespace-pre-wrap"
+							>
+								<time className="select-none text-zinc-600">
+									{new Date(event.emittedAt).toLocaleTimeString()}
+								</time>
+								<span className={event.stream === 'stderr' ? 'text-red-400' : 'text-sky-400'}>
+									{event.stream}
+								</span>
+								<span className={event.stream === 'stderr' ? 'text-red-300' : 'text-zinc-300'}>
+									{event.content}
+								</span>
+							</div>
+						))
+					)}
+				</div>
+				<button
+					type="button"
+					onClick={() => setAutoScroll((enabled) => !enabled)}
+					aria-label={autoScroll ? 'Disable auto-scroll' : 'Enable auto-scroll'}
+					title={autoScroll ? 'Disable auto-scroll' : 'Enable auto-scroll'}
+					className={`absolute right-3 bottom-3 rounded p-1.5 shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-zinc-950 ${
+						autoScroll
+							? 'bg-violet-600 text-white hover:bg-violet-500'
+							: 'bg-zinc-900 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+					}`}
+				>
+					{autoScroll ? (
+						<Pause className="h-4 w-4" aria-hidden="true" />
+					) : (
+						<Play className="h-4 w-4" aria-hidden="true" />
+					)}
+				</button>
 			</div>
 		</div>
 	);
