@@ -129,6 +129,23 @@ describe('runImplementationPhase', () => {
 		});
 	});
 
+	it('names the worktree path in the prompt for Antigravity but not for Claude (issue #226)', async () => {
+		// agy --print runs from its own scratch dir, not the worktree cwd, so the
+		// Antigravity prompt must name the absolute path; Claude inherits cwd and
+		// keeps the "current working directory" phrasing.
+		const claudeDeps = makeDeps();
+		await runImplementationPhase(claudeDeps);
+		const claudePrompt = claudeDeps.runAgent.mock.calls[0][0].args?.[0] ?? '';
+		expect(claudePrompt).toContain('worktree whose root is your current working directory');
+		expect(claudePrompt).not.toContain(WORKTREE_PATH);
+
+		const agyDeps = makeDeps();
+		await runImplementationPhase({ ...agyDeps, cli: 'antigravity' });
+		const agyPrompt = agyDeps.runAgent.mock.calls[0][0].args?.[0] ?? '';
+		expect(agyPrompt).toContain(`worktree at the absolute path ${WORKTREE_PATH}`);
+		expect(agyPrompt).not.toContain('worktree whose root is your current working directory');
+	});
+
 	it('still reports the pickup move but skips the final move when autoAdvance is off', async () => {
 		const deps = makeDeps();
 		const result = await runImplementationPhase({ ...deps, autoAdvance: false });
@@ -443,6 +460,27 @@ describe('buildImplementationPrompt', () => {
 		const prompt = buildImplementationPrompt(createMockWorkItem(), context);
 		expect(prompt).toContain('GH_TOKEN');
 		expect(prompt).toContain('gh auth switch');
+	});
+
+	it('describes the worktree as the current working directory when no path is named', () => {
+		// Claude/Codex inherit `cwd`, so the default phrasing stays true and no
+		// absolute path is named (issue #226).
+		const prompt = buildImplementationPrompt(createMockWorkItem(), context);
+		expect(prompt).toContain('worktree whose root is your current working directory');
+	});
+
+	it('names the exact absolute worktree path and requires all writes there when one is given', () => {
+		// Antigravity's `agy --print` runs from its own scratch dir, not `cwd`
+		// (issue #226): the prompt must name the worktree path and point every edit
+		// and hand-off file at it, so SWARM's delivery validation finds the hand-off.
+		const worktreePath = '/Users/dev/swarm/swarm/.swarm-workspaces/task-19';
+		const prompt = buildImplementationPrompt(createMockWorkItem(), { ...context, worktreePath });
+		expect(prompt).toContain(`worktree at the absolute path ${worktreePath}`);
+		expect(prompt).toContain(`inside\n${worktreePath}. SWARM only reads files from there.`);
+		expect(prompt).toContain(OPENED_PR_FILENAME);
+		expect(prompt).toContain(BLOCKED_REASON_FILENAME);
+		// The "current working directory" claim would be false there, so it's dropped.
+		expect(prompt).not.toContain('worktree whose root is your current working directory');
 	});
 });
 

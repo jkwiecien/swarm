@@ -428,8 +428,20 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 	const resumeId = options.resumeSessionId;
 	const { baseArgs, sessionArgs } = buildSessionArgs(cli, resumeId, options.sessionId);
 	const printFlag = PRINT_FLAG[cli];
+	// Antigravity's `agy --print` runs the agent from its own scratch dir
+	// (`~/.gemini/antigravity-cli/scratch`), NOT the `cwd` we spawn it with —
+	// confirmed live on agy v1.1.3 (issue #226). So, unlike claude/codex which do
+	// inherit `cwd`, agy cannot see the task worktree unless it is granted access
+	// explicitly: `--add-dir <cwd>` opens exactly the provisioned worktree. The
+	// phase prompt (built by the caller) names that same absolute path and requires
+	// all edits and the hand-off file be written there, so SWARM's delivery
+	// validation finds the hand-off in the worktree it provisioned. Grouped with the
+	// leading flags — never between `-p` and the prompt, the one position that is
+	// load-bearing for agy (see DEFAULT_ARGS/PRINT_FLAG above).
+	const addDirArgs = cli === 'antigravity' ? ['--add-dir', options.cwd] : [];
 	const args = [
 		...baseArgs,
+		...addDirArgs,
 		...modelArgs,
 		...launch.providerArgs,
 		...(options.providerArgs ?? []),

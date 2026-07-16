@@ -202,6 +202,8 @@ describe('runAgentCli', () => {
 		await resumed;
 		expect(spawnMock.mock.calls[0][1]).toEqual([
 			'--dangerously-skip-permissions',
+			'--add-dir',
+			'/wt',
 			'--conversation',
 			'08bbd753-411b-4797-a252-9b49087b26e5',
 			'-p',
@@ -241,9 +243,44 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'agy',
-			['--dangerously-skip-permissions', '-p', 'do the thing'],
+			['--dangerously-skip-permissions', '--add-dir', '/wt', '-p', 'do the thing'],
 			expect.anything(),
 		);
+	});
+
+	it('grants antigravity access to the worktree via --add-dir, and never for claude or codex', async () => {
+		// agy --print runs from its own scratch dir, not the `cwd` we spawn it with
+		// (issue #226), so it needs the worktree opened explicitly. --add-dir sits
+		// among the leading flags, never between -p and the prompt (load-bearing for
+		// agy). claude/codex inherit `cwd`, so they get no such flag.
+		const agy = runAgentCli(
+			createMockRunAgentCliOptions({
+				cli: 'antigravity',
+				cwd: '/tmp/wt/task-226',
+				args: ['do the thing'],
+			}),
+		);
+		lastChild().emit('close', 0, null);
+		await agy;
+		const agyArgs = spawnMock.mock.calls[0][1] as string[];
+		expect(agyArgs).toContain('--add-dir');
+		expect(agyArgs[agyArgs.indexOf('--add-dir') + 1]).toBe('/tmp/wt/task-226');
+		// Never adjacent to the prompt — -p must stay immediately before it.
+		expect(agyArgs.slice(-2)).toEqual(['-p', 'do the thing']);
+
+		const claude = runAgentCli(
+			createMockRunAgentCliOptions({ cli: 'claude', cwd: '/tmp/wt/task-226' }),
+		);
+		lastChild().emit('close', 0, null);
+		await claude;
+		expect(spawnMock.mock.calls[1][1]).not.toContain('--add-dir');
+
+		const codex = runAgentCli(
+			createMockRunAgentCliOptions({ cli: 'codex', cwd: '/tmp/wt/task-226' }),
+		);
+		lastChild().emit('close', 0, null);
+		await codex;
+		expect(spawnMock.mock.calls[2][1]).not.toContain('--add-dir');
 	});
 
 	it('spawns codex with exec subcommand, --dangerously-bypass-approvals-and-sandbox, and no -p flag', async () => {
