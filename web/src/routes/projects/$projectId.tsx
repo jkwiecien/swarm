@@ -29,7 +29,6 @@ import {
 	normalizeCustomPrompt,
 } from '@/lib/phase-prompt.js';
 import {
-	autoAdvanceSummary,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
 	isAutoAdvancePhase,
@@ -539,6 +538,7 @@ interface PhaseConfigRowProps {
 	enabledDisabled?: boolean;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	autoAdvance?: boolean;
+	handleAutoAdvanceChange?: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
 	/** Open the phase-detail screen for this row. */
 	onSelect: (phase: (typeof PHASES)[number]) => void;
 }
@@ -550,7 +550,7 @@ interface PhaseConfigRowProps {
  * `enabled === undefined`). Split out of {@link PhaseConfigRow} so that row's
  * dependent-selector logic stays the dominant thing it reads as.
  */
-function PhaseEnabledCell({
+export function PhaseEnabledCell({
 	phase,
 	label,
 	enabled,
@@ -569,22 +569,44 @@ function PhaseEnabledCell({
 		return <span className="text-xs text-zinc-500">Always on</span>;
 	}
 	return (
+		<PhaseToggleSwitch
+			checked={enabled === true}
+			label={`${label} enabled`}
+			disabled={Boolean(isPending || enabledDisabled)}
+			onChange={() => handleEnabledChange?.(phase as PipelineTogglePhase, !enabled)}
+		/>
+	);
+}
+
+/** A compact design-system switch shared by the phase controls. */
+export function PhaseToggleSwitch({
+	checked,
+	label,
+	disabled,
+	onChange,
+}: {
+	checked: boolean;
+	label: string;
+	disabled: boolean;
+	onChange?: () => void;
+}) {
+	return (
 		<button
 			type="button"
 			role="switch"
-			aria-checked={enabled}
-			aria-label={`${label} enabled`}
-			disabled={isPending || enabledDisabled}
+			aria-checked={checked}
+			aria-label={label}
+			disabled={disabled}
 			// The row navigates on click; keep the toggle from bubbling up to it
 			// (ai/DESIGN_SYSTEM.md: trailing row action calls stopPropagation).
 			onClick={(e) => {
 				e.stopPropagation();
-				handleEnabledChange?.(phase as PipelineTogglePhase, !enabled);
+				onChange?.();
 			}}
-			className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-[#0F0F11] disabled:opacity-50 disabled:cursor-not-allowed ${enabled ? 'bg-violet-600' : 'bg-zinc-700'}`}
+			className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-[#0F0F11] disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-violet-600' : 'bg-zinc-700'}`}
 		>
 			<span
-				className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`}
+				className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`}
 			/>
 		</button>
 	);
@@ -596,9 +618,9 @@ function PhaseEnabledCell({
  * override, a "Custom prompt" badge when one is set, and a trailing chevron. The
  * whole row is clickable and keyboard-focusable and opens the phase-detail screen
  * (ai/DESIGN_SYSTEM.md blesses whole-row-click navigation as long as the trailing
- * per-row action — here the Enabled checkbox — stops propagation).
+ * per-row action — here the Enabled switch — stops propagation).
  */
-function PhaseConfigRow({
+export function PhaseConfigRow({
 	phase,
 	config,
 	isPending,
@@ -606,6 +628,7 @@ function PhaseConfigRow({
 	enabledDisabled,
 	handleEnabledChange,
 	autoAdvance,
+	handleAutoAdvanceChange,
 	onSelect,
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
@@ -633,8 +656,19 @@ function PhaseConfigRow({
 					handleEnabledChange={handleEnabledChange}
 				/>
 			</td>
-			<td className="px-4 py-3.5 text-xs text-zinc-400">
-				{autoAdvanceSummary(phase, autoAdvance)}
+			<td className="px-4 py-3.5">
+				{autoAdvance === undefined ? (
+					<span className="text-xs text-zinc-500">N/A</span>
+				) : (
+					<PhaseToggleSwitch
+						checked={autoAdvance}
+						label={`${phaseLabel.label} auto-advance`}
+						disabled={isPending}
+						onChange={() =>
+							handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
+						}
+					/>
+				)}
 			</td>
 			<td className="px-4 py-3.5">
 				<div className="flex flex-wrap items-center gap-2">
@@ -688,7 +722,7 @@ interface PhaseSettingsDetailProps {
  * #135). It shares the route's `agents` state and the single Save/Reset model
  * (rendered by {@link AgentConfigurationForm}) — nothing here saves on its own.
  */
-function PhaseSettingsDetail({
+export function PhaseSettingsDetail({
 	phase,
 	config,
 	projectDefaults,
@@ -738,8 +772,14 @@ function PhaseSettingsDetail({
 					<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
 				</div>
 
-				{enabled !== undefined && (
-					<div className="flex items-center gap-2">
+				<div className="flex items-center gap-2">
+					{enabled === undefined ? (
+						<PhaseToggleSwitch
+							checked={true}
+							label={`${phaseLabel.label} enabled (always on)`}
+							disabled={true}
+						/>
+					) : (
 						<PhaseEnabledCell
 							phase={phase}
 							label={phaseLabel.label}
@@ -748,23 +788,26 @@ function PhaseSettingsDetail({
 							isPending={isPending}
 							handleEnabledChange={handleEnabledChange}
 						/>
-						<span className="text-xs text-zinc-400">
-							Phase enabled
-							{enabledDisabled ? ' (locked off while Review is disabled)' : ''}
-						</span>
-					</div>
-				)}
+					)}
+					<span className="text-xs text-zinc-400">
+						Phase enabled
+						{enabled === undefined
+							? ' (always on)'
+							: enabledDisabled
+								? ' (locked off while Review is disabled)'
+								: ''}
+					</span>
+				</div>
 
 				{autoAdvance !== undefined && (
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
-						<input
-							type="checkbox"
+					<div className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
+						<PhaseToggleSwitch
 							checked={autoAdvance}
-							onChange={(event) =>
-								handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, event.target.checked)
-							}
+							label={`${phaseLabel.label} auto-advance`}
 							disabled={isPending}
-							className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+							onChange={() =>
+								handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
+							}
 						/>
 						<span>
 							<span className="block text-sm font-medium text-zinc-200">Auto-advance</span>
@@ -774,7 +817,7 @@ function PhaseSettingsDetail({
 									: 'Move to In review after SWARM opens the pull request.'}
 							</span>
 						</span>
-					</label>
+					</div>
 				)}
 
 				<div className="grid gap-5 sm:grid-cols-2">
@@ -1018,6 +1061,7 @@ function AgentConfigurationForm({
 													isAutoAdvancePhase(phase) ? pipelineAutoAdvance[phase] : undefined
 												}
 												handleEnabledChange={handleEnabledChange}
+												handleAutoAdvanceChange={handleAutoAdvanceChange}
 												onSelect={onSelectPhase}
 											/>
 										))}

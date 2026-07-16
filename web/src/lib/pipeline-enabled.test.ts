@@ -46,6 +46,30 @@ describe('auto-advance form mapping', () => {
 			implementation: { autoAdvance: true },
 		});
 	});
+
+	it('combines auto-advance and enabled edits without dropping other settings', () => {
+		const existing: PipelineConfig = {
+			planning: { autoSplit: false },
+			implementation: {},
+			review: {},
+			respondToReview: { autoMerge: true, skipOnMinors: false },
+			respondToCi: {},
+		};
+		const enabled = buildPipelineEnabledUpdate(
+			{ review: false, respondToReview: true, respondToCi: false },
+			existing,
+		);
+
+		expect(
+			buildPipelineAutoAdvanceUpdate({ planning: true, implementation: false }, enabled),
+		).toEqual({
+			planning: { autoAdvance: true, autoSplit: false },
+			implementation: { autoAdvance: false },
+			review: { enabled: false },
+			respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
+			respondToCi: { enabled: false },
+		});
+	});
 });
 
 describe('toPipelineEnabledForm', () => {
