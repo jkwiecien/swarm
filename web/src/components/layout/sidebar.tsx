@@ -95,10 +95,10 @@ export function Sidebar() {
 						<Settings className="h-4 w-4" />
 						General
 					</Link>
-				</nav>
-			</div>
-			<div>
-				<div className="px-2 pb-2">
+
+					<div className="px-3 pt-4 pb-1 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+						Other
+					</div>
 					<Link
 						to="/quota"
 						className={
@@ -110,7 +110,9 @@ export function Sidebar() {
 						<Gauge className="h-4 w-4" />
 						CLI Quota
 					</Link>
-				</div>
+				</nav>
+			</div>
+			<div>
 				<div className="flex items-center gap-2 border-t border-zinc-850 p-4">
 					<span
 						className={
