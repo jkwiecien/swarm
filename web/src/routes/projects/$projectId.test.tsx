@@ -256,7 +256,8 @@ describe('PhaseSettingsDetail', () => {
 		const switchElement = screen.getByRole('switch') as HTMLButtonElement;
 		expect(switchElement.disabled).toBe(true);
 		expect(switchElement.getAttribute('aria-checked')).toBe('true');
-		expect(screen.getByText('Phase enabled (always on)')).toBeDefined();
+		expect(screen.getByText('Enabled')).toBeDefined();
+		expect(screen.getByText('Always on')).toBeDefined();
 	});
 
 	it('renders Auto-advance toggle switch when autoAdvance is defined', () => {
@@ -304,6 +305,7 @@ describe('PhaseSettingsDetail', () => {
 			/>,
 		);
 
-		expect(screen.getByText('Phase enabled (locked off while Review is disabled)')).toBeDefined();
+		expect(screen.getByText('Enabled')).toBeDefined();
+		expect(screen.getByText('Locked off while Review is disabled.')).toBeDefined();
 	});
 });

@@ -772,53 +772,57 @@ export function PhaseSettingsDetail({
 					<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
 				</div>
 
-				<div className="flex items-center gap-2">
-					{enabled === undefined ? (
-						<PhaseToggleSwitch
-							checked={true}
-							label={`${phaseLabel.label} enabled (always on)`}
-							disabled={true}
-						/>
-					) : (
-						<PhaseEnabledCell
-							phase={phase}
-							label={phaseLabel.label}
-							enabled={enabled}
-							enabledDisabled={enabledDisabled}
-							isPending={isPending}
-							handleEnabledChange={handleEnabledChange}
-						/>
-					)}
-					<span className="text-xs text-zinc-400">
-						Phase enabled
-						{enabled === undefined
-							? ' (always on)'
-							: enabledDisabled
-								? ' (locked off while Review is disabled)'
-								: ''}
-					</span>
-				</div>
-
-				{autoAdvance !== undefined && (
-					<div className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
-						<PhaseToggleSwitch
-							checked={autoAdvance}
-							label={`${phaseLabel.label} auto-advance`}
-							disabled={isPending}
-							onChange={() =>
-								handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
-							}
-						/>
+				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
+					<div className="flex items-start gap-3">
+						{enabled === undefined ? (
+							<PhaseToggleSwitch
+								checked={true}
+								label={`${phaseLabel.label} enabled (always on)`}
+								disabled={true}
+							/>
+						) : (
+							<PhaseEnabledCell
+								phase={phase}
+								label={phaseLabel.label}
+								enabled={enabled}
+								enabledDisabled={enabledDisabled}
+								isPending={isPending}
+								handleEnabledChange={handleEnabledChange}
+							/>
+						)}
 						<span>
-							<span className="block text-sm font-medium text-zinc-200">Auto-advance</span>
-							<span className="block text-xs text-zinc-400 mt-1">
-								{phase === 'planning'
-									? 'Move to ToDo after SWARM posts the plan.'
-									: 'Move to In review after SWARM opens the pull request.'}
-							</span>
+							<span className="block text-sm font-medium text-zinc-200">Enabled</span>
+							{enabled === undefined ? (
+								<span className="block text-xs text-zinc-400 mt-1">Always on</span>
+							) : enabledDisabled ? (
+								<span className="block text-xs text-zinc-400 mt-1">
+									Locked off while Review is disabled.
+								</span>
+							) : null}
 						</span>
 					</div>
-				)}
+
+					{autoAdvance !== undefined && (
+						<div className="flex items-start gap-3">
+							<PhaseToggleSwitch
+								checked={autoAdvance}
+								label={`${phaseLabel.label} auto-advance`}
+								disabled={isPending}
+								onChange={() =>
+									handleAutoAdvanceChange?.(phase as PipelineAutoAdvancePhase, !autoAdvance)
+								}
+							/>
+							<span>
+								<span className="block text-sm font-medium text-zinc-200">Auto-advance</span>
+								<span className="block text-xs text-zinc-400 mt-1">
+									{phase === 'planning'
+										? 'Move to ToDo after SWARM posts the plan.'
+										: 'Move to In review after SWARM opens the pull request.'}
+								</span>
+							</span>
+						</div>
+					)}
+				</div>
 
 				<div className="grid gap-5 sm:grid-cols-2">
 					<div>
