@@ -138,14 +138,34 @@ describe('runImplementationPhase', () => {
 		expect(result).toMatchObject({ movedTo: undefined });
 	});
 
-	it('reuses the existing task branch when resuming a deferred implementation', async () => {
+	it('provisions the existing task branch when its preserved worktree is gone', async () => {
 		const deps = makeDeps();
+		vi.mocked(deps.worktrees.reuse).mockResolvedValueOnce(undefined);
 		await runImplementationPhase({ ...deps, resumeExistingBranch: true });
 
+		expect(deps.worktrees.reuse).toHaveBeenCalledWith('19', 'issue-19', false);
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('19', {
 			createBranch: false,
 			branch: 'issue-19',
 		});
+	});
+
+	it('reuses a preserved task worktree for a fresh-session implementation retry', async () => {
+		const deps = makeDeps();
+		await runImplementationPhase({
+			...deps,
+			resumeExistingBranch: true,
+			sessionId: '11111111-1111-4111-8111-111111111111',
+		});
+
+		expect(deps.worktrees.reuse).toHaveBeenCalledWith('19', 'issue-19', false);
+		expect(deps.worktrees.provision).not.toHaveBeenCalled();
+		expect(deps.runAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: '11111111-1111-4111-8111-111111111111',
+				resumeSessionId: undefined,
+			}),
+		);
 	});
 
 	it('creates the task branch for a fresh retry deferred before provisioning', async () => {

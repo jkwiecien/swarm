@@ -59,7 +59,6 @@ import {
 	buildImplementationPrompt,
 } from '@/pipeline/prompts/implementation.js';
 import {
-	acquireResumableWorktree,
 	cleanupUnlessPreserved,
 	sessionRunArgs,
 	shouldPreserveForResume,
@@ -269,12 +268,11 @@ function readBlockedReason(worktreePath: string): string | undefined {
 /**
  * Acquire the task-branch worktree for the implementation run. When resuming a
  * Claude session (`resumeSessionId`) it reuses the existing worktree so the
- * agent can `--resume` in place; if that worktree is gone (`reuse` returns
- * undefined) it falls through to a fresh provision. Otherwise it provisions —
- * reusing the existing task branch when retrying a PM phase
- * (`resumeExistingBranch`), or creating a new branch. `resumed` reports whether
- * a session worktree was actually reused, so the caller only threads the resume
- * session id through when the checkout it belongs to is really in place.
+ * agent can `--resume` in place. A manual retry of an implementation that already
+ * provisioned its branch also reuses that checkout, but starts a fresh agent
+ * session. If the checkout is gone, it falls through to provision the existing
+ * task branch (`resumeExistingBranch`) or a new one. `resumed` reports whether
+ * an agent session, not merely the worktree, was resumed.
  */
 async function acquireImplementationWorktree(
 	worktrees: GitWorktreeManager,
@@ -283,11 +281,18 @@ async function acquireImplementationWorktree(
 	resumeSessionId: string | undefined,
 	resumeExistingBranch: boolean,
 ): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
-	return acquireResumableWorktree(worktrees, taskId, branch, false, resumeSessionId, () =>
-		resumeExistingBranch
-			? worktrees.provision(taskId, { createBranch: false, branch })
-			: worktrees.provision(taskId),
-	);
+	// A checkpoint means this run already owns the task branch. Reuse its checkout
+	// when it survived a failed/manual retry so a fresh agent session does not
+	// collide with `task-<id>` or discard partial, unpushed work. A session is only
+	// resumed when an actual resume id is present.
+	if (resumeSessionId || resumeExistingBranch) {
+		const handle = await worktrees.reuse(taskId, branch, false);
+		if (handle) return { handle, resumed: resumeSessionId !== undefined };
+	}
+	const handle = resumeExistingBranch
+		? await worktrees.provision(taskId, { createBranch: false, branch })
+		: await worktrees.provision(taskId);
+	return { handle, resumed: false };
 }
 
 /**
