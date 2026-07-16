@@ -316,6 +316,40 @@ describe('runsRouter', () => {
 			);
 		});
 
+		it('assigns a new session for a failed retry instead of reusing its old one', async () => {
+			const mockPayload = {
+				type: 'github' as const,
+				projectId: 'p1',
+				agentSessionId: '11111111-1111-4111-8111-111111111111',
+				resumeSession: true,
+				event: {
+					eventType: 'pull_request' as const,
+					repoFullName: 'jkwiecien/swarm',
+					isCommentEvent: false,
+				},
+			};
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			await caller.retryNow({ runId: 'run-1' });
+
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.objectContaining({
+					agentSessionId: expect.stringMatching(/^(?!11111111-1111-4111-8111-111111111111$).+$/),
+				}),
+				0,
+				{ unique: true },
+			);
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.not.objectContaining({ resumeSession: true }),
+				0,
+				{ unique: true },
+			);
+		});
+
 		it('marks a failed PM retry for dispatch without inventing a branch checkpoint', async () => {
 			const mockPayload = createMockGitHubProjectsWebhookJob();
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(

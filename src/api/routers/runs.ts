@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
@@ -74,6 +75,7 @@ function reconstructRetryJob(
 	cli?: z.infer<typeof AgentCliSchema>,
 	model?: string,
 	reasoning?: z.infer<typeof ReasoningLevelSchema>,
+	freshSession = false,
 ): NonNullable<Parameters<typeof resetRunToRunning>[1]> {
 	const job = { ...jobPayload };
 	job.runId = runId;
@@ -84,6 +86,10 @@ function reconstructRetryJob(
 	if (cli) job.cliOverride = cli;
 	if (model) job.modelOverride = model;
 	if (reasoning) job.reasoningOverride = reasoning;
+	if (freshSession) {
+		job.agentSessionId = randomUUID();
+		delete job.resumeSession;
+	}
 	return job;
 }
 
@@ -271,6 +277,7 @@ export const runsRouter = router({
 				input.cli,
 				input.model,
 				input.reasoning,
+				true,
 			);
 			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow, engineForRow);
 			await enqueueDelayedRetry(job, 0, { unique: true });
