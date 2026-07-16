@@ -72,6 +72,7 @@ import type { TriggerRegistry } from '../triggers/registry.js';
 import {
 	buildReviewDispatchKey,
 	refreshReviewDispatchClaim,
+	releaseReviewDispatch,
 } from '../triggers/review-dispatch-dedup.js';
 import type { TriggerContext, TriggerPhase, TriggerResult } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
@@ -1663,6 +1664,21 @@ export async function processJob(
 			eventType: job.event.eventType,
 			deliveryId: job.deliveryId,
 		});
+		if (job.runId) {
+			await finalizeRun(job.runId, {
+				status: 'failed',
+				error:
+					'The pending continuation re-evaluated to no-trigger (e.g. disposition changed or was disabled)',
+			});
+			if (job.type === 'github' && job.event.workItemId && job.event.headSha) {
+				const dispatchKey = buildReviewDispatchKey(
+					project.repo,
+					job.event.workItemId,
+					job.event.headSha,
+				);
+				await releaseReviewDispatch(dispatchKey);
+			}
+		}
 		return { status: 'no-trigger' };
 	}
 

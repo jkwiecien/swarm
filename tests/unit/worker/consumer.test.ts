@@ -81,9 +81,11 @@ vi.mock('@/worker/pending-continuations.js', () => ({
 }));
 
 const refreshReviewDispatchClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
+const releaseReviewDispatch = vi.fn(async (_key: string) => {});
 vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
 	refreshReviewDispatchClaim: (key: string, ttlSec: number) =>
 		refreshReviewDispatchClaim(key, ttlSec),
+	releaseReviewDispatch: (key: string) => releaseReviewDispatch(key),
 	buildReviewDispatchKey: (repo: string, prNumber: string, headSha: string) =>
 		`${repo}:${prNumber}:${headSha}`,
 }));
@@ -247,6 +249,7 @@ describe('processJob', () => {
 		takeNextPendingContinuation.mockClear();
 		takeNextPendingContinuation.mockResolvedValue(null);
 		refreshReviewDispatchClaim.mockClear();
+		releaseReviewDispatch.mockClear();
 		createRun.mockClear();
 		createRun.mockResolvedValue('run-1');
 		completeRun.mockClear();
@@ -466,6 +469,23 @@ describe('processJob', () => {
 
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
 			expect(takeNextPendingContinuation).not.toHaveBeenCalled();
+		});
+
+		it('finalizes the run row and releases the claim if a pending continuation re-resolves to no-trigger', async () => {
+			const job = createMockGitHubWebhookJob({
+				runId: 'run-123',
+				continuationDispatchClaimed: true,
+				event: createMockGitHubParsedEvent({ headSha: 'deadbeef' }),
+			});
+
+			const outcome = await processJob(job, registryReturning(null));
+
+			expect(outcome.status).toBe('no-trigger');
+			expect(completeRun).toHaveBeenCalledWith('run-123', {
+				status: 'failed',
+				error: expect.stringContaining('no-trigger'),
+			});
+			expect(releaseReviewDispatch).toHaveBeenCalledWith(`${PROJECT.repo}:17:deadbeef`);
 		});
 	});
 
