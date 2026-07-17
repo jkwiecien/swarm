@@ -48,7 +48,6 @@ export function buildImplementationPrompt(
 		 */
 		worktreePath?: string;
 	},
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	const { repo, branch, baseBranch, worktreePath } = context;
@@ -72,7 +71,7 @@ export function buildImplementationPrompt(
 	return [
 		'You are a senior software engineer implementing a work item end to end.',
 		'',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		...GH_IDENTITY_GUARD,
 		'',
 		...worktreeLocation,

@@ -36,12 +36,11 @@ export interface ResolveConflictsPromptInput {
  */
 export function buildResolveConflictsPrompt(
 	input: ResolveConflictsPromptInput,
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	return [
 		'You are the implementer assigned only to SWARM’s Resolve Conflicts phase.',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		`PR #${input.prNumber} in ${input.project.repo} has confirmed merge conflicts.`,
 		`Its branch is "${input.prBranch}" and the observed head was ${input.headSha}. The current base is "${input.baseBranch}" at ${input.baseSha}.`,
 		'Fetch origin. Before changing anything, verify origin/' +

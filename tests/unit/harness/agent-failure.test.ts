@@ -137,6 +137,23 @@ describe('classifyAgentFailure', () => {
 		expect(failure).toEqual({ kind: 'capacity' });
 	});
 
+	it.each([
+		'{"type":"error","message":"Selected model is at capacity. Please try a different model."}',
+		'{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+	])('classifies Codex structured capacity event %s anywhere in captured output', (event) => {
+		const output = [
+			'{"type":"item.completed","item":{"type":"reasoning"}}',
+			'Codex completed useful analysis before the provider failure.',
+			event,
+			...Array(16).fill('{"type":"item.completed","item":{"type":"message"}}'),
+			'Error: process completed with exit code 1.',
+		].join('\n');
+
+		expect(classifyAgentFailure(result({ cli: 'codex', stdout: output }), NOW)).toEqual({
+			kind: 'capacity',
+		});
+	});
+
 	it('ignores borrowed limit and reset signals outside the terminal window', () => {
 		const body = ['usage limit reached — resets 1:40pm (Europe/Warsaw)', ...Array(16).fill('work')];
 		const failure = classifyAgentFailure(
@@ -166,6 +183,17 @@ describe('classifyAgentFailure', () => {
 			);
 			expect(failure.kind).toBe('error');
 		}
+	});
+
+	it('leaves a non-capacity Codex turn.failed event as a terminal error', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'codex',
+				stderr: '{"type":"turn.failed","error":{"message":"Connection closed unexpectedly."}}',
+			}),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'error' });
 	});
 
 	it('classifies the observed Claude 529 overload banner as capacity', () => {

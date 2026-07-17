@@ -65,8 +65,9 @@ export const GitHubParsedEventSchema = z.object({
 
 	/**
 	 * The PR head commit SHA — `pull_request.head.sha` on a `pull_request` event,
-	 * `pull_request.head.sha` on a `pull_request_review` event, `check_suite.head_sha`
-	 * on a `check_suite` event. What the Review phase pins its detached checkout to
+	 * `pull_request.head.sha` (falling back to the review's pinned `commit_id`) on a
+	 * `pull_request_review` event, and `check_suite.head_sha` on a `check_suite`
+	 * event. What the Review phase pins its detached checkout to
 	 * (`src/pipeline/review.ts`), and what the Respond-to-review trigger's
 	 * review-verdict cap lookup falls back to when a submitted review's id isn't
 	 * yet in the ledger (issue #235).
@@ -198,7 +199,7 @@ function reviewFields(p: Record<string, unknown>): LifecycleFields {
 	const review = asRecord(p.review);
 	const head = asRecord(asRecord(p.pull_request)?.head);
 	return {
-		headSha: (head?.sha as string) ?? undefined,
+		headSha: (head?.sha as string) ?? (review?.commit_id as string) ?? undefined,
 		prBranch: (head?.ref as string) ?? undefined,
 		reviewState: (review?.state as string) ?? undefined,
 		reviewId: review?.id != null ? String(review.id) : undefined,

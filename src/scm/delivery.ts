@@ -4,11 +4,6 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import {
-	DELEGATION_EVENTS_FILENAME,
-	DELEGATION_REVIEW_FILENAME,
-	DELEGATION_SCRATCH_GLOB,
-} from '../delegation/native.js';
 import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 
 const execFileAsync = promisify(execFile);
@@ -133,15 +128,7 @@ export const HANDOFF_FILENAMES = {
 } as const;
 
 const PROGRESS_FILENAME = '.swarm_delivery.json';
-const SCRATCH_PATHSPECS = [
-	...Object.values(HANDOFF_FILENAMES),
-	PROGRESS_FILENAME,
-	DELEGATION_EVENTS_FILENAME,
-	DELEGATION_REVIEW_FILENAME,
-	// Covers the events log, the review file, and per-delegation contract manifests
-	// (`.swarm-delegation-<id>.contract.json`) so delegation scratch never lands in a PR.
-	`:(glob)${DELEGATION_SCRATCH_GLOB}`,
-] as const;
+const SCRATCH_PATHSPECS = [...Object.values(HANDOFF_FILENAMES), PROGRESS_FILENAME] as const;
 
 export class DeliveryDeferredError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
@@ -222,9 +209,7 @@ export async function commitPreparedTree(
 	await validatePreparedTree(cwd);
 	await git(cwd, ['add', '--all', '--', '.']);
 	// `git add` treats an explicitly named ignored path as an error, even when it
-	// is an exclude pathspec. Unstage scratch after adding instead: ignored files
-	// are never explicitly named, while non-ignored delegation artifacts stay out
-	// of the delivery commit.
+	// is an exclude pathspec. Unstage hand-off files after adding instead.
 	await git(cwd, ['reset', '--quiet', '--', ...SCRATCH_PATHSPECS]);
 	const staged = await git(cwd, ['diff', '--cached', '--name-only']);
 	if (!staged)

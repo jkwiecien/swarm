@@ -169,12 +169,12 @@ describe('runRespondToReviewPhase', () => {
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('antigravity');
 	});
 
-	describe('auto-merge is Review-only (issue #235)', () => {
+	describe('merge automation is Review-only (issue #235, provider-neutral since issue #253)', () => {
 		it.each([
 			['fixed', 'fixed\n'],
 			['pushed-back', 'pushed-back'],
 			['no-findings', 'no-findings'],
-		])('never surfaces autoMergeEnabled for a %s outcome, even when the setting is on', async (expectedOutcome, contents) => {
+		])('never surfaces mergeOutcome for a %s outcome, even when the setting is on', async (expectedOutcome, contents) => {
 			const deps = makeDeps();
 			deps.project = createMockProjectConfig({
 				pipeline: { respondToReview: { autoMerge: true } },
@@ -184,7 +184,7 @@ describe('runRespondToReviewPhase', () => {
 			const result = await runRespondToReviewPhase(deps);
 
 			expect(result.outcome).toBe(expectedOutcome);
-			expect(result).not.toHaveProperty('autoMergeEnabled');
+			expect(result).not.toHaveProperty('mergeOutcome');
 		});
 	});
 

@@ -45,7 +45,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -277,7 +276,6 @@ export async function runRespondToCiPhase(
 					args: [
 						buildRespondToCiPrompt(
 							{ repo: project.repo, prNumber, prBranch, headSha },
-							delegationEnabled(project, 'respond-to-ci', cli),
 							customPrompt,
 						),
 					],

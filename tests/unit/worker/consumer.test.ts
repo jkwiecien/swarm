@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
-import { AgentRunError } from '@/harness/agent-failure.js';
+import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import type { PMProvider } from '@/pm/types.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
@@ -140,9 +140,11 @@ vi.mock('@/db/repositories/appSettingsRepository.js', () => ({
 // SCM integration (the PM provider has no PR → comment mapping); mock it at the
 // module boundary the same way the PM provider is mocked above.
 const commentOnPullRequest = vi.fn(async (_p: ProjectConfig, _n: number, _b: string) => 99);
+const mergePullRequest = vi.fn(async () => ({ status: 'merged' as const, message: 'merged' }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		commentOnPullRequest = commentOnPullRequest;
+		mergePullRequest = mergePullRequest;
 	},
 }));
 
@@ -310,6 +312,8 @@ describe('processJob', () => {
 		clearRunCancellation.mockClear();
 		registerRunController.mockClear();
 		unregisterRunController.mockClear();
+		mergePullRequest.mockClear();
+		mergePullRequest.mockResolvedValue({ status: 'merged', message: 'merged' });
 	});
 
 	it('runs under the project limit and releases the slot on success', async () => {
@@ -791,6 +795,12 @@ describe('processJob', () => {
 			headSha: 'deadbeef',
 			taskId: '17',
 		});
+		expect(phaseCalls[0].args.mergePullRequest).toEqual(expect.any(Function));
+		await (phaseCalls[0].args.mergePullRequest as (project: ProjectConfig, pr: number) => unknown)(
+			PROJECT,
+			17,
+		);
+		expect(mergePullRequest).toHaveBeenCalledWith(PROJECT, 17);
 		expect(outcome).toEqual({
 			status: 'phase-succeeded',
 			phase: 'review',
@@ -1994,29 +2004,6 @@ describe('processJob', () => {
 			);
 		});
 
-		it('links native child observations to the completed parent run', async () => {
-			const delegation = {
-				invocationId: 'session-1:agent-1',
-				contractId: 'docs-update',
-				parentRunId: 'run-1',
-				phase: 'review',
-				agent: 'swarm-doc-editor' as const,
-				model: 'haiku',
-				delegationType: 'documentation-edit' as const,
-				allowedPaths: ['README.md'],
-				outcome: 'completed' as const,
-				reviewDisposition: 'accepted' as const,
-			};
-			phaseImpl = async () => ({ agent: agentResult({ delegations: [delegation] }) });
-
-			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
-
-			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
-				'run-1',
-				expect.objectContaining({ delegations: [delegation] }),
-			);
-		});
-
 		it('records the work item metadata and requested model/reasoning for a PM-driven phase', async () => {
 			const projectWithAgents = createMockProjectConfig({
 				agents: { planning: { cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' } },
@@ -2136,6 +2123,48 @@ describe('processJob', () => {
 				nextRetryAt: new Date(now.getTime() + outcome.retryDelayMs),
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'ro', 're');
+			vi.useRealTimers();
+		});
+
+		it('finalizes a Codex Review capacity failure as deferred with retry metadata', async () => {
+			vi.useFakeTimers();
+			const now = new Date('2026-07-10T10:00:00.000Z');
+			vi.setSystemTime(now);
+			phaseImpl = async () => {
+				throw agentRunError(
+					agentResult({
+						cli: 'codex',
+						exitCode: 1,
+						stdout:
+							'{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+					}),
+					'Review agent (codex) exited with code 1',
+					' for PR #17',
+				);
+			};
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome).toMatchObject({
+				status: 'phase-deferred',
+				phase: 'review',
+				runId: 'run-1',
+				attempt: 0,
+				retryDelayMs: 6 * 60 * 1000,
+				reason: 'Review agent (codex) exited with code 1 (model at capacity) for PR #17',
+				resumable: false,
+			});
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({
+					status: 'deferred',
+					nextRetryAt: new Date(now.getTime() + 6 * 60 * 1000),
+					engine: 'codex',
+				}),
+			);
 			vi.useRealTimers();
 		});
 

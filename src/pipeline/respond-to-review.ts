@@ -71,16 +71,15 @@
  * of (project, PR, new head), so a crash between a successful enqueue and that
  * checkpoint write can't duplicate the job. `pushed-back`, `no-findings`, a
  * failed/unpushed response, and an unchanged head all enqueue nothing. A
- * follow-up Review that approves may arm the same approval-only auto-merge
- * `runReviewPhase` already exposes (issue #235) — Respond-to-review still never
- * arms it directly.
+ * follow-up Review that approves may request the same approval-only merge
+ * `runReviewPhase` already exposes (issue #235, provider-neutral since issue
+ * #253) — Respond-to-review still never requests it directly.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -478,7 +477,6 @@ export async function runRespondToReviewPhase(
 					args: [
 						buildRespondToReviewPrompt(
 							{ repo: project.repo, prNumber, prBranch, reviewId },
-							delegationEnabled(project, 'respond-to-review', cli),
 							customPrompt,
 						),
 					],

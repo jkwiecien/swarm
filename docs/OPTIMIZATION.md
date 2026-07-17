@@ -121,13 +121,6 @@ The implementation persona's credentials and attribution rules must remain intac
 fallback remains useful for genuinely judgment-dependent PR descriptions, but the normal path
 should not require model participation in mechanical delivery.
 
-This boundary also applies to later model delegation: deterministic operations must not be
-delegated to a cheaper model merely because it costs less than the phase's primary model. Git
-commit/push/PR creation, hand-off URL handling, code or Markdown formatters, prescribed command
-execution, and collection of diff/CI metadata belong in SWARM or ordinary tooling. A lighter
-model is appropriate only when the delegated operation still requires bounded semantic
-judgment.
-
 ## 5. Give Review a preassembled review packet
 
 Review currently spends part of its run fetching and reconstructing context: the PR body and
@@ -171,137 +164,6 @@ follow a concrete failure or risk signal rather than making the highest tier the
 Routing decisions, effective model, and escalation reason must be recorded on the run for
 measurement and debugging.
 
-### Bounded native subagent delegation inside an expensive phase
-
-Pre-run routing chooses the primary model for an entire phase. It can be complemented by
-native subagent delegation when a strong primary model (for example, Claude Opus) encounters
-a substantial but tightly bounded semantic operation that does not require its reasoning
-tier. Suitable examples include updating several documentation sections from already-decided
-facts, applying a repetitive test pattern, or drafting a change summary from structured
-evidence.
-
-The primary agent can remain the coordinator and invoke a curated subagent definition pinned
-to a lighter model such as Claude Haiku. The delegation request must specify:
-
-- the exact task and facts already decided by the primary agent;
-- allowed files and prohibited scope;
-- the expected artifact or working-tree change;
-- the verification command or completion evidence;
-- whether the primary agent must inspect the result before hand-off.
-
-This must not become permission for arbitrary nested agents. SWARM's current phase guard bans
-all subagents to stop a pipeline persona from expanding into the complete workflow. Replace
-that blanket rule only for an allowlist of project-owned, phase-scoped subagents with fixed
-model tiers and restricted tools. The primary agent remains responsible for correctness and
-must not delegate architecture, ambiguous requirements, migrations, security/concurrency
-reasoning, broad refactors, or final high-risk judgment.
-
-Native subagents are useful when the primary session must continue immediately with the
-result. They are the first implementation option because they preserve the coordinator's
-live context and avoid building another orchestration lifecycle up front.
-
-Option B is a deliberate fallback: SWARM-orchestrated child runs. The primary agent writes a
-validated delegation manifest, SWARM launches a lighter model/CLI in the same leased worktree,
-and the primary session is resumed (or given a structured result) for final inspection. This
-provides stronger file/tool enforcement, first-class usage records, independent retries, and
-cross-CLI routing, at the cost of another run boundary, worktree coordination, and
-resume/continuation complexity.
-
-SWARM may replace Option A with Option B if native delegation proves unreliable or opaque—for
-example, if model pinning is not honored consistently, child usage cannot be attributed,
-tool/path restrictions cannot be enforced, failures cannot be retried independently, or the
-parent frequently loses/duplicates delegated work. Compare both approaches using total quota
-per successful task, correctness/rework rate, and operational failure rate. Do not migrate
-merely because Option B is architecturally cleaner; its extra session overhead can outweigh
-savings for small tasks.
-
-Do not use subagents for deterministic operations covered by §4. In particular, delegating a
-push to Haiku still spends model quota to execute a known command. The deterministic delivery
-work must land first so the curated-subagent feature has a clean boundary and cannot absorb
-commit, push, or PR responsibilities.
-
-Delegation is not automatically cheaper. The primary model spends quota creating the request
-and reviewing the result, while the subagent consumes its own input/output quota and may draw
-from the same provider pool. Apply a minimum-size threshold and measure total quota per
-successful task; a two-line README edit should normally stay with the primary agent or a
-deterministic formatter, while coordinated edits across several documents may justify a
-lighter subagent.
-
-### Implemented boundary (unified Option B)
-
-SWARM implements **Option B for every child-capable CLI** — one provider-neutral, SWARM-orchestrated
-delegation path rather than a per-CLI native mechanism. The Codex capability spike (#184) established
-that `codex exec` runs a single agent with no `--agent`/subagent mechanism, so native (Option A)
-delegation is impossible there; rather than maintain a second, Claude-only native path beside it,
-Claude was migrated onto the same Option B path. (The spike's findings are pinned by an executable
-test, `tests/unit/delegation/codex-capability.spike.test.ts`, skipped when `codex` isn't installed.)
-
-The flow: a phase's primary agent writes a validated delegation contract to
-`.swarm-delegation-<id>.contract.json` and runs `swarm delegate <file>` (a deterministic SWARM
-command, `src/cli/commands/delegate.ts` → `src/delegation/orchestrator.ts`), never a CLI subagent.
-SWARM launches a lighter-model child in the same leased worktree:
-
-- **Model pinning** — the child runs on the per-CLI `lightModels` tier (Claude→Haiku,
-  Codex→`gpt-5.4-mini` by default), pinned via `--model`.
-- **Tool/scope confinement** — Claude children are restricted to `Read`/`Edit` (no shell, so no
-  git/commit/push/nested delegation); Codex children run under the `--sandbox workspace-write` policy
-  rooted at the worktree with approvals disabled. A recursion guard (`SWARM_DELEGATION_DEPTH`) refuses
-  a child that tries to delegate again.
-- **Path enforcement** — provider-neutral and authoritative: SWARM diffs the worktree before/after
-  the child and rejects (and reverts) any change outside the contract's `allowedPaths`. Contract
-  paths are pre-validated to be documentation files outside protected areas (`.git`, `.claude`).
-- **Usage attribution** — the child's reported usage (Claude JSON / Codex JSONL) is captured and
-  recorded as a provider-neutral observation linked to the parent by run id.
-- **Primary review** — the parent must inspect the returned diff and record an accepted/reworked
-  disposition for every completed child, or the phase fails. Run history stores the child
-  observations beside the parent phase.
-
-It is disabled by default per project and phase, with the global `SWARM_DELEGATION_ENABLED` kill
-switch. Antigravity has no usable tool/sandbox controls and stays unsupported (#185): a non-capable
-CLI fails closed to the no-subagent prompt guard.
-
-**Guarantees and limits.** Model pinning, usage attribution, and path scope are enforced for both
-Claude and Codex. Tool restriction is strongest on Claude (an allowlist that removes shell entirely);
-on Codex the OS sandbox confines writes to the worktree but the child can still run commands within
-it, so path scope is enforced primarily by SWARM's post-hoc diff check (safe rejection) rather than a
-per-file OS control. Delegation happens inline within the single primary run — SWARM does not (yet)
-run the child across an independent run boundary with its own retry/resume lifecycle; that
-between-runs variant remains a future option to promote only under the reliability/attribution/retry
-criteria above, and the contract and observation shapes are provider-neutral so promoting it needs no
-redefinition. Deterministic delivery (§4) stays outside delegation for every CLI.
-
-### When delegation actually pays off (and when it does not)
-
-Delegation is **not** a default cost win, and it is disabled out of the box for that reason. The
-primary spends tokens writing the contract and reviewing the child's diff, and the child spends its
-own — so the arithmetic only favours delegation when:
-
-    cost(write contract @primary) + cost(review diff @primary) + cost(child @light)  <  cost(do it @primary)
-
-The load-bearing term is the contract. Writing a *complete, precise* contract — every decided fact,
-exact wording, exact placement — is most of the hard thinking; once it's written, the child is
-essentially a typist. So delegation saves only on the **mechanical application**, never on the
-**decision**. It is worthwhile only with a high *apply-to-decide ratio*: one small, already-made
-decision applied across enough surface that the contract is cheap relative to the doing.
-
-- **Pays off**: propagating one decided fact across several docs (e.g. a renamed config key updated
-  consistently in README + ARCHITECTURE + skill docs — one decision, six near-identical edits);
-  regenerating a table/list from a known source across sections; stamping a repetitive doc pattern
-  across many entries.
-- **Does not pay off**: a one- or two-spot edit (contract + review overhead exceeds the edit);
-  anything where *what* to write is still undecided (that's the expensive part and is non-delegable);
-  and — today — anything that isn't documentation, since `documentation-edit` is the only supported
-  `delegationType`. The realistic niche is therefore **multi-file documentation propagation**, which
-  is narrow.
-
-Two better justifications than raw token cost: **context hygiene** (offloading a tedious multi-file
-sweep keeps the primary's context on the actual problem) and **future parallelism** (async children
-would give latency wins — not built yet, since delegation runs inline). The primary's prompt guard
-(`delegationGuardLines`, `src/delegation/native.ts`) encodes this apply-to-decide test so an eligible
-agent self-filters and skips delegations that would not pay off; the `minimumSemanticOperations`
-threshold is the coarse backstop. Enable delegation only for a project with genuinely repetitive
-multi-doc work, and confirm the win by measuring quota per successful task (§9) before trusting it —
-if the numbers don't show a saving on the real workload, leaving it disabled is the correct outcome.
 
 ## 7. Add phase-specific effort and spending controls
 
@@ -373,11 +235,9 @@ Implement these changes incrementally and measure after each step:
 2. Produce structured Planning packets and consume them in Implementation.
 3. Reuse the parent Planning run for all split-child plans.
 4. Move commit, push, and PR creation into deterministic orchestration.
-5. Add allowlisted native lighter-model subagents for bounded semantic work, building on the
-   deterministic boundary from the preceding step.
-6. Preassemble Review packets.
-7. Add Planning skip policies and risk-based model/effort routing using the measured baseline.
-8. Add project verification profiles and refine them from observed runs.
+5. Preassemble Review packets.
+6. Add Planning skip policies and risk-based model/effort routing using the measured baseline.
+7. Add project verification profiles and refine them from observed runs.
 
 The checkpoint/resume work can proceed independently. Together, the two efforts address both
 sides of quota waste: this document reduces the cost of a successful pipeline, while
