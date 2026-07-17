@@ -697,7 +697,10 @@ function runPhase(
 				signal,
 				runAgent,
 			});
-		case 'review':
+		case 'review': {
+			// SCM provider selection belongs at the composition root. The Review
+			// phase receives only the provider-neutral merge capability.
+			const scm = new GitHubSCMIntegration();
 			return runReviewPhase({
 				project,
 				prNumber: trigger.prNumber,
@@ -711,7 +714,9 @@ function runPhase(
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
+				mergePullRequest: scm.mergePullRequest.bind(scm),
 			});
+		}
 		case 'respond-to-review':
 			return runRespondToReviewPhase({
 				project,
