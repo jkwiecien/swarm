@@ -378,6 +378,13 @@ describe('buildReviewPrompt', () => {
 		expect(prompt).toContain('Do not merge the PR');
 	});
 
+	it('keeps blocked optional experiments from aborting the review hand-off', () => {
+		const prompt = buildReviewPrompt(context);
+		expect(prompt).toContain('Do not create disposable repositories');
+		expect(prompt).toContain('never run destructive cleanup commands such as `rm -rf`');
+		expect(prompt).toContain('still write the required hand-off file');
+	});
+
 	it('carries the GH identity guard so the reviewer persona token is not overridden', () => {
 		const prompt = buildReviewPrompt(context);
 		expect(prompt).toContain('GH_TOKEN');
