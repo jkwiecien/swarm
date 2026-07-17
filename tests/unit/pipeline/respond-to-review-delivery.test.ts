@@ -32,19 +32,24 @@ function agentResult(): AgentCliResult {
 	};
 }
 
+const testGitEnvironment = Object.fromEntries(
+	Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')),
+);
+
 /**
  * A minimal real git repo — `commitPreparedTree` shells out to `git`
  * (`src/scm/delivery.ts`), so a `fixed` outcome needs an actual checkout to
  * commit into, not just a mocked worktree handle.
  */
 function initGitRepo(path: string): void {
-	const git = (...args: string[]) => execFileSync('git', args, { cwd: path });
+	const git = (...args: string[]) =>
+		execFileSync('git', args, { cwd: path, env: testGitEnvironment });
 	git('init', '-q');
 	git('config', 'user.email', 'test@example.com');
 	git('config', 'user.name', 'Test');
 	writeFileSync(join(path, 'README.md'), 'initial\n');
 	git('add', '.');
-	git('commit', '-q', '-m', 'initial commit');
+	git('commit', '-q', '--no-verify', '-m', 'initial commit');
 }
 
 /** A real, uncommitted working-tree change for `commitPreparedTree` to pick up. */
