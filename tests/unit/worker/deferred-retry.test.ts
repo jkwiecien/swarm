@@ -4,6 +4,11 @@ import {
 	createMockGitHubWebhookJob,
 } from '../../helpers/factories.js';
 
+const updateRunJobPayload = vi.fn(async (_runId: string, _job: unknown) => {});
+vi.mock('@/db/repositories/runsRepository.js', () => ({
+	updateRunJobPayload: (runId: string, job: unknown) => updateRunJobPayload(runId, job),
+}));
+
 const isRunCancellationRequested = vi.fn<(runId: string) => Promise<boolean>>();
 vi.mock('@/queue/cancellation.js', () => ({
 	isRunCancellationRequested: (runId: string) => isRunCancellationRequested(runId),
@@ -34,6 +39,7 @@ describe('reenqueueDeferred', () => {
 		enqueueDelayedRetry.mockResolvedValue('retry-1');
 		removePendingRetryForRun.mockClear();
 		registerPendingContinuation.mockClear();
+		updateRunJobPayload.mockClear();
 	});
 
 	it('removes a retry when termination lands in the pre-enqueue window', async () => {
@@ -130,6 +136,10 @@ describe('reenqueueDeferred', () => {
 		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 			expect.not.objectContaining({ resumeSession: true }),
 			60_000,
+		);
+		expect(updateRunJobPayload).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({ resumeDelivery: true }),
 		);
 	});
 
