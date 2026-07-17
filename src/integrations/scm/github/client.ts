@@ -291,6 +291,25 @@ export async function listOpenPullRequestsForBase(
 		}));
 }
 
+/** Retrieve pull request details by number, including mergeability status. */
+export async function getPullRequest(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<ConflictCandidatePullRequest> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	return {
+		number: data.number,
+		headBranch: data.head.ref,
+		headSha: data.head.sha,
+		baseBranch: data.base.ref,
+		baseSha: data.base.sha,
+		mergeable: data.mergeable,
+		authorLogin: data.user?.login ?? null,
+	};
+}
+
 /**
  * Resolve the GitHub login a token authenticates as, or `null` if the token is
  * absent or the lookup fails. Used to map a persona's token to its bot identity

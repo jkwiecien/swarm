@@ -23,6 +23,7 @@ import {
 	enablePullRequestAutoMerge,
 	findOpenPullRequest,
 	getGitHubUserForToken,
+	getPullRequest,
 	getPullRequestMergeState,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
@@ -237,6 +238,17 @@ export class GitHubSCMIntegration {
 		const [owner, repo] = project.repo.split('/');
 		return this.withPersonaCredentials(project, 'implementer', () =>
 			listOpenPullRequestsForBase(owner, repo, baseBranch),
+		);
+	}
+
+	async getPullRequest(
+		project: ProjectConfig,
+		prNumber: number,
+		persona: GitHubPersona = 'reviewer',
+	): Promise<ConflictCandidatePullRequest> {
+		const [owner, repo] = project.repo.split('/');
+		return this.withPersonaCredentials(project, persona, () =>
+			getPullRequest(owner, repo, prNumber),
 		);
 	}
 

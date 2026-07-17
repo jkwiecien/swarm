@@ -17,6 +17,14 @@ vi.mock('@/triggers/review-dispatch-dedup.js', () => ({
 		`${repo}:${prNumber}:${headSha}`,
 }));
 
+// Mock the conflict resolution dedup module to prevent Redis connection.
+const { claimConflictResolution } = vi.hoisted(() => ({ claimConflictResolution: vi.fn() }));
+vi.mock('@/triggers/resolve-conflicts-dedup.js', () => ({
+	claimConflictResolution,
+	buildConflictResolutionKey: (repo: string, prNumber: string, headSha: string, baseSha: string) =>
+		`${repo}:${prNumber}:${headSha}:${baseSha}`,
+}));
+
 // The respond-to-ci path also applies a per-PR fix-attempt cap; mock it so these
 // tests need no Redis. Defaults to allowing the attempt; a test flips it to
 // exercise the cap.
@@ -35,11 +43,17 @@ const {
 	getPullRequestAuthorLogin,
 	scheduleCoalescedJob,
 	withPersonaCredentials,
+	hasPersonaToken,
+	getPullRequest,
+	commentOnPullRequest,
 } = vi.hoisted(() => ({
 	getCheckSuiteStatus: vi.fn(),
 	getPullRequestAuthorLogin: vi.fn(),
 	scheduleCoalescedJob: vi.fn(),
 	withPersonaCredentials: vi.fn(),
+	hasPersonaToken: vi.fn(),
+	getPullRequest: vi.fn(),
+	commentOnPullRequest: vi.fn(),
 }));
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	getCheckSuiteStatus,
@@ -49,6 +63,9 @@ vi.mock('@/queue/producer.js', () => ({ scheduleCoalescedJob }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		withPersonaCredentials = withPersonaCredentials;
+		hasPersonaToken = hasPersonaToken;
+		getPullRequest = getPullRequest;
+		commentOnPullRequest = commentOnPullRequest;
 	},
 }));
 
@@ -81,6 +98,8 @@ beforeEach(() => {
 	claimReviewDispatch.mockResolvedValue(true);
 	claimRespondToCiAttempt.mockReset();
 	claimRespondToCiAttempt.mockResolvedValue({ allowed: true, attempt: 1 });
+	claimConflictResolution.mockReset();
+	claimConflictResolution.mockResolvedValue(true);
 	getCheckSuiteStatus.mockReset();
 	scheduleCoalescedJob.mockReset();
 	// The integration just runs the callback under (mocked) credentials.
@@ -97,6 +116,19 @@ beforeEach(() => {
 	getPullRequestAuthorLogin.mockResolvedValue('swarm-impl');
 	reserveReviewVerdict.mockReset();
 	reserveReviewVerdict.mockResolvedValue({ status: 'reserved', id: 'v1', ordinal: 1 });
+	hasPersonaToken.mockReset();
+	hasPersonaToken.mockResolvedValue(true);
+	getPullRequest.mockReset();
+	getPullRequest.mockResolvedValue({
+		number: 42,
+		headBranch: 'task-42',
+		headSha: 'head-sha-123',
+		baseBranch: 'main',
+		baseSha: 'base-sha-123',
+		mergeable: true,
+		authorLogin: 'swarm-impl',
+	});
+	commentOnPullRequest.mockReset();
 });
 
 const PROJECT = createMockProjectConfig();
@@ -584,6 +616,104 @@ describe('review trigger', () => {
 			);
 			expect(result).toMatchObject({ phase: 'respond-to-ci' });
 			expect(reserveReviewVerdict).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('handle — mergeability and conflict triggers (issue #265)', () => {
+		const synchronized = {
+			eventType: 'pull_request',
+			action: 'synchronize',
+			workItemId: '42',
+			headSha: 'abc123',
+			isDraft: false,
+			isCrossRepo: false,
+			prAuthorLogin: 'swarm-impl',
+		} as const;
+
+		it('transitions to Resolve-conflicts immediately when mergeable is false (conflicting)', async () => {
+			getPullRequest.mockResolvedValue({
+				number: 42,
+				headBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+				mergeable: false,
+				authorLogin: 'swarm-impl',
+			});
+
+			const result = await handler.handle(ctx(synchronized));
+
+			expect(result).toEqual({
+				phase: 'resolve-conflicts',
+				taskId: '42-conflicts',
+				prNumber: '42',
+				prBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+			});
+		});
+
+		it('skips (returns null) on synchronize event when PR is mergeable (true)', async () => {
+			getPullRequest.mockResolvedValue({
+				number: 42,
+				headBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+				mergeable: true,
+				authorLogin: 'swarm-impl',
+			});
+
+			const result = await handler.handle(ctx(synchronized));
+			expect(result).toBeNull();
+		});
+
+		it('schedules a deferred mergeability recheck when mergeable is null (unknown)', async () => {
+			getPullRequest.mockResolvedValue({
+				number: 42,
+				headBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+				mergeable: null,
+				authorLogin: 'swarm-impl',
+			});
+
+			const result = await handler.handle(ctx(synchronized));
+			expect(result).toBeNull();
+			expect(scheduleCoalescedJob).toHaveBeenCalledWith(
+				expect.objectContaining({
+					recheckAttempt: 1,
+					event: expect.objectContaining({
+						eventType: 'pull_request',
+						action: 'synchronize',
+					}),
+				}),
+				'review-mergeability:jkwiecien/swarm:42:abc123',
+				30000,
+			);
+		});
+
+		it('comments and gives up on mergeability rechecks once cap is reached', async () => {
+			getPullRequest.mockResolvedValue({
+				number: 42,
+				headBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+				mergeable: null,
+				authorLogin: 'swarm-impl',
+			});
+
+			const result = await handler.handle(ctx(synchronized, { recheckAttempt: 20 }));
+			expect(result).toBeNull();
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+			expect(commentOnPullRequest).toHaveBeenCalledWith(
+				expect.any(Object),
+				42,
+				expect.stringContaining('SWARM conflict check needs attention'),
+			);
 		});
 	});
 });
