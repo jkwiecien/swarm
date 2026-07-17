@@ -19,9 +19,11 @@ import {
 } from '../../queue/cancellation.js';
 import {
 	enqueueDelayedRetry,
+	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
 } from '../../queue/producer.js';
+import { toQueuedRuns } from '../../queue/queued-runs.js';
 import { publicProcedure, router } from '../trpc.js';
 
 // `RunStatus`/`RunRow` are local (non-exported) types in the repository, so the
@@ -110,6 +112,16 @@ export const runsRouter = router({
 	list: publicProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
 		return await listRunsFromDb(input);
 	}),
+
+	// Work enqueued in BullMQ but not yet picked up by the worker — invisible to
+	// `list` above, which only reads the `runs` table (issue #234). No pagination:
+	// the pending set is small and bounded by worker throughput.
+	queued: publicProcedure
+		.input(z.object({ projectId: z.string().min(1).optional() }).optional())
+		.query(async ({ input }) => {
+			const items = toQueuedRuns(await listPendingJobs());
+			return input?.projectId ? items.filter((item) => item.projectId === input.projectId) : items;
+		}),
 
 	// Single run by id; NOT_FOUND when unknown (the only not-found path).
 	getById: publicProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
