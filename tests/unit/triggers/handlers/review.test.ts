@@ -556,6 +556,16 @@ describe('review trigger', () => {
 			expect(result).toMatchObject({ phase: 'review' });
 		});
 
+		it('skips the dispatch when a same-head retry is already submitted', async () => {
+			reserveReviewVerdict.mockResolvedValue({
+				status: 'reused',
+				id: 'v1',
+				ordinal: 1,
+				state: 'submitted',
+			});
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
 		it('fails closed (skips) when the reservation call throws', async () => {
 			reserveReviewVerdict.mockRejectedValue(new Error('connection reset'));
 			expect(await handler.handle(ctx(reviewable))).toBeNull();

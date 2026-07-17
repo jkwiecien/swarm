@@ -478,6 +478,14 @@ async function reserveDurableReviewSlot(
 			});
 			return false;
 		}
+		if (reservation.status === 'reused' && reservation.state === 'submitted') {
+			logger.debug('review: slot already submitted for this head SHA — skipping same-head retry', {
+				prNumber,
+				headSha,
+				ordinal: reservation.ordinal,
+			});
+			return false;
+		}
 		if (reservation.status === 'capped') {
 			logger.warn('review: PR already has two submitted verdicts — skipping (safety cap)', {
 				prNumber,

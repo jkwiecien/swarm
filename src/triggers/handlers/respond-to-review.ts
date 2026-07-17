@@ -113,7 +113,9 @@ export function createRespondToReviewTrigger(
 				);
 				return false;
 			}
-			if (isCapReachingRequestChanges(record.ordinal, record.verdict)) {
+			const verdict =
+				record.verdict ?? (reviewState === 'changes_requested' ? 'request-changes' : reviewState);
+			if (isCapReachingRequestChanges(record.ordinal, verdict)) {
 				logger.warn(
 					'respond-to-review: second changes-requested verdict reached the review cap — stopping the automatic cycle (manual intervention required)',
 					{ prNumber, headSha, reviewId },

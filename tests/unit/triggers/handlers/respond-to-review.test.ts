@@ -188,6 +188,23 @@ describe('respond-to-review trigger', () => {
 			expect(byHead).toHaveBeenCalledWith(PROJECT.id, PROJECT.repo, '17', HEAD_SHA);
 		});
 
+		it('falls back to mapping reviewState when record.verdict is null/undefined (webhook race)', async () => {
+			const byReviewId = vi.fn(async () => undefined);
+			const byHead = vi.fn(async () => ({
+				ordinal: 2,
+				state: 'pending' as const,
+				verdict: null,
+				headSha: HEAD_SHA,
+			}));
+			const cappedHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: byReviewId,
+				getReviewVerdictByHead: byHead,
+			});
+			expect(await cappedHandler.handle(ctx({ reviewState: 'changes_requested' }))).toBeNull();
+			expect(byHead).toHaveBeenCalledWith(PROJECT.id, PROJECT.repo, '17', HEAD_SHA);
+		});
+
 		it('fails closed (skips) when no ledger record is found for a changes-requested event', async () => {
 			const noRecordHandler = createRespondToReviewTrigger({
 				resolveIdentities: async () => IDENTITIES,
