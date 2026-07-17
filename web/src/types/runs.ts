@@ -109,6 +109,21 @@ export interface RunRow {
 	 * Drives the verdict badge a completed Review row shows instead of "Completed".
 	 */
 	reviewVerdict: string | null;
+	/**
+	 * This Review run's slot in the two-verdict safety-cap ledger (1 or 2,
+	 * issue #235); null for non-Review phases, a Review run whose verdict wasn't
+	 * ledgered, and pre-existing rows.
+	 */
+	reviewOrdinal: number | null;
+	/**
+	 * This Review run's automation outcome (issue #235) — currently only
+	 * `manual-intervention-required`, set when this run submitted the second
+	 * `request-changes` verdict the cap allows, so Respond-to-review stopped the
+	 * automatic cycle instead of dispatching a third review. Null for every other
+	 * outcome and pre-existing rows. Drives the "Manual action required" badge
+	 * and run-detail callout (issue #242).
+	 */
+	reviewAutomationOutcome: string | null;
 	exitCode: number | null;
 	timedOut: boolean;
 	error: string | null;

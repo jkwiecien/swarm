@@ -32,6 +32,54 @@ describe('RunStatusBadge', () => {
 		});
 	});
 
+	describe('review-cap manual intervention (issue #242)', () => {
+		it('renders a distinct "Manual action required" badge for the cap-stopping second changes-requested verdict', () => {
+			render(
+				<RunStatusBadge
+					status="completed"
+					phase="review"
+					reviewVerdict="request-changes"
+					reviewAutomationOutcome="manual-intervention-required"
+				/>,
+			);
+			const badge = screen.getByText('Manual action required');
+			expect(badge.className).toContain('text-red-400');
+			expect(screen.queryByText('Changes requested')).toBeNull();
+		});
+
+		it('retains the underlying request-changes context in the title', () => {
+			render(
+				<RunStatusBadge
+					status="completed"
+					phase="review"
+					reviewVerdict="request-changes"
+					reviewAutomationOutcome="manual-intervention-required"
+				/>,
+			);
+			const badge = screen.getByText('Manual action required');
+			expect(badge.getAttribute('title')).toMatch(/changes-requested/i);
+		});
+
+		it('shows the ordinary "Changes requested" badge for a first changes-requested verdict (no cap outcome)', () => {
+			render(<RunStatusBadge status="completed" phase="review" reviewVerdict="request-changes" />);
+			const badge = screen.getByText('Changes requested');
+			expect(badge.className).toContain('text-amber-400');
+		});
+
+		it('ignores the cap outcome for an approval verdict', () => {
+			render(
+				<RunStatusBadge
+					status="completed"
+					phase="review"
+					reviewVerdict="approve"
+					reviewAutomationOutcome="manual-intervention-required"
+				/>,
+			);
+			expect(screen.getByText('Approved')).not.toBeNull();
+			expect(screen.queryByText('Manual action required')).toBeNull();
+		});
+	});
+
 	describe('lifecycle status is kept where a verdict must not show', () => {
 		it('shows "Completed" for a completed non-Review run even if a verdict slipped through', () => {
 			render(<RunStatusBadge status="completed" phase="implementation" reviewVerdict="approve" />);
