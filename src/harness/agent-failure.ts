@@ -83,7 +83,16 @@ const USAGE_LIMIT_RE = /\b(?:session|usage|rate)[\s-]?limit\b/i;
 const RATE_HTTP_RE = /\b(?:429|too many requests)\b/i;
 const RESET_RE = /resets?\s+([^\n]+)/i;
 // Codex reports selected-model saturation separately from account quota.
-const CAPACITY_RE = /selected model is at capacity/i;
+const CODEX_CAPACITY_RE = /selected model is at capacity/i;
+// Claude / Claude Code surface Anthropic's transient 529 overload — a documented
+// temporary-capacity response (platform.claude.com/docs/en/api/errors §529) — as
+// an `API Error: 529 Overloaded` banner, or with the raw `overloaded_error` type
+// from the JSON error body; Claude Code's retry path prints one such line per
+// attempt before giving up (code.claude.com/docs/en/errors). All forms name
+// "overloaded", so we anchor on that word — a `529` immediately paired with
+// "overloaded", or the literal `overloaded_error` type token — never a bare 529,
+// which reviewed code, tool output, or an unrelated log can mention innocuously.
+const CLAUDE_CAPACITY_RE = /\b529\s+overloaded\b|\boverloaded_error\b/i;
 // Provider errors are terminal output; borrowed task/code/CI text lives earlier
 // in the transcript. Fifteen non-empty lines comfortably contain real banners
 // while keeping those unrelated body matches out of classification.
@@ -196,11 +205,12 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * output and `signal: null`, since it trapped SIGTERM and called `process.exit`
  * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
  * exists precisely because `result.signal` can't be trusted to reflect this).
- * Otherwise a stalled run is classified as `stalled`. Next, a terminal Codex
- * capacity banner is `capacity` (gated on `result.cli === 'codex'` — the phrase
- * is a Codex provider error, not something Claude/Antigravity would emit as
- * their own status, so non-Codex runs that merely quote or discuss the text must
- * not be misclassified), a recognisable terminal limit banner is a
+ * Otherwise a stalled run is classified as `stalled`. Next, a terminal
+ * provider-capacity banner is `capacity`, matched per CLI so one CLI's provider
+ * error can't be triggered by another CLI merely quoting or discussing the text:
+ * Codex's `selected model is at capacity` (gated on `result.cli === 'codex'`)
+ * and Claude's transient `529 Overloaded` / `overloaded_error` (gated on
+ * `result.cli === 'claude'`). A recognisable terminal limit banner is a
  * `rate-limit`, and everything else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
@@ -219,7 +229,8 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	}
 
 	const tail = terminalTail(output);
-	if (result.cli === 'codex' && CAPACITY_RE.test(tail)) return { kind: 'capacity' };
+	if (result.cli === 'codex' && CODEX_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
+	if (result.cli === 'claude' && CLAUDE_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
 	const resetMatch = RESET_RE.exec(tail);
 	const isRateLimited =

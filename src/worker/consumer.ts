@@ -333,6 +333,13 @@ function deferAgentRunError(
 		// Every phase and CLI now captures a resumable session id (agent-cli.ts), so
 		// this is no longer gated to claude or the PM phases; a run whose session
 		// wasn't captured simply persists no id and retries from scratch.
+		//
+		// A `capacity` deferral (Codex "at capacity", Claude 529/overloaded — issue
+		// #229) deliberately stays fresh: the provider rejected the request before
+		// the model did any work, so there is no partial reasoning or edit to
+		// resume, and the captured session id (if any) points at a run that never
+		// progressed. Starting fresh matches the pre-existing Codex-capacity
+		// contract; only an explicit safety case would justify resuming instead.
 		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
 		pmPhaseStarted:
 			job.type === 'github-projects' &&
