@@ -204,21 +204,35 @@ describe('github client', () => {
 	});
 
 	describe('getPullRequestMergeState', () => {
-		it('resolves merged/state/draft from the PR', async () => {
-			pullsGet.mockResolvedValue({ data: { merged: false, state: 'open', draft: true } });
+		it('resolves merged/state/draft/head SHA from the PR', async () => {
+			pullsGet.mockResolvedValue({
+				data: { merged: false, state: 'open', draft: true, head: { sha: 'reviewed-head' } },
+			});
 
 			await expect(
 				withGitHubToken('tok', () => getPullRequestMergeState('jkwiecien', 'swarm', 42)),
-			).resolves.toEqual({ merged: false, state: 'open', draft: true });
+			).resolves.toEqual({
+				merged: false,
+				state: 'open',
+				draft: true,
+				headSha: 'reviewed-head',
+			});
 			expect(pullsGet).toHaveBeenCalledWith({ owner: 'jkwiecien', repo: 'swarm', pull_number: 42 });
 		});
 
 		it('normalizes a missing draft flag to false', async () => {
-			pullsGet.mockResolvedValue({ data: { merged: true, state: 'closed' } });
+			pullsGet.mockResolvedValue({
+				data: { merged: true, state: 'closed', head: { sha: 'merged-head' } },
+			});
 
 			await expect(
 				withGitHubToken('tok', () => getPullRequestMergeState('jkwiecien', 'swarm', 42)),
-			).resolves.toEqual({ merged: true, state: 'closed', draft: false });
+			).resolves.toEqual({
+				merged: true,
+				state: 'closed',
+				draft: false,
+				headSha: 'merged-head',
+			});
 		});
 	});
 
@@ -229,7 +243,9 @@ describe('github client', () => {
 			});
 
 			await expect(
-				withGitHubToken('tok', () => mergePullRequestDirect('jkwiecien', 'swarm', 42)),
+				withGitHubToken('tok', () =>
+					mergePullRequestDirect('jkwiecien', 'swarm', 42, 'reviewed-head'),
+				),
 			).resolves.toEqual({
 				merged: true,
 				message: 'Pull Request successfully merged',
@@ -239,6 +255,7 @@ describe('github client', () => {
 				owner: 'jkwiecien',
 				repo: 'swarm',
 				pull_number: 42,
+				sha: 'reviewed-head',
 			});
 		});
 
@@ -247,7 +264,9 @@ describe('github client', () => {
 			pullsMerge.mockRejectedValue(error);
 
 			await expect(
-				withGitHubToken('tok', () => mergePullRequestDirect('jkwiecien', 'swarm', 42)),
+				withGitHubToken('tok', () =>
+					mergePullRequestDirect('jkwiecien', 'swarm', 42, 'reviewed-head'),
+				),
 			).rejects.toThrow(/not mergeable/);
 		});
 	});

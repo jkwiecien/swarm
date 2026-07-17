@@ -65,10 +65,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import {
-	mergeAfterReviewIfEligible,
-	mergePullRequestDefault,
-} from '@/pipeline/merge-after-review.js';
+import { mergeAfterReviewIfEligible } from '@/pipeline/merge-after-review.js';
 import { buildReviewPrompt } from '@/pipeline/prompts/review.js';
 import {
 	acquireResumableWorktree,
@@ -277,7 +274,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
-		mergePullRequest = mergePullRequestDefault,
+		mergePullRequest,
 		markReviewVerdictSubmitted = markReviewVerdictSubmittedDefault,
 		abandonReviewVerdict = abandonReviewVerdictDefault,
 	} = options;
@@ -294,8 +291,11 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	// themselves approve the PR, so they never request a merge (issue #235).
 	// Best-effort: a refusal or error is logged and never fails the completed
 	// review.
-	const mergeIfApproved = (verdict: ReviewVerdict): Promise<MergePullRequestOutcome | undefined> =>
-		mergeAfterReviewIfEligible({
+	const mergeIfApproved = (
+		verdict: ReviewVerdict,
+	): Promise<MergePullRequestOutcome | undefined> => {
+		if (!mergePullRequest) return Promise.resolve(undefined);
+		return mergeAfterReviewIfEligible({
 			enabled: project.pipeline?.respondToReview?.autoMerge ?? false,
 			eligible: verdict === 'approve',
 			mergePullRequest,
@@ -304,6 +304,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			taskId,
 			phase: 'Review',
 		});
+	};
 
 	logger.info(`Phase started - Review — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,

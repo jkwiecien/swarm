@@ -137,6 +137,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: true,
 				state: 'closed',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			await scm.mergePullRequest(project, 42);
 			expect(getPersonaToken).toHaveBeenCalledWith(project, 'implementer');
@@ -147,6 +148,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: true,
 				state: 'closed',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 
 			await expect(scm.mergePullRequest(project, 42)).resolves.toEqual({
@@ -162,6 +164,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: true,
+				headSha: 'reviewed-head',
 			});
 
 			await expect(scm.mergePullRequest(project, 42)).resolves.toEqual({
@@ -177,6 +180,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'closed',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 
 			await expect(scm.mergePullRequest(project, 42)).resolves.toEqual({
@@ -202,6 +206,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
 				enabled: true,
@@ -220,6 +225,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -235,7 +241,12 @@ describe('GitHubSCMIntegration', () => {
 				message: 'Pull Request successfully merged',
 				sha: 'deadbeef',
 			});
-			expect(mergePullRequestDirect).toHaveBeenCalledWith('jkwiecien', 'swarm', 42);
+			expect(mergePullRequestDirect).toHaveBeenCalledWith(
+				'jkwiecien',
+				'swarm',
+				42,
+				'reviewed-head',
+			);
 		});
 
 		it('does not eagerly fall back to a direct merge for an unrelated auto-merge failure', async () => {
@@ -243,6 +254,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(new Error('502 Bad Gateway'));
 
@@ -258,6 +270,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -278,6 +291,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -297,6 +311,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -313,11 +328,12 @@ describe('GitHubSCMIntegration', () => {
 			});
 		});
 
-		it('is policy-blocked when the direct merge endpoint responds 403 for a repository restriction', async () => {
+		it('is policy-blocked when the direct merge endpoint responds 403 for a merge-queue restriction', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -332,7 +348,7 @@ describe('GitHubSCMIntegration', () => {
 			);
 
 			await expect(scm.mergePullRequest(project, 42)).resolves.toEqual({
-				status: 'unsupported',
+				status: 'policy-blocked',
 				message: 'Changes must be made through a pull request using a merge queue',
 			});
 		});
@@ -342,6 +358,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),
@@ -361,6 +378,7 @@ describe('GitHubSCMIntegration', () => {
 				merged: false,
 				state: 'open',
 				draft: false,
+				headSha: 'reviewed-head',
 			});
 			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
 				new Error('Auto-merge is not allowed for this repository'),

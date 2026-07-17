@@ -140,9 +140,11 @@ vi.mock('@/db/repositories/appSettingsRepository.js', () => ({
 // SCM integration (the PM provider has no PR → comment mapping); mock it at the
 // module boundary the same way the PM provider is mocked above.
 const commentOnPullRequest = vi.fn(async (_p: ProjectConfig, _n: number, _b: string) => 99);
+const mergePullRequest = vi.fn(async () => ({ status: 'merged' as const, message: 'merged' }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		commentOnPullRequest = commentOnPullRequest;
+		mergePullRequest = mergePullRequest;
 	},
 }));
 
@@ -310,6 +312,8 @@ describe('processJob', () => {
 		clearRunCancellation.mockClear();
 		registerRunController.mockClear();
 		unregisterRunController.mockClear();
+		mergePullRequest.mockClear();
+		mergePullRequest.mockResolvedValue({ status: 'merged', message: 'merged' });
 	});
 
 	it('runs under the project limit and releases the slot on success', async () => {
@@ -791,6 +795,12 @@ describe('processJob', () => {
 			headSha: 'deadbeef',
 			taskId: '17',
 		});
+		expect(phaseCalls[0].args.mergePullRequest).toEqual(expect.any(Function));
+		await (phaseCalls[0].args.mergePullRequest as (project: ProjectConfig, pr: number) => unknown)(
+			PROJECT,
+			17,
+		);
+		expect(mergePullRequest).toHaveBeenCalledWith(PROJECT, 17);
 		expect(outcome).toEqual({
 			status: 'phase-succeeded',
 			phase: 'review',

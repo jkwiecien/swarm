@@ -21,13 +21,8 @@
  */
 
 import type { ProjectConfig } from '@/config/schema.js';
-import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
 import type { MergePullRequest, MergePullRequestOutcome } from '@/scm/merge.js';
-
-/** Production default — the GitHub SCM integration's auto-merge-preferring direct-merge fallback. */
-export const mergePullRequestDefault: MergePullRequest = (project, prNumber) =>
-	new GitHubSCMIntegration().mergePullRequest(project, prNumber);
 
 export interface MergeAfterReviewOptions {
 	/** `pipeline.respondToReview.autoMerge` — the setting that gates this call. */

@@ -213,9 +213,11 @@ export interface PullRequestMergeState {
 	/** `open` | `closed`. */
 	state: string;
 	draft: boolean;
+	/** The exact head commit this merge attempt is allowed to merge. */
+	headSha: string;
 }
 
-/** Resolve a PR's merged/state/draft flags — the same fields {@link enablePullRequestAutoMerge} checks. */
+/** Resolve a PR's merge-relevant state, including its head SHA for a safe direct merge. */
 export async function getPullRequestMergeState(
 	owner: string,
 	repo: string,
@@ -223,7 +225,12 @@ export async function getPullRequestMergeState(
 ): Promise<PullRequestMergeState> {
 	const client = getScopedClient();
 	const { data } = await client.pulls.get({ owner, repo, pull_number: prNumber });
-	return { merged: data.merged, state: data.state, draft: Boolean(data.draft) };
+	return {
+		merged: data.merged,
+		state: data.state,
+		draft: Boolean(data.draft),
+		headSha: data.head.sha,
+	};
 }
 
 /** Result of a direct (non-auto) pull-request merge attempt. */
@@ -247,9 +254,10 @@ export async function mergePullRequestDirect(
 	owner: string,
 	repo: string,
 	prNumber: number,
+	headSha: string,
 ): Promise<DirectMergeResult> {
 	const client = getScopedClient();
-	const { data } = await client.pulls.merge({ owner, repo, pull_number: prNumber });
+	const { data } = await client.pulls.merge({ owner, repo, pull_number: prNumber, sha: headSha });
 	return { merged: data.merged, message: data.message, sha: data.sha };
 }
 

@@ -64,20 +64,15 @@ function isAutoMergeUnavailable(error: unknown): boolean {
  * PR that isn't currently mergeable (pending/failing checks, missing
  * approvals, conflicts) and 409 for a race on the expected head — both
  * transient, so `not-ready`. A 403 means the repository's own rules refuse the
- * merge outright: `policy-blocked`, except when the message names a merge
- * queue requirement — a capability this adapter doesn't implement, so
- * `unsupported` rather than a policy a human could simply change. Anything
- * else (401, 404, 5xx, network failure) is an unexpected `provider-error`.
+ * merge outright: `policy-blocked`, including a merge-queue requirement.
+ * Anything else (401, 404, 5xx, network failure) is an unexpected
+ * `provider-error`.
  */
 function classifyDirectMergeError(error: unknown): MergePullRequestOutcome {
 	const message = errorMessage(error);
 	const status = errorStatus(error);
 	if (status === 405 || status === 409) return { status: 'not-ready', message };
-	if (status === 403) {
-		return /merge queue/i.test(message)
-			? { status: 'unsupported', message }
-			: { status: 'policy-blocked', message };
-	}
+	if (status === 403) return { status: 'policy-blocked', message };
 	return { status: 'provider-error', message };
 }
 
@@ -113,7 +108,7 @@ async function mergeReadyPullRequest(
 	}
 
 	try {
-		const merge = await mergePullRequestDirect(owner, repo, prNumber);
+		const merge = await mergePullRequestDirect(owner, repo, prNumber, state.headSha);
 		return merge.merged
 			? { status: 'merged', message: merge.message, sha: merge.sha }
 			: { status: 'not-ready', message: merge.message };
