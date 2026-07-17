@@ -13,6 +13,7 @@ import {
 } from '../../db/repositories/runsRepository.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
 import { ReasoningLevelSchema } from '../../harness/models.js';
+import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { getPMProvider } from '../../integrations/pm/registry.js';
 import { logger } from '../../lib/logger.js';
 import {
@@ -23,18 +24,24 @@ import {
 import type { SwarmJob } from '../../queue/jobs.js';
 import {
 	enqueueDelayedRetry,
+	getQueuedJobData,
 	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
 	removeQueuedJob,
 } from '../../queue/producer.js';
-import { deriveQueuedPhaseHint, type QueuedRun, toQueuedRuns } from '../../queue/queued-runs.js';
+import {
+	deriveQueuedPhaseHint,
+	type QueuedPhaseHint,
+	type QueuedRun,
+	toQueuedRuns,
+} from '../../queue/queued-runs.js';
 import { publicProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
 const queuedWorkItemCache = new Map<
 	string,
-	{ expiresAt: number; title?: string; url?: string; nodeId?: string }
+	{ expiresAt: number; title?: string; url?: string; nodeId?: string; phaseHint?: QueuedPhaseHint }
 >();
 
 function queuedWorkItemCacheKey(item: QueuedRun): string | null {
@@ -49,20 +56,21 @@ function queuedWorkItemCacheKey(item: QueuedRun): string | null {
 
 function withQueuedWorkItemDetails(
 	item: QueuedRun,
-	details: { title?: string; url?: string; nodeId?: string },
+	details: { title?: string; url?: string; nodeId?: string; phaseHint?: QueuedPhaseHint },
 ): QueuedRun {
 	return {
 		...item,
 		workItemTitle: details.title,
 		workItemUrl: details.url,
 		workItemNodeId: details.nodeId || item.workItemNodeId,
+		phaseHint: details.phaseHint || item.phaseHint,
 	};
 }
 
 async function resolveQueuedWorkItemDetails(
 	item: QueuedRun,
 	workItemNodeId: string,
-): Promise<{ title?: string; url?: string } | null> {
+): Promise<{ title?: string; url?: string; isSupported?: boolean } | null> {
 	const project = await getProjectByIdFromDb(item.projectId);
 	if (!project) return null;
 
@@ -70,9 +78,17 @@ async function resolveQueuedWorkItemDetails(
 	if (!manifest) return null;
 
 	const workItem = await manifest.createProvider(project).getWorkItem(workItemNodeId);
+	let isSupported = false;
+	if (workItem.statusId) {
+		const targetPhase = resolvePipelinePhaseForOptionId(project.githubProjects, workItem.statusId);
+		if (targetPhase === 'planning' || targetPhase === 'implementation') {
+			isSupported = true;
+		}
+	}
 	return {
 		title: workItem.title || undefined,
 		url: workItem.url || undefined,
+		isSupported,
 	};
 }
 
@@ -86,11 +102,21 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 	}
 
 	try {
-		let details: { title?: string; url?: string; nodeId?: string } | null = null;
+		let details: {
+			title?: string;
+			url?: string;
+			nodeId?: string;
+			phaseHint?: QueuedPhaseHint;
+		} | null = null;
 		if (item.type === 'github-projects' && item.workItemNodeId) {
 			const resolved = await resolveQueuedWorkItemDetails(item, item.workItemNodeId);
 			if (resolved) {
-				details = { ...resolved, nodeId: item.workItemNodeId };
+				details = {
+					title: resolved.title,
+					url: resolved.url,
+					nodeId: item.workItemNodeId,
+					phaseHint: resolved.isSupported ? 'board' : 'unknown',
+				};
 			}
 		} else if (item.type === 'github' && item.prNumber) {
 			const project = await getProjectByIdFromDb(item.projectId);
@@ -99,10 +125,13 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 				if (manifest) {
 					const pm = manifest.createProvider(project);
 					const items = await pm.listWorkItems();
-					const match = items.find(
-						(i) =>
-							i.url.endsWith(`/issues/${item.prNumber}`) ||
-							i.url.endsWith(`/pull/${item.prNumber}`),
+					const repoFullName = item.repo;
+					const match = items.find((i) =>
+						repoFullName
+							? i.url.endsWith(`/${repoFullName}/issues/${item.prNumber}`) ||
+								i.url.endsWith(`/${repoFullName}/pull/${item.prNumber}`)
+							: i.url.endsWith(`/issues/${item.prNumber}`) ||
+								i.url.endsWith(`/pull/${item.prNumber}`),
 					);
 					if (match) {
 						details = {
@@ -530,7 +559,7 @@ export const runsRouter = router({
 
 			let jobData: SwarmJob;
 			try {
-				jobData = await removeQueuedJob(input.jobId);
+				jobData = await getQueuedJobData(input.jobId);
 			} catch (error) {
 				const msg = error instanceof Error ? error.message : String(error);
 				throw new TRPCError({
@@ -559,13 +588,32 @@ export const runsRouter = router({
 
 			if (jobData.type === 'github-projects') {
 				workItemNodeId = jobData.event.itemNodeId;
+				const workItem = await pm.getWorkItem(workItemNodeId);
+				if (!workItem.statusId) {
+					throw new TRPCError({
+						code: 'PRECONDITION_FAILED',
+						message: `Work item has no status ID.`,
+					});
+				}
+				const targetPhase = resolvePipelinePhaseForOptionId(
+					project.githubProjects,
+					workItem.statusId,
+				);
+				if (!targetPhase) {
+					throw new TRPCError({
+						code: 'PRECONDITION_FAILED',
+						message: `Work item status does not start a Planning or Implementation phase.`,
+					});
+				}
 			} else if (jobData.type === 'github') {
 				const prNumber = jobData.event.workItemId;
-				if (prNumber) {
+				const repoFullName = jobData.event.repoFullName;
+				if (prNumber && repoFullName) {
 					const items = await pm.listWorkItems();
 					const match = items.find(
 						(item) =>
-							item.url.endsWith(`/issues/${prNumber}`) || item.url.endsWith(`/pull/${prNumber}`),
+							item.url.endsWith(`/${repoFullName}/issues/${prNumber}`) ||
+							item.url.endsWith(`/${repoFullName}/pull/${prNumber}`),
 					);
 					workItemNodeId = match?.id;
 				}
@@ -584,6 +632,16 @@ export const runsRouter = router({
 				throw new TRPCError({
 					code: 'INTERNAL_SERVER_ERROR',
 					message: `Failed to move board card to backlog: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+
+			try {
+				await removeQueuedJob(input.jobId);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: `Failed to remove job from queue after moving board card: ${msg}`,
 				});
 			}
 

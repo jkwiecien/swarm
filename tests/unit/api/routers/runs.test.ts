@@ -23,6 +23,7 @@ vi.mock('@/queue/producer.js', () => ({
 	enqueueDelayedRetry: vi.fn(),
 	removePendingRetryForRun: vi.fn(),
 	removeQueuedJob: vi.fn(),
+	getQueuedJobData: vi.fn(),
 }));
 
 vi.mock('@/queue/queued-runs.js', () => ({
@@ -65,6 +66,7 @@ import {
 } from '@/queue/cancellation.js';
 import {
 	enqueueDelayedRetry,
+	getQueuedJobData,
 	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
@@ -228,6 +230,7 @@ describe('runsRouter', () => {
 			const workItem = createMockWorkItem({
 				title: 'Fix the widget',
 				url: 'https://github.com/acme/widgets/issues/42',
+				statusId: '61e4505c', // Planning status
 			});
 			const getWorkItem = vi.fn().mockResolvedValue(workItem);
 			vi.mocked(listPendingJobs).mockResolvedValue([]);
@@ -806,19 +809,28 @@ describe('runsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 
 			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
 			vi.mocked(removeQueuedJob).mockResolvedValue(jobData);
 
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: jobData.event.itemNodeId,
+				statusId: '61e4505c', // Planning status (starts planning phase)
+				title: 'Test Card',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
 			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
 			vi.mocked(getPMProvider).mockReturnValue({
-				createProvider: () => ({ moveWorkItem }),
+				createProvider: () => ({ getWorkItem, moveWorkItem }),
 			} as never);
 
 			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
 
 			expect(result).toEqual({ success: true });
+			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
 			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
 			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
 			expect(getPMProvider).toHaveBeenCalledWith(project.pm.type);
+			expect(getWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId);
 			expect(moveWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId, 'backlog');
 		});
 
@@ -836,6 +848,7 @@ describe('runsRouter', () => {
 					workItemId: '42',
 				},
 			};
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
 			vi.mocked(removeQueuedJob).mockResolvedValue(jobData as never);
 
 			const listWorkItems = vi
@@ -849,6 +862,8 @@ describe('runsRouter', () => {
 			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
 
 			expect(result).toEqual({ success: true });
+			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
+			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
 			expect(listWorkItems).toHaveBeenCalled();
 			expect(moveWorkItem).toHaveBeenCalledWith('card-1', 'backlog');
 		});
@@ -863,7 +878,7 @@ describe('runsRouter', () => {
 
 		it('throws PRECONDITION_FAILED when the job state is active', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
-			vi.mocked(removeQueuedJob).mockRejectedValue(
+			vi.mocked(getQueuedJobData).mockRejectedValue(
 				new Error('Job "job-1" is active and cannot be put back.'),
 			);
 
@@ -885,7 +900,7 @@ describe('runsRouter', () => {
 					workItemId: '42',
 				},
 			};
-			vi.mocked(removeQueuedJob).mockResolvedValue(jobData as never);
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
 
 			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
 				/Job phase hint "resolve-conflicts" is not supported for Put back./,
@@ -904,7 +919,7 @@ describe('runsRouter', () => {
 					workItemId: '42',
 				},
 			};
-			vi.mocked(removeQueuedJob).mockResolvedValue(jobData as never);
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
 
 			const listWorkItems = vi
 				.fn()
@@ -915,6 +930,28 @@ describe('runsRouter', () => {
 
 			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
 				/Job has no linked board card./,
+			);
+		});
+
+		it('throws PRECONDITION_FAILED when the github-projects job status does not start planning or implementation', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: jobData.event.itemNodeId,
+				statusId: 'df73e18b', // In Review status (does not start planning or implementation)
+				title: 'Test Card',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem }),
+			} as never);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Work item status does not start a Planning or Implementation phase./,
 			);
 		});
 	});

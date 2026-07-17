@@ -632,6 +632,62 @@ describe('closeQueue', () => {
 	});
 });
 
+describe('getQueuedJobData', () => {
+	it('successfully retrieves job data without removing it', async () => {
+		const jobData = createMockGitHubWebhookJob();
+		const remove = vi.fn().mockResolvedValue(undefined);
+		const mockJob = {
+			id: 'job-1',
+			data: jobData,
+			getState: vi.fn().mockResolvedValue('waiting'),
+			remove,
+		};
+		vi.mocked(fromId).mockResolvedValue(mockJob as never);
+
+		const { getQueuedJobData } = await import('@/queue/producer.js');
+		const result = await getQueuedJobData('job-1');
+
+		expect(result).toEqual(jobData);
+		expect(fromId).toHaveBeenCalledWith(expect.any(Object), 'job-1');
+		expect(remove).not.toHaveBeenCalled();
+	});
+
+	it('throws an error if the job does not exist', async () => {
+		vi.mocked(fromId).mockResolvedValue(undefined);
+
+		const { getQueuedJobData } = await import('@/queue/producer.js');
+		await expect(getQueuedJobData('job-1')).rejects.toThrow(/Queued job with ID "job-1" not found/);
+	});
+
+	it('throws an error if the job is active', async () => {
+		const mockJob = {
+			id: 'job-1',
+			data: {},
+			getState: vi.fn().mockResolvedValue('active'),
+			remove: vi.fn(),
+		};
+		vi.mocked(fromId).mockResolvedValue(mockJob as never);
+
+		const { getQueuedJobData } = await import('@/queue/producer.js');
+		await expect(getQueuedJobData('job-1')).rejects.toThrow(
+			/Job "job-1" is active and cannot be put back./,
+		);
+	});
+
+	it('throws an error if the job is completed or failed', async () => {
+		const mockJob = {
+			id: 'job-1',
+			data: {},
+			getState: vi.fn().mockResolvedValue('completed'),
+			remove: vi.fn(),
+		};
+		vi.mocked(fromId).mockResolvedValue(mockJob as never);
+
+		const { getQueuedJobData } = await import('@/queue/producer.js');
+		await expect(getQueuedJobData('job-1')).rejects.toThrow(/Job "job-1" is already finished/);
+	});
+});
+
 describe('removeQueuedJob', () => {
 	it('successfully removes a job that is waiting, prioritized, or delayed', async () => {
 		const jobData = createMockGitHubWebhookJob();

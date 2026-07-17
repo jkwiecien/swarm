@@ -320,6 +320,26 @@ export async function removePendingRetryForRun(runId: string): Promise<number> {
 }
 
 /**
+ * Retrieve a pending job by its id from BullMQ, ensuring it is not active or completed/failed.
+ * Returns the job data so the caller can inspect/act on it.
+ */
+export async function getQueuedJobData(jobId: string): Promise<SwarmJob> {
+	const q = getQueue();
+	const job = await Job.fromId(q, jobId);
+	if (!job) {
+		throw new Error(`Queued job with ID "${jobId}" not found`);
+	}
+	const state = await job.getState();
+	if (state === 'active') {
+		throw new Error(`Job "${jobId}" is active and cannot be put back.`);
+	}
+	if (state === 'completed' || state === 'failed') {
+		throw new Error(`Job "${jobId}" is already finished (state: ${state}).`);
+	}
+	return job.data;
+}
+
+/**
  * Remove a pending job by its id from BullMQ, ensuring it is not active or completed/failed.
  * Returns the job data so the caller can inspect/act on it.
  */
