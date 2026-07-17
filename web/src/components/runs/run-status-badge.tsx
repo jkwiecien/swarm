@@ -1,6 +1,6 @@
 import type { ComponentProps } from 'react';
 
-type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
+type RunStatus = 'running' | 'completed' | 'failed' | 'deferred' | 'queued';
 
 interface RunStatusBadgeProps extends ComponentProps<'span'> {
 	status: RunStatus;
@@ -54,6 +54,14 @@ const STATUS_CONFIGS: Record<RunStatus, BadgeConfig> = {
 		text: 'Deferred',
 		classes: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
 		dotClass: 'bg-amber-400',
+	},
+	// Enqueued but not yet picked up (issue #238). Neutral zinc and, crucially, no
+	// pulse — it must read as clearly *not running* against the blue pulsing
+	// "Running" badge.
+	queued: {
+		text: 'Queued',
+		classes: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20',
+		dotClass: 'bg-zinc-400',
 	},
 };
 

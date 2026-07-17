@@ -2,9 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { createRoute, useNavigate } from '@tanstack/react-router';
 import { z } from 'zod';
 import { EmptyRunsState } from '@/components/runs/empty-runs-state.js';
+import { QueuedRunsSection } from '@/components/runs/queued-runs-section.js';
 import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
-import { runsListRefetchInterval } from '@/lib/runs-refresh.js';
+import { queuedListRefetchInterval, runsListRefetchInterval } from '@/lib/runs-refresh.js';
 import { trpc } from '@/lib/trpc.js';
 import { type RunRow, runPhaseFilterSchema, runStatusFilterSchema } from '@/types/runs.js';
 import { rootRoute } from '../__root.js';
@@ -54,6 +55,14 @@ function RunsRouteComponent() {
 		refetchInterval: (query) => runsListRefetchInterval(query.state.data),
 	});
 
+	// Enqueued-but-not-yet-running work (issue #238). Independent of the runs
+	// table's status/phase filters — only the project scope applies — and never
+	// gates the table below.
+	const queuedQuery = useQuery({
+		...trpc.runs.queued.queryOptions({ projectId: search.projectId || undefined }),
+		refetchInterval: (query) => queuedListRefetchInterval(query.state.data),
+	});
+
 	const hasActiveFilters = !!(search.projectId || search.status || search.phase);
 
 	return (
@@ -71,6 +80,8 @@ function RunsRouteComponent() {
 				onPhaseChange={(phase) => handleFilterChange({ phase: phase as RunsSearch['phase'] })}
 				onClear={handleClearFilters}
 			/>
+
+			<QueuedRunsSection items={queuedQuery.data ?? []} />
 
 			{runsQuery.isLoading ? (
 				<div className="text-sm text-zinc-400">Loading runs history…</div>

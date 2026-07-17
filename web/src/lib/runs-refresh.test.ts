@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	queuedListRefetchInterval,
 	RUNS_ACTIVE_REFETCH_MS,
 	RUNS_IDLE_REFETCH_MS,
 	runsListRefetchInterval,
@@ -47,6 +48,31 @@ describe('runsListRefetchInterval', () => {
 			const interval = runsListRefetchInterval(input);
 			expect(interval).toBeGreaterThan(0);
 			expect(interval).toBeLessThanOrEqual(RUNS_IDLE_REFETCH_MS);
+			expect(Number.isFinite(interval)).toBe(true);
+		}
+	});
+});
+
+describe('queuedListRefetchInterval', () => {
+	it('polls on the idle baseline when there is no queued work', () => {
+		expect(queuedListRefetchInterval(undefined)).toBe(RUNS_IDLE_REFETCH_MS);
+		expect(queuedListRefetchInterval(null)).toBe(RUNS_IDLE_REFETCH_MS);
+		expect(queuedListRefetchInterval([])).toBe(RUNS_IDLE_REFETCH_MS);
+	});
+
+	it('polls on the active cadence when at least one item is queued', () => {
+		expect(queuedListRefetchInterval([{ jobId: 'a' }])).toBe(RUNS_ACTIVE_REFETCH_MS);
+		expect(queuedListRefetchInterval([{ jobId: 'a' }, { jobId: 'b' }])).toBe(
+			RUNS_ACTIVE_REFETCH_MS,
+		);
+	});
+
+	// Same never-stop-polling contract as the runs list: even when the queue is
+	// empty the interval stays positive so newly-enqueued work still surfaces.
+	it('never stops polling (always a positive, finite interval)', () => {
+		for (const input of [undefined, null, [], [{ jobId: 'a' }]]) {
+			const interval = queuedListRefetchInterval(input);
+			expect(interval).toBeGreaterThan(0);
 			expect(Number.isFinite(interval)).toBe(true);
 		}
 	});

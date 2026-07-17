@@ -26,3 +26,16 @@ export function runsListRefetchInterval(data?: { data?: RunStatusRow[] } | null)
 	const hasRunning = data?.data?.some((run) => run.status === 'running') ?? false;
 	return hasRunning ? RUNS_ACTIVE_REFETCH_MS : RUNS_IDLE_REFETCH_MS;
 }
+
+/**
+ * Poll cadence for the Queued section (issue #238). Same never-stop-polling
+ * contract as {@link runsListRefetchInterval}: poll fast while work is queued so
+ * a picked-up job disappears promptly, and keep polling on the idle baseline when
+ * the queue is empty so newly-enqueued work still surfaces without a manual
+ * refresh. Returns a positive number in all cases (never `false`/0). Kept
+ * structural on `length` so the tRPC payload can be passed straight through.
+ */
+export function queuedListRefetchInterval(items?: { length: number } | null): number {
+	const hasQueued = (items?.length ?? 0) > 0;
+	return hasQueued ? RUNS_ACTIVE_REFETCH_MS : RUNS_IDLE_REFETCH_MS;
+}

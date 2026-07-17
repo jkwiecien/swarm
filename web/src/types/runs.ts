@@ -23,6 +23,54 @@ export const runPhaseFilterSchema = z.enum([
 export type RunPhaseFilter = z.infer<typeof runPhaseFilterSchema>;
 
 /**
+ * Mirrors the server `runs.queued` contract (`QueuedRunSchema`,
+ * `src/queue/queued-runs.ts`) for a job enqueued in BullMQ but not yet picked up
+ * by the worker (issue #234). The web package doesn't import server modules, so
+ * this re-declares the shape here the same way `runStatusFilterSchema` mirrors
+ * the router's status enum — keep it exactly in step with the server schema.
+ *
+ * `phaseHint` is best-effort (derived without a GitHub lookup), so it is NOT the
+ * same closed set as {@link runPhaseFilterSchema}: `board` covers Planning/Impl
+ * before authoritative dispatch, and `unknown` is a real value.
+ */
+export const queuedPhaseHintSchema = z.enum([
+	'board',
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+	'unknown',
+]);
+export type QueuedPhaseHint = z.infer<typeof queuedPhaseHintSchema>;
+
+/** Which BullMQ pending set a job was read from (mirrors `PendingJobStateSchema`). */
+export const queuedRunStateSchema = z.enum(['waiting', 'prioritized', 'delayed']);
+export type QueuedRunState = z.infer<typeof queuedRunStateSchema>;
+
+export const queuedRunSchema = z.object({
+	jobId: z.string(),
+	projectId: z.string(),
+	type: z.enum(['github', 'github-projects']),
+	state: queuedRunStateSchema,
+	phaseHint: queuedPhaseHintSchema,
+	/** `github` jobs only — `owner/repo`. */
+	repo: z.string().optional(),
+	/** `github` jobs only — the PR/issue number. */
+	prNumber: z.string().optional(),
+	/** `github-projects` jobs only — the opaque board item node id. */
+	workItemNodeId: z.string().optional(),
+	/** `github-projects` jobs only — `Issue` | `PullRequest` | `DraftIssue`. */
+	contentType: z.string().optional(),
+	/** Effective BullMQ priority; 0 is highest. */
+	priority: z.number().int().nonnegative(),
+	/** ISO 8601 — when the job was enqueued. */
+	enqueuedAt: z.string(),
+	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
+	runsAt: z.string().optional(),
+});
+export type QueuedRun = z.infer<typeof queuedRunSchema>;
+
+/**
  * Mirrors `AgentUsage` (`src/harness/usage.ts`) — the web package doesn't
  * import server modules, so this hand-mirrors the shape the same way `RunRow`
  * hand-mirrors the DB row.
