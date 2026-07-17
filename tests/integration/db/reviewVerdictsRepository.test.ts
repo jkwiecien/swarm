@@ -1,0 +1,154 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+
+import {
+	abandonReviewVerdict,
+	getReviewVerdictByHead,
+	getReviewVerdictByReviewId,
+	markReviewVerdictSubmitted,
+	reserveReviewVerdict,
+} from '../../../src/db/repositories/reviewVerdictsRepository.js';
+import { truncateAll } from '../helpers/db.js';
+import { seedProject } from '../helpers/seed.js';
+
+// `review_verdicts.project_id` FKs `projects`, so every test needs a seeded project.
+const PROJECT_ID = 'proj-review-verdicts';
+const REPO = 'jkwiecien/review-verdicts-repo';
+const PR = '17';
+
+const key = (headSha: string) => ({
+	projectId: PROJECT_ID,
+	repository: REPO,
+	prNumber: PR,
+	headSha,
+});
+
+describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
+	'reviewVerdictsRepository (integration)',
+	() => {
+		beforeEach(async () => {
+			await truncateAll();
+			await seedProject({ id: PROJECT_ID, repo: REPO });
+		});
+
+		describe('reserveReviewVerdict', () => {
+			it('reserves the first slot at ordinal 1', async () => {
+				const reservation = await reserveReviewVerdict(key('sha-1'));
+				expect(reservation).toMatchObject({ status: 'reserved', ordinal: 1 });
+			});
+
+			it('reuses the same-head reservation on a retry instead of allocating a new ordinal', async () => {
+				const first = await reserveReviewVerdict(key('sha-1'));
+				const retry = await reserveReviewVerdict(key('sha-1'));
+				expect(retry).toMatchObject({ status: 'reused', ordinal: 1, state: 'pending' });
+				expect(retry).toMatchObject({ id: (first as { id: string }).id });
+			});
+
+			it('blocks a different head while another reservation for this PR is still pending', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				const blocked = await reserveReviewVerdict(key('sha-2'));
+				expect(blocked).toMatchObject({ status: 'blocked', ordinal: 1 });
+			});
+
+			it('allocates the second slot once the first is submitted', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'request-changes' });
+				const second = await reserveReviewVerdict(key('sha-2'));
+				expect(second).toMatchObject({ status: 'reserved', ordinal: 2 });
+			});
+
+			it('rejects a third reservation once two verdicts are submitted (the safety cap)', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'request-changes' });
+				await reserveReviewVerdict(key('sha-2'));
+				await markReviewVerdictSubmitted(key('sha-2'), { verdict: 'request-changes' });
+				const third = await reserveReviewVerdict(key('sha-3'));
+				expect(third).toEqual({ status: 'capped' });
+			});
+
+			it('never allocates more than two submitted slots across concurrent distinct-head reservations', async () => {
+				const reservations = await Promise.all(
+					['sha-a', 'sha-b', 'sha-c', 'sha-d'].map((sha) => reserveReviewVerdict(key(sha))),
+				);
+				const reserved = reservations.filter((r) => r.status === 'reserved');
+				const blocked = reservations.filter((r) => r.status === 'blocked');
+				// Exactly one reservation wins the race for the (single) pending slot;
+				// every other concurrent distinct head is blocked behind it.
+				expect(reserved).toHaveLength(1);
+				expect(blocked).toHaveLength(3);
+			});
+
+			it('frees the ordinal for a fresh attempt once a pending reservation is abandoned', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await abandonReviewVerdict(key('sha-1'));
+				// The abandoned head's own retry re-reserves ordinal 1, not ordinal 2 —
+				// the failed attempt isn't charged against the cap.
+				const retry = await reserveReviewVerdict(key('sha-1'));
+				expect(retry).toMatchObject({ status: 'reserved', ordinal: 1 });
+				// And a different head is no longer blocked behind the abandoned one.
+				const other = await reserveReviewVerdict(key('sha-2'));
+				expect(other).toMatchObject({ status: 'blocked', ordinal: 1 });
+			});
+		});
+
+		describe('markReviewVerdictSubmitted', () => {
+			it('is idempotent by natural key — repairs a crash between delivery and this write', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				const first = await markReviewVerdictSubmitted(key('sha-1'), {
+					verdict: 'approve',
+					reviewId: '555',
+				});
+				const second = await markReviewVerdictSubmitted(key('sha-1'), {
+					verdict: 'approve',
+					reviewId: '555',
+				});
+				expect(first?.ordinal).toBe(1);
+				expect(second?.ordinal).toBe(1);
+				const record = await getReviewVerdictByReviewId(PROJECT_ID, REPO, '555');
+				expect(record).toMatchObject({ ordinal: 1, state: 'submitted', verdict: 'approve' });
+			});
+
+			it('returns undefined when no reservation exists for this PR/head', async () => {
+				const result = await markReviewVerdictSubmitted(key('never-reserved'), {
+					verdict: 'approve',
+				});
+				expect(result).toBeUndefined();
+			});
+
+			it('survives a fresh repository call — persisted across process lifecycle', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), {
+					verdict: 'request-changes',
+					reviewId: '9',
+				});
+				const record = await getReviewVerdictByHead(PROJECT_ID, REPO, PR, 'sha-1');
+				expect(record).toMatchObject({
+					ordinal: 1,
+					state: 'submitted',
+					verdict: 'request-changes',
+					headSha: 'sha-1',
+				});
+			});
+		});
+
+		describe('abandonReviewVerdict', () => {
+			it('only touches a pending record — never abandons a submitted verdict', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'approve' });
+				await abandonReviewVerdict(key('sha-1'));
+				const record = await getReviewVerdictByHead(PROJECT_ID, REPO, PR, 'sha-1');
+				expect(record?.state).toBe('submitted');
+			});
+
+			it('is a no-op when no reservation exists', async () => {
+				await expect(abandonReviewVerdict(key('never-reserved'))).resolves.toBeUndefined();
+			});
+		});
+
+		describe('getReviewVerdictByReviewId / getReviewVerdictByHead', () => {
+			it('returns undefined for an unknown review id or head', async () => {
+				expect(await getReviewVerdictByReviewId(PROJECT_ID, REPO, 'unknown')).toBeUndefined();
+				expect(await getReviewVerdictByHead(PROJECT_ID, REPO, PR, 'unknown')).toBeUndefined();
+			});
+		});
+	},
+);

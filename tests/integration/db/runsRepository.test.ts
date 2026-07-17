@@ -234,6 +234,39 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.reviewVerdict).toBeNull();
 		});
 
+		it('persists the safety-cap ordinal and manual-intervention outcome (issue #235)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '3e', phase: 'review' });
+
+			await completeRun(id, {
+				status: 'completed',
+				engine: 'claude',
+				exitCode: 0,
+				reviewVerdict: 'request-changes',
+				reviewOrdinal: 2,
+				reviewAutomationOutcome: 'manual-intervention-required',
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewOrdinal).toBe(2);
+			expect(row?.reviewAutomationOutcome).toBe('manual-intervention-required');
+		});
+
+		it('leaves the safety-cap columns null for a non-terminal verdict', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '3f', phase: 'review' });
+
+			await completeRun(id, {
+				status: 'completed',
+				engine: 'claude',
+				exitCode: 0,
+				reviewVerdict: 'approve',
+				reviewOrdinal: 1,
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewOrdinal).toBe(1);
+			expect(row?.reviewAutomationOutcome).toBeNull();
+		});
+
 		it('keeps the engine persisted at creation when a deferral omits it (issue #169)', async () => {
 			// A run rate-limited before its agent ran defers with no agent result, so
 			// `completeRun` omits `engine`. The creation-time engine must survive so the
@@ -291,6 +324,23 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			const row = await getRunByIdFromDb(id);
 			expect(row?.status).toBe('running');
 			expect(row?.reviewVerdict).toBeNull();
+		});
+
+		it('clears a prior safety-cap ordinal/outcome alongside the verdict (issue #235)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9d', phase: 'review' });
+			await completeRun(id, {
+				status: 'completed',
+				engine: 'claude',
+				reviewVerdict: 'request-changes',
+				reviewOrdinal: 2,
+				reviewAutomationOutcome: 'manual-intervention-required',
+			});
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewOrdinal).toBeNull();
+			expect(row?.reviewAutomationOutcome).toBeNull();
 		});
 
 		it('records the effective engine for the fresh attempt when one is passed', async () => {

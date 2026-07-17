@@ -166,53 +166,23 @@ describe('runRespondToReviewPhase', () => {
 		expect(deps.runAgent.mock.calls[0][0].cli).toBe('antigravity');
 	});
 
-	it('does not enable auto merge when it is disabled', async () => {
-		const deps = makeDeps();
-		const enablePullRequestAutoMerge = vi.fn();
-		await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
-		expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
-	});
+	describe('auto-merge is Review-only (issue #235)', () => {
+		it.each([
+			['fixed', 'fixed\n'],
+			['pushed-back', 'pushed-back'],
+			['no-findings', 'no-findings'],
+		])('never surfaces autoMergeEnabled for a %s outcome, even when the setting is on', async (expectedOutcome, contents) => {
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			outcomeFileContents = contents;
 
-	it('enables GitHub auto-merge after fixes, including while CI is pending', async () => {
-		const deps = makeDeps();
-		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
-		const enablePullRequestAutoMerge = vi.fn(async () => ({
-			enabled: true,
-			message: 'GitHub auto-merge enabled; waiting for required checks',
-		}));
+			const result = await runRespondToReviewPhase(deps);
 
-		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
-
-		expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
-		expect(result.autoMergeEnabled).toBe(true);
-	});
-
-	it('does not enable auto merge after a concrete review pushback', async () => {
-		const deps = makeDeps();
-		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
-		outcomeFileContents = 'pushed-back';
-		const enablePullRequestAutoMerge = vi.fn();
-
-		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
-
-		expect(result.outcome).toBe('pushed-back');
-		expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
-		expect(result.autoMergeEnabled).toBeUndefined();
-	});
-
-	it('enables GitHub auto-merge after a true no-findings acknowledgment', async () => {
-		const deps = makeDeps();
-		deps.project = createMockProjectConfig({ pipeline: { respondToReview: { autoMerge: true } } });
-		outcomeFileContents = 'no-findings';
-		const enablePullRequestAutoMerge = vi.fn(async () => ({
-			enabled: true,
-			message: 'GitHub auto-merge enabled',
-		}));
-
-		const result = await runRespondToReviewPhase({ ...deps, enablePullRequestAutoMerge });
-
-		expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
-		expect(result.autoMergeEnabled).toBe(true);
+			expect(result.outcome).toBe(expectedOutcome);
+			expect(result).not.toHaveProperty('autoMergeEnabled');
+		});
 	});
 
 	it('throws and still cleans up when the agent exits non-zero', async () => {

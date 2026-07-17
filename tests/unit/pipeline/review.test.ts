@@ -54,6 +54,10 @@ function makeDeps() {
 		),
 		graft: vi.fn(() => []),
 		getToken: vi.fn(async () => 'reviewer-token'),
+		// Ledger writers default to a first-verdict reservation so existing tests
+		// exercise the common case without a live database (issue #235).
+		markReviewVerdictSubmitted: vi.fn(async () => ({ id: 'verdict-1', ordinal: 1 })),
+		abandonReviewVerdict: vi.fn(async () => {}),
 	};
 }
 
@@ -269,6 +273,82 @@ describe('runReviewPhase', () => {
 			expect(result.verdict).toBe('approve');
 			expect(result.autoMergeEnabled).toBe(false);
 			expect(deps.worktrees.cleanup).toHaveBeenCalledWith('review-20');
+		});
+	});
+
+	describe('two-verdict safety-cap ledger (issue #235)', () => {
+		it('marks the reserved head submitted with the verdict, by natural key', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			await runReviewPhase(deps);
+
+			expect(deps.markReviewVerdictSubmitted).toHaveBeenCalledWith(
+				{
+					projectId: deps.project.id,
+					repository: deps.project.repo,
+					prNumber: '99',
+					headSha: HEAD_SHA,
+				},
+				{ verdict: 'approve' },
+			);
+			expect(deps.abandonReviewVerdict).not.toHaveBeenCalled();
+		});
+
+		it('surfaces the ledger ordinal on the result', async () => {
+			verdictFileContents = 'request-changes\n';
+			const deps = makeDeps();
+			deps.markReviewVerdictSubmitted = vi.fn(async () => ({ id: 'verdict-1', ordinal: 1 }));
+
+			const result = await runReviewPhase(deps);
+
+			expect(result.reviewOrdinal).toBe(1);
+			expect(result.automationOutcome).toBeUndefined();
+		});
+
+		it('records manual-intervention-required when the second verdict is request-changes', async () => {
+			verdictFileContents = 'request-changes\n';
+			const deps = makeDeps();
+			deps.markReviewVerdictSubmitted = vi.fn(async () => ({ id: 'verdict-2', ordinal: 2 }));
+
+			const result = await runReviewPhase(deps);
+
+			expect(result.reviewOrdinal).toBe(2);
+			expect(result.automationOutcome).toBe('manual-intervention-required');
+		});
+
+		it('does not record manual-intervention-required for a second-slot approval', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			deps.markReviewVerdictSubmitted = vi.fn(async () => ({ id: 'verdict-2', ordinal: 2 }));
+
+			const result = await runReviewPhase(deps);
+
+			expect(result.automationOutcome).toBeUndefined();
+		});
+
+		it('abandons the reservation when the agent fails before any review was submitted', async () => {
+			const deps = makeDeps();
+			deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
+
+			await expect(runReviewPhase(deps)).rejects.toThrow(/exited with code 1/);
+
+			expect(deps.abandonReviewVerdict).toHaveBeenCalledWith({
+				projectId: deps.project.id,
+				repository: deps.project.repo,
+				prNumber: '99',
+				headSha: HEAD_SHA,
+			});
+			expect(deps.markReviewVerdictSubmitted).not.toHaveBeenCalled();
+		});
+
+		it('does not fail the run when abandoning the reservation itself throws', async () => {
+			const deps = makeDeps();
+			deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
+			deps.abandonReviewVerdict = vi.fn(async () => {
+				throw new Error('connection reset');
+			});
+
+			await expect(runReviewPhase(deps)).rejects.toThrow(/exited with code 1/);
 		});
 	});
 });

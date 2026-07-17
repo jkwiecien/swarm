@@ -73,11 +73,6 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import {
-	type EnablePullRequestAutoMerge,
-	enableAutoMergeIfEligible,
-	enablePullRequestAutoMergeDefault,
-} from '@/pipeline/auto-merge.js';
 import { buildRespondToReviewPrompt } from '@/pipeline/prompts/respond-to-review.js';
 import {
 	acquireResumableWorktree,
@@ -219,8 +214,6 @@ export interface RunRespondToReviewPhaseOptions {
 	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
 	delivery?: ScmDeliveryProvider;
 	getToken?: typeof getPersonaToken;
-	/** Injectable GitHub auto-merge operation; best-effort after an eligible response when enabled. */
-	enablePullRequestAutoMerge?: EnablePullRequestAutoMerge;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -234,8 +227,6 @@ export interface RespondToReviewPhaseResult {
 	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
-	/** Whether GitHub accepted the opt-in automatic-merge request. */
-	autoMergeEnabled?: boolean;
 }
 
 /**
@@ -329,27 +320,6 @@ function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult
 	});
 }
 
-function enableAutoMerge(
-	enabled: boolean,
-	outcome: RespondOutcome,
-	enablePullRequestAutoMerge: EnablePullRequestAutoMerge,
-	project: ProjectConfig,
-	prNumber: string,
-	taskId: string,
-): Promise<boolean | undefined> {
-	// A pushback leaves requested changes unresolved. Only a real fix or a
-	// no-findings acknowledgment is safe to hand to GitHub for auto-merge.
-	return enableAutoMergeIfEligible({
-		enabled,
-		eligible: outcome === 'fixed' || outcome === 'no-findings',
-		enablePullRequestAutoMerge,
-		project,
-		prNumber,
-		taskId,
-		phase: 'Respond-to-review',
-	});
-}
-
 /**
  * Run the Respond-to-review phase for one submitted review. Provisions a
  * worktree on the PR's existing branch, runs the implementer agent to address
@@ -383,7 +353,6 @@ export async function runRespondToReviewPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
-		enablePullRequestAutoMerge = enablePullRequestAutoMergeDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
@@ -489,15 +458,7 @@ export async function runRespondToReviewPhase(
 			let movedTo: PmStatusKey | undefined;
 			if (pm && boardItemId && (await reportBoardStatus(pm, boardItemId, DONE_STATUS, taskId)))
 				movedTo = DONE_STATUS;
-			const autoMergeEnabled = await enableAutoMerge(
-				project.pipeline?.respondToReview?.autoMerge ?? false,
-				outcome,
-				enablePullRequestAutoMerge,
-				project,
-				prNumber,
-				taskId,
-			);
-			return { outcome, movedTo, agent, autoMergeEnabled };
+			return { outcome, movedTo, agent };
 		}
 		const handoff = readHandoff(handle.path, RESPOND_OUTCOME_FILENAME, ReviewResponseHandoffSchema);
 		if (
@@ -545,25 +506,15 @@ export async function runRespondToReviewPhase(
 			movedTo = DONE_STATUS;
 		}
 
-		const autoMergeEnabled = await enableAutoMerge(
-			project.pipeline?.respondToReview?.autoMerge ?? false,
-			outcome,
-			enablePullRequestAutoMerge,
-			project,
-			prNumber,
-			taskId,
-		);
-
 		logger.info('Phase finished - Respond-to-review', {
 			taskId,
 			prNumber,
 			prBranch,
 			outcome,
 			movedTo,
-			autoMergeEnabled,
 		});
 
-		return { outcome, movedTo, agent, autoMergeEnabled };
+		return { outcome, movedTo, agent };
 	} catch (error) {
 		if (!legacyMode && hasDeliveryProgress(handle.path)) {
 			preserveForResume = true;

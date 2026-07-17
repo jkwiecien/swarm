@@ -59,6 +59,8 @@ describe('review production delivery', () => {
 			submitReview,
 			postComment: vi.fn(),
 		} as unknown as ScmDeliveryProvider;
+		const markReviewVerdictSubmitted = vi.fn(async () => ({ id: 'verdict-1', ordinal: 1 }));
+		const abandonReviewVerdict = vi.fn(async () => undefined);
 		const options = {
 			project: createMockProjectConfig(),
 			prNumber: '42',
@@ -69,19 +71,38 @@ describe('review production delivery', () => {
 			graft: vi.fn(() => []),
 			getToken: vi.fn(async () => 'review-token'),
 			delivery,
+			markReviewVerdictSubmitted,
+			abandonReviewVerdict,
 		};
 
 		await expect(runReviewPhase(options)).rejects.toBeInstanceOf(DeliveryDeferredError);
 		expect(cleanup).not.toHaveBeenCalled();
 		expect(runAgent).toHaveBeenCalledTimes(1);
+		// The failure happened after delivery progress existed (an ambiguous
+		// mid-submission failure), so the reservation is preserved, not abandoned
+		// (issue #235).
+		expect(abandonReviewVerdict).not.toHaveBeenCalled();
 
 		await expect(
 			runReviewPhase({ ...options, resumeSessionId: 'session-1' }),
 		).resolves.toMatchObject({
 			verdict: 'approve',
+			reviewOrdinal: 1,
 		});
 		expect(runAgent).toHaveBeenCalledTimes(1);
 		expect(submitReview).toHaveBeenCalledTimes(2);
 		expect(cleanup).toHaveBeenCalledTimes(1);
+		// Marked submitted exactly once, on the successful (resumed) attempt, with
+		// the recovered review id.
+		expect(markReviewVerdictSubmitted).toHaveBeenCalledTimes(1);
+		expect(markReviewVerdictSubmitted).toHaveBeenCalledWith(
+			{
+				projectId: options.project.id,
+				repository: options.project.repo,
+				prNumber: '42',
+				headSha: 'abc',
+			},
+			{ verdict: 'approve', reviewId: '77' },
+		);
 	});
 });

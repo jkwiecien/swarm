@@ -1,6 +1,6 @@
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
-import { projectCredentials, projects, runLogs, runs } from '@/db/schema/index.js';
+import { projectCredentials, projects, reviewVerdicts, runLogs, runs } from '@/db/schema/index.js';
 
 // These tests pin the persisted shape to SWARM's config model (src/config/schema.ts)
 // and single-user scope (ai/ARCHITECTURE.md) without needing a live Postgres.
@@ -147,6 +147,67 @@ describe('db schema', () => {
 			expect(names).toContain('idx_runs_project_id');
 			expect(names).toContain('idx_runs_status');
 			expect(names).toContain('idx_runs_started_at');
+		});
+
+		it('carries a nullable review safety-cap slot and automation outcome (issue #235)', () => {
+			expect(columns.get('review_ordinal')?.getSQLType()).toBe('integer');
+			expect(columns.get('review_ordinal')?.notNull).toBe(false);
+			expect(columns.get('review_automation_outcome')?.getSQLType()).toBe('text');
+			expect(columns.get('review_automation_outcome')?.notNull).toBe(false);
+		});
+	});
+
+	describe('review_verdicts', () => {
+		const table = getTableConfig(reviewVerdicts);
+		const columns = new Map(table.columns.map((c) => [c.name, c]));
+
+		it('is named "review_verdicts"', () => {
+			expect(table.name).toBe('review_verdicts');
+		});
+
+		it('records the natural key, slot ordinal, state, verdict, and review id', () => {
+			for (const name of [
+				'id',
+				'project_id',
+				'repository',
+				'pr_number',
+				'head_sha',
+				'ordinal',
+				'state',
+				'verdict',
+				'review_id',
+				'reserved_at',
+				'submitted_at',
+			]) {
+				expect(columns.has(name), `missing column ${name}`).toBe(true);
+			}
+		});
+
+		it('keys on id and starts a reservation as "pending"', () => {
+			expect(columns.get('id')?.primary).toBe(true);
+			expect(columns.get('state')?.notNull).toBe(true);
+			expect(columns.get('state')?.default).toBe('pending');
+		});
+
+		it('cascades from the owning project', () => {
+			const fk = table.foreignKeys[0];
+			expect(fk).toBeDefined();
+			expect(fk.reference().foreignTable).toBe(projects);
+			expect(fk.onDelete).toBe('cascade');
+		});
+
+		it('enforces one record per PR/head and indexes PR and review-id lookups', () => {
+			const unique = table.indexes.find((i) => i.config.unique);
+			expect(unique).toBeDefined();
+			expect(unique?.config.columns.map((c) => (c as { name: string }).name)).toEqual([
+				'project_id',
+				'repository',
+				'pr_number',
+				'head_sha',
+			]);
+			const names = table.indexes.map((i) => i.config.name);
+			expect(names).toContain('idx_review_verdicts_pr');
+			expect(names).toContain('idx_review_verdicts_review_id');
 		});
 	});
 

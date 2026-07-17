@@ -57,7 +57,11 @@ import { runPlanningPhase } from '../pipeline/planning.js';
 import { runResolveConflictsPhase } from '../pipeline/resolve-conflicts.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
-import { type ReviewVerdict, runReviewPhase } from '../pipeline/review.js';
+import {
+	type ReviewAutomationOutcome,
+	type ReviewVerdict,
+	runReviewPhase,
+} from '../pipeline/review.js';
 import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
 import type { WorkItem } from '../pm/types.js';
 import {
@@ -619,6 +623,10 @@ function runPhase(
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 	/** The submitted verdict of a Review run — persisted onto its history row (issue #218). */
 	verdict?: ReviewVerdict;
+	/** This Review run's two-verdict safety-cap slot (1 or 2) — persisted onto its history row (issue #235). */
+	reviewOrdinal?: number;
+	/** This Review run's automation outcome (e.g. `manual-intervention-required`) — persisted onto its history row (issue #235). */
+	automationOutcome?: ReviewAutomationOutcome;
 }> {
 	const overrides = agentOverrideFor(
 		project,
@@ -1810,6 +1818,10 @@ export async function processJob(
 				// Only a Review run carries a verdict; every other phase leaves it
 				// undefined, so the column is written only for reviews (issue #218).
 				reviewVerdict: result.verdict,
+				// Same: only a Review run carries a safety-cap slot/automation outcome
+				// (issue #235).
+				reviewOrdinal: result.reviewOrdinal,
+				reviewAutomationOutcome: result.automationOutcome,
 			},
 			result.agent,
 		);

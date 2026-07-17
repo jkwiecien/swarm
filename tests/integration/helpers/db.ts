@@ -68,6 +68,7 @@ export async function truncateAll(): Promise<void> {
 			run_output_events,
 			run_logs,
 			runs,
+			review_verdicts,
 			project_credentials,
 			projects,
 			app_settings

@@ -53,6 +53,24 @@ export const runs = pgTable(
 		 * re-running review never shows a stale verdict.
 		 */
 		reviewVerdict: text('review_verdict'),
+		/**
+		 * This Review run's slot number in the two-verdict safety-cap ledger
+		 * (`review_verdicts`, issue #235) — 1 (initial review) or 2 (the one
+		 * permitted re-review). Nullable: only a completed Review run whose
+		 * verdict was recorded in the ledger sets it; every other phase, and any
+		 * pre-existing row, leaves it null. Cleared on a retry alongside
+		 * `reviewVerdict` ({@link resetRunToRunning}).
+		 */
+		reviewOrdinal: integer('review_ordinal'),
+		/**
+		 * The review-automation outcome for a completed Review run — currently only
+		 * `manual-intervention-required`, set when this run submitted the second
+		 * `request-changes` verdict the cap allows, so Respond-to-review stops the
+		 * automatic cycle instead of dispatching a third review. Nullable: every
+		 * other outcome (approvals, the first verdict, non-Review phases) leaves it
+		 * null. Cleared on a retry alongside `reviewVerdict`.
+		 */
+		reviewAutomationOutcome: text('review_automation_outcome'),
 		exitCode: integer('exit_code'),
 		timedOut: boolean('timed_out').notNull().default(false),
 		error: text('error'),

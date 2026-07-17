@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PersonaIdentities } from '@/integrations/scm/github/personas.js';
 import { createRespondToReviewTrigger } from '@/triggers/handlers/respond-to-review.js';
 import type { TriggerContext } from '@/triggers/types.js';
@@ -9,10 +9,24 @@ import {
 
 const PROJECT = createMockProjectConfig();
 const IDENTITIES: PersonaIdentities = { implementer: 'swarm-impl', reviewer: 'swarm-rev' };
+const HEAD_SHA = 'deadbeef1234deadbeef1234deadbeef1234dead';
 
 // Real getPersonaForLogin runs against these identities — only identity
-// *resolution* is stubbed (it would otherwise hit GitHub).
-const handler = createRespondToReviewTrigger({ resolveIdentities: async () => IDENTITIES });
+// *resolution* is stubbed (it would otherwise hit GitHub). The ledger lookups
+// default to the first (non-capping) verdict slot so the existing dispatch
+// tests exercise the common case without needing a live database.
+const getReviewVerdictByReviewId = vi.fn(async () => ({
+	ordinal: 1,
+	state: 'submitted' as const,
+	verdict: 'request-changes',
+	headSha: HEAD_SHA,
+}));
+const getReviewVerdictByHead = vi.fn(async () => undefined);
+const handler = createRespondToReviewTrigger({
+	resolveIdentities: async () => IDENTITIES,
+	getReviewVerdictByReviewId,
+	getReviewVerdictByHead,
+});
 
 function reviewEvent(overrides: Partial<Parameters<typeof createMockGitHubParsedEvent>[0]> = {}) {
 	return createMockGitHubParsedEvent({
@@ -22,6 +36,7 @@ function reviewEvent(overrides: Partial<Parameters<typeof createMockGitHubParsed
 		reviewState: 'changes_requested',
 		reviewId: '555',
 		prBranch: 'issue-17',
+		headSha: HEAD_SHA,
 		actorLogin: 'swarm-rev',
 		...overrides,
 	});
@@ -126,10 +141,86 @@ describe('respond-to-review trigger', () => {
 		it('skips when the review coordinates are incomplete', async () => {
 			expect(await handler.handle(ctx({ prBranch: undefined }))).toBeNull();
 			expect(await handler.handle(ctx({ reviewId: undefined }))).toBeNull();
+			expect(await handler.handle(ctx({ headSha: undefined }))).toBeNull();
 		});
 
 		it('skips when the review has no author', async () => {
 			expect(await handler.handle(ctx({ actorLogin: undefined }))).toBeNull();
+		});
+	});
+
+	describe('two-verdict safety cap (issue #235)', () => {
+		it('stops the cycle on the second changes-requested verdict', async () => {
+			const getReviewVerdictByReviewId = vi.fn(async () => ({
+				ordinal: 2,
+				state: 'submitted' as const,
+				verdict: 'request-changes',
+				headSha: HEAD_SHA,
+			}));
+			const cappedHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId,
+				getReviewVerdictByHead: vi.fn(async () => undefined),
+			});
+			expect(await cappedHandler.handle(ctx())).toBeNull();
+		});
+
+		it('dispatches the first changes-requested verdict (ordinal 1 is not capped)', async () => {
+			const result = await handler.handle(ctx());
+			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
+			expect(getReviewVerdictByReviewId).toHaveBeenCalledWith(PROJECT.id, PROJECT.repo, '555');
+		});
+
+		it('falls back to the PR/head lookup when the review id is not yet in the ledger', async () => {
+			const byReviewId = vi.fn(async () => undefined);
+			const byHead = vi.fn(async () => ({
+				ordinal: 2,
+				state: 'submitted' as const,
+				verdict: 'request-changes',
+				headSha: HEAD_SHA,
+			}));
+			const cappedHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: byReviewId,
+				getReviewVerdictByHead: byHead,
+			});
+			expect(await cappedHandler.handle(ctx())).toBeNull();
+			expect(byHead).toHaveBeenCalledWith(PROJECT.id, PROJECT.repo, '17', HEAD_SHA);
+		});
+
+		it('fails closed (skips) when no ledger record is found for a changes-requested event', async () => {
+			const noRecordHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: vi.fn(async () => undefined),
+				getReviewVerdictByHead: vi.fn(async () => undefined),
+			});
+			expect(await noRecordHandler.handle(ctx())).toBeNull();
+		});
+
+		it('fails closed (skips) when the ledger lookup throws', async () => {
+			const throwingHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: vi.fn(async () => {
+					throw new Error('connection reset');
+				}),
+				getReviewVerdictByHead: vi.fn(async () => undefined),
+			});
+			expect(await throwingHandler.handle(ctx())).toBeNull();
+		});
+
+		it('does not consult the ledger for a non-changes-requested verdict', async () => {
+			const project = createMockProjectConfig({
+				pipeline: { respondToReview: { skipOnMinors: false } },
+			});
+			const byReviewId = vi.fn(async () => undefined);
+			const noopHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: byReviewId,
+				getReviewVerdictByHead: vi.fn(async () => undefined),
+			});
+			const result = await noopHandler.handle({ ...ctx({ reviewState: 'approved' }), project });
+			expect(result).toMatchObject({ phase: 'respond-to-review' });
+			expect(byReviewId).not.toHaveBeenCalled();
 		});
 	});
 });

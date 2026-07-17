@@ -63,6 +63,8 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		reasoning: null,
 		status: 'completed',
 		reviewVerdict: null,
+		reviewOrdinal: null,
+		reviewAutomationOutcome: null,
 		exitCode: 0,
 		timedOut: false,
 		error: null,
