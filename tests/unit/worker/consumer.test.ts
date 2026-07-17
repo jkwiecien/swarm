@@ -751,6 +751,19 @@ describe('processJob', () => {
 		expect(phaseCalls[0].args.sessionId).toBeUndefined();
 	});
 
+	it('threads delivery resume separately when no agent session was captured', async () => {
+		getRunByIdFromDb.mockResolvedValue({ agentSessionId: null });
+
+		await processJob(
+			createMockGitHubWebhookJob({ resumeDelivery: true, runId: 'run-1' }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(phaseCalls[0].phase).toBe('review');
+		expect(phaseCalls[0].args.resumeDelivery).toBe(true);
+		expect(phaseCalls[0].args.resumeSessionId).toBeUndefined();
+	});
+
 	it('discriminates the context source for a projects job', async () => {
 		const seen: TriggerContext[] = [];
 		const job = createMockGitHubProjectsWebhookJob();
@@ -1532,7 +1545,8 @@ describe('processJob', () => {
 
 		expect(outcome).toMatchObject({
 			status: 'phase-deferred',
-			resumable: true,
+			resumable: false,
+			resumeDelivery: true,
 			reason:
 				"Implementation delivery deferred for retry ← pre-push hook failed: Cannot find package 'react'",
 		});

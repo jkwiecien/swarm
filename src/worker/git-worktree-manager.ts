@@ -117,9 +117,11 @@ export class GitWorktreeManager {
 		taskId: string,
 		branch: string,
 		detached: boolean,
+		isReusable?: (path: string) => boolean,
 	): Promise<WorktreeHandle | undefined> {
 		const path = this.worktreePath(taskId);
 		if (!existsSync(path)) return undefined;
+		if (isReusable && !isReusable(path)) return undefined;
 		await claimWorktreeLease(this.project.id, taskId);
 		return { taskId, path, branch, detached };
 	}

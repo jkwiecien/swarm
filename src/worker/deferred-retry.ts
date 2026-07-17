@@ -23,7 +23,12 @@ export async function reenqueueDeferred(
 		// Retry intent is derived from this outcome. Do not let a stale flag from an
 		// earlier queued job turn a pre-provisioning capacity retry into a branch
 		// resume.
-		const { resumePmPhase, resumeSession: _resumeSession, ...job } = parsed;
+		const {
+			resumePmPhase,
+			resumeSession: _resumeSession,
+			resumeDelivery: _resumeDelivery,
+			...job
+		} = parsed;
 		const next: SwarmJob = {
 			...job,
 			rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1,
@@ -44,6 +49,9 @@ export async function reenqueueDeferred(
 			// the deferral was a resumable one (rate-limit/timeout). Separate from
 			// `resumePmPhase`, which is only the github-projects board-dispatch signal.
 			...(outcome.resumable ? { resumeSession: true } : {}),
+			// Delivery retries reuse a valid progress-marked worktree, independent of
+			// whether the completed agent run exposed a session id.
+			...(outcome.resumeDelivery ? { resumeDelivery: true } : {}),
 			// A prioritized continuation (issue #214) already holds its dispatch dedup
 			// claim; tell the retry's handler to reuse it rather than re-claim (which,
 			// fired within the refreshed TTL, would drop the run as a duplicate).

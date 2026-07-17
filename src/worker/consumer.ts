@@ -129,6 +129,8 @@ export type JobOutcome =
 			 * whether the captured `agentSessionId` is kept on the deferred row.
 			 */
 			resumable: boolean;
+			/** True when the retry must reuse deterministic-delivery progress, not an agent session. */
+			resumeDelivery?: boolean;
 			/**
 			 * True when a PM-driven phase was actually entered before it deferred.
 			 * This preserves board dispatch intent without implying that
@@ -350,6 +352,7 @@ function deferAgentRunError(
 		// progressed. Starting fresh matches the pre-existing Codex-capacity
 		// contract; only an explicit safety case would justify resuming instead.
 		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
+		resumeDelivery: failure.kind === 'delivery' || undefined,
 		pmPhaseStarted:
 			job.type === 'github-projects' &&
 			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
@@ -635,6 +638,7 @@ function runPhase(
 	const session = {
 		sessionId: job.resumeSession ? undefined : job.agentSessionId,
 		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
+		resumeDelivery: job.resumeDelivery === true,
 	};
 	const markImplementationBranchProvisioned = async (): Promise<void> => {
 		job.implementationBranchProvisioned = true;
@@ -1653,10 +1657,7 @@ async function handlePhaseFailure(
 					? { kind: 'delivery' }
 					: { kind: 'worktree-exists' };
 		const deferred = deferAgentRunError(failure, job, trigger, project.id, error, runId);
-		if (deferred) {
-			if (err instanceof DeliveryDeferredError) deferred.resumable = true;
-			return deferred;
-		}
+		if (deferred) return deferred;
 	}
 
 	logger.error(`Phase failed - ${phaseLabel(trigger.phase)}`, {

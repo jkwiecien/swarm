@@ -154,6 +154,8 @@ export interface RunReviewPhaseOptions {
 	 */
 	sessionId?: string;
 	resumeSessionId?: string;
+	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
+	resumeDelivery?: boolean;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -232,6 +234,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		resumeDelivery = false,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -274,20 +277,21 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	// Read-only checkout pinned to the reviewed commit (see the module header for
 	// why detached-at-SHA rather than the PR branch). On a resume retry, reuse the
 	// preserved checkout so the agent continues its session against the same head.
-	const { handle, resumed } = await acquireResumableWorktree(
+	const { handle, resumed, deliveryResumed } = await acquireResumableWorktree(
 		worktrees,
 		taskId,
 		headSha,
 		true,
 		resumeSessionId,
 		() => worktrees.provision(taskId, { detach: true, baseBranch: headSha }),
+		resumeDelivery,
 	);
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
-		const agent = resumeDelivery
+		const shouldResumeDelivery = !legacyMode && deliveryResumed;
+		const agent = shouldResumeDelivery
 			? resumedDeliveryAgent(cli)
 			: await runAgent({
 					cli,

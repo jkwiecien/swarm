@@ -70,6 +70,12 @@ const jobBase = z.object({
 	 */
 	resumeSession: z.boolean().optional(),
 	/**
+	 * Set on a deterministic-delivery retry. Unlike {@link resumeSession}, this
+	 * resumes a preserved worktree and its delivery sidecar without requiring an
+	 * agent CLI session to exist.
+	 */
+	resumeDelivery: z.boolean().optional(),
+	/**
 	 * The `runs` row this job re-runs (issue #136). Absent on a fresh webhook;
 	 * set when a deferred run is re-enqueued (`reenqueueDeferred`
 	 * `src/worker/index.ts`, or a manual "Retry now") so the worker resets that

@@ -110,6 +110,29 @@ describe('reenqueueDeferred', () => {
 		);
 	});
 
+	it('retries delivery with its own worktree-resume signal, not an agent session', async () => {
+		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '243',
+			retryDelayMs: 60_000,
+			reason: 'review delivery failed',
+			attempt: 0,
+			resumable: false,
+			resumeDelivery: true,
+			runId: 'run-1',
+		});
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({ resumeDelivery: true }),
+			60_000,
+		);
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ resumeSession: true }),
+			60_000,
+		);
+	});
+
 	it('keeps manual PM retry dispatch intent through a later concurrency deferral', async () => {
 		await reenqueueDeferred(
 			'job-1',
