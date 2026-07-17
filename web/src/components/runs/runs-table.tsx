@@ -176,6 +176,7 @@ export function RunsTable({
 										timedOut={run.timedOut}
 										phase={run.phase}
 										reviewVerdict={run.reviewVerdict}
+										reviewAutomationOutcome={run.reviewAutomationOutcome}
 									/>
 								</td>
 								<td className="px-2 py-3 text-sm text-zinc-400">

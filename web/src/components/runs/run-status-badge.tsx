@@ -24,6 +24,14 @@ interface RunStatusBadgeProps extends ComponentProps<'span'> {
 	 * keep the lifecycle badge (issue #218).
 	 */
 	reviewVerdict?: string | null;
+	/**
+	 * This Review run's automation outcome (issue #235) — `manual-intervention-required`
+	 * when it submitted the second `request-changes` verdict the two-review safety
+	 * cap allows. Only takes effect alongside a `request-changes` {@link reviewVerdict}
+	 * on a completed Review run; null/absent otherwise keeps the plain verdict badge
+	 * (issue #242).
+	 */
+	reviewAutomationOutcome?: string | null;
 }
 
 interface BadgeConfig {
@@ -31,6 +39,8 @@ interface BadgeConfig {
 	classes: string;
 	dotClass: string;
 	pulse?: boolean;
+	/** Native tooltip; used to keep fuller context available for a short `text`. */
+	title?: string;
 }
 
 const STATUS_CONFIGS: Record<RunStatus, BadgeConfig> = {
@@ -97,6 +107,24 @@ const REVIEW_VERDICT_CONFIGS: Record<string, BadgeConfig> = {
 	},
 };
 
+/**
+ * Distinct, high-attention treatment for a completed Review run whose verdict
+ * was the second `request-changes` the two-review safety cap allows (issue
+ * #242): SWARM stopped the automatic Respond-to-review/re-review cycle, so the
+ * PR needs a human decision instead of another automatic pass. Reuses the same
+ * red "Danger" hue as the lifecycle "Failed" badge — the two never appear on
+ * the same row (this only renders for `status === 'completed'`) — rather than
+ * introduce an undocumented color. The short visible `text` alone doesn't say
+ * *why*, so `title` retains the underlying request-changes context for a hover.
+ */
+const MANUAL_INTERVENTION_CONFIG: BadgeConfig = {
+	text: 'Manual action required',
+	classes: 'bg-red-500/10 text-red-400 border-red-500/20',
+	dotClass: 'bg-red-400',
+	title:
+		'Second changes-requested verdict — SWARM stopped automatic re-review; this PR needs a human decision.',
+};
+
 /** Title-case a hyphenated verdict key for a label ('some-verdict' → 'Some verdict'). */
 function humanizeVerdict(verdict: string): string {
 	const spaced = verdict.replace(/-/g, ' ');
@@ -117,11 +145,20 @@ function resolveBadgeConfig(
 	timedOut: boolean,
 	phase: string | undefined,
 	reviewVerdict: string | null | undefined,
+	reviewAutomationOutcome: string | null | undefined,
 ): BadgeConfig {
 	if (status === 'failed' && timedOut) return TIMED_OUT_CONFIG;
 	// A completed Review run shows its verdict rather than "Completed"; anything
 	// non-completed (or a review row missing its verdict) keeps lifecycle status.
 	if (status === 'completed' && phase === 'review' && reviewVerdict) {
+		// The cap-stopping second changes-requested verdict gets its own distinct
+		// treatment instead of the ordinary "Changes requested" badge (issue #242).
+		if (
+			reviewVerdict === 'request-changes' &&
+			reviewAutomationOutcome === 'manual-intervention-required'
+		) {
+			return MANUAL_INTERVENTION_CONFIG;
+		}
 		return REVIEW_VERDICT_CONFIGS[reviewVerdict] ?? verdictFallbackConfig(reviewVerdict);
 	}
 	return (
@@ -138,13 +175,21 @@ export function RunStatusBadge({
 	timedOut = false,
 	phase,
 	reviewVerdict,
+	reviewAutomationOutcome,
 	className = '',
 	...props
 }: RunStatusBadgeProps) {
-	const config = resolveBadgeConfig(status, timedOut, phase, reviewVerdict);
+	const config = resolveBadgeConfig(
+		status,
+		timedOut,
+		phase,
+		reviewVerdict,
+		reviewAutomationOutcome,
+	);
 
 	return (
 		<span
+			title={config.title}
 			className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-semibold border ${config.classes} ${className}`}
 			{...props}
 		>

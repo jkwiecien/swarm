@@ -431,11 +431,61 @@ function TerminateRunButton({ run }: { run: RunRow }) {
 	);
 }
 
-interface RunDetailHeaderProps {
+interface ReviewCapCalloutProps {
 	run: RunRow;
+	project?: { name: string; repo: string } | null;
 }
 
-function RunDetailHeader({ run }: RunDetailHeaderProps) {
+/**
+ * Run-detail warning for a completed Review run whose verdict was the second
+ * `request-changes` the two-review safety cap allows (issue #242): SWARM
+ * stopped the automatic Respond-to-review/re-review cycle, so this explains
+ * why to the operator and links to the PR that now needs a human decision.
+ * A no-op for every other run (wrong status/phase, or no cap outcome).
+ */
+export function ReviewCapCallout({ run, project }: ReviewCapCalloutProps) {
+	if (
+		run.status !== 'completed' ||
+		run.phase !== 'review' ||
+		run.reviewVerdict !== 'request-changes' ||
+		run.reviewAutomationOutcome !== 'manual-intervention-required'
+	) {
+		return null;
+	}
+
+	return (
+		<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
+			<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+			<div>
+				<h3 className="text-xs font-semibold text-red-200">Manual action required</h3>
+				<p className="text-xs text-red-400/80 mt-1">
+					This was the second changes-requested verdict SWARM's two-review safety cap allows
+					{run.reviewOrdinal ? ` (review ${run.reviewOrdinal} of 2)` : ''}. SWARM will not
+					automatically enqueue another Respond-to-review or re-review — this PR needs a human
+					decision.
+				</p>
+				{project?.repo && run.prNumber && (
+					<a
+						href={`https://github.com/${project.repo}/pull/${run.prNumber}`}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="inline-flex items-center gap-1 mt-2 text-red-300 hover:text-red-200 font-mono hover:underline"
+					>
+						View PR #{run.prNumber}
+						<ExternalLink className="h-3 w-3" />
+					</a>
+				)}
+			</div>
+		</div>
+	);
+}
+
+interface RunDetailHeaderProps {
+	run: RunRow;
+	project?: { name: string; repo: string } | null;
+}
+
+export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 	return (
 		<div className="space-y-6">
 			{/* Breadcrumb */}
@@ -459,6 +509,7 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 					timedOut={run.timedOut}
 					phase={run.phase}
 					reviewVerdict={run.reviewVerdict}
+					reviewAutomationOutcome={run.reviewAutomationOutcome}
 					className="text-sm px-3 py-1"
 				/>
 			</div>
@@ -516,6 +567,8 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 					</div>
 				</div>
 			)}
+
+			<ReviewCapCallout run={run} project={project} />
 		</div>
 	);
 }
@@ -671,6 +724,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 								timedOut={run.timedOut}
 								phase={run.phase}
 								reviewVerdict={run.reviewVerdict}
+								reviewAutomationOutcome={run.reviewAutomationOutcome}
 							/>
 						</span>
 					</div>
@@ -856,7 +910,7 @@ function RunDetailRouteComponent() {
 
 	return (
 		<div className="space-y-6">
-			<RunDetailHeader run={run as unknown as RunRow} />
+			<RunDetailHeader run={run as unknown as RunRow} project={project} />
 
 			{/* Tab Bar */}
 			<div className="flex border-b border-zinc-800">
