@@ -79,6 +79,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 	});
 
 	const setTheme = (next: AppearanceTheme) => {
+		// A system change while an explicit preference is active produces no
+		// media-query event because there is intentionally no subscription. Read
+		// the current value before rendering `system`, rather than reusing that
+		// stale snapshot for one render.
+		if (next === 'system') setSystemTheme(getSystemTheme());
 		setPendingPreference(next);
 		updateMutation.mutate(next);
 	};

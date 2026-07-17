@@ -143,6 +143,32 @@ describe('ThemeProvider', () => {
 		await waitFor(() => expect(mql.removeEventListener).toHaveBeenCalledTimes(1));
 	});
 
+	it('reads the current OS preference when switching from an explicit theme to system', async () => {
+		const { mql } = stubMatchMedia(true);
+		mockGetSettings.mockResolvedValue({ appearance: { theme: 'light' } } satisfies AppSettings);
+		let resolveUpdate: (value: AppSettings) => void = () => {};
+		mockUpdateSettings.mockReturnValue(
+			new Promise((resolve) => {
+				resolveUpdate = resolve;
+			}),
+		);
+		const { result } = renderTheme();
+
+		await waitFor(() => expect(result.current.preference).toBe('light'));
+		mql.matches = false; // OS changed while the explicit light theme was active.
+
+		act(() => result.current.setTheme('system'));
+
+		expect(result.current.preference).toBe('system');
+		expect(result.current.resolvedTheme).toBe('light');
+		expect(document.documentElement.getAttribute('data-theme')).toBe('light');
+
+		await act(async () => {
+			resolveUpdate({ appearance: { theme: 'system' } });
+			await Promise.resolve();
+		});
+	});
+
 	it('switches optimistically and persists the full settings payload, preserving agents.defaults', async () => {
 		const stored: AppSettings = {
 			agents: { defaults: { claude: 'opus' } },
