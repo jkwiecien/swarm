@@ -228,6 +228,7 @@ export async function commitPreparedTree(
 		'-c',
 		`user.email=${identity.email}`,
 		'commit',
+		'--no-verify',
 		'-m',
 		subject,
 	]);

@@ -2,6 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockProjectConfig } from '../../../../helpers/factories.js';
 
+type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+
+const { mockExecFile } = vi.hoisted(() => ({
+	mockExecFile: vi.fn(),
+}));
+
+vi.mock('node:child_process', async (importOriginal) => ({
+	...(await importOriginal<typeof import('node:child_process')>()),
+	execFile: mockExecFile,
+}));
+
 vi.mock('@/config/provider.js', () => ({
 	getPersonaToken: vi.fn(),
 	getPersonaTokenOrNull: vi.fn(),
@@ -30,6 +41,10 @@ describe('GitHubSCMIntegration', () => {
 		vi.mocked(getPersonaToken).mockReset();
 		vi.mocked(getPersonaTokenOrNull).mockReset();
 		vi.mocked(withGitHubToken).mockClear();
+		mockExecFile.mockImplementation(
+			(_file: string, _args: string[], _options: unknown, callback: ExecFileCallback) =>
+				callback(null, '', ''),
+		);
 	});
 
 	describe('hasIntegration', () => {
@@ -114,6 +129,26 @@ describe('GitHubSCMIntegration', () => {
 				name: 'swarm-implementer',
 				email: 'swarm-implementer@users.noreply.github.com',
 			});
+		});
+
+		it('bypasses interactive git hooks when pushing a worker-owned delivery', async () => {
+			vi.mocked(getPersonaToken).mockResolvedValue('tok-impl');
+			vi.mocked(getGitHubUserForToken).mockResolvedValue('swarm-implementer');
+			const delivery = await scm.deliveryProvider(project, 'implementer');
+
+			await delivery.pushBranch('/worktree', 'issue-241', 'abc1234');
+
+			expect(mockExecFile).toHaveBeenCalledWith(
+				'git',
+				[
+					'push',
+					'--no-verify',
+					'https://github.com/jkwiecien/swarm.git',
+					'abc1234:refs/heads/issue-241',
+				],
+				expect.objectContaining({ cwd: '/worktree' }),
+				expect.any(Function),
+			);
 		});
 	});
 });

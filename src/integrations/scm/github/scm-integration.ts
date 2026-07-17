@@ -154,7 +154,12 @@ export class GitHubSCMIntegration {
 				const authorization = Buffer.from(`x-access-token:${token}`).toString('base64');
 				await promisify(execFile)(
 					'git',
-					['push', `https://github.com/${project.repo}.git`, `${expectedSha}:refs/heads/${branch}`],
+					[
+						'push',
+						'--no-verify',
+						`https://github.com/${project.repo}.git`,
+						`${expectedSha}:refs/heads/${branch}`,
+					],
 					{
 						cwd,
 						env: {
