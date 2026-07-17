@@ -13,8 +13,10 @@ import {
 	buildRespondToReviewPrompt,
 	issueNumberFromBranch,
 	RESPOND_OUTCOME_FILENAME,
+	resolvePushedHeadSha,
 	runRespondToReviewPhase,
 } from '@/pipeline/respond-to-review.js';
+import type { DeliveryProgress } from '@/scm/delivery.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
 
@@ -53,6 +55,7 @@ function makeDeps() {
 		prNumber: '99',
 		prBranch: PR_BRANCH,
 		reviewId: '4242',
+		headSha: 'reviewedsha0000000000000000000000000000',
 		taskId: 'respond-21',
 		worktrees: worktrees as unknown as GitWorktreeManager,
 		runAgent: vi.fn<(opts: RunAgentCliOptions) => Promise<AgentCliResult>>(async () =>
@@ -400,5 +403,59 @@ describe('issueNumberFromBranch', () => {
 
 	it('returns undefined when the prefix is not followed by digits', () => {
 		expect(issueNumberFromBranch('issue-fix-login', 'issue-')).toBeUndefined();
+	});
+});
+
+describe('resolvePushedHeadSha (issue #241)', () => {
+	const REVIEWED_HEAD_SHA = 'reviewed0000000000000000000000000000000';
+
+	function progress(overrides: Partial<DeliveryProgress> = {}): DeliveryProgress {
+		return { deliveryId: 'd1', pushed: false, followUpEnqueued: false, ...overrides };
+	}
+
+	it('returns the pushed commit for a fixed outcome whose head advanced', () => {
+		const result = resolvePushedHeadSha(
+			'fixed',
+			progress({ commitSha: 'newsha1', pushed: true }),
+			REVIEWED_HEAD_SHA,
+		);
+		expect(result).toBe('newsha1');
+	});
+
+	it.each([
+		'pushed-back',
+		'no-findings',
+	] as const)('returns undefined for a %s outcome even if a commit were somehow recorded', (outcome) => {
+		expect(
+			resolvePushedHeadSha(
+				outcome,
+				progress({ commitSha: 'newsha1', pushed: true }),
+				REVIEWED_HEAD_SHA,
+			),
+		).toBeUndefined();
+	});
+
+	it('returns undefined when the fix commit was never pushed (failed delivery)', () => {
+		expect(
+			resolvePushedHeadSha(
+				'fixed',
+				progress({ commitSha: 'newsha1', pushed: false }),
+				REVIEWED_HEAD_SHA,
+			),
+		).toBeUndefined();
+	});
+
+	it('returns undefined when no commit was recorded at all', () => {
+		expect(resolvePushedHeadSha('fixed', progress(), REVIEWED_HEAD_SHA)).toBeUndefined();
+	});
+
+	it('returns undefined for an unchanged head (the pushed commit matches what was reviewed)', () => {
+		expect(
+			resolvePushedHeadSha(
+				'fixed',
+				progress({ commitSha: REVIEWED_HEAD_SHA, pushed: true }),
+				REVIEWED_HEAD_SHA,
+			),
+		).toBeUndefined();
 	});
 });

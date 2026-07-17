@@ -208,6 +208,7 @@ export function createRespondToReviewTrigger(
 				prNumber,
 				prBranch,
 				reviewId,
+				headSha,
 			};
 		},
 	};

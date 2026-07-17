@@ -718,6 +718,7 @@ function runPhase(
 				prNumber: trigger.prNumber,
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
+				headSha: trigger.headSha,
 				taskId: trigger.taskId,
 				pm: createGitHubProjectsProvider(project),
 				cli: overrides.cli,

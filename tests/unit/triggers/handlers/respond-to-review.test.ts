@@ -80,6 +80,7 @@ describe('respond-to-review trigger', () => {
 				prNumber: '17',
 				prBranch: 'issue-17',
 				reviewId: '555',
+				headSha: HEAD_SHA,
 			});
 		});
 
@@ -94,6 +95,7 @@ describe('respond-to-review trigger', () => {
 				prNumber: '17',
 				prBranch: 'issue-17',
 				reviewId: '555',
+				headSha: HEAD_SHA,
 			});
 		});
 

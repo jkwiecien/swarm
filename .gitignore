@@ -67,3 +67,18 @@ logs/
 
 # SWARM task worktrees (ai/ARCHITECTURE.md "Worktree lifecycle")
 .swarm-workspaces/
+
+# SWARM agent hand-off/scratch artifacts (src/scm/delivery.ts's `HANDOFF_FILENAMES`,
+# `PROGRESS_FILENAME`, and delegation scratch) — written at the worktree root by a
+# phase's agent, read by deterministic delivery, and never meant to be committed;
+# `commitPreparedTree` already excludes them from its own `git add`, but they were
+# not previously gitignored, which let an unrelated commit accidentally track two
+# of them (fixed alongside issue #241). Keeping them ignored here is the durable
+# backstop against that recurring.
+implementation_handoff.json
+review_handoff.json
+respond_to_review_handoff.json
+respond_to_ci_handoff.json
+resolve_conflicts_handoff.json
+.swarm_delivery.json
+.swarm-delegation-*

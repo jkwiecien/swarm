@@ -250,6 +250,7 @@ const RESPOND_TO_REVIEW_TRIGGER: TriggerResult = {
 	prNumber: '17',
 	prBranch: 'issue-17',
 	reviewId: '555',
+	headSha: 'deadbeef',
 };
 const RESPOND_TO_CI_TRIGGER: TriggerResult = {
 	phase: 'respond-to-ci',
