@@ -207,6 +207,52 @@ export async function enablePullRequestAutoMerge(
 	return { enabled: true, message: 'GitHub auto-merge enabled' };
 }
 
+/** A PR's merge-relevant state — the initial lookup `mergePullRequest` needs before choosing a merge path. */
+export interface PullRequestMergeState {
+	merged: boolean;
+	/** `open` | `closed`. */
+	state: string;
+	draft: boolean;
+}
+
+/** Resolve a PR's merged/state/draft flags — the same fields {@link enablePullRequestAutoMerge} checks. */
+export async function getPullRequestMergeState(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<PullRequestMergeState> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.get({ owner, repo, pull_number: prNumber });
+	return { merged: data.merged, state: data.state, draft: Boolean(data.draft) };
+}
+
+/** Result of a direct (non-auto) pull-request merge attempt. */
+export interface DirectMergeResult {
+	merged: boolean;
+	message: string;
+	sha?: string;
+}
+
+/**
+ * Merge an open PR directly via GitHub's REST merge endpoint — the fallback
+ * `GitHubSCMIntegration.mergePullRequest` uses once repository auto-merge is
+ * confirmed unavailable (issue #253). Octokit throws a `RequestError` (with a
+ * `.status`) on any non-2xx response — unmet required checks/reviews,
+ * conflicts, a branch-protection/ruleset refusal, a merge-queue requirement,
+ * ... — classifying that error into the provider-neutral outcome is the
+ * adapter's job, not this primitive's; this only performs the API call and
+ * leaves the merge-method choice to GitHub's own default.
+ */
+export async function mergePullRequestDirect(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<DirectMergeResult> {
+	const client = getScopedClient();
+	const { data } = await client.pulls.merge({ owner, repo, pull_number: prNumber });
+	return { merged: data.merged, message: data.message, sha: data.sha };
+}
+
 /** List open same-repository PRs targeting a base branch, including GitHub's asynchronous mergeability. */
 export async function listOpenPullRequestsForBase(
 	owner: string,
