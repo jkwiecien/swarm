@@ -219,6 +219,32 @@ describe('GitHubRouterAdapter', () => {
 			});
 		});
 
+		it('falls back to the review commit SHA when the pull request head SHA is absent', () => {
+			const parsed = adapter.parseWebhook('pull_request_review', {
+				action: 'submitted',
+				repository: repo(),
+				pull_request: { number: 3, head: { ref: 'issue-3' } },
+				review: { id: 987654, state: 'changes_requested', commit_id: 'reviewed-sha' },
+				sender: { login: 'swarm-rev' },
+			});
+			expect(parsed).toMatchObject({
+				reviewId: '987654',
+				prBranch: 'issue-3',
+				headSha: 'reviewed-sha',
+			});
+		});
+
+		it('leaves the review head SHA undefined when neither SHA source is present', () => {
+			const parsed = adapter.parseWebhook('pull_request_review', {
+				action: 'submitted',
+				repository: repo(),
+				pull_request: { number: 3, head: { ref: 'issue-3' } },
+				review: { id: 987654, state: 'changes_requested' },
+				sender: { login: 'swarm-rev' },
+			});
+			expect(parsed?.headSha).toBeUndefined();
+		});
+
 		it('enriches a check_suite event with head SHA, conclusion, and the PR branch', () => {
 			const parsed = adapter.parseWebhook('check_suite', {
 				action: 'completed',
