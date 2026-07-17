@@ -47,7 +47,7 @@ export function GitHubProjectsMappingForm({
 	errorMessage,
 }: GitHubProjectsMappingFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
@@ -155,7 +155,7 @@ export function GitHubProjectsMappingForm({
 						type="button"
 						onClick={handleReset}
 						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 					>
 						Reset
 					</button>

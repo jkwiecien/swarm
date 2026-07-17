@@ -20,7 +20,10 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('appSettingsRepository (in
 
 	describe('updateAppSettings', () => {
 		it('round-trips the stored settings', async () => {
-			const settings = { agents: { defaults: { claude: 'opus' } } };
+			const settings = {
+				agents: { defaults: { claude: 'opus' } },
+				appearance: { theme: 'light' as const },
+			};
 			const returned = await updateAppSettings(settings);
 
 			expect(returned).toEqual(settings);
@@ -28,10 +31,37 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('appSettingsRepository (in
 		});
 
 		it('is an idempotent upsert — a second write replaces the first in place', async () => {
-			await updateAppSettings({ agents: { defaults: { claude: 'opus' } } });
-			await updateAppSettings({ agents: { defaults: { claude: 'sonnet' } } });
+			await updateAppSettings({
+				agents: { defaults: { claude: 'opus' } },
+				appearance: { theme: 'dark' },
+			});
+			await updateAppSettings({
+				agents: { defaults: { claude: 'sonnet' } },
+				appearance: { theme: 'system' },
+			});
 
-			expect(await getAppSettings()).toEqual({ agents: { defaults: { claude: 'sonnet' } } });
+			expect(await getAppSettings()).toEqual({
+				agents: { defaults: { claude: 'sonnet' } },
+				appearance: { theme: 'system' },
+			});
+		});
+
+		it('round-trips each theme value', async () => {
+			for (const theme of ['dark', 'light', 'system'] as const) {
+				await updateAppSettings({ appearance: { theme } });
+				expect(await getAppSettings()).toEqual({ appearance: { theme } });
+			}
+		});
+	});
+
+	describe('legacy rows', () => {
+		it('normalizes a pre-appearance row to a dark default on read', async () => {
+			const db = (await import('../../../src/db/client.js')).getDb();
+			const { appSettings } = await import('../../../src/db/schema/appSettings.js');
+			// biome-ignore lint/suspicious/noExplicitAny: intentionally bypassing the AppSettings type to write a pre-#250 shape
+			await db.insert(appSettings).values({ id: 'global', settings: { agents: {} } as any });
+
+			expect(await getAppSettings()).toEqual({ agents: {}, appearance: { theme: 'dark' } });
 		});
 	});
 });

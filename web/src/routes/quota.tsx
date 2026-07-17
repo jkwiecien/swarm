@@ -171,7 +171,7 @@ function QuotaRouteComponent() {
 							return (
 								<div
 									key={q.cli}
-									className="border border-zinc-800 rounded-lg bg-[#0F0F11]/45 p-6 space-y-6 flex flex-col justify-between"
+									className="border border-zinc-800 rounded-lg bg-panel/45 p-6 space-y-6 flex flex-col justify-between"
 								>
 									<div className="space-y-4">
 										{/* Card Header */}

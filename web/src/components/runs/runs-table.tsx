@@ -108,7 +108,7 @@ export function RunsTable({
 
 	return (
 		<div className="space-y-4">
-			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+			<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 				<table className="w-full table-fixed text-left border-collapse">
 					<colgroup>
 						<col className={columnWidths.phase} />
@@ -213,7 +213,7 @@ export function RunsTable({
 							type="button"
 							onClick={() => onPageChange(currentPage - 1)}
 							disabled={currentPage === 1}
-							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
 						>
 							Previous
 						</button>
@@ -224,7 +224,7 @@ export function RunsTable({
 							type="button"
 							onClick={() => onPageChange(currentPage + 1)}
 							disabled={currentPage === totalPages}
-							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+							className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
 						>
 							Next
 						</button>

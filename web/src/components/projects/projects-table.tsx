@@ -39,7 +39,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 
 	return (
 		<div className="space-y-6">
-			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+			<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 				<table className="w-full text-left border-collapse">
 					<thead>
 						<tr className="bg-zinc-800/30 border-b border-zinc-800">
@@ -126,7 +126,7 @@ export function ProjectsTable({ projects }: ProjectsTableProps) {
 							<button
 								type="button"
 								onClick={() => setDeleteTarget(null)}
-								className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
+								className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors"
 							>
 								Cancel
 							</button>

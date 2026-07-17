@@ -313,7 +313,7 @@ function GeneralSettingsForm({
 	errorMessage,
 }: GeneralSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
@@ -498,7 +498,7 @@ function GeneralSettingsForm({
 						type="button"
 						onClick={handleReset}
 						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 					>
 						Reset
 					</button>
@@ -516,7 +516,7 @@ const FIELD_CLASS =
 const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 
 /** Card wrapper recipe shared by the phase-detail sections. */
-const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm';
+const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
 /** Display labels for the agent CLIs, used in the phase-row summary. */
 const CLI_LABELS: Record<AgentCli, string> = {
@@ -617,7 +617,7 @@ export function PhaseToggleSwitch({
 				e.stopPropagation();
 				onChange?.();
 			}}
-			className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-[#0F0F11] disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-violet-600' : 'bg-zinc-700'}`}
+			className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-panel disabled:opacity-50 disabled:cursor-not-allowed ${checked ? 'bg-violet-600' : 'bg-zinc-700'}`}
 		>
 			<span
 				className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-4' : 'translate-x-0.5'}`}
@@ -801,7 +801,7 @@ export function PhaseSettingsDetail({
 
 				<PhaseDetailNote phase={phase} />
 
-				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
+				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-panel/20">
 					<div className="flex items-start gap-3">
 						{enabled === undefined ? (
 							<PhaseToggleSwitch
@@ -1054,7 +1054,7 @@ function AgentConfigurationForm({
 				/>
 			) : (
 				<>
-					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+					<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 						<div>
 							<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 								Phases Configuration
@@ -1064,7 +1064,7 @@ function AgentConfigurationForm({
 								Unset values fall back to the pipeline's coded defaults.
 							</p>
 
-							<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+							<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 								<table className="w-full text-left border-collapse">
 									<thead>
 										<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
@@ -1109,7 +1109,7 @@ function AgentConfigurationForm({
 						</div>
 					</div>
 
-					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+					<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 						<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 							Light Models
 						</h2>
@@ -1120,7 +1120,7 @@ function AgentConfigurationForm({
 							Antigravity cannot host a delegation child yet.
 						</p>
 
-						<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+						<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 							<table className="w-full text-left border-collapse">
 								<thead>
 									<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
@@ -1189,7 +1189,7 @@ function AgentConfigurationForm({
 					type="button"
 					onClick={handleReset}
 					disabled={isPending || !isDirty}
-					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+					className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 				>
 					Reset
 				</button>
@@ -1226,13 +1226,13 @@ function PipelineSettingsForm({
 	errorMessage,
 }: PipelineSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 						Pipeline Automation
 					</h2>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={autoMerge}
@@ -1248,7 +1248,7 @@ function PipelineSettingsForm({
 							</span>
 						</span>
 					</label>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={skipRespondToReviewOnMinors}
@@ -1291,7 +1291,7 @@ function PipelineSettingsForm({
 						type="button"
 						onClick={handleReset}
 						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 					>
 						Reset
 					</button>
@@ -1700,7 +1700,7 @@ function ProjectDetailRouteComponent() {
 				<p className="text-xs text-red-400/80 font-mono">{projectQuery.error.message}</p>
 				<Link
 					to="/projects"
-					className="text-xs font-semibold text-zinc-300 hover:text-white transition-colors underline mt-2 inline-block"
+					className="text-xs font-semibold text-zinc-300 hover:text-zinc-100 transition-colors underline mt-2 inline-block"
 				>
 					Back to Projects
 				</Link>
@@ -1733,7 +1733,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('runs')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'runs'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -1745,7 +1745,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('general')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'general'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -1757,7 +1757,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('agents')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'agents'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -1769,7 +1769,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('pipeline')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'pipeline'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -1781,7 +1781,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('boardMapping')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'boardMapping'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -1793,7 +1793,7 @@ function ProjectDetailRouteComponent() {
 					onClick={() => goToTab('credentials')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
 						activeTab === 'credentials'
-							? 'border-violet-500 text-white bg-zinc-800/20'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>

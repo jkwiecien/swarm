@@ -13,7 +13,7 @@ export function Sidebar() {
 	const [createOpen, setCreateOpen] = useState(false);
 
 	return (
-		<div className="flex w-full md:w-64 flex-col justify-between border-r border-zinc-800 bg-[#0F0F11]">
+		<div className="flex w-full md:w-64 flex-col justify-between border-r border-zinc-800 bg-panel">
 			<div>
 				<div className="flex h-14 items-center justify-between border-b border-zinc-850 px-4">
 					<span className="text-sm font-semibold text-zinc-100">SWARM</span>
