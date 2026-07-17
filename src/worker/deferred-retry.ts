@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { updateRunJobPayload } from '../db/repositories/runsRepository.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
@@ -36,6 +37,7 @@ export async function reenqueueDeferred(
 		if (outcome.pendingDispatch) {
 			const pending: SwarmJob = {
 				...parsed,
+				pendingDispatchId: randomUUID(),
 				...(outcome.runId ? { runId: outcome.runId } : {}),
 				...(parsed.type === 'github-projects' &&
 				(outcome.phase === 'planning' || outcome.phase === 'implementation')

@@ -13,12 +13,16 @@
  * `project-concurrency.ts`'s shape: a lazy fail-fast `Redis` singleton
  * (`maxRetriesPerRequest: 1`) with an `'error'` listener.
  *
+ * A promoter claims a field with a short Redis lease before queueing it. The
+ * handoff uses the entry's stable `pendingDispatchId`, so lease expiry after a
+ * crash between BullMQ `add()` and acknowledgement cannot enqueue a second job.
  * Every operation swallows+logs Redis errors and fails open (register no-ops,
- * take returns `null`): a registry hiccup must never fail a real run. Single-worker
+ * claim returns `null`): a registry hiccup must never fail a real run. Single-worker
  * MVP — a multi-worker deployment inherits
  * `project-concurrency`'s documented per-worker-lease caveat.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { requireEnv } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -27,6 +31,8 @@ import type { SwarmJob } from '../queue/jobs.js';
 import type { TriggerPhase } from '../triggers/types.js';
 
 const KEY_NS = 'swarm:pending-continuations:';
+const CLAIM_NS = 'swarm:pending-continuation-claims:';
+const CLAIM_TTL_MS = 30_000;
 
 let redisInstance: Redis | null = null;
 
@@ -43,9 +49,20 @@ export type PendingDispatch = {
 	continuation: boolean;
 };
 
+export type PendingContinuationClaim = {
+	entry: PendingDispatch;
+	field: string;
+	raw: string;
+	token: string;
+};
+
 /** Stable per-task+phase field so a re-deferral replaces its prior entry. */
 function fieldFor(entry: { taskId: string; phase: TriggerPhase }): string {
 	return `${entry.taskId}:${entry.phase}`;
+}
+
+function claimKey(projectId: string, field: string): string {
+	return `${CLAIM_NS}${projectId}:${field}`;
 }
 
 function getRedis(): Redis {
@@ -104,15 +121,16 @@ export async function registerPendingContinuation(
  * the oldest continuation wins; otherwise this is strict FIFO. Malformed entries
  * are dropped in passing so a corrupt value can't wedge the registry.
  */
-export async function takeNextPendingContinuation(
+async function selectNextPendingContinuation(
 	projectId: string,
 	prioritizeContinuations: boolean,
-): Promise<PendingDispatch | null> {
+): Promise<{ entry: PendingDispatch; field: string; raw: string } | null> {
 	const key = `${KEY_NS}${projectId}`;
 	try {
 		const redis = getRedis();
 		const all = await redis.hgetall(key);
 		let oldestField: string | undefined;
+		let oldestRaw: string | undefined;
 		let oldest: PendingDispatch | undefined;
 		for (const [field, raw] of Object.entries(all)) {
 			const parsed = parseEntry(raw);
@@ -128,17 +146,56 @@ export async function takeNextPendingContinuation(
 			if (shouldReplace) {
 				oldest = parsed;
 				oldestField = field;
+				oldestRaw = raw;
 			}
 		}
-		if (!oldest || !oldestField) return null;
-		return oldest;
+		if (!oldest || !oldestField || !oldestRaw) return null;
+		return { entry: oldest, field: oldestField, raw: oldestRaw };
 	} catch (err) {
-		logger.warn('pending-continuations: take failed', {
+		logger.warn('pending-continuations: select failed', {
 			projectId,
 			error: String(err),
 		});
 		return null;
 	}
+}
+
+/**
+ * Claim the next entry for promotion. `SET NX PX` elects one slot releaser; a
+ * lease expires after a crash, allowing a later release to retry the same
+ * deterministic BullMQ handoff.
+ */
+export async function claimNextPendingContinuation(
+	projectId: string,
+	prioritizeContinuations: boolean,
+): Promise<PendingContinuationClaim | null> {
+	try {
+		const redis = getRedis();
+		const selected = await selectNextPendingContinuation(projectId, prioritizeContinuations);
+		if (!selected) return null;
+		const token = randomUUID();
+		const acquired = await redis.set(
+			claimKey(projectId, selected.field),
+			token,
+			'PX',
+			CLAIM_TTL_MS,
+			'NX',
+		);
+		if (acquired !== 'OK') return null;
+		return { ...selected, token };
+	} catch (err) {
+		logger.warn('pending-continuations: claim failed', { projectId, error: String(err) });
+		return null;
+	}
+}
+
+/** Backwards-compatible read-only selector retained for dashboard/tests. */
+export async function takeNextPendingContinuation(
+	projectId: string,
+	prioritizeContinuations: boolean,
+): Promise<PendingDispatch | null> {
+	const selected = await selectNextPendingContinuation(projectId, prioritizeContinuations);
+	return selected?.entry ?? null;
 }
 
 /** Remove a dispatch after BullMQ accepted it for execution. */
@@ -150,6 +207,52 @@ export async function removePendingContinuation(
 		await getRedis().hdel(`${KEY_NS}${projectId}`, fieldFor(entry));
 	} catch (err) {
 		logger.warn('pending-continuations: remove failed', { projectId, error: String(err) });
+	}
+}
+
+/** Finish a claimed handoff only when this promoter still owns the same entry. */
+export async function acknowledgePendingContinuationClaim(
+	projectId: string,
+	claim: PendingContinuationClaim,
+): Promise<void> {
+	try {
+		await getRedis().eval(
+			`if redis.call('GET', KEYS[2]) == ARGV[1] then
+				if redis.call('HGET', KEYS[1], ARGV[2]) == ARGV[3] then redis.call('HDEL', KEYS[1], ARGV[2]) end
+				redis.call('DEL', KEYS[2])
+			end`,
+			2,
+			`${KEY_NS}${projectId}`,
+			claimKey(projectId, claim.field),
+			claim.token,
+			claim.field,
+			claim.raw,
+		);
+	} catch (err) {
+		logger.warn('pending-continuations: acknowledge claim failed', {
+			projectId,
+			error: String(err),
+		});
+	}
+}
+
+/** Release an unhanded-off claim so a later slot release can try immediately. */
+export async function releasePendingContinuationClaim(
+	projectId: string,
+	claim: PendingContinuationClaim,
+): Promise<void> {
+	try {
+		await getRedis().eval(
+			`if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`,
+			1,
+			claimKey(projectId, claim.field),
+			claim.token,
+		);
+	} catch (err) {
+		logger.warn('pending-continuations: release claim failed', {
+			projectId,
+			error: String(err),
+		});
 	}
 }
 
@@ -165,6 +268,7 @@ export async function removePendingContinuationForRun(runId: string): Promise<nu
 				const entry = parseEntry(raw);
 				if (entry?.job.runId === runId) {
 					await redis.hdel(key, field);
+					await redis.del(claimKey(key.slice(KEY_NS.length), field));
 					removed += 1;
 				}
 			}

@@ -224,7 +224,11 @@ describe('reenqueueDeferred', () => {
 			taskId: '17',
 			phase: 'review',
 			enqueuedAt: expect.any(Number),
-			job: expect.objectContaining({ runId: 'run-1', continuationDispatchClaimed: true }),
+			job: expect.objectContaining({
+				runId: 'run-1',
+				continuationDispatchClaimed: true,
+				pendingDispatchId: expect.any(String),
+			}),
 			continuation: true,
 		});
 	});

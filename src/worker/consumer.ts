@@ -88,7 +88,12 @@ import {
 	type TriggerResult,
 } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
-import { removePendingContinuation, takeNextPendingContinuation } from './pending-continuations.js';
+import {
+	acknowledgePendingContinuationClaim,
+	claimNextPendingContinuation,
+	type PendingContinuationClaim,
+	releasePendingContinuationClaim,
+} from './pending-continuations.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
@@ -457,19 +462,27 @@ export async function promoteNextPendingContinuation(
 	projectId: string,
 	prioritizeContinuations = true,
 ): Promise<void> {
+	let claim: PendingContinuationClaim | null = null;
 	try {
-		const next = await takeNextPendingContinuation(projectId, prioritizeContinuations);
-		if (!next) return;
-		const jobId = await enqueuePendingDispatch(next.job);
-		await removePendingContinuation(projectId, next);
+		claim = await claimNextPendingContinuation(projectId, prioritizeContinuations);
+		if (!claim) return;
+		const pendingDispatchId = claim.entry.job.pendingDispatchId;
+		if (!pendingDispatchId) {
+			await releasePendingContinuationClaim(projectId, claim);
+			logger.warn('pending-continuation: missing deterministic handoff id', { projectId });
+			return;
+		}
+		const jobId = await enqueuePendingDispatch(claim.entry.job, pendingDispatchId);
+		await acknowledgePendingContinuationClaim(projectId, claim);
 		logger.debug('pending-continuation: slot freed — dispatched blocked phase', {
 			projectId,
 			jobId,
-			taskId: next.taskId,
-			phase: next.phase,
-			continuation: next.continuation,
+			taskId: claim.entry.taskId,
+			phase: claim.entry.phase,
+			continuation: claim.entry.continuation,
 		});
 	} catch (err) {
+		if (claim) await releasePendingContinuationClaim(projectId, claim);
 		logger.warn('pending-continuation: promote after slot release failed', {
 			projectId,
 			error: describeError(err),
@@ -1645,6 +1658,9 @@ export async function processJob(
 	registry: TriggerRegistry,
 	signal?: AbortSignal,
 ): Promise<JobOutcome> {
+	// The stable handoff id is only for queue admission. Once this attempt has
+	// started, later manual retries must get a new id if it defers again.
+	delete job.pendingDispatchId;
 	const project = await findProjectByIdFromDb(job.projectId);
 	if (!project) {
 		// The producer only enqueues for projects it resolved from Postgres, so a

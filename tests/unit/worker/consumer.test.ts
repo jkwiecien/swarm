@@ -65,25 +65,33 @@ vi.mock('@/pipeline/respond-to-review.js', () => ({
 }));
 
 const enqueueJob = vi.fn(async (_job: unknown) => 'synthetic-job-1');
-const enqueuePendingDispatch = vi.fn(async (_job: unknown) => 'pending-job-1');
+const enqueuePendingDispatch = vi.fn(
+	async (_job: unknown, _pendingDispatchId: string) => 'pending-job-1',
+);
 vi.mock('@/queue/producer.js', () => ({
 	enqueueJob: (job: unknown) => enqueueJob(job),
-	enqueuePendingDispatch: (job: unknown) => enqueuePendingDispatch(job),
+	enqueuePendingDispatch: (job: unknown, pendingDispatchId: string) =>
+		enqueuePendingDispatch(job, pendingDispatchId),
 }));
 
-// Pending-continuation scheduling (issue #214): the registry's take + the
+// Pending-continuation scheduling (issue #214): the registry's claim + the
 // dispatch-claim refresh are mocked at the boundary so these tests drive the
 // prioritized-continuation wiring without Redis. `buildReviewDispatchKey` keeps
 // its real shape so the refreshed key is asserted.
-const takeNextPendingContinuation = vi.fn(
+const claimNextPendingContinuation = vi.fn(
 	async (_projectId: string, _prioritize: boolean) => null as unknown,
 );
-const removePendingContinuation = vi.fn(async (_projectId: string, _entry: unknown) => {});
+const acknowledgePendingContinuationClaim = vi.fn(
+	async (_projectId: string, _claim: unknown) => {},
+);
+const releasePendingContinuationClaim = vi.fn(async (_projectId: string, _claim: unknown) => {});
 vi.mock('@/worker/pending-continuations.js', () => ({
-	takeNextPendingContinuation: (projectId: string, prioritize: boolean) =>
-		takeNextPendingContinuation(projectId, prioritize),
-	removePendingContinuation: (projectId: string, entry: unknown) =>
-		removePendingContinuation(projectId, entry),
+	claimNextPendingContinuation: (projectId: string, prioritize: boolean) =>
+		claimNextPendingContinuation(projectId, prioritize),
+	acknowledgePendingContinuationClaim: (projectId: string, claim: unknown) =>
+		acknowledgePendingContinuationClaim(projectId, claim),
+	releasePendingContinuationClaim: (projectId: string, claim: unknown) =>
+		releasePendingContinuationClaim(projectId, claim),
 }));
 
 const refreshConflictResolutionClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
@@ -286,9 +294,10 @@ describe('processJob', () => {
 		enqueueJob.mockResolvedValue('synthetic-job-1');
 		enqueuePendingDispatch.mockClear();
 		enqueuePendingDispatch.mockResolvedValue('pending-job-1');
-		removePendingContinuation.mockClear();
-		takeNextPendingContinuation.mockClear();
-		takeNextPendingContinuation.mockResolvedValue(null);
+		claimNextPendingContinuation.mockClear();
+		claimNextPendingContinuation.mockResolvedValue(null);
+		acknowledgePendingContinuationClaim.mockClear();
+		releasePendingContinuationClaim.mockClear();
 		refreshConflictResolutionClaim.mockClear();
 		refreshReviewDispatchClaim.mockClear();
 		releaseReviewDispatch.mockClear();
@@ -505,12 +514,21 @@ describe('processJob', () => {
 		});
 
 		it('promotes the oldest pending continuation when a slot frees on success', async () => {
-			takeNextPendingContinuation.mockResolvedValue({
-				taskId: '20',
-				phase: 'review',
-				enqueuedAt: 1,
-				job: createMockGitHubWebhookJob({ runId: 'run-20', continuationDispatchClaimed: true }),
-				continuation: true,
+			claimNextPendingContinuation.mockResolvedValue({
+				field: '20:review',
+				raw: 'raw',
+				token: 'token',
+				entry: {
+					taskId: '20',
+					phase: 'review',
+					enqueuedAt: 1,
+					job: createMockGitHubWebhookJob({
+						runId: 'run-20',
+						continuationDispatchClaimed: true,
+						pendingDispatchId: '11111111-1111-4111-8111-111111111111',
+					}),
+					continuation: true,
+				},
 			});
 
 			const outcome = await processJob(
@@ -520,14 +538,16 @@ describe('processJob', () => {
 
 			expect(outcome.status).toBe('phase-succeeded');
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(takeNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, true);
+			expect(claimNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, true);
 			expect(enqueuePendingDispatch).toHaveBeenCalledWith(
 				expect.objectContaining({ runId: 'run-20' }),
+				'11111111-1111-4111-8111-111111111111',
 			);
+			expect(acknowledgePendingContinuationClaim).toHaveBeenCalledOnce();
 		});
 
 		it('releases cleanly when nothing is pending to promote', async () => {
-			takeNextPendingContinuation.mockResolvedValue(null);
+			claimNextPendingContinuation.mockResolvedValue(null);
 
 			const outcome = await processJob(
 				createMockGitHubWebhookJob(),
@@ -539,12 +559,19 @@ describe('processJob', () => {
 		});
 
 		it('still succeeds when promoting a pending continuation throws', async () => {
-			takeNextPendingContinuation.mockResolvedValue({
-				taskId: '20',
-				phase: 'review',
-				enqueuedAt: 1,
-				job: createMockGitHubWebhookJob(),
-				continuation: true,
+			claimNextPendingContinuation.mockResolvedValue({
+				field: '20:review',
+				raw: 'raw',
+				token: 'token',
+				entry: {
+					taskId: '20',
+					phase: 'review',
+					enqueuedAt: 1,
+					job: createMockGitHubWebhookJob({
+						pendingDispatchId: '11111111-1111-4111-8111-111111111111',
+					}),
+					continuation: true,
+				},
 			});
 			enqueuePendingDispatch.mockRejectedValue(new Error('queue down'));
 
@@ -554,6 +581,7 @@ describe('processJob', () => {
 			);
 
 			expect(outcome.status).toBe('phase-succeeded');
+			expect(releasePendingContinuationClaim).toHaveBeenCalledOnce();
 		});
 
 		it.each([
@@ -586,7 +614,7 @@ describe('processJob', () => {
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(takeNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, false);
+			expect(claimNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, false);
 		});
 
 		it('finalizes the run row and releases the claim if a pending continuation re-resolves to no-trigger', async () => {

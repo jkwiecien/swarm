@@ -397,6 +397,7 @@ export const runsRouter = router({
 					startFresh,
 				);
 				if (promoted) {
+					await removePendingContinuationForRun(run.id);
 					return { runId: input.runId, status: 'retrying' as const };
 				}
 				// No pending job to promote — the re-enqueue was lost (the
@@ -433,7 +434,11 @@ export const runsRouter = router({
 					engineForRow,
 					startFresh ? null : undefined,
 				);
-				await enqueueDelayedRetry(job, 0, { unique: true });
+				await removePendingContinuationForRun(run.id);
+				await enqueueDelayedRetry(job, 0, {
+					unique: true,
+					...(job.pendingDispatchId ? { jobId: `pending_${job.pendingDispatchId}` } : {}),
+				});
 				return { runId: input.runId, status: 'retrying' as const };
 			}
 

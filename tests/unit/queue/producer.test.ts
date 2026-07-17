@@ -269,6 +269,17 @@ describe('scheduleCoalescedJob', () => {
 });
 
 describe('enqueueDelayedRetry', () => {
+	it('uses an explicit stable handoff id to recover an enqueue/remove crash window', async () => {
+		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({
+			pendingDispatchId: '11111111-1111-4111-8111-111111111111',
+		});
+
+		await enqueueDelayedRetry(job, 0, { jobId: 'pending_11111111-1111-4111-8111-111111111111' });
+		await enqueueDelayedRetry(job, 0, { jobId: 'pending_11111111-1111-4111-8111-111111111111' });
+
+		expect(add.mock.calls[0][2]?.jobId).toBe(add.mock.calls[1][2]?.jobId);
+	});
 	it('keeps a deferred review-lifecycle job at BullMQ top priority', async () => {
 		const { enqueueDelayedRetry } = await import('@/queue/producer.js');
 

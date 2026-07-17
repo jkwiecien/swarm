@@ -10,8 +10,13 @@ const hdel = vi.fn<(key: string, field: string) => Promise<number>>();
 const hlen = vi.fn<(key: string) => Promise<number>>();
 const del = vi.fn<(key: string) => Promise<number>>();
 const keys = vi.fn<(pattern: string) => Promise<string[]>>();
+const set =
+	vi.fn<
+		(key: string, value: string, mode: 'PX', ttl: number, condition: 'NX') => Promise<'OK' | null>
+	>();
+const evalScript = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const on = vi.fn();
-const redisClient = { hset, hgetall, hdel, hlen, del, keys, on };
+const redisClient = { hset, hgetall, hdel, hlen, del, keys, set, eval: evalScript, on };
 const RedisMock = vi.fn<(options: Record<string, unknown>) => typeof redisClient>(
 	() => redisClient,
 );
@@ -29,6 +34,8 @@ describe('pending continuations registry', () => {
 		hlen.mockResolvedValue(0);
 		del.mockResolvedValue(1);
 		keys.mockResolvedValue([]);
+		set.mockResolvedValue('OK');
+		evalScript.mockResolvedValue(1);
 	});
 
 	it('registers keyed on <taskId>:<phase> via one fail-fast client', async () => {
@@ -128,6 +135,62 @@ describe('pending continuations registry', () => {
 		expect(await takeNextPendingContinuation('alpha', true)).toMatchObject({ taskId: '17' });
 		hdel.mockClear();
 		expect(await takeNextPendingContinuation('alpha', false)).toMatchObject({ taskId: '10' });
+	});
+
+	it('gives concurrent slot releases one lease owner', async () => {
+		hgetall.mockResolvedValue({
+			'17:review': JSON.stringify({
+				taskId: '17',
+				phase: 'review',
+				enqueuedAt: 100,
+				job: createMockGitHubWebhookJob(),
+				continuation: true,
+			}),
+		});
+		set.mockResolvedValueOnce('OK').mockResolvedValueOnce(null);
+		const { claimNextPendingContinuation } = await import('@/worker/pending-continuations.js');
+
+		const [first, second] = await Promise.all([
+			claimNextPendingContinuation('alpha', true),
+			claimNextPendingContinuation('alpha', true),
+		]);
+
+		expect([first, second].filter(Boolean)).toHaveLength(1);
+		expect(set).toHaveBeenCalledWith(
+			'swarm:pending-continuation-claims:alpha:17:review',
+			expect.any(String),
+			'PX',
+			30_000,
+			'NX',
+		);
+	});
+
+	it('acknowledges a claimed handoff with an ownership-checked delete', async () => {
+		const { acknowledgePendingContinuationClaim } = await import(
+			'@/worker/pending-continuations.js'
+		);
+		await acknowledgePendingContinuationClaim('alpha', {
+			entry: {
+				taskId: '17',
+				phase: 'review',
+				enqueuedAt: 100,
+				job: createMockGitHubWebhookJob(),
+				continuation: true,
+			},
+			field: '17:review',
+			raw: 'stored-json',
+			token: 'lease-token',
+		});
+
+		expect(evalScript).toHaveBeenCalledWith(
+			expect.stringContaining("redis.call('HDEL'"),
+			2,
+			'swarm:pending-continuations:alpha',
+			'swarm:pending-continuation-claims:alpha:17:review',
+			'lease-token',
+			'17:review',
+			'stored-json',
+		);
 	});
 
 	it('removes every pending entry belonging to a terminated run', async () => {
