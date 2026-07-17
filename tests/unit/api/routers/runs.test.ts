@@ -22,10 +22,23 @@ vi.mock('@/queue/producer.js', () => ({
 	promoteRetryForRun: vi.fn(),
 	enqueueDelayedRetry: vi.fn(),
 	removePendingRetryForRun: vi.fn(),
+	removeQueuedJob: vi.fn(),
+	getQueuedJobData: vi.fn(),
 }));
 
 vi.mock('@/queue/queued-runs.js', () => ({
 	toQueuedRuns: vi.fn(),
+	deriveQueuedPhaseHint: vi.fn((job) => {
+		if (job.type === 'github-projects') return 'board';
+		const { event } = job;
+		if (event.eventType === 'pull_request_review') {
+			return event.reviewState === 'approved' ? 'review' : 'respond-to-review';
+		}
+		if (event.eventType === 'pull_request' && event.action === 'closed' && event.merged === true) {
+			return 'resolve-conflicts';
+		}
+		return 'unknown';
+	}),
 }));
 
 vi.mock('@/queue/cancellation.js', () => ({
@@ -53,9 +66,11 @@ import {
 } from '@/queue/cancellation.js';
 import {
 	enqueueDelayedRetry,
+	getQueuedJobData,
 	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
+	removeQueuedJob,
 } from '@/queue/producer.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
 import {
@@ -215,6 +230,7 @@ describe('runsRouter', () => {
 			const workItem = createMockWorkItem({
 				title: 'Fix the widget',
 				url: 'https://github.com/acme/widgets/issues/42',
+				statusId: '61e4505c', // Planning status
 			});
 			const getWorkItem = vi.fn().mockResolvedValue(workItem);
 			vi.mocked(listPendingJobs).mockResolvedValue([]);
@@ -784,6 +800,159 @@ describe('runsRouter', () => {
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'completed' });
+		});
+	});
+
+	describe('putBack', () => {
+		it('successfully removes a github-projects job and moves card to backlog', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
+			vi.mocked(removeQueuedJob).mockResolvedValue(jobData);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: jobData.event.itemNodeId,
+				statusId: '61e4505c', // Planning status (starts planning phase)
+				title: 'Test Card',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
+			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem, moveWorkItem }),
+			} as never);
+
+			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
+
+			expect(result).toEqual({ success: true });
+			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
+			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
+			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
+			expect(getPMProvider).toHaveBeenCalledWith(project.pm.type);
+			expect(getWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId);
+			expect(moveWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId, 'backlog');
+		});
+
+		it('successfully removes a github job and moves card to backlog by searching card url', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const jobData = {
+				projectId: 'p1',
+				type: 'github' as const,
+				event: {
+					eventType: 'pull_request_review' as const,
+					reviewState: 'approved',
+					repoFullName: 'acme/widgets',
+					workItemId: '42',
+				},
+			};
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
+			vi.mocked(removeQueuedJob).mockResolvedValue(jobData as never);
+
+			const listWorkItems = vi
+				.fn()
+				.mockResolvedValue([{ id: 'card-1', url: 'https://github.com/acme/widgets/pull/42' }]);
+			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ listWorkItems, moveWorkItem }),
+			} as never);
+
+			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
+
+			expect(result).toEqual({ success: true });
+			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
+			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
+			expect(listWorkItems).toHaveBeenCalled();
+			expect(moveWorkItem).toHaveBeenCalledWith('card-1', 'backlog');
+		});
+
+		it('throws NOT_FOUND when the project does not exist', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Project with ID "p1" not found/,
+			);
+		});
+
+		it('throws PRECONDITION_FAILED when the job state is active', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(getQueuedJobData).mockRejectedValue(
+				new Error('Job "job-1" is active and cannot be put back.'),
+			);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Job "job-1" is active and cannot be put back./,
+			);
+		});
+
+		it('throws PRECONDITION_FAILED when the job is in an unsupported phase', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			const jobData = {
+				projectId: 'p1',
+				type: 'github' as const,
+				event: {
+					eventType: 'pull_request' as const,
+					action: 'closed',
+					merged: true,
+					repoFullName: 'acme/widgets',
+					workItemId: '42',
+				},
+			};
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Job phase hint "resolve-conflicts" is not supported for Put back./,
+			);
+		});
+
+		it('throws PRECONDITION_FAILED when the job has no linked card', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			const jobData = {
+				projectId: 'p1',
+				type: 'github' as const,
+				event: {
+					eventType: 'pull_request_review' as const,
+					reviewState: 'approved',
+					repoFullName: 'acme/widgets',
+					workItemId: '42',
+				},
+			};
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
+
+			const listWorkItems = vi
+				.fn()
+				.mockResolvedValue([{ id: 'card-1', url: 'https://github.com/acme/widgets/pull/999' }]);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ listWorkItems }),
+			} as never);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Job has no linked board card./,
+			);
+		});
+
+		it('throws PRECONDITION_FAILED when the github-projects job status does not start planning or implementation', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
+			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: jobData.event.itemNodeId,
+				statusId: 'df73e18b', // In Review status (does not start planning or implementation)
+				title: 'Test Card',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem }),
+			} as never);
+
+			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+				/Work item status does not start a Planning or Implementation phase./,
+			);
 		});
 	});
 });

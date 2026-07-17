@@ -13,6 +13,7 @@ import {
 } from '../../db/repositories/runsRepository.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
 import { ReasoningLevelSchema } from '../../harness/models.js';
+import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { getPMProvider } from '../../integrations/pm/registry.js';
 import { logger } from '../../lib/logger.js';
 import {
@@ -20,35 +21,56 @@ import {
 	requestRunCancellation,
 	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
+import type { SwarmJob } from '../../queue/jobs.js';
 import {
 	enqueueDelayedRetry,
+	getQueuedJobData,
 	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
+	removeQueuedJob,
 } from '../../queue/producer.js';
-import { type QueuedRun, toQueuedRuns } from '../../queue/queued-runs.js';
+import {
+	deriveQueuedPhaseHint,
+	type QueuedPhaseHint,
+	type QueuedRun,
+	toQueuedRuns,
+} from '../../queue/queued-runs.js';
 import { publicProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
-const queuedWorkItemCache = new Map<string, { expiresAt: number; title?: string; url?: string }>();
+const queuedWorkItemCache = new Map<
+	string,
+	{ expiresAt: number; title?: string; url?: string; nodeId?: string; phaseHint?: QueuedPhaseHint }
+>();
 
 function queuedWorkItemCacheKey(item: QueuedRun): string | null {
-	return item.type === 'github-projects' && item.workItemNodeId
-		? `${item.projectId}:${item.workItemNodeId}`
-		: null;
+	if (item.type === 'github-projects' && item.workItemNodeId) {
+		return `${item.projectId}:${item.workItemNodeId}`;
+	}
+	if (item.type === 'github' && item.prNumber) {
+		return `${item.projectId}:github:${item.prNumber}`;
+	}
+	return null;
 }
 
 function withQueuedWorkItemDetails(
 	item: QueuedRun,
-	details: { title?: string; url?: string },
+	details: { title?: string; url?: string; nodeId?: string; phaseHint?: QueuedPhaseHint },
 ): QueuedRun {
-	return { ...item, workItemTitle: details.title, workItemUrl: details.url };
+	return {
+		...item,
+		workItemTitle: details.title,
+		workItemUrl: details.url,
+		workItemNodeId: details.nodeId || item.workItemNodeId,
+		phaseHint: details.phaseHint || item.phaseHint,
+	};
 }
 
 async function resolveQueuedWorkItemDetails(
 	item: QueuedRun,
 	workItemNodeId: string,
-): Promise<{ title?: string; url?: string } | null> {
+): Promise<{ title?: string; url?: string; isSupported?: boolean } | null> {
 	const project = await getProjectByIdFromDb(item.projectId);
 	if (!project) return null;
 
@@ -56,16 +78,23 @@ async function resolveQueuedWorkItemDetails(
 	if (!manifest) return null;
 
 	const workItem = await manifest.createProvider(project).getWorkItem(workItemNodeId);
+	let isSupported = false;
+	if (workItem.statusId) {
+		const targetPhase = resolvePipelinePhaseForOptionId(project.githubProjects, workItem.statusId);
+		if (targetPhase === 'planning' || targetPhase === 'implementation') {
+			isSupported = true;
+		}
+	}
 	return {
 		title: workItem.title || undefined,
 		url: workItem.url || undefined,
+		isSupported,
 	};
 }
 
 async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 	const cacheKey = queuedWorkItemCacheKey(item);
-	const workItemNodeId = item.workItemNodeId;
-	if (!cacheKey || !workItemNodeId) return item;
+	if (!cacheKey) return item;
 
 	const cached = queuedWorkItemCache.get(cacheKey);
 	if (cached && cached.expiresAt > Date.now()) {
@@ -73,8 +102,50 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 	}
 
 	try {
-		const details = await resolveQueuedWorkItemDetails(item, workItemNodeId);
+		let details: {
+			title?: string;
+			url?: string;
+			nodeId?: string;
+			phaseHint?: QueuedPhaseHint;
+		} | null = null;
+		if (item.type === 'github-projects' && item.workItemNodeId) {
+			const resolved = await resolveQueuedWorkItemDetails(item, item.workItemNodeId);
+			if (resolved) {
+				details = {
+					title: resolved.title,
+					url: resolved.url,
+					nodeId: item.workItemNodeId,
+					phaseHint: resolved.isSupported ? 'board' : 'unknown',
+				};
+			}
+		} else if (item.type === 'github' && item.prNumber) {
+			const project = await getProjectByIdFromDb(item.projectId);
+			if (project) {
+				const manifest = getPMProvider(project.pm.type);
+				if (manifest) {
+					const pm = manifest.createProvider(project);
+					const items = await pm.listWorkItems();
+					const repoFullName = item.repo;
+					const match = items.find((i) =>
+						repoFullName
+							? i.url.endsWith(`/${repoFullName}/issues/${item.prNumber}`) ||
+								i.url.endsWith(`/${repoFullName}/pull/${item.prNumber}`)
+							: i.url.endsWith(`/issues/${item.prNumber}`) ||
+								i.url.endsWith(`/pull/${item.prNumber}`),
+					);
+					if (match) {
+						details = {
+							title: match.title || undefined,
+							url: match.url || undefined,
+							nodeId: match.id,
+						};
+					}
+				}
+			}
+		}
+
 		if (!details) return item;
+
 		const cachedDetails = {
 			expiresAt: Date.now() + QUEUED_WORK_ITEM_CACHE_TTL_MS,
 			...details,
@@ -85,6 +156,7 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 		logger.debug('runs.queued: backing work item lookup failed; using fallback', {
 			projectId: item.projectId,
 			workItemNodeId: item.workItemNodeId,
+			prNumber: item.prNumber,
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return item;
@@ -465,5 +537,114 @@ export const runsRouter = router({
 
 			// `running`: the worker aborts the agent and settles the row.
 			return { runId: run.id, status: 'terminating' as const };
+		}),
+
+	// Put back action for queued work items (issue #251).
+	// Safely removes a waiting, prioritized, or delayed job and moves its linked card back to backlog.
+	putBack: publicProcedure
+		.input(
+			z.object({
+				jobId: z.string().min(1),
+				projectId: z.string().min(1),
+			}),
+		)
+		.mutation(async ({ input }) => {
+			const project = await getProjectByIdFromDb(input.projectId);
+			if (!project) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Project with ID "${input.projectId}" not found`,
+				});
+			}
+
+			let jobData: SwarmJob;
+			try {
+				jobData = await getQueuedJobData(input.jobId);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				throw new TRPCError({
+					code: msg.includes('not found') ? 'NOT_FOUND' : 'PRECONDITION_FAILED',
+					message: msg,
+				});
+			}
+
+			const phaseHint = deriveQueuedPhaseHint(jobData);
+			if (phaseHint !== 'board' && phaseHint !== 'review') {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Job phase hint "${phaseHint}" is not supported for Put back.`,
+				});
+			}
+
+			let workItemNodeId: string | undefined;
+			const pmManifest = getPMProvider(project.pm.type);
+			if (!pmManifest) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `PM Provider for type "${project.pm.type}" not found`,
+				});
+			}
+			const pm = pmManifest.createProvider(project);
+
+			if (jobData.type === 'github-projects') {
+				workItemNodeId = jobData.event.itemNodeId;
+				const workItem = await pm.getWorkItem(workItemNodeId);
+				if (!workItem.statusId) {
+					throw new TRPCError({
+						code: 'PRECONDITION_FAILED',
+						message: `Work item has no status ID.`,
+					});
+				}
+				const targetPhase = resolvePipelinePhaseForOptionId(
+					project.githubProjects,
+					workItem.statusId,
+				);
+				if (!targetPhase) {
+					throw new TRPCError({
+						code: 'PRECONDITION_FAILED',
+						message: `Work item status does not start a Planning or Implementation phase.`,
+					});
+				}
+			} else if (jobData.type === 'github') {
+				const prNumber = jobData.event.workItemId;
+				const repoFullName = jobData.event.repoFullName;
+				if (prNumber && repoFullName) {
+					const items = await pm.listWorkItems();
+					const match = items.find(
+						(item) =>
+							item.url.endsWith(`/${repoFullName}/issues/${prNumber}`) ||
+							item.url.endsWith(`/${repoFullName}/pull/${prNumber}`),
+					);
+					workItemNodeId = match?.id;
+				}
+			}
+
+			if (!workItemNodeId) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Job has no linked board card.`,
+				});
+			}
+
+			try {
+				await pm.moveWorkItem(workItemNodeId, 'backlog');
+			} catch (error) {
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: `Failed to move board card to backlog: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+
+			try {
+				await removeQueuedJob(input.jobId);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: `Failed to remove job from queue after moving board card: ${msg}`,
+				});
+			}
+
+			return { success: true };
 		}),
 });
