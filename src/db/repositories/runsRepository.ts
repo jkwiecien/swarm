@@ -18,7 +18,7 @@ import { and, asc, count, desc, eq, gt, isNotNull, type SQL, sql } from 'drizzle
 import type { DelegationObservation } from '../../delegation/native.js';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
-import type { ReviewVerdict } from '../../pipeline/review.js';
+import type { ReviewAutomationOutcome, ReviewVerdict } from '../../pipeline/review.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
@@ -126,6 +126,18 @@ export interface CompleteRunInput {
 	 * a non-review finalize never touches the column.
 	 */
 	reviewVerdict?: ReviewVerdict;
+	/**
+	 * This Review run's two-verdict safety-cap slot (1 or 2, issue #235). Set
+	 * only alongside `reviewVerdict`; omitted for every other phase.
+	 */
+	reviewOrdinal?: number;
+	/**
+	 * This Review run's automation outcome (issue #235), e.g.
+	 * `manual-intervention-required` when it submitted the second
+	 * `request-changes` verdict the cap allows. Set only alongside
+	 * `reviewVerdict`; omitted for every other phase.
+	 */
+	reviewAutomationOutcome?: ReviewAutomationOutcome;
 }
 
 /**
@@ -151,6 +163,8 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			delegations: input.delegations,
 			agentSessionId: input.agentSessionId,
 			reviewVerdict: input.reviewVerdict,
+			reviewOrdinal: input.reviewOrdinal,
+			reviewAutomationOutcome: input.reviewAutomationOutcome,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
@@ -207,6 +221,10 @@ export async function resetRunToRunning(
 			// Clear any prior verdict so a re-running Review row shows lifecycle
 			// status, not a stale verdict, until it submits a fresh one (issue #218).
 			reviewVerdict: null,
+			// Same for the safety-cap slot/automation outcome (issue #235) — a retry
+			// re-marks them once it re-submits.
+			reviewOrdinal: null,
+			reviewAutomationOutcome: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),

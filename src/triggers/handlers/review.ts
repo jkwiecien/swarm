@@ -81,6 +81,7 @@
  */
 
 import type { ProjectConfig } from '../../config/schema.js';
+import { reserveReviewVerdict } from '../../db/repositories/reviewVerdictsRepository.js';
 import {
 	type CheckSuiteStatus,
 	getCheckSuiteStatus,
@@ -445,6 +446,71 @@ async function dispatchRespondToCi(
 }
 
 /**
+ * Reserve (or reuse) this PR/head's durable review-verdict slot — the
+ * two-verdict safety cap (issue #235) — after the Redis dispatch dedup claim
+ * and before returning a `review` dispatch. Only the `review` disposition
+ * reserves a slot: Respond-to-CI shares the same PR+SHA dedup key but never
+ * consumes a review verdict.
+ *
+ * Fails closed: a `blocked` (another head's reservation is still pending) or
+ * `capped` (two verdicts already submitted) result skips the dispatch, as
+ * does a persistence error — a re-review the ledger can't currently account
+ * for must not run ahead of it. A `reserved`/`reused` result (the common
+ * case, including a same-head retry) proceeds.
+ */
+async function reserveDurableReviewSlot(
+	project: ProjectConfig,
+	prNumber: string,
+	headSha: string,
+): Promise<boolean> {
+	try {
+		const reservation = await reserveReviewVerdict({
+			projectId: project.id,
+			repository: project.repo,
+			prNumber,
+			headSha,
+		});
+		if (reservation.status === 'blocked') {
+			logger.debug('review: another review for this PR is still pending — skipping', {
+				prNumber,
+				headSha,
+				pendingOrdinal: reservation.ordinal,
+			});
+			return false;
+		}
+		if (reservation.status === 'reused' && reservation.state === 'submitted') {
+			logger.debug('review: slot already submitted for this head SHA — skipping same-head retry', {
+				prNumber,
+				headSha,
+				ordinal: reservation.ordinal,
+			});
+			return false;
+		}
+		if (reservation.status === 'capped') {
+			logger.warn('review: PR already has two submitted verdicts — skipping (safety cap)', {
+				prNumber,
+				headSha,
+			});
+			return false;
+		}
+		logger.debug('review: reserved durable review-verdict slot', {
+			prNumber,
+			headSha,
+			ordinal: reservation.ordinal,
+			reused: reservation.status === 'reused',
+		});
+		return true;
+	} catch (err) {
+		logger.error('review: failed to reserve review-verdict slot — failing closed', {
+			prNumber,
+			headSha,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
+}
+
+/**
  * Validates a trigger context for the review handler, checking the source,
  * event-level gates, and required fields (PR number, head SHA). Returns the
  * narrowed GitHub event, project, prNumber, and headSha on success, or `null`
@@ -550,6 +616,8 @@ export function createReviewTrigger(): TriggerHandler {
 					ctx.continuationDispatchClaimed === true,
 				);
 			}
+
+			if (!(await reserveDurableReviewSlot(ctx.project, prNumber, headSha))) return null;
 
 			logger.debug('review: dispatching Review phase', { prNumber, headSha });
 			return { phase: 'review', taskId: prNumber, prNumber, headSha };

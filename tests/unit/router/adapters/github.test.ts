@@ -203,11 +203,11 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.isCrossRepo).toBeUndefined();
 		});
 
-		it('enriches a pull_request_review event with state, id and branch', () => {
+		it('enriches a pull_request_review event with state, id, branch and head SHA', () => {
 			const parsed = adapter.parseWebhook('pull_request_review', {
 				action: 'submitted',
 				repository: repo(),
-				pull_request: { number: 3, head: { ref: 'issue-3' } },
+				pull_request: { number: 3, head: { sha: 'deadbeef', ref: 'issue-3' } },
 				review: { id: 987654, state: 'changes_requested' },
 				sender: { login: 'swarm-rev' },
 			});
@@ -215,6 +215,7 @@ describe('GitHubRouterAdapter', () => {
 				reviewState: 'changes_requested',
 				reviewId: '987654',
 				prBranch: 'issue-3',
+				headSha: 'deadbeef',
 			});
 		});
 

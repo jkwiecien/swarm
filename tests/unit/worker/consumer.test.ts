@@ -45,6 +45,8 @@ let phaseImpl: (
 	movedTo?: string;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 	verdict?: string;
+	reviewOrdinal?: number;
+	automationOutcome?: string;
 }>;
 
 function mockPhase(phase: string) {
@@ -1969,6 +1971,25 @@ describe('processJob', () => {
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
 				'run-1',
 				expect.objectContaining({ status: 'completed', reviewVerdict: 'request-changes' }),
+			);
+		});
+
+		it('forwards a completed Review run’s safety-cap ordinal and automation outcome (issue #235)', async () => {
+			phaseImpl = async () => ({
+				agent: agentResult(),
+				verdict: 'request-changes',
+				reviewOrdinal: 2,
+				automationOutcome: 'manual-intervention-required',
+			});
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({
+					reviewOrdinal: 2,
+					reviewAutomationOutcome: 'manual-intervention-required',
+				}),
 			);
 		});
 

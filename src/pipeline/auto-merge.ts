@@ -1,10 +1,14 @@
 /**
- * Shared best-effort GitHub auto-merge for the two phases that can leave a PR
- * ready to land: Review (an `approve` verdict, issue #231) and Respond-to-review
- * (a `fixed` / `no-findings` outcome). One setting —
- * `pipeline.respondToReview.autoMerge` — gates both: when it's on and the
- * phase's result is merge-eligible, ask GitHub to merge the PR once its own
- * required reviews and checks pass.
+ * Best-effort GitHub auto-merge, armed only from the Review phase's own
+ * `approve` verdict (`src/pipeline/review.ts`, issue #231; restricted to this
+ * single call site by issue #235). `pipeline.respondToReview.autoMerge` gates
+ * it: when on and the verdict is `approve`, ask GitHub to merge the PR once
+ * its own required reviews and checks pass.
+ *
+ * Respond-to-review deliberately does **not** call this: none of its outcomes
+ * (`fixed`, `pushed-back`, `no-findings`) are an approval of the review that
+ * blocked the PR — only a fresh submitted Review approval clears that gate
+ * (issue #235), even after the implementer has addressed every point.
  *
  * Strictly best-effort: a provider refusal (a draft PR, a closed PR, no
  * merge-queue configured) or an error is logged and swallowed, never turning an
@@ -29,16 +33,16 @@ export const enablePullRequestAutoMergeDefault: EnablePullRequestAutoMerge = (pr
 	new GitHubSCMIntegration().enablePullRequestAutoMerge(project, prNumber);
 
 export interface EnableAutoMergeOptions {
-	/** `pipeline.respondToReview.autoMerge` — the single gate shared by both phases. */
+	/** `pipeline.respondToReview.autoMerge` — the setting that gates this call. */
 	enabled: boolean;
-	/** Whether this phase's result leaves the PR safe to hand to GitHub for merge. */
+	/** Whether this verdict leaves the PR safe to hand to GitHub for merge (an `approve`). */
 	eligible: boolean;
 	/** The (possibly injected) provider operation. */
 	enablePullRequestAutoMerge: EnablePullRequestAutoMerge;
 	project: ProjectConfig;
 	prNumber: string;
 	taskId: string;
-	/** Human phase name for the log lines (e.g. 'Review', 'Respond-to-review'). */
+	/** Human phase name for the log lines — always `'Review'`, the sole call site. */
 	phase: string;
 }
 

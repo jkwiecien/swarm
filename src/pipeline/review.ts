@@ -48,6 +48,11 @@
 
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
+import {
+	abandonReviewVerdict as abandonReviewVerdictDefault,
+	isCapReachingRequestChanges,
+	markReviewVerdictSubmitted as markReviewVerdictSubmittedDefault,
+} from '@/db/repositories/reviewVerdictsRepository.js';
 import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
@@ -102,6 +107,18 @@ export { buildReviewPrompt };
 export const REVIEW_VERDICTS = ['approve', 'request-changes', 'comment'] as const;
 
 export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+
+/**
+ * Review-automation outcomes recorded on a completed Review run's history row
+ * (issue #235) — currently only the terminal one: this run submitted the
+ * second `request-changes` verdict the two-verdict safety cap allows, so
+ * Respond-to-review stops the automatic cycle instead of dispatching a third
+ * review. Every other outcome (an approval, the first verdict) leaves the
+ * run's `reviewAutomationOutcome` column unset.
+ */
+export const REVIEW_AUTOMATION_OUTCOMES = ['manual-intervention-required'] as const;
+
+export type ReviewAutomationOutcome = (typeof REVIEW_AUTOMATION_OUTCOMES)[number];
 
 /** Claude Code is SWARM's review agent (PROJECT.md §5.3) — run as the reviewer persona. */
 export const DEFAULT_REVIEW_CLI: AgentCli = 'claude';
@@ -173,6 +190,13 @@ export interface RunReviewPhaseOptions {
 	 * verdict when `pipeline.respondToReview.autoMerge` is on (issue #231).
 	 */
 	enablePullRequestAutoMerge?: EnablePullRequestAutoMerge;
+	/**
+	 * Injectable review-verdict ledger writers (issue #235) — defaults to the
+	 * real {@link markReviewVerdictSubmittedDefault}/{@link abandonReviewVerdictDefault}
+	 * repository calls; overridden in tests.
+	 */
+	markReviewVerdictSubmitted?: typeof markReviewVerdictSubmittedDefault;
+	abandonReviewVerdict?: typeof abandonReviewVerdictDefault;
 }
 
 export interface ReviewPhaseResult {
@@ -180,6 +204,18 @@ export interface ReviewPhaseResult {
 	verdict: ReviewVerdict;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
+	/**
+	 * This run's slot number in the two-verdict safety-cap ledger (1 or 2),
+	 * `undefined` if the ledger had no reservation for this PR/head to mark
+	 * submitted (issue #235).
+	 */
+	reviewOrdinal?: number;
+	/**
+	 * Set to `manual-intervention-required` when this run submitted the second
+	 * `request-changes` verdict the cap allows; `undefined` for every other
+	 * verdict/ordinal.
+	 */
+	automationOutcome?: ReviewAutomationOutcome;
 	/**
 	 * Whether GitHub accepted the opt-in automatic-merge request after an
 	 * approval; `undefined` when auto-merge is disabled or the verdict wasn't an
@@ -240,17 +276,21 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 		enablePullRequestAutoMerge = enablePullRequestAutoMergeDefault,
+		markReviewVerdictSubmitted = markReviewVerdictSubmittedDefault,
+		abandonReviewVerdict = abandonReviewVerdictDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
 	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'reviewer');
+	const verdictKey = { projectId: project.id, repository: project.repo, prNumber, headSha };
 
 	// Once the review is submitted, an `approve` is the point at which SWARM's
 	// review is satisfied — so when the project opts in, arm GitHub auto-merge
-	// here (issue #231). A normal `approve` skips Respond-to-review, so this is
-	// the only phase that can act on it; the same setting still covers
-	// Respond-to-review's `fixed`/`no-findings` outcomes. Best-effort: a refusal
-	// or error is logged and never fails the completed review.
+	// here (issue #231). This is the *only* call site: Respond-to-review's
+	// `fixed`/`no-findings` outcomes address the review's findings but don't
+	// themselves approve the PR, so they never arm auto-merge (issue #235).
+	// Best-effort: a refusal or error is logged and never fails the completed
+	// review.
 	const armAutoMerge = (verdict: ReviewVerdict): Promise<boolean | undefined> =>
 		enableAutoMergeIfEligible({
 			enabled: project.pipeline?.respondToReview?.autoMerge ?? false,
@@ -334,8 +374,18 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			if (!raw) throw new Error(`Review agent (${cli}) wrote an empty ${REVIEW_VERDICT_FILENAME}`);
 			if (!REVIEW_VERDICTS.includes(raw))
 				throw new Error(`Review agent (${cli}) wrote unrecognized verdict '${original}'`);
+			const ledgerRecord = await markReviewVerdictSubmitted(verdictKey, { verdict: raw });
 			const autoMergeEnabled = await armAutoMerge(raw);
-			return { verdict: raw, agent, autoMergeEnabled };
+			const automationOutcome = isCapReachingRequestChanges(ledgerRecord?.ordinal, raw)
+				? 'manual-intervention-required'
+				: undefined;
+			return {
+				verdict: raw,
+				agent,
+				autoMergeEnabled,
+				reviewOrdinal: ledgerRecord?.ordinal,
+				automationOutcome,
+			};
 		}
 		const handoff = readHandoff(handle.path, REVIEW_VERDICT_FILENAME, ReviewHandoffSchema);
 		const delivery =
@@ -352,7 +402,18 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			});
 		saveDeliveryProgress(handle.path, progress);
 		const verdict = handoff.verdict;
+		// Marked after delivery confirms the review id — idempotent, so a crash
+		// between GitHub delivery and this write is repaired by a retry without
+		// submitting a second review (issue #235).
+		const ledgerRecord = await markReviewVerdictSubmitted(verdictKey, {
+			verdict,
+			reviewId: progress.reviewId !== undefined ? String(progress.reviewId) : undefined,
+		});
 		const autoMergeEnabled = await armAutoMerge(verdict);
+		const reviewOrdinal = ledgerRecord?.ordinal;
+		const automationOutcome = isCapReachingRequestChanges(reviewOrdinal, verdict)
+			? 'manual-intervention-required'
+			: undefined;
 
 		logger.info('Phase finished - Review', {
 			taskId,
@@ -360,13 +421,29 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			headSha,
 			verdict,
 			autoMergeEnabled,
+			reviewOrdinal,
+			automationOutcome,
 		});
 
-		return { verdict, agent, autoMergeEnabled };
+		return { verdict, agent, autoMergeEnabled, reviewOrdinal, automationOutcome };
 	} catch (error) {
 		if (!legacyMode && hasDeliveryProgress(handle.path)) {
 			preserveForResume = true;
 			throw new DeliveryDeferredError('Review delivery deferred for retry', { cause: error });
+		}
+		// No delivery progress exists (or this is legacy mode, which has none) —
+		// the review is known to have never been submitted, so free the ledger's
+		// pending slot rather than charging the PR for this failed attempt
+		// (issue #235). Best-effort: a failure here must not mask the original error.
+		try {
+			await abandonReviewVerdict(verdictKey);
+		} catch (abandonError) {
+			logger.warn('review: failed to abandon review-verdict reservation after a failed run', {
+				taskId,
+				prNumber,
+				headSha,
+				error: abandonError instanceof Error ? abandonError.message : String(abandonError),
+			});
 		}
 		throw error;
 	} finally {

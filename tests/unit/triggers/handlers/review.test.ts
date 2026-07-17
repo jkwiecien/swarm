@@ -61,6 +61,13 @@ vi.mock('@/integrations/scm/github/personas.js', async (importActual) => ({
 	resolvePersonaIdentities,
 }));
 
+// The `review` disposition reserves a durable safety-cap slot before
+// dispatching (issue #235); mock the ledger so these tests need no database.
+// Defaults to granting a fresh reservation (the common path); individual
+// tests flip it to exercise `blocked`/`capped`/a persistence error.
+const { reserveReviewVerdict } = vi.hoisted(() => ({ reserveReviewVerdict: vi.fn() }));
+vi.mock('@/db/repositories/reviewVerdictsRepository.js', () => ({ reserveReviewVerdict }));
+
 /** Build a `CheckSuiteStatus` from `[name, status, conclusion]` triples. */
 function checkStatus(runs: Array<[string, string, string | null]>): CheckSuiteStatus {
 	return {
@@ -88,6 +95,8 @@ beforeEach(() => {
 	resolvePersonaIdentities.mockResolvedValue({ implementer: 'swarm-impl', reviewer: 'swarm-rev' });
 	getPullRequestAuthorLogin.mockReset();
 	getPullRequestAuthorLogin.mockResolvedValue('swarm-impl');
+	reserveReviewVerdict.mockReset();
+	reserveReviewVerdict.mockResolvedValue({ status: 'reserved', id: 'v1', ordinal: 1 });
 });
 
 const PROJECT = createMockProjectConfig();
@@ -496,6 +505,85 @@ describe('review trigger', () => {
 		it('still claims when the continuation flag is absent (unchanged behavior)', async () => {
 			await handler.handle(ctx(reviewable));
 			expect(claimReviewDispatch).toHaveBeenCalledOnce();
+		});
+	});
+
+	describe('handle — durable review-verdict reservation (issue #235)', () => {
+		const reviewable = {
+			eventType: 'pull_request',
+			action: 'opened',
+			workItemId: '42',
+			headSha: 'abc123',
+			isDraft: false,
+			isCrossRepo: false,
+			prAuthorLogin: 'swarm-impl',
+		} as const;
+
+		it('reserves the PR/head slot after the dispatch claim, before dispatching', async () => {
+			const result = await handler.handle(ctx(reviewable));
+			expect(result).toEqual({
+				phase: 'review',
+				taskId: '42',
+				prNumber: '42',
+				headSha: 'abc123',
+			});
+			expect(reserveReviewVerdict).toHaveBeenCalledWith({
+				projectId: PROJECT.id,
+				repository: PROJECT.repo,
+				prNumber: '42',
+				headSha: 'abc123',
+			});
+		});
+
+		it('skips the dispatch when another head is still pending (blocked)', async () => {
+			reserveReviewVerdict.mockResolvedValue({ status: 'blocked', ordinal: 1 });
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
+		it('skips the dispatch once two verdicts are already submitted (capped)', async () => {
+			reserveReviewVerdict.mockResolvedValue({ status: 'capped' });
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
+		it('reuses a same-head retry reservation and still dispatches', async () => {
+			reserveReviewVerdict.mockResolvedValue({
+				status: 'reused',
+				id: 'v1',
+				ordinal: 1,
+				state: 'pending',
+			});
+			const result = await handler.handle(ctx(reviewable));
+			expect(result).toMatchObject({ phase: 'review' });
+		});
+
+		it('skips the dispatch when a same-head retry is already submitted', async () => {
+			reserveReviewVerdict.mockResolvedValue({
+				status: 'reused',
+				id: 'v1',
+				ordinal: 1,
+				state: 'submitted',
+			});
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
+		it('fails closed (skips) when the reservation call throws', async () => {
+			reserveReviewVerdict.mockRejectedValue(new Error('connection reset'));
+			expect(await handler.handle(ctx(reviewable))).toBeNull();
+		});
+
+		it('does not reserve a slot for the Respond-to-CI disposition', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			const result = await handler.handle(
+				ctx({
+					eventType: 'check_suite',
+					action: 'completed',
+					workItemId: '9',
+					headSha: 'cafe',
+					prBranch: 'issue-9',
+				}),
+			);
+			expect(result).toMatchObject({ phase: 'respond-to-ci' });
+			expect(reserveReviewVerdict).not.toHaveBeenCalled();
 		});
 	});
 });
