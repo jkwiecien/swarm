@@ -33,7 +33,6 @@ export function buildRespondToReviewPrompt(
 		prBranch: string;
 		reviewId: string;
 	},
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	const { repo, prNumber, prBranch, reviewId } = context;
@@ -41,7 +40,7 @@ export function buildRespondToReviewPrompt(
 		'You are a senior software engineer responding to a code review on a pull request',
 		'you authored.',
 		'',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,

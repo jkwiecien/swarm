@@ -90,7 +90,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 					{successMessage}
 				</div>
 			)}
-			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+			<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 				<table className="w-full table-fixed text-left border-collapse">
 					<colgroup>
 						<col className={columnWidths.phase} />

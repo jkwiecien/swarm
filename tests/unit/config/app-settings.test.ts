@@ -10,6 +10,30 @@ describe('AppSettingsSchema', () => {
 		expect(AppSettingsSchema.safeParse({}).success).toBe(true);
 	});
 
+	it('defaults appearance.theme to dark when absent', () => {
+		expect(validateAppSettings({}).appearance.theme).toBe('dark');
+		expect(validateAppSettings({ agents: {} }).appearance.theme).toBe('dark');
+	});
+
+	it('accepts each valid theme value', () => {
+		for (const theme of ['dark', 'light', 'system'] as const) {
+			expect(validateAppSettings({ appearance: { theme } }).appearance.theme).toBe(theme);
+		}
+	});
+
+	it('rejects an unknown theme value', () => {
+		expect(AppSettingsSchema.safeParse({ appearance: { theme: 'solarized' } }).success).toBe(false);
+	});
+
+	it('preserves agents.defaults alongside appearance', () => {
+		const parsed = validateAppSettings({
+			agents: { defaults: { claude: 'opus' } },
+			appearance: { theme: 'light' },
+		});
+		expect(parsed.agents?.defaults?.claude).toBe('opus');
+		expect(parsed.appearance.theme).toBe('light');
+	});
+
 	it('accepts a valid global agents.defaults block', () => {
 		const parsed = validateAppSettings({
 			agents: {
@@ -39,8 +63,8 @@ describe('AppSettingsSchema', () => {
 		expect(() => validateAppSettings({ agents: { defaults: { claude: 'nonsense' } } })).toThrow();
 	});
 
-	it('APP_SETTINGS_DEFAULTS is a valid, empty settings object', () => {
+	it('APP_SETTINGS_DEFAULTS is a valid settings object defaulting to a dark theme', () => {
 		expect(AppSettingsSchema.safeParse(APP_SETTINGS_DEFAULTS).success).toBe(true);
-		expect(APP_SETTINGS_DEFAULTS).toEqual({});
+		expect(APP_SETTINGS_DEFAULTS).toEqual({ appearance: { theme: 'dark' } });
 	});
 });

@@ -200,78 +200,105 @@ describe('runReviewPhase', () => {
 		expect(result.verdict).toBe(expected);
 	});
 
-	describe('auto-merge after approval (issue #231)', () => {
-		it('enables GitHub auto-merge when the setting is on and the verdict is approve', async () => {
+	describe('merge-after-approval (issue #231, provider-neutral since issue #253)', () => {
+		it('requests a merge when the setting is on and the verdict is approve', async () => {
 			verdictFileContents = 'approve\n';
 			const deps = makeDeps();
 			deps.project = createMockProjectConfig({
 				pipeline: { respondToReview: { autoMerge: true } },
 			});
-			const enablePullRequestAutoMerge = vi.fn(async () => ({
-				enabled: true,
-				message: 'GitHub auto-merge enabled',
+			const mergePullRequest = vi.fn(async () => ({
+				status: 'merged' as const,
+				message: 'merged via GitHub direct API',
 			}));
 
-			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+			const result = await runReviewPhase({ ...deps, mergePullRequest });
 
-			expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
-			expect(result.autoMergeEnabled).toBe(true);
+			expect(mergePullRequest).toHaveBeenCalledWith(deps.project, 99);
+			expect(result.mergeOutcome).toEqual({
+				status: 'merged',
+				message: 'merged via GitHub direct API',
+			});
 		});
 
-		it('does not enable auto-merge for a request-changes verdict', async () => {
+		it('does not request a merge for a request-changes verdict', async () => {
 			verdictFileContents = 'request-changes\n';
 			const deps = makeDeps();
 			deps.project = createMockProjectConfig({
 				pipeline: { respondToReview: { autoMerge: true } },
 			});
-			const enablePullRequestAutoMerge = vi.fn();
+			const mergePullRequest = vi.fn();
 
-			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+			const result = await runReviewPhase({ ...deps, mergePullRequest });
 
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
-			expect(result.autoMergeEnabled).toBeUndefined();
+			expect(mergePullRequest).not.toHaveBeenCalled();
+			expect(result.mergeOutcome).toBeUndefined();
 		});
 
-		it('does not enable auto-merge when the setting is disabled', async () => {
+		it('does not request a merge when the setting is disabled', async () => {
 			verdictFileContents = 'approve\n';
 			const deps = makeDeps(); // default project leaves autoMerge unset
-			const enablePullRequestAutoMerge = vi.fn();
+			const mergePullRequest = vi.fn();
 
-			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+			const result = await runReviewPhase({ ...deps, mergePullRequest });
 
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
-			expect(result.autoMergeEnabled).toBeUndefined();
+			expect(mergePullRequest).not.toHaveBeenCalled();
+			expect(result.mergeOutcome).toBeUndefined();
 		});
 
-		it('never reaches auto-merge when the review run itself fails', async () => {
+		it('never reaches the merge provider when the review run itself fails', async () => {
 			verdictFileContents = 'approve\n';
 			const deps = makeDeps();
 			deps.project = createMockProjectConfig({
 				pipeline: { respondToReview: { autoMerge: true } },
 			});
 			deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
-			const enablePullRequestAutoMerge = vi.fn();
+			const mergePullRequest = vi.fn();
 
-			await expect(runReviewPhase({ ...deps, enablePullRequestAutoMerge })).rejects.toThrow(
+			await expect(runReviewPhase({ ...deps, mergePullRequest })).rejects.toThrow(
 				/exited with code 1/,
 			);
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+			expect(mergePullRequest).not.toHaveBeenCalled();
 		});
 
-		it('keeps a completed review successful when arming auto-merge fails', async () => {
+		it('keeps a completed review successful and reports a non-ready outcome when the provider refuses', async () => {
 			verdictFileContents = 'approve\n';
 			const deps = makeDeps();
 			deps.project = createMockProjectConfig({
 				pipeline: { respondToReview: { autoMerge: true } },
 			});
-			const enablePullRequestAutoMerge = vi.fn(async () => {
+			const mergePullRequest = vi.fn(async () => ({
+				status: 'not-ready' as const,
+				message: 'required checks are still pending',
+			}));
+
+			const result = await runReviewPhase({ ...deps, mergePullRequest });
+
+			expect(result.verdict).toBe('approve');
+			expect(result.mergeOutcome).toEqual({
+				status: 'not-ready',
+				message: 'required checks are still pending',
+			});
+			expect(deps.worktrees.cleanup).toHaveBeenCalledWith('review-20');
+		});
+
+		it('keeps a completed review successful when the merge provider throws', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			const mergePullRequest = vi.fn(async () => {
 				throw new Error('provider unavailable');
 			});
 
-			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+			const result = await runReviewPhase({ ...deps, mergePullRequest });
 
 			expect(result.verdict).toBe('approve');
-			expect(result.autoMergeEnabled).toBe(false);
+			expect(result.mergeOutcome).toEqual({
+				status: 'provider-error',
+				message: 'provider unavailable',
+			});
 			expect(deps.worktrees.cleanup).toHaveBeenCalledWith('review-20');
 		});
 	});

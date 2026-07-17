@@ -1,7 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the subprocess boundary — unit tests never spawn a real CLI
@@ -13,6 +10,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { type AgentCliResult, describeAgent, runAgentCli } from '@/harness/agent-cli.js';
+import { classifyAgentFailure } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { createMockRunAgentCliOptions } from '../../helpers/factories.js';
 
@@ -106,36 +104,6 @@ describe('runAgentCli', () => {
 			'json',
 			'-p',
 			'implement the thing',
-		]);
-	});
-
-	it('attributes delegation observations to the current parent run', async () => {
-		const cwd = mkdtempSync(join(tmpdir(), 'swarm-agent-cli-'));
-		const base = {
-			contractId: 'docs-update',
-			phase: 'implementation',
-			agent: 'swarm-doc-editor',
-			model: 'haiku',
-			delegationType: 'documentation-edit',
-			allowedPaths: ['README.md'],
-			outcome: 'completed',
-		};
-		writeFileSync(
-			join(cwd, '.swarm-delegation-events.jsonl'),
-			`${JSON.stringify({ ...base, invocationId: 'inv-1', parentRunId: 'other-run' })}\n${JSON.stringify({ ...base, invocationId: 'inv-2', parentRunId: 'run-1' })}\n`,
-		);
-		const promise = runAgentCli(
-			createMockRunAgentCliOptions({
-				cwd,
-				sessionId: 'fresh',
-				env: { SWARM_PARENT_RUN_ID: 'run-1' },
-			}),
-		);
-		lastChild().emit('close', 0, null);
-
-		const result = await promise;
-		expect(result.delegations).toEqual([
-			expect.objectContaining({ invocationId: 'inv-2', parentRunId: 'run-1' }),
 		]);
 	});
 
@@ -558,6 +526,24 @@ describe('runAgentCli', () => {
 				reasoningTokens: 0,
 			});
 			expect(result.stdout).toBe('pong');
+		});
+
+		it('preserves a Codex capacity event after an earlier agent message for failure classification', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ cli: 'codex' }));
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				[
+					'{"type":"item.completed","item":{"type":"agent_message","text":"I completed useful analysis."}}',
+					'{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+				].join('\n'),
+			);
+			child.emit('close', 1, null);
+
+			const result = await promise;
+			expect(result.stdout).toBe('I completed useful analysis.');
+			expect(result.rawStdout).toContain('"type":"turn.failed"');
+			expect(classifyAgentFailure(result)).toEqual({ kind: 'capacity' });
 		});
 
 		it('leaves usage undefined and stdout raw for non-JSON stdout', async () => {

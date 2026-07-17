@@ -34,7 +34,7 @@ export function LogViewer({ stdout, stderr }: LogViewerProps) {
 						onClick={() => setActiveTab('stdout')}
 						className={`px-3 py-1.5 font-semibold rounded transition-colors cursor-pointer ${
 							activeTab === 'stdout'
-								? 'bg-zinc-800 text-white border border-zinc-700'
+								? 'bg-zinc-800 text-zinc-100 border border-zinc-700'
 								: 'text-zinc-400 hover:text-zinc-200 border border-transparent'
 						}`}
 					>
@@ -45,7 +45,7 @@ export function LogViewer({ stdout, stderr }: LogViewerProps) {
 						onClick={() => setActiveTab('stderr')}
 						className={`px-3 py-1.5 font-semibold rounded transition-colors cursor-pointer ${
 							activeTab === 'stderr'
-								? 'bg-zinc-800 text-white border border-zinc-700'
+								? 'bg-zinc-800 text-zinc-100 border border-zinc-700'
 								: 'text-zinc-400 hover:text-zinc-200 border border-transparent'
 						}`}
 					>

@@ -10,12 +10,12 @@ Stack it assumes: React + TypeScript + Vite + **Tailwind CSS v4** (CSS-first con
 
 ## 1. Color tokens
 
-Dark-mode only (no light theme) — this is a local admin tool for one developer, not a public product.
+**Dark by default, with Light and System-default alternatives** (issue #250) — this is still a local admin tool for one developer, not a public product, but it now respects the developer's own theme preference. Every color below is authored as a **dark-mode value at `:root`**; picking Light (directly, or via System default resolving to light) sets `data-theme="light"` on `<html>` (`web/src/components/theme/theme-provider.tsx`), and `web/src/index.css` overrides the *same* Tailwind v4 theme variables under a `[data-theme="light"]` selector. Because Tailwind v4 compiles every utility against its CSS variable (`.bg-zinc-900 { background-color: var(--color-zinc-900) }`, not a literal color), overriding the variable repaints every `zinc-*`/status-color utility already in use — component code never branches on theme.
 
-| Role | Token | Value | Usage |
+| Role | Token | Dark value | Usage |
 |---|---|---|---|
-| Canvas | custom | `#0A0A0B` | Page/app background |
-| Panel | custom | `#0F0F11` | Sidebar, cards, modals — usually blended with alpha (`/20`–`/40`) over the canvas rather than opaque |
+| Canvas | `canvas` (custom, semantic) | `#0A0A0B` | Page/app background — `bg-canvas` |
+| Panel | `panel` (custom, semantic) | `#0F0F11` | Sidebar, cards, modals — usually blended with alpha (`bg-panel/20`–`/40`) over the canvas rather than opaque |
 | Border (strong) | `zinc-800` | `#27272a` | Default dividers, input borders, card borders |
 | Border (soft) | `zinc-850` (custom, see below) | `#1f1f23` | Header/section dividers, secondary borders — one step darker than `zinc-800` |
 | Text — primary | `zinc-100` | `#f4f4f5` | Headings, primary values |
@@ -23,12 +23,12 @@ Dark-mode only (no light theme) — this is a local admin tool for one developer
 | Text — tertiary | `zinc-400` | | Field labels, helper text |
 | Text — muted | `zinc-500` | | Meta text, table headers, placeholders |
 | Text — faint | `zinc-600` | | Input placeholder text |
-| Accent (primary action) | `violet-600` / `violet-500` | | Primary buttons, active tab underline, focus rings |
+| Accent (primary action) | `violet-600` / `violet-500` | | Primary buttons, active tab underline, focus rings — **theme-invariant**, see below |
 | Success | `emerald-500`/`emerald-400` | | Connected/verified status |
 | Warning | `amber-500`/`amber-200`/`amber-900` | | Loop-prevention and similar caution banners |
 | Danger | `red-400`/`red-500`/`red-900` | | Validation errors, destructive-action affordances |
 
-**Fix required, don't copy verbatim**: `zinc-850` and `violet-650` are not real Tailwind shades (the prototype uses `zinc-850` ~10 times and the primary-button glow recipe below uses `violet-650`, but it ships zero-config Tailwind v4, so those classes are silently dead). Define both for real in `web/src/index.css` via Tailwind v4's `@theme`:
+**Fix required, don't copy verbatim**: `zinc-850` and `violet-650` are not real Tailwind shades (the prototype uses `zinc-850` ~10 times and the primary-button glow recipe below uses `violet-650`, but it ships zero-config Tailwind v4, so those classes are silently dead). Define both for real in `web/src/index.css` via Tailwind v4's `@theme`, alongside the semantic `canvas`/`panel` tokens (promoted from the literal `bg-[#0A0A0B]`/`bg-[#0F0F11]` the prototype hardcoded, so they can be overridden per-theme instead of staying frozen dark forever):
 
 ```css
 @import "tailwindcss";
@@ -36,8 +36,19 @@ Dark-mode only (no light theme) — this is a local admin tool for one developer
 @theme {
   --color-zinc-850: #1f1f23;
   --color-violet-650: #7531e3;
+  --color-canvas: #0a0a0b;
+  --color-panel: #0f0f11;
 }
 ```
+
+**The light-theme override rule.** `web/src/index.css`'s `[data-theme="light"]` block re-derives every neutral/status color it needs from the *other end* of that color's own Tailwind scale — it does not invent new hex values:
+
+- **`canvas`/`panel`/`zinc-850`** get hand-picked light equivalents (near-white canvas, a slightly-off-white panel).
+- **The full `zinc` neutral scale inverts shade-for-shade**: `100↔950`, `200↔900`, `300↔800`, `400↔700`, `500↔600` (e.g. light-theme `--color-zinc-900` takes dark-theme `zinc-200`'s value). A role authored for dark (light text on a dark panel, a dark input on a darker canvas) reads correctly once background and foreground swap ends of the scale — no per-component light/dark class list to maintain.
+- **Status hues** (`red`/`orange`/`amber`/`emerald`/`sky`/`blue`/`violet`) swap only the banner/badge-adjacent ends — `100↔950`, `200↔900`, `300↔800`, `400↔700` — the shades `ai/DESIGN_SYSTEM.md`'s own banner/badge recipes below actually use for tinted backgrounds, borders, and text.
+- **Shades 500/600 for every hue are deliberately left alone.** They're the solid-fill brand/accent colors — primary buttons, focus rings, the active-tab underline, a status badge's dot/bg tint — which read the same in both themes rather than inverting with the neutrals. This is why "Accent (primary action)" above is marked theme-invariant.
+
+New component work should default to the existing named-shade recipes below; reach for `bg-canvas`/`bg-panel` instead of a literal hex, and treat 500/600 accent shades as fixed brand color rather than something to special-case per theme.
 
 ## 2. Typography
 
@@ -66,7 +77,7 @@ Each entry is the Tailwind "recipe" to reuse — treat these as the contract, no
 `inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10`
 
 **Button — secondary**
-`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors`
+`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors` — `hover:text-zinc-100` (not `hover:text-white`), so hover text stays theme-aware rather than pinned white in Light.
 
 **Button — icon/ghost** (e.g. table row delete)
 `text-zinc-500 hover:text-red-400 p-1.5 rounded hover:bg-zinc-800/60 transition-colors`
@@ -79,13 +90,13 @@ Each entry is the Tailwind "recipe" to reuse — treat these as the contract, no
 
 **Label** — `block text-xs font-medium text-zinc-400`, required marker as `<span class="text-red-500">*</span>`.
 
-**Card/panel** — `border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm` (drop the alpha fraction to `/20`–`/30` for a nested sub-panel inside another panel, so depth reads without a heavier border).
+**Card/panel** — `border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm` (drop the alpha fraction to `/20`–`/30` for a nested sub-panel inside another panel, so depth reads without a heavier border).
 
-**Table** — bordered wrapper `border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm`; header row `bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400`; body rows `divide-y divide-zinc-800/60`, `hover:bg-zinc-800/40 transition-colors`. Whole-row-clickable-to-navigate is fine (`cursor-pointer` on `<tr>`) as long as any trailing per-row action button calls `stopPropagation`.
+**Table** — bordered wrapper `border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm`; header row `bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400`; body rows `divide-y divide-zinc-800/60`, `hover:bg-zinc-800/40 transition-colors`. Whole-row-clickable-to-navigate is fine (`cursor-pointer` on `<tr>`) as long as any trailing per-row action button calls `stopPropagation`.
 
-**Tabs** (underline style) — active: `border-b-2 border-violet-500 text-white bg-zinc-800/20`; inactive: `border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800`. Shared button base: `flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all`.
+**Tabs** (underline style) — active: `border-b-2 border-violet-500 text-zinc-100 bg-zinc-800/20`; inactive: `border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800`. Shared button base: `flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all`. Active-tab text is `text-zinc-100` (not `text-white`) so it stays legible against the light-theme `bg-zinc-800/20` tint, not just the dark one.
 
-**Modal/dialog** — full-screen centered overlay, backdrop `fixed inset-0 bg-black/80`; panel `bg-[#0F0F11] border border-zinc-800 rounded-lg shadow-2xl`; footer actions `flex flex-row-reverse gap-2` so the primary action reads first visually while staying last in DOM/tab order... actually keep the primary action first in tab order too — see §7, this is one of the prototype's few accessibility misses worth fixing rather than copying.
+**Modal/dialog** — full-screen centered overlay, backdrop `fixed inset-0 bg-black/80`; panel `bg-panel border border-zinc-800 rounded-lg shadow-2xl`; footer actions `flex flex-row-reverse gap-2` so the primary action reads first visually while staying last in DOM/tab order... actually keep the primary action first in tab order too — see §7, this is one of the prototype's few accessibility misses worth fixing rather than copying.
 
 **Banner — neutral/info** — `p-3 bg-zinc-900/50 border border-zinc-800 text-sm text-zinc-300 rounded`.
 
@@ -103,7 +114,7 @@ Each entry is the Tailwind "recipe" to reuse — treat these as the contract, no
 
 ## 5. Layout shell
 
-- Left sidebar (`w-64` on desktop, full-width stacked on mobile), `bg-[#0F0F11]`, bordered `border-r border-zinc-800`. Top: wordmark + version pill. Middle: nav grouped under a small uppercase section label (`text-[10px] font-semibold uppercase tracking-widest text-zinc-500`). Bottom: connection status dot pinned via `justify-between` on the sidebar's flex column.
+- Left sidebar (`w-64` on desktop, full-width stacked on mobile), `bg-panel`, bordered `border-r border-zinc-800`. Top: wordmark + version pill. Middle: nav grouped under a small uppercase section label (`text-[10px] font-semibold uppercase tracking-widest text-zinc-500`). Bottom: connection status dot pinned via `justify-between` on the sidebar's flex column.
 - Main content: centered column, `max-w-5xl mx-auto`, `p-4 md:p-8`.
 - Detail screens get a breadcrumb (`text-xs font-mono text-zinc-500`, current segment `text-zinc-300 font-semibold`) above the page title, then a horizontal tab bar, then the active tab's content in its own card.
 

@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import type { ProjectConfig } from '../config/schema.js';
-import { delegationEnabled } from '../delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -148,7 +147,6 @@ export async function runResolveConflictsPhase(
 								baseBranch,
 								baseSha,
 							},
-							delegationEnabled(project, 'resolve-conflicts', cli),
 							customPrompt,
 						),
 					],

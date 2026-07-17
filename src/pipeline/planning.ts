@@ -30,7 +30,6 @@ import { join } from 'node:path';
 
 import { z } from 'zod';
 import type { ProjectConfig } from '@/config/schema.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -609,14 +608,7 @@ export async function runPlanningPhase(
 			reasoning,
 			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
-			args: [
-				buildPlanningPrompt(
-					workItem,
-					autoSplit,
-					delegationEnabled(project, 'planning', cli),
-					customPrompt,
-				),
-			],
+			args: [buildPlanningPrompt(workItem, autoSplit, customPrompt)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			logContext: { taskId, phase: 'planning', workItemId: workItem.id },
 			timeoutMs,

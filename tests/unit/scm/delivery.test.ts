@@ -114,43 +114,4 @@ describe('SCM delivery hand-offs', () => {
 		const committed = fixtureGit(root, ['show', '--format=', '--name-only', sha]);
 		expect(committed.trim().split('\n')).toEqual(['.gitignore', 'change.txt']);
 	});
-
-	it('excludes every delegation lifecycle artifact from a delegated prepared tree', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
-		roots.push(root);
-		fixtureGit(root, ['init']);
-		writeFileSync(join(root, 'change.txt'), 'prepared\n');
-		writeFileSync(join(root, '.swarm-delegation-events.jsonl'), '{}\n');
-		writeFileSync(join(root, '.swarm-delegation-review.json'), '{}\n');
-		writeFileSync(join(root, '.swarm-delegation-agent-123.start'), '{}\n');
-
-		const sha = await commitPreparedTree(root, 'feat: delegated delivery', {
-			name: 'swarm-implementer',
-			email: 'swarm-implementer@users.noreply.github.com',
-		});
-		const committed = fixtureGit(root, ['show', '--format=', '--name-only', sha]);
-		expect(committed.trim()).toBe('change.txt');
-		expect(fixtureGit(root, ['status', '--porcelain'])).toContain(
-			'?? .swarm-delegation-agent-123.start',
-		);
-	});
-
-	it('rejects a tracked delegation lifecycle artifact', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
-		roots.push(root);
-		fixtureGit(root, ['init']);
-		fixtureGit(root, ['config', 'user.name', 'Fixture']);
-		fixtureGit(root, ['config', 'user.email', 'fixture@example.com']);
-		writeFileSync(join(root, '.swarm-delegation-events.jsonl'), '{}\n');
-		fixtureGit(root, ['add', '.swarm-delegation-events.jsonl']);
-		fixtureGit(root, ['commit', '-m', 'test: track scratch']);
-		writeFileSync(join(root, 'change.txt'), 'prepared\n');
-
-		await expect(
-			commitPreparedTree(root, 'feat: unsafe delivery', {
-				name: 'swarm-implementer',
-				email: 'swarm-implementer@users.noreply.github.com',
-			}),
-		).rejects.toThrow('scratch artifact is tracked');
-	});
 });

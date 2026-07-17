@@ -9,7 +9,6 @@ import {
 	timestamp,
 	uuid,
 } from 'drizzle-orm/pg-core';
-import type { DelegationObservation } from '../../delegation/native.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import { projects } from './projects.js';
@@ -89,8 +88,8 @@ export const runs = pgTable(
 		 * follow-up task) and every pre-existing run have none.
 		 */
 		usage: jsonb('usage').$type<AgentUsage>(),
-		/** Curated native child calls attributed to this parent phase run. */
-		delegations: jsonb('delegations').$type<DelegationObservation[]>(),
+		// Retained solely to preserve historical run data from the removed delegation feature.
+		delegations: jsonb('delegations'),
 		/**
 		 * Persisted SwarmJob payload (issue #152) to allow retrying terminally
 		 * failed runs. Nullable for backward compatibility.

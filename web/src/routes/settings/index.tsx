@@ -1,8 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createRoute } from '@tanstack/react-router';
-import { Cpu } from 'lucide-react';
+import { createRoute, useNavigate } from '@tanstack/react-router';
+import { Cpu, Monitor, Moon, Palette, Sun } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { useTheme } from '@/components/theme/theme-provider.js';
+import {
+	resolveActiveSettingsTab,
+	settingsSearchSchema,
+	settingsTabSearch,
+} from '@/lib/settings-nav.js';
+import type { AppearanceTheme } from '@/lib/theme.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { AppSettings } from '../../../../src/config/app-settings.js';
 import type { AgentDefaults } from '../../../../src/config/schema.js';
@@ -15,6 +22,14 @@ import {
 import { rootRoute } from '../__root.js';
 
 const CLIS = ['claude', 'antigravity', 'codex'] as const;
+
+/**
+ * Fallback merge base for `handleSubmit` when `settings` hasn't loaded yet — a
+ * plain literal rather than importing `APP_SETTINGS_DEFAULTS` (`src/config/app-settings.js`),
+ * which would pull that backend module's real (non-type) dependency chain —
+ * down to `node:child_process` — into the browser bundle.
+ */
+const FALLBACK_SETTINGS: AppSettings = { appearance: { theme: 'dark' } };
 
 const CLI_LABELS: Record<AgentCli, string> = {
 	claude: 'Claude',
@@ -69,7 +84,7 @@ function DefaultModelsForm({
 	errorMessage,
 }: DefaultModelsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
@@ -81,7 +96,7 @@ function DefaultModelsForm({
 						default.
 					</p>
 
-					<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+					<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 						<table className="w-full text-left border-collapse">
 							<thead>
 								<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
@@ -157,7 +172,7 @@ function DefaultModelsForm({
 						type="button"
 						onClick={handleReset}
 						disabled={isPending || !isDirty}
-						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+						className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
 					>
 						Reset
 					</button>
@@ -167,8 +182,105 @@ function DefaultModelsForm({
 	);
 }
 
+const THEME_OPTIONS: Array<{
+	value: AppearanceTheme;
+	label: string;
+	description: string;
+	icon: typeof Sun;
+}> = [
+	{
+		value: 'dark',
+		label: 'Dark',
+		description: "The dashboard's original dark palette.",
+		icon: Moon,
+	},
+	{
+		value: 'light',
+		label: 'Light',
+		description: 'A light palette for bright rooms and daytime use.',
+		icon: Sun,
+	},
+	{
+		value: 'system',
+		label: 'System default',
+		description:
+			"Follows your OS/browser's color-scheme preference and switches automatically when it changes.",
+		icon: Monitor,
+	},
+];
+
+/**
+ * The Appearance tab (issue #250): a radio group over the three theme choices,
+ * backed by `useTheme` rather than its own settings mutation — the provider
+ * already owns loading the saved choice, applying it dashboard-wide, and
+ * persisting a selection (merged onto the full settings object so it can't
+ * drop `agents.defaults`).
+ */
+export function AppearancePanel() {
+	const { preference, setTheme, isPending, isError, errorMessage } = useTheme();
+
+	return (
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
+			<div>
+				<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+					Theme
+				</h2>
+				<p className="text-xs text-zinc-400 mb-4">
+					The dashboard's color theme. Changes apply immediately and are saved automatically —
+					there's nothing else to submit.
+				</p>
+			</div>
+
+			<fieldset className="space-y-2">
+				<legend className="sr-only">Theme</legend>
+				{THEME_OPTIONS.map(({ value, label, description, icon: Icon }) => {
+					const checked = preference === value;
+					return (
+						<label
+							key={value}
+							className={`flex items-start gap-3 p-4 border rounded-md cursor-pointer transition-colors ${
+								checked
+									? 'border-violet-500 bg-zinc-800/20'
+									: 'border-zinc-800 bg-panel/20 hover:bg-zinc-800/20'
+							}`}
+						>
+							<input
+								type="radio"
+								name="theme"
+								value={value}
+								checked={checked}
+								disabled={isPending}
+								onChange={() => setTheme(value)}
+								className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+							/>
+							<Icon className="h-4 w-4 text-violet-400 mt-0.5 shrink-0" />
+							<span>
+								<span className="block text-sm font-medium text-zinc-200">{label}</span>
+								<span className="block text-xs text-zinc-400 mt-1">{description}</span>
+							</span>
+						</label>
+					);
+				})}
+			</fieldset>
+
+			{isError && (
+				<div className="mt-4 p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+					Failed to save appearance: {errorMessage}
+				</div>
+			)}
+		</div>
+	);
+}
+
 function SettingsRouteComponent() {
 	const queryClient = useQueryClient();
+	const navigate = useNavigate();
+	const search = settingsRoute.useSearch();
+	const activeTab = resolveActiveSettingsTab(search);
+	const goToTab = (tab: 'agents' | 'appearance') => {
+		navigate({ to: '/settings', search: settingsTabSearch(tab) });
+	};
+
 	const settingsQuery = useQuery(trpc.settings.get.queryOptions());
 
 	const [defaults, setDefaults] = useState<AgentDefaults>({});
@@ -215,7 +327,14 @@ function SettingsRouteComponent() {
 	const handleSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
 		const cleaned = cleanDefaults(defaults);
-		updateMutation.mutate({ agents: cleaned ? { defaults: cleaned } : undefined });
+		// Merge onto the full loaded settings (not just `{ agents }`) so saving
+		// model defaults can never drop a previously saved theme. `settings` is
+		// always loaded by the time this can fire (the loading/error states
+		// return before this form renders); the fallback is just for the type.
+		updateMutation.mutate({
+			...(settings ?? FALLBACK_SETTINGS),
+			agents: cleaned ? { defaults: cleaned } : undefined,
+		});
 	};
 
 	if (settingsQuery.isLoading) {
@@ -239,23 +358,49 @@ function SettingsRouteComponent() {
 				<p className="text-xs text-zinc-500 mt-1">Application-wide SWARM configuration.</p>
 			</div>
 
-			{/* Section Header */}
-			<div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-3">
-				<Cpu className="h-4 w-4 text-violet-400" />
-				<span className="text-sm font-semibold text-zinc-100">Agent Defaults</span>
+			{/* Horizontal Tab Bar */}
+			<div className="flex border-b border-zinc-800">
+				<button
+					type="button"
+					onClick={() => goToTab('agents')}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'agents'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<Cpu className="h-4 w-4 text-violet-400" />
+					Agent Defaults
+				</button>
+				<button
+					type="button"
+					onClick={() => goToTab('appearance')}
+					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all border-b-2 ${
+						activeTab === 'appearance'
+							? 'border-violet-500 text-zinc-100 bg-zinc-800/20'
+							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
+					}`}
+				>
+					<Palette className="h-4 w-4 text-violet-400" />
+					Appearance
+				</button>
 			</div>
 
-			<DefaultModelsForm
-				defaults={defaults}
-				handleModelChange={handleModelChange}
-				handleSubmit={handleSubmit}
-				handleReset={handleReset}
-				isDirty={isDirty}
-				isPending={updateMutation.isPending}
-				isSuccess={updateMutation.isSuccess}
-				isError={updateMutation.isError}
-				errorMessage={updateMutation.error?.message}
-			/>
+			{activeTab === 'agents' && (
+				<DefaultModelsForm
+					defaults={defaults}
+					handleModelChange={handleModelChange}
+					handleSubmit={handleSubmit}
+					handleReset={handleReset}
+					isDirty={isDirty}
+					isPending={updateMutation.isPending}
+					isSuccess={updateMutation.isSuccess}
+					isError={updateMutation.isError}
+					errorMessage={updateMutation.error?.message}
+				/>
+			)}
+
+			{activeTab === 'appearance' && <AppearancePanel />}
 		</div>
 	);
 }
@@ -263,5 +408,6 @@ function SettingsRouteComponent() {
 export const settingsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: '/settings',
+	validateSearch: (search) => settingsSearchSchema.parse(search),
 	component: SettingsRouteComponent,
 });

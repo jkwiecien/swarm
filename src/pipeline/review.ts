@@ -31,7 +31,8 @@
  * No PM interaction: the item already sits at "In review" (the Implementation
  * phase moved it), and a submitted review doesn't change board status — any
  * verdict drives SWARM-21 (the implementer always responds, even to an
- * approval), and merging is either handled by GitHub auto-merge (if enabled) or left to a human.
+ * approval), and merging is either handled by the provider-neutral merge
+ * capability (`src/scm/merge.ts`, issue #253) when enabled or left to a human.
  *
  * This is the phase's orchestration only, same as Planning/Implementation. It
  * composes `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15) and
@@ -53,7 +54,6 @@ import {
 	isCapReachingRequestChanges,
 	markReviewVerdictSubmitted as markReviewVerdictSubmittedDefault,
 } from '@/db/repositories/reviewVerdictsRepository.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -64,11 +64,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
-import {
-	type EnablePullRequestAutoMerge,
-	enableAutoMergeIfEligible,
-	enablePullRequestAutoMergeDefault,
-} from '@/pipeline/auto-merge.js';
+import { mergeAfterReviewIfEligible } from '@/pipeline/merge-after-review.js';
 import { buildReviewPrompt } from '@/pipeline/prompts/review.js';
 import {
 	acquireResumableWorktree,
@@ -88,6 +84,7 @@ import {
 	type ScmDeliveryProvider,
 	saveDeliveryProgress,
 } from '@/scm/delivery.js';
+import type { MergePullRequest, MergePullRequestOutcome } from '@/scm/merge.js';
 import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
@@ -186,10 +183,11 @@ export interface RunReviewPhaseOptions {
 	/** @deprecated Compatibility seam for pre-delivery tests; production leaves this unset. */
 	getToken?: typeof getPersonaToken;
 	/**
-	 * Injectable GitHub auto-merge operation; best-effort after an `approve`
-	 * verdict when `pipeline.respondToReview.autoMerge` is on (issue #231).
+	 * Injectable provider-neutral merge operation; best-effort after an
+	 * `approve` verdict when `pipeline.respondToReview.autoMerge` is on (issue
+	 * #231, made provider-neutral by issue #253).
 	 */
-	enablePullRequestAutoMerge?: EnablePullRequestAutoMerge;
+	mergePullRequest?: MergePullRequest;
 	/**
 	 * Injectable review-verdict ledger writers (issue #235) — defaults to the
 	 * real {@link markReviewVerdictSubmittedDefault}/{@link abandonReviewVerdictDefault}
@@ -217,11 +215,11 @@ export interface ReviewPhaseResult {
 	 */
 	automationOutcome?: ReviewAutomationOutcome;
 	/**
-	 * Whether GitHub accepted the opt-in automatic-merge request after an
-	 * approval; `undefined` when auto-merge is disabled or the verdict wasn't an
-	 * approval, so the provider was never asked.
+	 * The provider-neutral merge outcome after an approval; `undefined` when
+	 * merge automation is disabled or the verdict wasn't an approval, so the
+	 * provider was never asked.
 	 */
-	autoMergeEnabled?: boolean;
+	mergeOutcome?: MergePullRequestOutcome;
 }
 
 /**
@@ -275,7 +273,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
-		enablePullRequestAutoMerge = enablePullRequestAutoMergeDefault,
+		mergePullRequest,
 		markReviewVerdictSubmitted = markReviewVerdictSubmittedDefault,
 		abandonReviewVerdict = abandonReviewVerdictDefault,
 	} = options;
@@ -285,22 +283,27 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 	const verdictKey = { projectId: project.id, repository: project.repo, prNumber, headSha };
 
 	// Once the review is submitted, an `approve` is the point at which SWARM's
-	// review is satisfied — so when the project opts in, arm GitHub auto-merge
-	// here (issue #231). This is the *only* call site: Respond-to-review's
+	// review is satisfied — so when the project opts in, request a merge here
+	// through the provider-neutral capability (issue #231, made provider-neutral
+	// by issue #253). This is the *only* call site: Respond-to-review's
 	// `fixed`/`no-findings` outcomes address the review's findings but don't
-	// themselves approve the PR, so they never arm auto-merge (issue #235).
+	// themselves approve the PR, so they never request a merge (issue #235).
 	// Best-effort: a refusal or error is logged and never fails the completed
 	// review.
-	const armAutoMerge = (verdict: ReviewVerdict): Promise<boolean | undefined> =>
-		enableAutoMergeIfEligible({
+	const mergeIfApproved = (
+		verdict: ReviewVerdict,
+	): Promise<MergePullRequestOutcome | undefined> => {
+		if (!mergePullRequest) return Promise.resolve(undefined);
+		return mergeAfterReviewIfEligible({
 			enabled: project.pipeline?.respondToReview?.autoMerge ?? false,
 			eligible: verdict === 'approve',
-			enablePullRequestAutoMerge,
+			mergePullRequest,
 			project,
 			prNumber,
 			taskId,
 			phase: 'Review',
 		});
+	};
 
 	logger.info(`Phase started - Review — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,
@@ -339,13 +342,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 					reasoning,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
-					args: [
-						buildReviewPrompt(
-							{ repo: project.repo, prNumber, headSha },
-							delegationEnabled(project, 'review', cli),
-							customPrompt,
-						),
-					],
+					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha }, customPrompt)],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes acts as the reviewer persona.
 					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
@@ -375,14 +372,14 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			if (!REVIEW_VERDICTS.includes(raw))
 				throw new Error(`Review agent (${cli}) wrote unrecognized verdict '${original}'`);
 			const ledgerRecord = await markReviewVerdictSubmitted(verdictKey, { verdict: raw });
-			const autoMergeEnabled = await armAutoMerge(raw);
+			const mergeOutcome = await mergeIfApproved(raw);
 			const automationOutcome = isCapReachingRequestChanges(ledgerRecord?.ordinal, raw)
 				? 'manual-intervention-required'
 				: undefined;
 			return {
 				verdict: raw,
 				agent,
-				autoMergeEnabled,
+				mergeOutcome,
 				reviewOrdinal: ledgerRecord?.ordinal,
 				automationOutcome,
 			};
@@ -409,7 +406,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			verdict,
 			reviewId: progress.reviewId !== undefined ? String(progress.reviewId) : undefined,
 		});
-		const autoMergeEnabled = await armAutoMerge(verdict);
+		const mergeOutcome = await mergeIfApproved(verdict);
 		const reviewOrdinal = ledgerRecord?.ordinal;
 		const automationOutcome = isCapReachingRequestChanges(reviewOrdinal, verdict)
 			? 'manual-intervention-required'
@@ -420,12 +417,12 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			prNumber,
 			headSha,
 			verdict,
-			autoMergeEnabled,
+			mergeOutcome,
 			reviewOrdinal,
 			automationOutcome,
 		});
 
-		return { verdict, agent, autoMergeEnabled, reviewOrdinal, automationOutcome };
+		return { verdict, agent, mergeOutcome, reviewOrdinal, automationOutcome };
 	} catch (error) {
 		if (!legacyMode && hasDeliveryProgress(handle.path)) {
 			preserveForResume = true;

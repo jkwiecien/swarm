@@ -97,18 +97,6 @@ const PHASE_DESCRIPTIONS: Partial<Record<(typeof PHASES)[number], string>> = {
 		'Used only when Implementation was not preceded by a Planning run for this item; otherwise the Implementation configuration applies.',
 };
 
-/**
- * CLIs that can host a curated delegation *child* (`DELEGATION_CHILD_CAPABLE` in
- * `src/delegation/native.ts`), with the coded default light model each falls back
- * to (`DEFAULT_LIGHT_MODEL`). Antigravity is omitted — it can't host a child yet
- * (#185). The defaults are mirrored here for display only; the server resolves the
- * effective value.
- */
-const LIGHT_MODEL_CLIS = [
-	{ cli: 'claude', label: 'Claude', defaultModel: 'haiku' },
-	{ cli: 'codex', label: 'Codex', defaultModel: 'gpt-5.4-mini' },
-] as const;
-
 const CODED_DEFAULT_MODEL: Record<string, string> = {
 	claude: 'sonnet',
 	codex: 'gpt-5.6-terra',
@@ -230,10 +218,6 @@ function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 		const cleaned = cleanAgentConfig(phaseConfig);
 		if (cleaned) cleanAgents[phase] = cleaned;
 	}
-	// Preserve the delegation policy verbatim — the dashboard only edits its
-	// `lightModels`, but `enabled`/`phases`/`minimumSemanticOperations` may be set
-	// in swarm.config.json and must survive an agents-tab save unchanged.
-	if (agents.delegation) cleanAgents.delegation = agents.delegation;
 	return Object.keys(cleanAgents).length > 0 ? cleanAgents : undefined;
 }
 
@@ -313,7 +297,7 @@ function GeneralSettingsForm({
 	errorMessage,
 }: GeneralSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
@@ -516,7 +500,7 @@ const FIELD_CLASS =
 const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 
 /** Card wrapper recipe shared by the phase-detail sections. */
-const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm';
+const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
 /** Display labels for the agent CLIs, used in the phase-row summary. */
 const CLI_LABELS: Record<AgentCli, string> = {
@@ -801,7 +785,7 @@ export function PhaseSettingsDetail({
 
 				<PhaseDetailNote phase={phase} />
 
-				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
+				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-panel/20">
 					<div className="flex items-start gap-3">
 						{enabled === undefined ? (
 							<PhaseToggleSwitch
@@ -977,7 +961,6 @@ interface AgentConfigurationFormProps {
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleLightModelChange: (cli: 'claude' | 'codex', value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -991,7 +974,7 @@ interface AgentConfigurationFormProps {
 
 /**
  * Agent Configuration tab. Shows the per-phase summary table (each row navigates
- * to its detail screen) plus the global Light Models table, or — when a phase is
+ * to its detail screen), or — when a phase is
  * selected — that phase's detail screen. Both views live in one `<form>` and
  * share a single Save/Reset and the route's `agents`/`pipeline` state, so there
  * is no second competing save model (issue #135, #119).
@@ -1010,7 +993,6 @@ function AgentConfigurationForm({
 	handleReasoningChange,
 	handleTimeoutChange,
 	handlePromptChange,
-	handleLightModelChange,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -1053,114 +1035,60 @@ function AgentConfigurationForm({
 					onBack={onBack}
 				/>
 			) : (
-				<>
-					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-						<div>
-							<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-								Phases Configuration
-							</h2>
-							<p className="text-xs text-zinc-400 mb-4">
-								Select a phase to configure its agent CLI, model, and an optional custom prompt.
-								Unset values fall back to the pipeline's coded defaults.
-							</p>
-
-							<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-								<table className="w-full text-left border-collapse">
-									<thead>
-										<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-											<th className="px-4 py-3">Phase</th>
-											<th className="px-4 py-3">Enabled</th>
-											<th className="px-4 py-3">Auto-advance</th>
-											<th className="px-4 py-3">Configuration</th>
-											<th className="px-4 py-3">
-												<span className="sr-only">Open</span>
-											</th>
-										</tr>
-									</thead>
-									<tbody className="divide-y divide-zinc-800/60">
-										{PHASES.map((phase) => {
-											const autoAdvancePhase = autoAdvanceConfigPhase(phase);
-											return (
-												<PhaseConfigRow
-													key={phase}
-													phase={phase}
-													config={agents[phase] ?? {}}
-													isPending={isPending}
-													enabled={
-														TOGGLEABLE_PHASES.has(phase)
-															? pipelineEnabled[phase as PipelineTogglePhase]
-															: undefined
-													}
-													enabledDisabled={
-														phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
-													}
-													autoAdvance={
-														autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
-													}
-													handleEnabledChange={handleEnabledChange}
-													handleAutoAdvanceChange={handleAutoAdvanceChange}
-													onSelect={onSelectPhase}
-												/>
-											);
-										})}
-									</tbody>
-								</table>
-							</div>
-						</div>
-					</div>
-
-					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+				<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
+					<div>
 						<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-							Light Models
+							Phases Configuration
 						</h2>
 						<p className="text-xs text-zinc-400 mb-4">
-							The lighter model each CLI uses for bounded curated delegation (the
-							<code className="mx-1 text-zinc-300">swarm delegate</code> child run). Applies only
-							when delegation is enabled for a phase; leave unset to use the coded default.
-							Antigravity cannot host a delegation child yet.
+							Select a phase to configure its agent CLI, model, and an optional custom prompt. Unset
+							values fall back to the pipeline's coded defaults.
 						</p>
 
-						<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+						<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 							<table className="w-full text-left border-collapse">
 								<thead>
 									<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-										<th className="px-4 py-3">Agent CLI</th>
-										<th className="px-4 py-3">Light Model</th>
+										<th className="px-4 py-3">Phase</th>
+										<th className="px-4 py-3">Enabled</th>
+										<th className="px-4 py-3">Auto-advance</th>
+										<th className="px-4 py-3">Configuration</th>
+										<th className="px-4 py-3">
+											<span className="sr-only">Open</span>
+										</th>
 									</tr>
 								</thead>
 								<tbody className="divide-y divide-zinc-800/60">
-									{LIGHT_MODEL_CLIS.map(({ cli, label, defaultModel }) => {
-										const selected = agents.delegation?.lightModels?.[cli];
+									{PHASES.map((phase) => {
+										const autoAdvancePhase = autoAdvanceConfigPhase(phase);
 										return (
-											<tr key={cli} className="hover:bg-zinc-800/40 transition-colors">
-												<td className="px-4 py-3.5">
-													<div className="text-sm font-medium text-zinc-200">{label}</div>
-													<div className="text-xs text-zinc-500 font-mono select-all">{cli}</div>
-												</td>
-												<td className="px-4 py-3.5">
-													<select
-														value={selected ?? ''}
-														onChange={(e) => handleLightModelChange(cli, e.target.value)}
-														disabled={isPending}
-														aria-label={`${label} light model`}
-														className="block w-full max-w-[300px] px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500 font-mono transition-shadow"
-													>
-														<option value="">Default ({defaultModel})</option>
-														{AGENT_MODELS[cli].map((model) => (
-															<option key={model} value={model}>
-																{model}
-															</option>
-														))}
-													</select>
-												</td>
-											</tr>
+											<PhaseConfigRow
+												key={phase}
+												phase={phase}
+												config={agents[phase] ?? {}}
+												isPending={isPending}
+												enabled={
+													TOGGLEABLE_PHASES.has(phase)
+														? pipelineEnabled[phase as PipelineTogglePhase]
+														: undefined
+												}
+												enabledDisabled={
+													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+												}
+												autoAdvance={
+													autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
+												}
+												handleEnabledChange={handleEnabledChange}
+												handleAutoAdvanceChange={handleAutoAdvanceChange}
+												onSelect={onSelectPhase}
+											/>
 										);
 									})}
 								</tbody>
 							</table>
 						</div>
 					</div>
-				</>
+				</div>
 			)}
 
 			{/* Feedback Banners */}
@@ -1226,13 +1154,13 @@ function PipelineSettingsForm({
 	errorMessage,
 }: PipelineSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 						Pipeline Automation
 					</h2>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={autoMerge}
@@ -1248,7 +1176,7 @@ function PipelineSettingsForm({
 							</span>
 						</span>
 					</label>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={skipRespondToReviewOnMinors}
@@ -1433,13 +1361,6 @@ function ProjectDetailRouteComponent() {
 		);
 		if (hasDefaultChange) return true;
 
-		const localLight = agents.delegation?.lightModels ?? {};
-		const dbLight = projectAgents.delegation?.lightModels ?? {};
-		const hasLightChange = (['claude', 'codex'] as const).some(
-			(cli) => (localLight[cli] ?? '') !== (dbLight[cli] ?? ''),
-		);
-		if (hasLightChange) return true;
-
 		if (PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase])))
 			return true;
 
@@ -1542,29 +1463,6 @@ function ProjectDetailRouteComponent() {
 			...prev,
 			[phase]: { ...prev[phase], prompt: value },
 		}));
-		updateMutation.reset();
-	};
-
-	const handleLightModelChange = (cli: 'claude' | 'codex', value: string) => {
-		setAgents((prev) => {
-			// Preserve the rest of the delegation policy; only touch lightModels. When
-			// no delegation block exists yet, create a disabled one to hold the pin.
-			const delegation = prev.delegation ?? {
-				enabled: false,
-				minimumSemanticOperations: 3,
-				phases: {},
-			};
-			const lightModels = { ...(delegation.lightModels ?? {}) };
-			if (value) lightModels[cli] = value;
-			else delete lightModels[cli];
-			return {
-				...prev,
-				delegation: {
-					...delegation,
-					lightModels: Object.keys(lightModels).length > 0 ? lightModels : undefined,
-				},
-			};
-		});
 		updateMutation.reset();
 	};
 
@@ -1849,7 +1747,6 @@ function ProjectDetailRouteComponent() {
 					handleReasoningChange={handleReasoningChange}
 					handleTimeoutChange={handleTimeoutChange}
 					handlePromptChange={handlePromptChange}
-					handleLightModelChange={handleLightModelChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
