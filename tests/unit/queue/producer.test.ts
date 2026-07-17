@@ -8,62 +8,68 @@ import {
 // Mock BullMQ's Queue so nothing touches Redis — capture constructor args and
 // the add()/close() calls the producer makes. Hoisted so the vi.mock factory
 // (itself hoisted above imports) can reference them.
-const { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId } = vi.hoisted(() => {
-	// Typed with add()'s (name, data, opts) signature so `mock.calls[0]` is a
-	// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
-	const add =
-		vi.fn<
+const { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId, toKey, zscore } =
+	vi.hoisted(() => {
+		// Typed with add()'s (name, data, opts) signature so `mock.calls[0]` is a
+		// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
+		const add =
+			vi.fn<
+				(
+					name: string,
+					data: unknown,
+					opts?: { jobId?: string; delay?: number; priority?: number },
+				) => Promise<unknown>
+			>();
+		const close = vi.fn();
+		// Job shape covers what `scheduleCoalescedJob` uses (`name`/`remove`),
+		// `promoteRetryForRun` uses (`data`/`updateData`/`promote`), and
+		// `listPendingJobs` uses (`id`/`data`/`timestamp`/`delay`/`priority`); all
+		// optional so a test supplies only the fields its assertion touches.
+		type MockJob = {
+			id?: string;
+			name?: string;
+			remove?: () => Promise<void>;
+			data?: { runId?: string; rateLimitRetryAttempt?: number; [key: string]: unknown };
+			timestamp?: number;
+			delay?: number;
+			priority?: number;
+			updateData?: (data: unknown) => Promise<void>;
+			promote?: () => Promise<void>;
+		};
+		const getDelayed = vi.fn<() => Promise<MockJob[]>>();
+		const getWaiting = vi.fn<() => Promise<MockJob[]>>();
+		const getPrioritized = vi.fn<() => Promise<MockJob[]>>();
+		// `Job.fromId(queue, id)` — the lookup `promoteJobById` uses. Resolves a job
+		// exposing `getState`/`promote`, or `undefined` for a reaped/absent id.
+		const fromId =
+			vi.fn<
+				(
+					queue: unknown,
+					jobId: string,
+				) => Promise<{ getState: () => Promise<string>; promote: () => Promise<void> } | undefined>
+			>();
+		const toKey = vi.fn((type: string) => `bull:swarm-jobs:${type}`);
+		const zscore = vi.fn();
+		const client = Promise.resolve({ zscore });
+		// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
+		// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
+		// `calls[0]` fails to typecheck.
+		const QueueMock = vi.fn<
 			(
 				name: string,
-				data: unknown,
-				opts?: { jobId?: string; delay?: number; priority?: number },
-			) => Promise<unknown>
-		>();
-	const close = vi.fn();
-	// Job shape covers what `scheduleCoalescedJob` uses (`name`/`remove`),
-	// `promoteRetryForRun` uses (`data`/`updateData`/`promote`), and
-	// `listPendingJobs` uses (`id`/`data`/`timestamp`/`delay`/`priority`); all
-	// optional so a test supplies only the fields its assertion touches.
-	type MockJob = {
-		id?: string;
-		name?: string;
-		remove?: () => Promise<void>;
-		data?: { runId?: string; rateLimitRetryAttempt?: number; [key: string]: unknown };
-		timestamp?: number;
-		delay?: number;
-		priority?: number;
-		updateData?: (data: unknown) => Promise<void>;
-		promote?: () => Promise<void>;
-	};
-	const getDelayed = vi.fn<() => Promise<MockJob[]>>();
-	const getWaiting = vi.fn<() => Promise<MockJob[]>>();
-	const getPrioritized = vi.fn<() => Promise<MockJob[]>>();
-	// `Job.fromId(queue, id)` — the lookup `promoteJobById` uses. Resolves a job
-	// exposing `getState`/`promote`, or `undefined` for a reaped/absent id.
-	const fromId =
-		vi.fn<
-			(
-				queue: unknown,
-				jobId: string,
-			) => Promise<{ getState: () => Promise<string>; promote: () => Promise<void> } | undefined>
-		>();
-	// Typed with the Queue constructor's (name, opts) signature so `mock.calls`
-	// is a real tuple — untyped, vi.fn() infers a zero-arg call and indexing
-	// `calls[0]` fails to typecheck.
-	const QueueMock = vi.fn<
-		(
-			name: string,
-			opts?: QueueOptions,
-		) => {
-			add: typeof add;
-			close: typeof close;
-			getDelayed: typeof getDelayed;
-			getWaiting: typeof getWaiting;
-			getPrioritized: typeof getPrioritized;
-		}
-	>(() => ({ add, close, getDelayed, getWaiting, getPrioritized }));
-	return { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId };
-});
+				opts?: QueueOptions,
+			) => {
+				add: typeof add;
+				close: typeof close;
+				getDelayed: typeof getDelayed;
+				getWaiting: typeof getWaiting;
+				getPrioritized: typeof getPrioritized;
+				toKey: typeof toKey;
+				client: typeof client;
+			}
+		>(() => ({ add, close, getDelayed, getWaiting, getPrioritized, toKey, client }));
+		return { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId, toKey, zscore };
+	});
 
 vi.mock('bullmq', () => ({ Queue: QueueMock, Job: { fromId } }));
 
@@ -84,6 +90,9 @@ beforeEach(() => {
 	getPrioritized.mockResolvedValue([]);
 	fromId.mockReset();
 	fromId.mockResolvedValue(undefined);
+	toKey.mockClear();
+	zscore.mockReset();
+	zscore.mockResolvedValue(null);
 	process.env.REDIS_URL = 'redis://localhost:6379';
 });
 
@@ -541,6 +550,33 @@ describe('listPendingJobs', () => {
 		const { listPendingJobs } = await import('@/queue/producer.js');
 
 		expect(await listPendingJobs()).toEqual([]);
+	});
+
+	it('fetches actual runsAt score from the delayed zset when client is available', async () => {
+		const githubJob = createMockGitHubWebhookJob();
+		getDelayed.mockResolvedValue([
+			{ id: 'd-1', data: githubJob, timestamp: 3000, delay: 30_000, priority: 0 },
+		]);
+		const { listPendingJobs } = await import('@/queue/producer.js');
+
+		zscore.mockResolvedValueOnce('1700000030000');
+
+		const snapshots = await listPendingJobs();
+
+		expect(snapshots).toEqual([
+			{
+				jobId: 'd-1',
+				type: 'github',
+				state: 'delayed',
+				data: githubJob,
+				enqueuedAt: 3000,
+				delayMs: 30_000,
+				priority: 0,
+				runsAt: 1700000030000,
+			},
+		]);
+		expect(toKey).toHaveBeenCalledWith('delayed');
+		expect(zscore).toHaveBeenCalledWith('bull:swarm-jobs:delayed', 'd-1');
 	});
 });
 

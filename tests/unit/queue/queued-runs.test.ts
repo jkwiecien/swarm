@@ -174,6 +174,18 @@ describe('toQueuedRuns', () => {
 		expect(delayedItem.runsAt).toBe(new Date(1_700_000_030_000).toISOString());
 	});
 
+	it('prioritizes the runsAt property on PendingJobSnapshot for the computed runsAt', () => {
+		const [delayedItem] = toQueuedRuns([
+			makeSnapshot({
+				state: 'delayed',
+				enqueuedAt: 1_700_000_000_000,
+				delayMs: 30_000,
+				runsAt: 1_700_000_100_000,
+			}),
+		]);
+		expect(delayedItem.runsAt).toBe(new Date(1_700_000_100_000).toISOString());
+	});
+
 	it('carries the effective priority through', () => {
 		const [item] = toQueuedRuns([makeSnapshot({ priority: 10 })]);
 		expect(item.priority).toBe(10);

@@ -49,6 +49,8 @@ export interface PendingJobSnapshot {
 	delayMs: number;
 	/** `Job.priority` — BullMQ ranks 0 (unset) as highest. */
 	priority: number;
+	/** Actual scheduled execution timestamp (epoch ms) from Redis, if delayed. */
+	runsAt?: number;
 }
 
 /** The `runs.queued` API/UI contract — Zod is the source of truth for this shape. */
@@ -70,7 +72,7 @@ export const QueuedRunSchema = z.object({
 	priority: z.number().int().nonnegative(),
 	/** ISO 8601 — `Job.timestamp`. */
 	enqueuedAt: z.string(),
-	/** ISO 8601 — `delayed` jobs only, `enqueuedAt + delayMs`. */
+	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
 	runsAt: z.string().optional(),
 });
 export type QueuedRun = z.infer<typeof QueuedRunSchema>;
@@ -99,6 +101,7 @@ export function deriveQueuedPhaseHint(job: SwarmJob): QueuedPhaseHint {
 
 function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
 	const { data } = snapshot;
+	const runsAtTime = snapshot.runsAt ?? snapshot.enqueuedAt + snapshot.delayMs;
 	const shared = {
 		jobId: snapshot.jobId,
 		projectId: data.projectId,
@@ -107,9 +110,7 @@ function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
 		phaseHint: deriveQueuedPhaseHint(data),
 		priority: snapshot.priority,
 		enqueuedAt: new Date(snapshot.enqueuedAt).toISOString(),
-		...(snapshot.state === 'delayed'
-			? { runsAt: new Date(snapshot.enqueuedAt + snapshot.delayMs).toISOString() }
-			: {}),
+		...(snapshot.state === 'delayed' ? { runsAt: new Date(runsAtTime).toISOString() } : {}),
 	};
 
 	return QueuedRunSchema.parse(

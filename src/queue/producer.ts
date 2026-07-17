@@ -325,24 +325,59 @@ export async function listPendingJobs(): Promise<PendingJobSnapshot[]> {
 		q.getDelayed(),
 	]);
 
+	// Fetch actual scheduled run time (scores) from the delayed zset in Redis, failing safe
+	let delayedScores: (number | null)[] = [];
+	if (typeof q.toKey === 'function' && 'client' in q) {
+		try {
+			const client = await q.client;
+			if (client && typeof client.zscore === 'function') {
+				const delayedKey = q.toKey('delayed');
+				delayedScores = await Promise.all(
+					delayed.map(async (job) => {
+						if (!job.id) return null;
+						try {
+							const score = await client.zscore(delayedKey, job.id);
+							return score ? parseInt(score, 10) : null;
+						} catch {
+							return null;
+						}
+					}),
+				);
+			}
+		} catch {
+			// Fail safe
+		}
+	}
+
 	const toSnapshot =
 		(state: PendingJobState) =>
-		(job: (typeof waiting)[number]): PendingJobSnapshot => ({
-			// `job.id` is optional only before a job is first persisted; every job
-			// returned by these getters is already in Redis and always has one.
-			jobId: job.id ?? '',
-			type: job.data.type,
-			state,
-			data: job.data,
-			enqueuedAt: job.timestamp,
-			delayMs: job.delay ?? 0,
-			priority: job.priority ?? 0,
-		});
+		(job: (typeof waiting)[number], index?: number): PendingJobSnapshot => {
+			const snapshot: PendingJobSnapshot = {
+				// `job.id` is optional only before a job is first persisted; every job
+				// returned by these getters is already in Redis and always has one.
+				jobId: job.id ?? '',
+				type: job.data.type,
+				state,
+				data: job.data,
+				enqueuedAt: job.timestamp,
+				delayMs: job.delay ?? 0,
+				priority: job.priority ?? 0,
+			};
+
+			if (state === 'delayed' && index !== undefined) {
+				const runsAt = delayedScores[index];
+				if (runsAt !== null && runsAt !== undefined) {
+					snapshot.runsAt = runsAt;
+				}
+			}
+
+			return snapshot;
+		};
 
 	return [
-		...waiting.map(toSnapshot('waiting')),
-		...prioritized.map(toSnapshot('prioritized')),
-		...delayed.map(toSnapshot('delayed')),
+		...waiting.map((job) => toSnapshot('waiting')(job)),
+		...prioritized.map((job) => toSnapshot('prioritized')(job)),
+		...delayed.map((job, idx) => toSnapshot('delayed')(job, idx)),
 	];
 }
 
