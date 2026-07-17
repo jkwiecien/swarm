@@ -188,6 +188,7 @@ export async function resetRunToRunning(
 	timeoutMs?: number,
 	reasoning?: string | null,
 	engine?: AgentCli,
+	agentSessionId?: string | null,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -210,6 +211,7 @@ export async function resetRunToRunning(
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
 			...(reasoning !== undefined ? { reasoning } : {}),
+			...(agentSessionId !== undefined ? { agentSessionId } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });

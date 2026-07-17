@@ -52,8 +52,20 @@ async function claimRunOrThrow(
 	model?: string,
 	reasoning?: string | null,
 	engine?: z.infer<typeof AgentCliSchema>,
+	agentSessionId?: string | null,
 ): Promise<void> {
-	if (await resetRunToRunning(runId, jobPayload, fromStatus, model, undefined, reasoning, engine))
+	if (
+		await resetRunToRunning(
+			runId,
+			jobPayload,
+			fromStatus,
+			model,
+			undefined,
+			reasoning,
+			engine,
+			agentSessionId,
+		)
+	)
 		return;
 	throw new TRPCError({
 		code: 'CONFLICT',
@@ -206,6 +218,7 @@ export const runsRouter = router({
 			const engineForRow = input.cli;
 
 			if (run.status === 'deferred') {
+				const startFresh = run.agentSessionId === null || applyingOverride;
 				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
 				// the automatic pickup already flipped it — the real duplicate guard.
 				await claimRunOrThrow(
@@ -215,6 +228,7 @@ export const runsRouter = router({
 					input.model,
 					reasoningForRow,
 					engineForRow,
+					startFresh ? null : undefined,
 				);
 				// Common case: promote the pending delayed job in place (delay → 0).
 				const promoted = await promoteRetryForRun(
@@ -222,6 +236,7 @@ export const runsRouter = router({
 					input.cli,
 					input.model,
 					input.reasoning,
+					startFresh,
 				);
 				if (promoted) {
 					return { runId: input.runId, status: 'retrying' as const };
@@ -246,6 +261,7 @@ export const runsRouter = router({
 					input.cli,
 					input.model,
 					input.reasoning,
+					startFresh,
 				);
 				// Persist the reconstructed payload onto the already-claimed row, then
 				// enqueue at delay 0.
@@ -257,6 +273,7 @@ export const runsRouter = router({
 					undefined,
 					reasoningForRow,
 					engineForRow,
+					startFresh ? null : undefined,
 				);
 				await enqueueDelayedRetry(job, 0, { unique: true });
 				return { runId: input.runId, status: 'retrying' as const };
@@ -279,7 +296,15 @@ export const runsRouter = router({
 				input.reasoning,
 				true,
 			);
-			await claimRunOrThrow(run.id, job, 'failed', input.model, reasoningForRow, engineForRow);
+			await claimRunOrThrow(
+				run.id,
+				job,
+				'failed',
+				input.model,
+				reasoningForRow,
+				engineForRow,
+				null,
+			);
 			await enqueueDelayedRetry(job, 0, { unique: true });
 
 			return { runId: input.runId, status: 'retrying' as const };
