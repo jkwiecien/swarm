@@ -30,12 +30,12 @@ import { pruneStaleWorktrees } from '../worktree/retention.js';
 import {
 	type JobOutcome,
 	processJob,
+	promoteNextPendingContinuation,
 	reportInterruptedJobToBoard,
 	resolveAgentTimeoutMs,
 } from './consumer.js';
 import { reenqueueDeferred } from './deferred-retry.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
-import { clearPendingContinuations } from './pending-continuations.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 import { resolveWorkerLockOptions } from './runtime-options.js';
@@ -144,15 +144,17 @@ const shutdown = new AbortController();
 async function resetProjectSlots(): Promise<void> {
 	try {
 		const projects = await listAllProjectsFromDb();
-		// Clear the slot counters *and* the pending-continuation registry (issue
-		// #214) leaked by a crashed single-worker process. A previously pending
-		// continuation still has its fallback delayed BullMQ retry in Redis, so this
-		// loses only the prompt-promote wake-up, never the retry itself.
+		// Slot counters are per-worker leases and must be reset after a crash. Pending
+		// dispatches are durable work, however, so retain them and wake one per
+		// project now that the reset made a slot available.
+		await Promise.all(projects.map((project) => resetProjectSlot(project.id)));
 		await Promise.all(
-			projects.flatMap((project) => [
-				resetProjectSlot(project.id),
-				clearPendingContinuations(project.id),
-			]),
+			projects.map((project) =>
+				promoteNextPendingContinuation(
+					project.id,
+					project.pipeline?.prioritizeContinuations !== false,
+				),
+			),
 		);
 	} catch (err) {
 		logger.error('Failed to reset project concurrency counters at startup', {

@@ -47,6 +47,10 @@ vi.mock('@/queue/cancellation.js', () => ({
 	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
 }));
 
+vi.mock('@/worker/pending-continuations.js', () => ({
+	removePendingContinuationForRun: vi.fn(),
+}));
+
 import { runsRouter } from '@/api/routers/runs.js';
 import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import {

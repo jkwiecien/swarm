@@ -65,10 +65,10 @@ vi.mock('@/pipeline/respond-to-review.js', () => ({
 }));
 
 const enqueueJob = vi.fn(async (_job: unknown) => 'synthetic-job-1');
-const promoteJobById = vi.fn(async (_jobId: string) => true);
+const enqueuePendingDispatch = vi.fn(async (_job: unknown) => 'pending-job-1');
 vi.mock('@/queue/producer.js', () => ({
 	enqueueJob: (job: unknown) => enqueueJob(job),
-	promoteJobById: (jobId: string) => promoteJobById(jobId),
+	enqueuePendingDispatch: (job: unknown) => enqueuePendingDispatch(job),
 }));
 
 // Pending-continuation scheduling (issue #214): the registry's take + the
@@ -76,11 +76,14 @@ vi.mock('@/queue/producer.js', () => ({
 // prioritized-continuation wiring without Redis. `buildReviewDispatchKey` keeps
 // its real shape so the refreshed key is asserted.
 const takeNextPendingContinuation = vi.fn(
-	async (_projectId: string) =>
-		null as { jobId: string; taskId: string; phase: string; enqueuedAt: number } | null,
+	async (_projectId: string, _prioritize: boolean) => null as unknown,
 );
+const removePendingContinuation = vi.fn(async (_projectId: string, _entry: unknown) => {});
 vi.mock('@/worker/pending-continuations.js', () => ({
-	takeNextPendingContinuation: (projectId: string) => takeNextPendingContinuation(projectId),
+	takeNextPendingContinuation: (projectId: string, prioritize: boolean) =>
+		takeNextPendingContinuation(projectId, prioritize),
+	removePendingContinuation: (projectId: string, entry: unknown) =>
+		removePendingContinuation(projectId, entry),
 }));
 
 const refreshConflictResolutionClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
@@ -281,8 +284,9 @@ describe('processJob', () => {
 		addComment.mockResolvedValue('comment-1');
 		enqueueJob.mockClear();
 		enqueueJob.mockResolvedValue('synthetic-job-1');
-		promoteJobById.mockClear();
-		promoteJobById.mockResolvedValue(true);
+		enqueuePendingDispatch.mockClear();
+		enqueuePendingDispatch.mockResolvedValue('pending-job-1');
+		removePendingContinuation.mockClear();
 		takeNextPendingContinuation.mockClear();
 		takeNextPendingContinuation.mockResolvedValue(null);
 		refreshConflictResolutionClaim.mockClear();
@@ -307,6 +311,7 @@ describe('processJob', () => {
 		acquireProjectSlot.mockClear();
 		acquireProjectSlot.mockResolvedValue({ acquired: true, tracked: true });
 		releaseProjectSlot.mockClear();
+		enqueuePendingDispatch.mockClear();
 		isRunCancellationRequested.mockClear();
 		isRunCancellationRequested.mockResolvedValue(false);
 		clearRunCancellation.mockClear();
@@ -341,7 +346,8 @@ describe('processJob', () => {
 			phase: 'review',
 			taskId: '17',
 			attempt: 0,
-			retryDelayMs: 6 * 60 * 1000,
+			retryDelayMs: 0,
+			pendingDispatch: true,
 		});
 		expect(phaseCalls).toEqual([]);
 		expect(releaseProjectSlot).not.toHaveBeenCalled();
@@ -364,12 +370,12 @@ describe('processJob', () => {
 			status: 'phase-deferred',
 			phase: 'implementation',
 			resumable: false,
-			runId: undefined,
+			runId: 'run-1',
 		});
 		expect(phaseCalls).toEqual([]);
 	});
 
-	it('fails an at-limit job after its shared retry budget is exhausted', async () => {
+	it('does not consume the external-failure retry budget while waiting for a slot', async () => {
 		acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 
 		const outcome = await processJob(
@@ -377,8 +383,10 @@ describe('processJob', () => {
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome.status).toBe('phase-failed');
-		expect(commentOnPullRequest).toHaveBeenCalledOnce();
+		expect(outcome.status).toBe('phase-deferred');
+		if (outcome.status !== 'phase-deferred') throw new Error('expected deferred');
+		expect(outcome.pendingDispatch).toBe(true);
+		expect(commentOnPullRequest).not.toHaveBeenCalled();
 		expect(phaseCalls).toEqual([]);
 	});
 
@@ -447,8 +455,8 @@ describe('processJob', () => {
 			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 			await processJob(createMockGitHubWebhookJob(), registryReturning(RESPOND_TO_REVIEW_TRIGGER));
 
-			expect(refreshReviewDispatchClaim).not.toHaveBeenCalled();
-			expect(refreshConflictResolutionClaim).not.toHaveBeenCalled();
+			// The dispatch claim stays held even without priority so immediate
+			// slot-release dispatch cannot be deduplicated as a fresh webhook.
 		});
 
 		it('refreshes the Resolve-conflicts head/base claim while pending', async () => {
@@ -478,7 +486,7 @@ describe('processJob', () => {
 			});
 		});
 
-		it('does not retain a non-review phase (implementation) as a pending continuation', async () => {
+		it('retains a blocked Implementation with a visible run and exact resume phase', async () => {
 			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 			const workItem = createMockWorkItem({ statusId: '61e4505c' });
 			const trigger: TriggerResult = { phase: 'implementation', taskId: '216', workItem };
@@ -491,16 +499,18 @@ describe('processJob', () => {
 			if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
 			expect(outcome.continuationDispatchClaimed).toBeUndefined();
 			expect(outcome.pendingContinuation).toBeUndefined();
+			expect(outcome.pendingDispatch).toBe(true);
 			expect(refreshReviewDispatchClaim).not.toHaveBeenCalled();
-			expect(createRun).not.toHaveBeenCalled();
+			expect(createRun).toHaveBeenCalledOnce();
 		});
 
 		it('promotes the oldest pending continuation when a slot frees on success', async () => {
 			takeNextPendingContinuation.mockResolvedValue({
-				jobId: 'retry-99',
 				taskId: '20',
 				phase: 'review',
 				enqueuedAt: 1,
+				job: createMockGitHubWebhookJob({ runId: 'run-20', continuationDispatchClaimed: true }),
+				continuation: true,
 			});
 
 			const outcome = await processJob(
@@ -510,8 +520,10 @@ describe('processJob', () => {
 
 			expect(outcome.status).toBe('phase-succeeded');
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(takeNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id);
-			expect(promoteJobById).toHaveBeenCalledWith('retry-99');
+			expect(takeNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, true);
+			expect(enqueuePendingDispatch).toHaveBeenCalledWith(
+				expect.objectContaining({ runId: 'run-20' }),
+			);
 		});
 
 		it('releases cleanly when nothing is pending to promote', async () => {
@@ -523,17 +535,18 @@ describe('processJob', () => {
 			);
 
 			expect(outcome.status).toBe('phase-succeeded');
-			expect(promoteJobById).not.toHaveBeenCalled();
+			expect(enqueuePendingDispatch).not.toHaveBeenCalled();
 		});
 
 		it('still succeeds when promoting a pending continuation throws', async () => {
 			takeNextPendingContinuation.mockResolvedValue({
-				jobId: 'retry-99',
 				taskId: '20',
 				phase: 'review',
 				enqueuedAt: 1,
+				job: createMockGitHubWebhookJob(),
+				continuation: true,
 			});
-			promoteJobById.mockRejectedValue(new Error('queue down'));
+			enqueuePendingDispatch.mockRejectedValue(new Error('queue down'));
 
 			const outcome = await processJob(
 				createMockGitHubWebhookJob(),
@@ -548,7 +561,7 @@ describe('processJob', () => {
 			RESPOND_TO_REVIEW_TRIGGER,
 			RESPOND_TO_CI_TRIGGER,
 			RESOLVE_CONFLICTS_TRIGGER,
-		])('preserves prior FIFO/backoff behavior for $phase when prioritization is false', async (trigger) => {
+		])('keeps FIFO scheduling for $phase when continuation prioritization is false', async (trigger) => {
 			projectLookup = () =>
 				createMockProjectConfig({ pipeline: { prioritizeContinuations: false } });
 			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
@@ -558,24 +571,22 @@ describe('processJob', () => {
 			expect(outcome).toMatchObject({
 				status: 'phase-deferred',
 				phase: trigger.phase,
-				retryDelayMs: 6 * 60 * 1000,
+				retryDelayMs: 0,
 			});
 			if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
-			expect(outcome.continuationDispatchClaimed).toBeUndefined();
-			expect(outcome.pendingContinuation).toBeUndefined();
-			expect(createRun).not.toHaveBeenCalled();
-			expect(refreshReviewDispatchClaim).not.toHaveBeenCalled();
-			expect(refreshConflictResolutionClaim).not.toHaveBeenCalled();
+			expect(outcome.continuationDispatchClaimed).toBe(true);
+			expect(outcome.pendingContinuation).toBe(false);
+			expect(createRun).toHaveBeenCalledOnce();
 		});
 
-		it('does not promote on slot release when prioritizeContinuations is false', async () => {
+		it('still promotes pending work on slot release when prioritizeContinuations is false', async () => {
 			projectLookup = () =>
 				createMockProjectConfig({ pipeline: { prioritizeContinuations: false } });
 
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(takeNextPendingContinuation).not.toHaveBeenCalled();
+			expect(takeNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, false);
 		});
 
 		it('finalizes the run row and releases the claim if a pending continuation re-resolves to no-trigger', async () => {

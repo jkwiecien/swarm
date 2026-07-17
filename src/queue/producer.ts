@@ -103,6 +103,22 @@ export async function enqueueJob(job: SwarmJob): Promise<string | undefined> {
 }
 
 /**
+ * Dispatch work released by the per-project concurrency scheduler. It must not
+ * reuse the webhook delivery id: the original job completed when it became
+ * pending, and BullMQ would otherwise silently keep that completed job instead
+ * of running the preserved dispatch intent.
+ */
+export async function enqueuePendingDispatch(job: SwarmJob): Promise<string | undefined> {
+	const priority = priorityFor(job);
+	const jobId = `pending_${job.type}_${randomUUID()}`;
+	const added = await getQueue().add(job.type, job, {
+		jobId,
+		...(priority !== undefined ? { priority } : {}),
+	});
+	return added.id;
+}
+
+/**
  * Schedule `job` to run after `delayMs`, coalesced on `coalesceKey`: any
  * pending (delayed or waiting) job already scheduled under the same key is
  * removed first, so N events for the same key collapse into a single deferred

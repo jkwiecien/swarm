@@ -204,9 +204,7 @@ describe('reenqueueDeferred', () => {
 		);
 	});
 
-	it('threads continuationDispatchClaimed and registers a prioritized Review continuation', async () => {
-		enqueueDelayedRetry.mockResolvedValue('retry-42');
-
+	it('retains a concurrency-blocked Review without scheduling a delayed retry', async () => {
 		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
 			status: 'phase-deferred',
 			phase: 'review',
@@ -218,19 +216,16 @@ describe('reenqueueDeferred', () => {
 			runId: 'run-1',
 			continuationDispatchClaimed: true,
 			pendingContinuation: true,
+			pendingDispatch: true,
 		});
 
-		// The retry carries the reuse-the-held-claim flag so its handler skips re-claiming.
-		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-			expect.objectContaining({ continuationDispatchClaimed: true }),
-			6 * 60 * 1000,
-		);
-		// It is registered under the project with the id enqueueDelayedRetry returned.
+		expect(enqueueDelayedRetry).not.toHaveBeenCalled();
 		expect(registerPendingContinuation).toHaveBeenCalledExactlyOnceWith('swarm', {
-			jobId: 'retry-42',
 			taskId: '17',
 			phase: 'review',
 			enqueuedAt: expect.any(Number),
+			job: expect.objectContaining({ runId: 'run-1', continuationDispatchClaimed: true }),
+			continuation: true,
 		});
 	});
 
