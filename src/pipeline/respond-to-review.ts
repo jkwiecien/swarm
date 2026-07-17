@@ -73,6 +73,11 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import {
+	type EnablePullRequestAutoMerge,
+	enableAutoMergeIfEligible,
+	enablePullRequestAutoMergeDefault,
+} from '@/pipeline/auto-merge.js';
 import { buildRespondToReviewPrompt } from '@/pipeline/prompts/respond-to-review.js';
 import {
 	acquireResumableWorktree,
@@ -215,10 +220,7 @@ export interface RunRespondToReviewPhaseOptions {
 	delivery?: ScmDeliveryProvider;
 	getToken?: typeof getPersonaToken;
 	/** Injectable GitHub auto-merge operation; best-effort after an eligible response when enabled. */
-	enablePullRequestAutoMerge?: (
-		project: ProjectConfig,
-		prNumber: number,
-	) => Promise<{ enabled: boolean; message: string }>;
+	enablePullRequestAutoMerge?: EnablePullRequestAutoMerge;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -327,45 +329,25 @@ function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult
 	});
 }
 
-async function enableAutoMerge(
+function enableAutoMerge(
 	enabled: boolean,
 	outcome: RespondOutcome,
-	enablePullRequestAutoMerge: NonNullable<
-		RunRespondToReviewPhaseOptions['enablePullRequestAutoMerge']
-	>,
+	enablePullRequestAutoMerge: EnablePullRequestAutoMerge,
 	project: ProjectConfig,
 	prNumber: string,
 	taskId: string,
 ): Promise<boolean | undefined> {
 	// A pushback leaves requested changes unresolved. Only a real fix or a
 	// no-findings acknowledgment is safe to hand to GitHub for auto-merge.
-	if (!enabled || (outcome !== 'fixed' && outcome !== 'no-findings')) return undefined;
-	try {
-		const merge = await enablePullRequestAutoMerge(project, Number(prNumber));
-		if (merge.enabled) {
-			logger.info('Respond-to-review enabled GitHub auto-merge for pull request', {
-				taskId,
-				prNumber,
-			});
-		} else {
-			logger.warn('Respond-to-review did not enable GitHub auto-merge', {
-				taskId,
-				prNumber,
-				reason: merge.message,
-			});
-		}
-		return merge.enabled;
-	} catch (error) {
-		logger.warn(
-			'Respond-to-review could not enable GitHub auto-merge — response remains successful',
-			{
-				taskId,
-				prNumber,
-				error: error instanceof Error ? error.message : String(error),
-			},
-		);
-		return false;
-	}
+	return enableAutoMergeIfEligible({
+		enabled,
+		eligible: outcome === 'fixed' || outcome === 'no-findings',
+		enablePullRequestAutoMerge,
+		project,
+		prNumber,
+		taskId,
+		phase: 'Respond-to-review',
+	});
 }
 
 /**
@@ -401,8 +383,7 @@ export async function runRespondToReviewPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
-		enablePullRequestAutoMerge = (mergeProject, mergePrNumber) =>
-			new GitHubSCMIntegration().enablePullRequestAutoMerge(mergeProject, mergePrNumber),
+		enablePullRequestAutoMerge = enablePullRequestAutoMergeDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
