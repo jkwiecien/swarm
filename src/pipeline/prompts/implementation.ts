@@ -62,7 +62,7 @@ export function buildImplementationPrompt(
 		'respond to a review, post any additional PR comment, or invoke another agent.',
 		'SWARM runs Review and Respond-to-review as separate phases after you exit.',
 		'',
-		'Do not merge the PR — a human does that. Keep the change scoped to the work item.',
+		'Do not merge the PR. Keep the change scoped to the work item.',
 		...projectInstructionsSection(customPrompt),
 		'',
 		'--- WORK ITEM ---',
