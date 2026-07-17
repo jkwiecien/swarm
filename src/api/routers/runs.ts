@@ -36,6 +36,7 @@ import {
 	type QueuedRun,
 	toQueuedRuns,
 } from '../../queue/queued-runs.js';
+import { removePendingContinuationForRun } from '../../worker/pending-continuations.js';
 import { publicProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
@@ -396,6 +397,7 @@ export const runsRouter = router({
 					startFresh,
 				);
 				if (promoted) {
+					await removePendingContinuationForRun(run.id);
 					return { runId: input.runId, status: 'retrying' as const };
 				}
 				// No pending job to promote — the re-enqueue was lost (the
@@ -432,7 +434,11 @@ export const runsRouter = router({
 					engineForRow,
 					startFresh ? null : undefined,
 				);
-				await enqueueDelayedRetry(job, 0, { unique: true });
+				await removePendingContinuationForRun(run.id);
+				await enqueueDelayedRetry(job, 0, {
+					unique: true,
+					...(job.pendingDispatchId ? { jobId: `pending_${job.pendingDispatchId}` } : {}),
+				});
 				return { runId: input.runId, status: 'retrying' as const };
 			}
 
@@ -515,9 +521,11 @@ export const runsRouter = router({
 			await requestRunCancellation(run.id);
 
 			if (run.status === 'deferred') {
-				// Cancel the pending retry job so no automatic pickup resurrects it,
+				// Cancel either scheduled retry-shaped work or a slot-release pending
+				// dispatch so no automatic pickup resurrects it,
 				// then atomically fail the row while it's still deferred.
 				await removePendingRetryForRun(run.id);
+				await removePendingContinuationForRun(run.id);
 				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
 					// Keep the durable marker until an explicit retry clears it. The
 					// completed handler can still be between persisting `deferred` and

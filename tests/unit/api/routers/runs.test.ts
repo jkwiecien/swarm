@@ -47,6 +47,10 @@ vi.mock('@/queue/cancellation.js', () => ({
 	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
 }));
 
+vi.mock('@/worker/pending-continuations.js', () => ({
+	removePendingContinuationForRun: vi.fn(),
+}));
+
 import { runsRouter } from '@/api/routers/runs.js';
 import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import {
@@ -73,6 +77,7 @@ import {
 	removeQueuedJob,
 } from '@/queue/producer.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
+import { removePendingContinuationForRun } from '@/worker/pending-continuations.js';
 import {
 	createMockGitHubProjectsWebhookJob,
 	createMockProjectConfig,
@@ -132,6 +137,7 @@ describe('runsRouter', () => {
 		vi.mocked(enqueueDelayedRetry).mockReset();
 		vi.mocked(markRunUserTerminated).mockReset();
 		vi.mocked(removePendingRetryForRun).mockReset();
+		vi.mocked(removePendingContinuationForRun).mockReset();
 		vi.mocked(requestRunCancellation).mockReset();
 		vi.mocked(clearRunCancellation).mockReset();
 		vi.mocked(listPendingJobs).mockReset();
@@ -655,6 +661,27 @@ describe('runsRouter', () => {
 				expect.objectContaining({ runId: 'run-1', resumeDelivery: true }),
 				0,
 				{ unique: true },
+			);
+		});
+
+		it('invalidates a slot-blocked pending continuation before reconstructing Retry now', async () => {
+			const mockPayload = createMockGitHubProjectsWebhookJob({
+				pendingDispatchId: '11111111-1111-4111-8111-111111111111',
+			});
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', jobPayload: mockPayload }),
+			);
+			vi.mocked(resetRunToRunning).mockResolvedValue(true);
+			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
+			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+
+			await caller.retryNow({ runId: 'run-1' });
+
+			expect(removePendingContinuationForRun).toHaveBeenCalledExactlyOnceWith('run-1');
+			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+				expect.objectContaining({ pendingDispatchId: '11111111-1111-4111-8111-111111111111' }),
+				0,
+				{ unique: true, jobId: 'pending_11111111-1111-4111-8111-111111111111' },
 			);
 		});
 

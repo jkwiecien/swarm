@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { updateRunJobPayload } from '../db/repositories/runsRepository.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
@@ -33,6 +34,37 @@ export async function reenqueueDeferred(
 ): Promise<void> {
 	try {
 		const parsed = SwarmJobSchema.parse(data);
+		if (outcome.pendingDispatch) {
+			const pending: SwarmJob = {
+				...parsed,
+				pendingDispatchId: randomUUID(),
+				...(outcome.runId ? { runId: outcome.runId } : {}),
+				...(parsed.type === 'github-projects' &&
+				(outcome.phase === 'planning' || outcome.phase === 'implementation')
+					? { resumePmPhase: outcome.phase }
+					: {}),
+				...(outcome.continuationDispatchClaimed ? { continuationDispatchClaimed: true } : {}),
+			};
+			await persistRetryPayload(outcome.runId, pending);
+
+			const cancelledRunId = await getCancelledRunId(outcome.runId);
+			if (cancelledRunId) return;
+
+			await registerPendingContinuation(parsed.projectId, {
+				taskId: outcome.taskId,
+				phase: outcome.phase,
+				enqueuedAt: Date.now(),
+				job: pending,
+				continuation: outcome.pendingContinuation === true,
+			});
+			logger.debug('Concurrency-blocked phase retained for slot release', {
+				jobId,
+				phase: outcome.phase,
+				taskId: outcome.taskId,
+			});
+			return;
+		}
+
 		// Retry intent is derived from this outcome. Do not let a stale flag from an
 		// earlier queued job turn a pre-provisioning capacity retry into a branch
 		// resume.
@@ -82,7 +114,7 @@ export async function reenqueueDeferred(
 			return;
 		}
 
-		const retryJobId = await enqueueDelayedRetry(next, outcome.retryDelayMs);
+		await enqueueDelayedRetry(next, outcome.retryDelayMs);
 
 		// If termination raced the queue hand-off, its queue scan may have run
 		// before the retry existed. The durable marker makes that ordering visible
@@ -95,19 +127,6 @@ export async function reenqueueDeferred(
 				runId: cancelledAfterEnqueueRunId,
 			});
 			return;
-		}
-
-		// Register a prioritized continuation (issue #214) so a freed project slot can
-		// promote its delayed retry ahead of new board work. Best-effort and after the
-		// cancellation checks: the delayed retry above is the safety net if the
-		// registry write is lost, and a terminated run must not be re-registered.
-		if (outcome.pendingContinuation && retryJobId) {
-			await registerPendingContinuation(parsed.projectId, {
-				jobId: retryJobId,
-				taskId: outcome.taskId,
-				phase: outcome.phase,
-				enqueuedAt: Date.now(),
-			});
 		}
 
 		logger.debug('Rate-limited phase re-enqueued for retry', {

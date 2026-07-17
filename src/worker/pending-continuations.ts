@@ -1,55 +1,68 @@
 /**
- * Pending-continuation registry, Redis-backed (issue #214).
+ * Pending-dispatch registry, Redis-backed (issues #214/#262).
  *
- * An SCM-driven continuation of already-active pipeline work that is
- * blocked *solely* by a project's concurrency limit is retained here as a
- * *pending continuation* rather than being buried under the generic rate-limit
- * backoff. When any of the project's slots frees, `processJob` promotes the
- * oldest pending continuation ahead of new Planning/Implementation work
- * (`promoteJobById`, `src/queue/producer.ts`) — the fix for issue #213, where a
- * `pull_request opened` arriving while Implementation finishes was left waiting
- * out the 6-minute backoff while a fresh board job took the freed slot.
+ * A phase blocked *solely* by a project's concurrency limit is retained here
+ * with the job that already resolved it. This avoids replaying a stale webhook
+ * after an arbitrary delay: in particular, a Planning card can still be in
+ * Planning when its slot frees, but its status-dedup key has expired. The stored
+ * `resumePmPhase` dispatch intent makes that retry unambiguous.
  *
  * One Redis HASH per project (`swarm:pending-continuations:<id>`), keyed by a
  * stable `<taskId>:<phase>` field so a re-deferral *replaces* rather than stacks.
- * The value is a JSON {@link PendingContinuation}. Mirrors
+ * The value is a JSON {@link PendingDispatch}. Mirrors
  * `project-concurrency.ts`'s shape: a lazy fail-fast `Redis` singleton
  * (`maxRetriesPerRequest: 1`) with an `'error'` listener.
  *
+ * A promoter claims a field with a short Redis lease before queueing it. The
+ * handoff uses the entry's stable `pendingDispatchId`, so lease expiry after a
+ * crash between BullMQ `add()` and acknowledgement cannot enqueue a second job.
  * Every operation swallows+logs Redis errors and fails open (register no-ops,
- * take returns `null`): a registry hiccup must never fail a real run, and the
- * concurrency deferral's fallback delayed retry still fires on its own delay, so
- * a lost registry entry only costs the *prompt* promotion, never the retry
- * itself. Single-worker MVP — a multi-worker deployment inherits
+ * claim returns `null`): a registry hiccup must never fail a real run. Single-worker
+ * MVP — a multi-worker deployment inherits
  * `project-concurrency`'s documented per-worker-lease caveat.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { requireEnv } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
+import type { SwarmJob } from '../queue/jobs.js';
 import type { TriggerPhase } from '../triggers/types.js';
 
 const KEY_NS = 'swarm:pending-continuations:';
+const CLAIM_NS = 'swarm:pending-continuation-claims:';
+const CLAIM_TTL_MS = 30_000;
 
 let redisInstance: Redis | null = null;
 
 /**
- * A retained, concurrency-blocked continuation awaiting a freed project slot.
- * `jobId` is the delayed BullMQ retry job's id — the fallback retry that fires on
- * its own delay if no slot frees first, and the handle `promoteJobById` moves to
- * `waiting` when a slot does free.
+ * A retained, concurrency-blocked phase awaiting a freed project slot.
  */
-export type PendingContinuation = {
-	jobId: string;
+export type PendingDispatch = {
 	taskId: string;
 	phase: TriggerPhase;
 	enqueuedAt: number;
+	/** The exact dispatch intent, rather than a webhook that must be interpreted again. */
+	job: SwarmJob;
+	/** SCM continuations jump ahead of new board work when the project opts in. */
+	continuation: boolean;
+};
+
+export type PendingContinuationClaim = {
+	entry: PendingDispatch;
+	field: string;
+	raw: string;
+	token: string;
 };
 
 /** Stable per-task+phase field so a re-deferral replaces its prior entry. */
 function fieldFor(entry: { taskId: string; phase: TriggerPhase }): string {
 	return `${entry.taskId}:${entry.phase}`;
+}
+
+function claimKey(projectId: string, field: string): string {
+	return `${CLAIM_NS}${projectId}:${field}`;
 }
 
 function getRedis(): Redis {
@@ -66,16 +79,17 @@ function getRedis(): Redis {
 }
 
 /** Parse a stored entry, returning `undefined` for anything malformed. */
-function parseEntry(raw: string): PendingContinuation | undefined {
+function parseEntry(raw: string): PendingDispatch | undefined {
 	try {
-		const value = JSON.parse(raw) as Partial<PendingContinuation>;
+		const value = JSON.parse(raw) as Partial<PendingDispatch>;
 		if (
-			typeof value.jobId === 'string' &&
 			typeof value.taskId === 'string' &&
 			typeof value.phase === 'string' &&
-			typeof value.enqueuedAt === 'number'
+			typeof value.enqueuedAt === 'number' &&
+			value.job !== undefined &&
+			typeof value.continuation === 'boolean'
 		) {
-			return value as PendingContinuation;
+			return value as PendingDispatch;
 		}
 	} catch {
 		// fall through
@@ -84,18 +98,18 @@ function parseEntry(raw: string): PendingContinuation | undefined {
 }
 
 /**
- * Register (or replace) a project's pending continuation — `HSET` keyed on
+ * Register (or replace) a project's pending dispatch — `HSET` keyed on
  * `<taskId>:<phase>`, so a job re-deferred while already pending overwrites its
  * prior entry rather than stacking a second one. Idempotent; fails open.
  */
 export async function registerPendingContinuation(
 	projectId: string,
-	entry: PendingContinuation,
+	entry: PendingDispatch,
 ): Promise<void> {
 	try {
 		await getRedis().hset(`${KEY_NS}${projectId}`, fieldFor(entry), JSON.stringify(entry));
 	} catch (err) {
-		logger.warn('pending-continuations: register failed (fallback retry still fires)', {
+		logger.warn('pending-continuations: register failed', {
 			projectId,
 			error: String(err),
 		});
@@ -103,40 +117,166 @@ export async function registerPendingContinuation(
 }
 
 /**
- * Remove and return the project's oldest pending continuation by `enqueuedAt`
- * (FIFO), or `null` when none is pending. Malformed entries are dropped in
- * passing so a corrupt value can't wedge the registry. Fails open (returns
- * `null`) on a Redis error.
+ * Return the next pending dispatch. With continuation priority on,
+ * the oldest continuation wins; otherwise this is strict FIFO. Malformed entries
+ * are dropped in passing so a corrupt value can't wedge the registry.
  */
-export async function takeNextPendingContinuation(
+async function selectNextPendingContinuation(
 	projectId: string,
-): Promise<PendingContinuation | null> {
+	prioritizeContinuations: boolean,
+): Promise<{ entry: PendingDispatch; field: string; raw: string } | null> {
 	const key = `${KEY_NS}${projectId}`;
 	try {
 		const redis = getRedis();
 		const all = await redis.hgetall(key);
 		let oldestField: string | undefined;
-		let oldest: PendingContinuation | undefined;
+		let oldestRaw: string | undefined;
+		let oldest: PendingDispatch | undefined;
 		for (const [field, raw] of Object.entries(all)) {
 			const parsed = parseEntry(raw);
 			if (!parsed) {
 				await redis.hdel(key, field);
 				continue;
 			}
-			if (!oldest || parsed.enqueuedAt < oldest.enqueuedAt) {
+			const shouldReplace =
+				!oldest ||
+				(prioritizeContinuations && parsed.continuation !== oldest.continuation
+					? parsed.continuation
+					: parsed.enqueuedAt < oldest.enqueuedAt);
+			if (shouldReplace) {
 				oldest = parsed;
 				oldestField = field;
+				oldestRaw = raw;
 			}
 		}
-		if (!oldest || !oldestField) return null;
-		await redis.hdel(key, oldestField);
-		return oldest;
+		if (!oldest || !oldestField || !oldestRaw) return null;
+		return { entry: oldest, field: oldestField, raw: oldestRaw };
 	} catch (err) {
-		logger.warn('pending-continuations: take failed (fallback retry still fires)', {
+		logger.warn('pending-continuations: select failed', {
 			projectId,
 			error: String(err),
 		});
 		return null;
+	}
+}
+
+/**
+ * Claim the next entry for promotion. `SET NX PX` elects one slot releaser; a
+ * lease expires after a crash, allowing a later release to retry the same
+ * deterministic BullMQ handoff.
+ */
+export async function claimNextPendingContinuation(
+	projectId: string,
+	prioritizeContinuations: boolean,
+): Promise<PendingContinuationClaim | null> {
+	try {
+		const redis = getRedis();
+		const selected = await selectNextPendingContinuation(projectId, prioritizeContinuations);
+		if (!selected) return null;
+		const token = randomUUID();
+		const acquired = await redis.set(
+			claimKey(projectId, selected.field),
+			token,
+			'PX',
+			CLAIM_TTL_MS,
+			'NX',
+		);
+		if (acquired !== 'OK') return null;
+		return { ...selected, token };
+	} catch (err) {
+		logger.warn('pending-continuations: claim failed', { projectId, error: String(err) });
+		return null;
+	}
+}
+
+/** Backwards-compatible read-only selector retained for dashboard/tests. */
+export async function takeNextPendingContinuation(
+	projectId: string,
+	prioritizeContinuations: boolean,
+): Promise<PendingDispatch | null> {
+	const selected = await selectNextPendingContinuation(projectId, prioritizeContinuations);
+	return selected?.entry ?? null;
+}
+
+/** Remove a dispatch after BullMQ accepted it for execution. */
+export async function removePendingContinuation(
+	projectId: string,
+	entry: Pick<PendingDispatch, 'taskId' | 'phase'>,
+): Promise<void> {
+	try {
+		await getRedis().hdel(`${KEY_NS}${projectId}`, fieldFor(entry));
+	} catch (err) {
+		logger.warn('pending-continuations: remove failed', { projectId, error: String(err) });
+	}
+}
+
+/** Finish a claimed handoff only when this promoter still owns the same entry. */
+export async function acknowledgePendingContinuationClaim(
+	projectId: string,
+	claim: PendingContinuationClaim,
+): Promise<void> {
+	try {
+		await getRedis().eval(
+			`if redis.call('GET', KEYS[2]) == ARGV[1] then
+				if redis.call('HGET', KEYS[1], ARGV[2]) == ARGV[3] then redis.call('HDEL', KEYS[1], ARGV[2]) end
+				redis.call('DEL', KEYS[2])
+			end`,
+			2,
+			`${KEY_NS}${projectId}`,
+			claimKey(projectId, claim.field),
+			claim.token,
+			claim.field,
+			claim.raw,
+		);
+	} catch (err) {
+		logger.warn('pending-continuations: acknowledge claim failed', {
+			projectId,
+			error: String(err),
+		});
+	}
+}
+
+/** Release an unhanded-off claim so a later slot release can try immediately. */
+export async function releasePendingContinuationClaim(
+	projectId: string,
+	claim: PendingContinuationClaim,
+): Promise<void> {
+	try {
+		await getRedis().eval(
+			`if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end return 0`,
+			1,
+			claimKey(projectId, claim.field),
+			claim.token,
+		);
+	} catch (err) {
+		logger.warn('pending-continuations: release claim failed', {
+			projectId,
+			error: String(err),
+		});
+	}
+}
+
+/** Remove a terminated run's pending dispatch so a later slot release cannot revive it. */
+export async function removePendingContinuationForRun(runId: string): Promise<number> {
+	try {
+		const redis = getRedis();
+		const keys = await redis.keys(`${KEY_NS}*`);
+		let removed = 0;
+		for (const key of keys) {
+			const all = await redis.hgetall(key);
+			for (const [field, raw] of Object.entries(all)) {
+				const entry = parseEntry(raw);
+				if (entry?.job.runId === runId) {
+					await redis.hdel(key, field);
+					await redis.del(claimKey(key.slice(KEY_NS.length), field));
+					removed += 1;
+				}
+			}
+		}
+		return removed;
+	} catch (err) {
+		logger.warn('pending-continuations: remove-for-run failed', { runId, error: String(err) });
+		return 0;
 	}
 }
 
@@ -151,10 +291,8 @@ export async function countPendingContinuations(projectId: string): Promise<numb
 }
 
 /**
- * Drop a project's whole pending-continuation registry (`DEL`) — the startup
- * reset (`src/worker/index.ts`), alongside `resetProjectSlot`. A previously
- * pending continuation still has its fallback delayed BullMQ retry in Redis, so
- * clearing the registry loses only the prompt-promote wake-up, never the retry.
+ * Drop a project's whole pending-dispatch registry. This is retained for explicit
+ * administrative cleanup; worker startup deliberately does not call it.
  */
 export async function clearPendingContinuations(projectId: string): Promise<void> {
 	try {

@@ -110,6 +110,12 @@ const jobBase = z.object({
 	 * `claimReviewDispatch`. Board jobs never set it.
 	 */
 	continuationDispatchClaimed: z.boolean().optional(),
+	/**
+	 * Stable queue handoff id for a concurrency-blocked continuation. The slot
+	 * releaser and a concurrent manual retry use this same id, so BullMQ accepts
+	 * at most one of them.
+	 */
+	pendingDispatchId: z.string().uuid().optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

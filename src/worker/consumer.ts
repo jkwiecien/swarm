@@ -69,7 +69,7 @@ import {
 	USER_TERMINATION_MESSAGE,
 } from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueJob, promoteJobById } from '../queue/producer.js';
+import { enqueueJob, enqueuePendingDispatch } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import {
@@ -88,7 +88,12 @@ import {
 	type TriggerResult,
 } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
-import { takeNextPendingContinuation } from './pending-continuations.js';
+import {
+	acknowledgePendingContinuationClaim,
+	claimNextPendingContinuation,
+	type PendingContinuationClaim,
+	releasePendingContinuationClaim,
+} from './pending-continuations.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
@@ -144,8 +149,7 @@ export type JobOutcome =
 			 * The `runs` row this deferral belongs to (issue #136), when one was
 			 * created/reused for this job. Carried onto the re-enqueued job so the
 			 * retry resets the same row instead of inserting a new one. Absent when
-			 * the deferral happened before any row existed (e.g. the concurrency-limit
-			 * deferral on a fresh webhook).
+			 * the deferral happened before a run row could be persisted.
 			 */
 			runId?: string;
 			/**
@@ -162,6 +166,11 @@ export type JobOutcome =
 			 * the fallback retry.
 			 */
 			pendingContinuation?: boolean;
+			/**
+			 * A project-slot deferral. Unlike a provider failure, this is retained in
+			 * the pending-dispatch registry and awakened only by a released slot.
+			 */
+			pendingDispatch?: boolean;
 	  };
 
 /**
@@ -196,11 +205,9 @@ const DEFAULT_RETRY_DELAY_MS = 30 * 60 * 1000;
 const RETRY_BUFFER_MS = 60 * 1000;
 
 /**
- * TTL the review-dispatch claim is refreshed to while a Review is held as a
- * pending continuation (issue #214). Comfortably outlives the fallback delayed
- * retry ({@link MIN_RETRY_DELAY_MS}) so the claim never lapses while the
- * continuation waits — no sibling `opened`/`check_suite` event can steal it, and
- * the prioritized retry reuses the still-live claim rather than re-claiming.
+ * TTL the review-dispatch claim is refreshed while an SCM continuation is held
+ * pending. The released job carries that claim and therefore never replays the
+ * status/webhook dedup path as fresh work.
  */
 const PENDING_CONTINUATION_CLAIM_TTL_SEC = Math.ceil(MIN_RETRY_DELAY_MS / 1000) + 120;
 
@@ -367,34 +374,22 @@ function deferForConcurrencyLimit(
 	trigger: TriggerResult,
 	projectId: string,
 ): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
-	const attempt = job.rateLimitRetryAttempt ?? 0;
 	const reason = `Project '${projectId}' is at its concurrent-job limit`;
-	if (attempt >= MAX_RATE_LIMIT_RETRIES) {
-		logger.error(`Phase failed - ${phaseLabel(trigger.phase)} — retry budget exhausted`, {
-			projectId,
-			phase: trigger.phase,
-			taskId: trigger.taskId,
-			attempt,
-			error: reason,
-		});
-		return undefined;
-	}
 
 	logger.warn(`Phase deferred - ${phaseLabel(trigger.phase)} — project at concurrency limit`, {
 		projectId,
 		phase: trigger.phase,
 		taskId: trigger.taskId,
-		attempt,
-		retryDelayMs: MIN_RETRY_DELAY_MS,
 	});
 	return {
 		status: 'phase-deferred',
 		phase: trigger.phase,
 		taskId: trigger.taskId,
-		retryDelayMs: MIN_RETRY_DELAY_MS,
+		retryDelayMs: 0,
 		reason,
-		attempt,
+		attempt: job.rateLimitRetryAttempt ?? 0,
 		resumable: false,
+		pendingDispatch: true,
 		// A fresh webhook has no row yet (this defers before `tryCreateRun`); a
 		// retry carries its originating row's id, which must survive so the next
 		// re-enqueue keeps resetting the same row rather than orphaning it.
@@ -407,18 +402,11 @@ function deferForConcurrencyLimit(
  * pre-run deferral path, split out so that function stays within the complexity
  * budget (the file already splits helpers this way).
  *
- * An SCM-driven continuation blocked *solely* by concurrency (issues #214/#219), when
- * `prioritizeContinuations` is on, is retained as a *pending continuation*
- * rather than sent through the generic 6-minute backoff: a run row is created
- * now so the blocked phase shows as `deferred` on the dashboard (the
- * concurrency defer otherwise happens before any row exists), its dispatch
- * claim is refreshed when it has one,
- * and the outcome is marked so (a) the retry reuses the held claim rather than
- * re-claiming and (b) `reenqueueDeferred` registers it for
- * promote-on-slot-release. `prioritizeContinuations: false`, or any new-work
- * phase, keeps the prior FIFO/backoff behavior exactly (no row, no claim
- * refresh, no registration). Returns the `phase-deferred` outcome, or a terminal
- * `phase-failed` once the shared retry budget is exhausted.
+ * Every blocked phase is retained as pending work, not sent through the external
+ * failure backoff. Its run row becomes visible immediately and its exact dispatch
+ * intent is recorded by `reenqueueDeferred`; PM jobs carry `resumePmPhase` so a
+ * stale board status cannot deduplicate the resumed phase. SCM continuations
+ * retain their dispatch claim and optionally receive priority over board work.
  */
 async function handleConcurrencyDeferral(
 	job: SwarmJob,
@@ -426,28 +414,19 @@ async function handleConcurrencyDeferral(
 	project: ProjectConfig,
 ): Promise<JobOutcome> {
 	const deferred = deferForConcurrencyLimit(job, trigger, project.id);
-	if (!deferred) {
-		const error = `Project '${project.id}' remained at its concurrent-job limit until the retry budget was exhausted`;
-		await reportPhaseFailureToBoardOrPr(trigger, project, error);
-		// Terminal failure on the pre-try/catch path: flip the reused row to `failed`
-		// so the dashboard stops offering Retry now (which would 409 — no pending job
-		// survives). No-ops for a fresh webhook with no row yet.
-		await finalizeRun(job.runId, { status: 'failed', error });
-		return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
-	}
+	if (!deferred) throw new Error('Concurrency deferral must always produce a pending dispatch');
+
+	// Every blocked phase gets a run row now. This makes new Planning and
+	// Implementation work visible while it waits, rather than creating a row only
+	// after a timer happens to fire.
+	const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
+	if (runId) deferred.runId = runId;
 
 	// Retain a concurrency-blocked SCM phase as a pending continuation,
 	// prioritized over new board work once a slot frees.
-	if (
-		project.pipeline?.prioritizeContinuations !== false &&
-		isPrioritizedContinuationPhase(trigger.phase)
-	) {
-		// Create the run row now so the blocked phase is observable as `deferred`
-		// instead of invisible until the fallback delay fires.
-		const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
-		if (runId) deferred.runId = runId;
+	if (isPrioritizedContinuationPhase(trigger.phase)) {
 		deferred.continuationDispatchClaimed = true;
-		deferred.pendingContinuation = true;
+		deferred.pendingContinuation = project.pipeline?.prioritizeContinuations !== false;
 		if (trigger.phase === 'review' || trigger.phase === 'respond-to-ci') {
 			// Review and Respond-to-CI share the PR+SHA dispatch slot.
 			await refreshReviewDispatchClaim(
@@ -467,35 +446,43 @@ async function handleConcurrencyDeferral(
 		}
 	}
 
-	// A retry job carries its originating row (`deferred.runId`); this pre-try/catch
-	// path must finalize that row here or it stays stuck `deferred` with the prior
-	// attempt's stale `nextRetryAt`. Refreshes status=`deferred` + recomputes
-	// `nextRetryAt`; no-ops when there is no row (a fresh non-continuation webhook).
+	// This pre-try/catch path must settle the visible run now. A slot deferral has
+	// no scheduled timestamp: a release, not polling, wakes it.
 	await finalizeFailedRun(deferred.runId, deferred, undefined);
 	return deferred;
 }
 
 /**
- * After a project slot frees, promote the oldest pending continuation for that
- * project (issue #214) so it runs ahead of new board work — the fix for issue
- * #213. Best-effort and fully swallowed: a registry/queue hiccup must never turn
- * a settled run into a failed job, and the continuation's own fallback delayed
- * retry still fires. A no-op when nothing is pending — the freed slot then goes
- * to whatever the queue serves next; no slot is ever reserved.
+ * After a project slot frees, dispatch the next durable pending phase. Best-effort
+ * and fully swallowed: a registry/queue hiccup must never turn a settled run into
+ * a failed job. A no-op when nothing is pending — the freed slot then goes to
+ * whatever the queue serves next; no slot is ever reserved.
  */
-async function promoteNextPendingContinuation(projectId: string): Promise<void> {
+export async function promoteNextPendingContinuation(
+	projectId: string,
+	prioritizeContinuations = true,
+): Promise<void> {
+	let claim: PendingContinuationClaim | null = null;
 	try {
-		const next = await takeNextPendingContinuation(projectId);
-		if (!next) return;
-		const promoted = await promoteJobById(next.jobId);
-		logger.debug('pending-continuation: slot freed — promoted a blocked continuation', {
+		claim = await claimNextPendingContinuation(projectId, prioritizeContinuations);
+		if (!claim) return;
+		const pendingDispatchId = claim.entry.job.pendingDispatchId;
+		if (!pendingDispatchId) {
+			await releasePendingContinuationClaim(projectId, claim);
+			logger.warn('pending-continuation: missing deterministic handoff id', { projectId });
+			return;
+		}
+		const jobId = await enqueuePendingDispatch(claim.entry.job, pendingDispatchId);
+		await acknowledgePendingContinuationClaim(projectId, claim);
+		logger.debug('pending-continuation: slot freed — dispatched blocked phase', {
 			projectId,
-			jobId: next.jobId,
-			taskId: next.taskId,
-			phase: next.phase,
-			promoted,
+			jobId,
+			taskId: claim.entry.taskId,
+			phase: claim.entry.phase,
+			continuation: claim.entry.continuation,
 		});
 	} catch (err) {
+		if (claim) await releasePendingContinuationClaim(projectId, claim);
 		logger.warn('pending-continuation: promote after slot release failed', {
 			projectId,
 			error: describeError(err),
@@ -1168,7 +1155,7 @@ async function finalizeFailedRun(
 			{
 				status: 'deferred',
 				error: outcome.reason,
-				nextRetryAt: new Date(Date.now() + outcome.retryDelayMs),
+				nextRetryAt: outcome.pendingDispatch ? null : new Date(Date.now() + outcome.retryDelayMs),
 				...agentColumns(agent),
 				// Persist the session id the run captured so the retry can resume it —
 				// for claude the id it assigned/echoed, for codex/agy the id captured
@@ -1671,6 +1658,9 @@ export async function processJob(
 	registry: TriggerRegistry,
 	signal?: AbortSignal,
 ): Promise<JobOutcome> {
+	// The stable handoff id is only for queue admission. Once this attempt has
+	// started, later manual retries must get a new id if it defers again.
+	delete job.pendingDispatchId;
 	const project = await findProjectByIdFromDb(job.projectId);
 	if (!project) {
 		// The producer only enqueues for projects it resolved from Postgres, so a
@@ -1845,9 +1835,10 @@ export async function processJob(
 			// project (issues #214/#219) so SCM work blocked only by concurrency runs ahead
 			// of new board work, instead of waiting out its fallback backoff. No-op
 			// when nothing is pending or the policy is off; never reserves a slot.
-			if (project.pipeline?.prioritizeContinuations !== false) {
-				await promoteNextPendingContinuation(project.id);
-			}
+			await promoteNextPendingContinuation(
+				project.id,
+				project.pipeline?.prioritizeContinuations !== false,
+			);
 		}
 		inFlightTaskIds.delete(trigger.taskId);
 	}
