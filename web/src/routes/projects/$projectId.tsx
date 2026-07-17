@@ -297,7 +297,7 @@ function GeneralSettingsForm({
 	errorMessage,
 }: GeneralSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
@@ -500,7 +500,7 @@ const FIELD_CLASS =
 const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 
 /** Card wrapper recipe shared by the phase-detail sections. */
-const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm';
+const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
 /** Display labels for the agent CLIs, used in the phase-row summary. */
 const CLI_LABELS: Record<AgentCli, string> = {
@@ -785,7 +785,7 @@ export function PhaseSettingsDetail({
 
 				<PhaseDetailNote phase={phase} />
 
-				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20">
+				<div className="space-y-4 p-4 border border-zinc-800 rounded-md bg-panel/20">
 					<div className="flex items-start gap-3">
 						{enabled === undefined ? (
 							<PhaseToggleSwitch
@@ -1035,7 +1035,7 @@ function AgentConfigurationForm({
 					onBack={onBack}
 				/>
 			) : (
-				<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+				<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 					<div>
 						<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 							Phases Configuration
@@ -1045,7 +1045,7 @@ function AgentConfigurationForm({
 							values fall back to the pipeline's coded defaults.
 						</p>
 
-						<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+						<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
 							<table className="w-full text-left border-collapse">
 								<thead>
 									<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
@@ -1154,13 +1154,13 @@ function PipelineSettingsForm({
 	errorMessage,
 }: PipelineSettingsFormProps) {
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm">
 			<form onSubmit={handleSubmit} className="space-y-6">
 				<div>
 					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 						Pipeline Automation
 					</h2>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={autoMerge}
@@ -1176,7 +1176,7 @@ function PipelineSettingsForm({
 							</span>
 						</span>
 					</label>
-					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-[#0F0F11]/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
+					<label className="flex items-start gap-3 p-4 border border-zinc-800 rounded-md bg-panel/20 cursor-pointer hover:bg-zinc-800/20 transition-colors">
 						<input
 							type="checkbox"
 							checked={skipRespondToReviewOnMinors}

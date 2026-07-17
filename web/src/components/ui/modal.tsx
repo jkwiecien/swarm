@@ -35,7 +35,7 @@ export function Modal({ open, onClose, title, children }: ModalProps) {
 			{/* biome-ignore lint/a11y/useKeyWithClickEvents: stopPropagation doesn't need keyboard equivalent */}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: stopPropagation doesn't need keyboard equivalent */}
 			<div
-				className="w-full max-w-lg rounded-lg border border-zinc-800 bg-[#0F0F11] p-6 shadow-2xl"
+				className="w-full max-w-lg rounded-lg border border-zinc-800 bg-panel p-6 shadow-2xl"
 				onClick={(e) => e.stopPropagation()}
 			>
 				<div className="flex items-center justify-between border-b border-zinc-850 pb-4 mb-4">

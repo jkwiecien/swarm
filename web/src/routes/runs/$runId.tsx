@@ -690,7 +690,7 @@ function RunOverview({ run, project }: RunOverviewProps) {
 	const now = useNow(run.status === 'running');
 
 	return (
-		<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm space-y-6">
+		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm space-y-6">
 			<div>
 				<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
 					Run Details
@@ -919,7 +919,7 @@ function RunDetailRouteComponent() {
 					onClick={() => setActiveTab('live')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all cursor-pointer ${
 						activeTab === 'live'
-							? 'border-b-2 border-violet-500 text-white bg-zinc-800/20'
+							? 'border-b-2 border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -931,7 +931,7 @@ function RunDetailRouteComponent() {
 					onClick={() => setActiveTab('overview')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all cursor-pointer ${
 						activeTab === 'overview'
-							? 'border-b-2 border-violet-500 text-white bg-zinc-800/20'
+							? 'border-b-2 border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
@@ -943,7 +943,7 @@ function RunDetailRouteComponent() {
 					onClick={() => setActiveTab('logs')}
 					className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-all cursor-pointer ${
 						activeTab === 'logs'
-							? 'border-b-2 border-violet-500 text-white bg-zinc-800/20'
+							? 'border-b-2 border-violet-500 text-zinc-100 bg-zinc-800/20'
 							: 'border-b-2 border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>

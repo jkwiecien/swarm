@@ -19,8 +19,18 @@ import type { AppSettings } from '../../config/app-settings.js';
 export const appSettings = pgTable('app_settings', {
 	/** Single-row sentinel — there is exactly one global-settings record. */
 	id: text('id').primaryKey().default('global'),
-	/** The whole settings object (`AppSettings`) as one jsonb blob. */
-	settings: jsonb('settings').$type<AppSettings>().notNull().default({}),
+	/**
+	 * The whole settings object (`AppSettings`) as one jsonb blob. The SQL-level
+	 * default stays the pre-#250 literal `{}` (not `APP_SETTINGS_DEFAULTS`, which
+	 * now includes `appearance`) so this column definition doesn't drift from
+	 * the migration already applied — every read re-validates through
+	 * `AppSettingsSchema` anyway (`appSettingsRepository.ts`), which fills in
+	 * `appearance` regardless of what's actually stored.
+	 */
+	settings: jsonb('settings')
+		.$type<AppSettings>()
+		.notNull()
+		.default({} as AppSettings),
 	createdAt: timestamp('created_at').defaultNow(),
 	updatedAt: timestamp('updated_at')
 		.defaultNow()

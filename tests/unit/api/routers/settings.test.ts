@@ -25,7 +25,10 @@ describe('settingsRouter', () => {
 
 	describe('get', () => {
 		it('returns whatever getAppSettings resolves', async () => {
-			const settings: AppSettings = { agents: { defaults: { claude: 'opus' } } };
+			const settings: AppSettings = {
+				agents: { defaults: { claude: 'opus' } },
+				appearance: { theme: 'dark' },
+			};
 			vi.mocked(getAppSettings).mockResolvedValue(settings);
 
 			const result = await caller.get();
@@ -33,17 +36,21 @@ describe('settingsRouter', () => {
 			expect(getAppSettings).toHaveBeenCalledTimes(1);
 		});
 
-		it('returns the empty defaults when nothing is stored', async () => {
-			vi.mocked(getAppSettings).mockResolvedValue({});
+		it('returns the defaults when nothing is stored', async () => {
+			const defaults: AppSettings = { appearance: { theme: 'dark' } };
+			vi.mocked(getAppSettings).mockResolvedValue(defaults);
 
 			const result = await caller.get();
-			expect(result).toEqual({});
+			expect(result).toEqual(defaults);
 		});
 	});
 
 	describe('update', () => {
 		it('validates input and passes it to updateAppSettings', async () => {
-			const settings: AppSettings = { agents: { defaults: { claude: 'sonnet' } } };
+			const settings: AppSettings = {
+				agents: { defaults: { claude: 'sonnet' } },
+				appearance: { theme: 'light' },
+			};
 			vi.mocked(updateAppSettings).mockResolvedValue(settings);
 
 			const result = await caller.update(settings);

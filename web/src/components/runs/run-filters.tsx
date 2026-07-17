@@ -38,7 +38,7 @@ export function RunFilters({
 	const hasActiveFilters = (showProject && projectId) || status || phase;
 
 	return (
-		<div className="flex flex-wrap items-end gap-4 p-4 border border-zinc-800 rounded-lg bg-[#0F0F11]/40 shadow-sm">
+		<div className="flex flex-wrap items-end gap-4 p-4 border border-zinc-800 rounded-lg bg-panel/40 shadow-sm">
 			{showProject && (
 				<div className="flex-1 min-w-[200px]">
 					<label

@@ -3,7 +3,7 @@ import { Sidebar } from '@/components/layout/sidebar.js';
 
 function RootLayout() {
 	return (
-		<div className="flex min-h-screen flex-col md:flex-row bg-[#0A0A0B]">
+		<div className="flex min-h-screen flex-col md:flex-row bg-canvas">
 			<Sidebar />
 			<main className="flex-1 overflow-y-auto">
 				<div className="p-4 md:p-8">

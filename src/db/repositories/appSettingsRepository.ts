@@ -5,17 +5,23 @@
  * in the single-row `app_settings` table pinned to the `'global'` sentinel id
  * (`src/db/schema/appSettings.ts`).
  *
- * The `settings` jsonb column is already typed with the config's inferred type
- * (`AppSettings`, `src/config/app-settings.ts`), so reading a row back is a
- * re-assembly, not a re-validation — the Zod schema stays the source of truth
- * for the shape (ai/CODING_STANDARDS.md "Zod is the source of truth"). Writes go
+ * The `settings` jsonb column is typed with the config's inferred type
+ * (`AppSettings`, `src/config/app-settings.ts`), but a row written before a
+ * schema change (e.g. before `appearance` existed, issue #250) can still hold
+ * an older shape at runtime despite the compile-time type — so a read
+ * re-validates through `AppSettingsSchema` rather than trusting the column
+ * type verbatim, materializing any since-added defaulted keys. Writes go
  * through the `settings` tRPC router, which validates the input against
  * `AppSettingsSchema` before it ever reaches here.
  */
 
 import { eq } from 'drizzle-orm';
 
-import { APP_SETTINGS_DEFAULTS, type AppSettings } from '../../config/app-settings.js';
+import {
+	APP_SETTINGS_DEFAULTS,
+	type AppSettings,
+	validateAppSettings,
+} from '../../config/app-settings.js';
 import { getDb } from '../client.js';
 import { appSettings } from '../schema/appSettings.js';
 
@@ -35,7 +41,7 @@ export async function getAppSettings(): Promise<AppSettings> {
 		.where(eq(appSettings.id, GLOBAL_ID))
 		.limit(1);
 	const row = rows[0];
-	return row ? row.settings : APP_SETTINGS_DEFAULTS;
+	return row ? validateAppSettings(row.settings) : APP_SETTINGS_DEFAULTS;
 }
 
 /**
