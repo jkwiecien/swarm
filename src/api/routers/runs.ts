@@ -20,29 +20,43 @@ import {
 	requestRunCancellation,
 	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
+import type { SwarmJob } from '../../queue/jobs.js';
 import {
 	enqueueDelayedRetry,
 	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
+	removeQueuedJob,
 } from '../../queue/producer.js';
-import { type QueuedRun, toQueuedRuns } from '../../queue/queued-runs.js';
+import { deriveQueuedPhaseHint, type QueuedRun, toQueuedRuns } from '../../queue/queued-runs.js';
 import { publicProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
-const queuedWorkItemCache = new Map<string, { expiresAt: number; title?: string; url?: string }>();
+const queuedWorkItemCache = new Map<
+	string,
+	{ expiresAt: number; title?: string; url?: string; nodeId?: string }
+>();
 
 function queuedWorkItemCacheKey(item: QueuedRun): string | null {
-	return item.type === 'github-projects' && item.workItemNodeId
-		? `${item.projectId}:${item.workItemNodeId}`
-		: null;
+	if (item.type === 'github-projects' && item.workItemNodeId) {
+		return `${item.projectId}:${item.workItemNodeId}`;
+	}
+	if (item.type === 'github' && item.prNumber) {
+		return `${item.projectId}:github:${item.prNumber}`;
+	}
+	return null;
 }
 
 function withQueuedWorkItemDetails(
 	item: QueuedRun,
-	details: { title?: string; url?: string },
+	details: { title?: string; url?: string; nodeId?: string },
 ): QueuedRun {
-	return { ...item, workItemTitle: details.title, workItemUrl: details.url };
+	return {
+		...item,
+		workItemTitle: details.title,
+		workItemUrl: details.url,
+		workItemNodeId: details.nodeId || item.workItemNodeId,
+	};
 }
 
 async function resolveQueuedWorkItemDetails(
@@ -64,8 +78,7 @@ async function resolveQueuedWorkItemDetails(
 
 async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 	const cacheKey = queuedWorkItemCacheKey(item);
-	const workItemNodeId = item.workItemNodeId;
-	if (!cacheKey || !workItemNodeId) return item;
+	if (!cacheKey) return item;
 
 	const cached = queuedWorkItemCache.get(cacheKey);
 	if (cached && cached.expiresAt > Date.now()) {
@@ -73,8 +86,37 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 	}
 
 	try {
-		const details = await resolveQueuedWorkItemDetails(item, workItemNodeId);
+		let details: { title?: string; url?: string; nodeId?: string } | null = null;
+		if (item.type === 'github-projects' && item.workItemNodeId) {
+			const resolved = await resolveQueuedWorkItemDetails(item, item.workItemNodeId);
+			if (resolved) {
+				details = { ...resolved, nodeId: item.workItemNodeId };
+			}
+		} else if (item.type === 'github' && item.prNumber) {
+			const project = await getProjectByIdFromDb(item.projectId);
+			if (project) {
+				const manifest = getPMProvider(project.pm.type);
+				if (manifest) {
+					const pm = manifest.createProvider(project);
+					const items = await pm.listWorkItems();
+					const match = items.find(
+						(i) =>
+							i.url.endsWith(`/issues/${item.prNumber}`) ||
+							i.url.endsWith(`/pull/${item.prNumber}`),
+					);
+					if (match) {
+						details = {
+							title: match.title || undefined,
+							url: match.url || undefined,
+							nodeId: match.id,
+						};
+					}
+				}
+			}
+		}
+
 		if (!details) return item;
+
 		const cachedDetails = {
 			expiresAt: Date.now() + QUEUED_WORK_ITEM_CACHE_TTL_MS,
 			...details,
@@ -85,6 +127,7 @@ async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
 		logger.debug('runs.queued: backing work item lookup failed; using fallback', {
 			projectId: item.projectId,
 			workItemNodeId: item.workItemNodeId,
+			prNumber: item.prNumber,
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return item;
@@ -465,5 +508,85 @@ export const runsRouter = router({
 
 			// `running`: the worker aborts the agent and settles the row.
 			return { runId: run.id, status: 'terminating' as const };
+		}),
+
+	// Put back action for queued work items (issue #251).
+	// Safely removes a waiting, prioritized, or delayed job and moves its linked card back to backlog.
+	putBack: publicProcedure
+		.input(
+			z.object({
+				jobId: z.string().min(1),
+				projectId: z.string().min(1),
+			}),
+		)
+		.mutation(async ({ input }) => {
+			const project = await getProjectByIdFromDb(input.projectId);
+			if (!project) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Project with ID "${input.projectId}" not found`,
+				});
+			}
+
+			let jobData: SwarmJob;
+			try {
+				jobData = await removeQueuedJob(input.jobId);
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				throw new TRPCError({
+					code: msg.includes('not found') ? 'NOT_FOUND' : 'PRECONDITION_FAILED',
+					message: msg,
+				});
+			}
+
+			const phaseHint = deriveQueuedPhaseHint(jobData);
+			if (phaseHint !== 'board' && phaseHint !== 'review') {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Job phase hint "${phaseHint}" is not supported for Put back.`,
+				});
+			}
+
+			let workItemNodeId: string | undefined;
+			const pmManifest = getPMProvider(project.pm.type);
+			if (!pmManifest) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `PM Provider for type "${project.pm.type}" not found`,
+				});
+			}
+			const pm = pmManifest.createProvider(project);
+
+			if (jobData.type === 'github-projects') {
+				workItemNodeId = jobData.event.itemNodeId;
+			} else if (jobData.type === 'github') {
+				const prNumber = jobData.event.workItemId;
+				if (prNumber) {
+					const items = await pm.listWorkItems();
+					const match = items.find(
+						(item) =>
+							item.url.endsWith(`/issues/${prNumber}`) || item.url.endsWith(`/pull/${prNumber}`),
+					);
+					workItemNodeId = match?.id;
+				}
+			}
+
+			if (!workItemNodeId) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Job has no linked board card.`,
+				});
+			}
+
+			try {
+				await pm.moveWorkItem(workItemNodeId, 'backlog');
+			} catch (error) {
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: `Failed to move board card to backlog: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+
+			return { success: true };
 		}),
 });

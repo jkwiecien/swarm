@@ -320,6 +320,27 @@ export async function removePendingRetryForRun(runId: string): Promise<number> {
 }
 
 /**
+ * Remove a pending job by its id from BullMQ, ensuring it is not active or completed/failed.
+ * Returns the job data so the caller can inspect/act on it.
+ */
+export async function removeQueuedJob(jobId: string): Promise<SwarmJob> {
+	const q = getQueue();
+	const job = await Job.fromId(q, jobId);
+	if (!job) {
+		throw new Error(`Queued job with ID "${jobId}" not found`);
+	}
+	const state = await job.getState();
+	if (state === 'active') {
+		throw new Error(`Job "${jobId}" is active and cannot be put back.`);
+	}
+	if (state === 'completed' || state === 'failed') {
+		throw new Error(`Job "${jobId}" is already finished (state: ${state}).`);
+	}
+	await job.remove();
+	return job.data;
+}
+
+/**
  * Snapshot every job not yet picked up by the worker — the queue-introspection
  * half of the `runs.queued` API (issue #234), the read-only counterpart to
  * {@link enqueueJob}. Pending work lives across three BullMQ sets: `waiting`

@@ -1,10 +1,37 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { QueuedRun } from '@/types/runs.js';
+
+vi.mock('@/lib/trpc.js', () => ({
+	trpcClient: {
+		runs: {
+			putBack: {
+				mutate: vi.fn(),
+			},
+		},
+	},
+	trpc: {
+		projects: {
+			list: {
+				queryOptions: () => ({
+					queryKey: ['projects.list'],
+					queryFn: () => Promise.resolve([]),
+				}),
+			},
+		},
+		runs: {
+			queued: {
+				queryKey: () => ['runs.queued'],
+			},
+		},
+	},
+}));
+
+import { trpcClient } from '@/lib/trpc.js';
 import { QueuedRunsSection } from './queued-runs-section.js';
 import { RunStatusBadge } from './run-status-badge.js';
 
@@ -99,5 +126,37 @@ describe('QueuedRunsSection', () => {
 
 		const runningDot = screen.getByText('Running').querySelector('span');
 		expect(runningDot?.className).toContain('animate-pulse');
+	});
+
+	it('hides the Put back action for unlinked items (no workItemNodeId)', () => {
+		const unlinkedItem: QueuedRun = {
+			...boardItem,
+			workItemNodeId: undefined,
+		};
+		renderSection(<QueuedRunsSection items={[unlinkedItem]} />);
+		expect(screen.queryByRole('button', { name: /Put back/i })).toBeNull();
+	});
+
+	it('hides the Put back action for unsupported phases (e.g. respond-to-review)', () => {
+		const unsupportedItem: QueuedRun = {
+			...boardItem,
+			phaseHint: 'respond-to-review',
+		};
+		renderSection(<QueuedRunsSection items={[unsupportedItem]} />);
+		expect(screen.queryByRole('button', { name: /Put back/i })).toBeNull();
+	});
+
+	it('shows Put back action and opens confirmation modal on click', () => {
+		renderSection(<QueuedRunsSection items={[boardItem]} />);
+
+		const putBackBtn = screen.getByRole('button', { name: /Put back/i });
+		expect(putBackBtn).not.toBeNull();
+
+		fireEvent.click(putBackBtn);
+
+		expect(screen.getByText('Put Back Work Item')).not.toBeNull();
+		expect(
+			screen.getByText(/Are you sure you want to put this queued work item back\?/),
+		).not.toBeNull();
 	});
 });
