@@ -16,11 +16,13 @@ import { GitHubProjectsRouterAdapter } from '../../../router/adapters/github-pro
 import type { PMProviderManifest } from '../manifest.js';
 import { registerPMProvider } from '../registry.js';
 import { githubProjectsConfigSchema } from './config-schema.js';
+import { createGitHubProjectsProvider } from './provider.js';
 
 export const githubProjectsManifest: PMProviderManifest = {
 	id: 'github-projects',
 	label: 'GitHub Projects',
 	category: 'pm',
+	createProvider: createGitHubProjectsProvider,
 	configSchema: githubProjectsConfigSchema,
 	routerAdapter: new GitHubProjectsRouterAdapter(),
 };

@@ -1,6 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
+import { ExternalLink } from 'lucide-react';
 import { formatRelativeTime, formatTimeUntil } from '@/lib/format.js';
-import { queuedPhaseLabel, queuedRunKey, queuedWorkItemLabel } from '@/lib/queued-runs.js';
+import {
+	queuedPhaseLabel,
+	queuedRunKey,
+	queuedWorkItemLabel,
+	queuedWorkItemTitle,
+	queuedWorkItemUrl,
+} from '@/lib/queued-runs.js';
+import { runTableColumnWidths } from '@/lib/run-table-layout.js';
 import { trpc } from '@/lib/trpc.js';
 import type { QueuedRun } from '@/types/runs.js';
 import { RunStatusBadge } from './run-status-badge.js';
@@ -31,6 +39,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 	// stable across renders, so the early return below stays after all hooks.
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectsMap = new Map(projectsQuery.data?.map((p) => [p.id, p]) ?? []);
+	const columnWidths = runTableColumnWidths(showProject);
 
 	if (items.length === 0) return null;
 
@@ -40,7 +49,14 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 				Queued <span className="text-zinc-500">({items.length})</span>
 			</h2>
 			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-				<table className="w-full text-left border-collapse">
+				<table className="w-full table-fixed text-left border-collapse">
+					<colgroup>
+						<col className={columnWidths.phase} />
+						{showProject && <col className={columnWidths.project} />}
+						<col className={columnWidths.task} />
+						<col className="w-[10%]" />
+						<col />
+					</colgroup>
 					<thead>
 						<tr className="bg-zinc-800/30 border-b border-zinc-800">
 							<th className="px-2 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -52,7 +68,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 								</th>
 							)}
 							<th className="px-2 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-								Work item
+								Task / ID
 							</th>
 							<th className="px-2 py-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
 								Status
@@ -73,8 +89,30 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 										{projectsMap.get(item.projectId)?.name || item.projectId}
 									</td>
 								)}
-								<td className="px-2 py-2 text-xs text-zinc-300 font-mono">
-									{queuedWorkItemLabel(item)}
+								<td className="px-2 py-2 text-xs">
+									<div className="flex w-full min-w-0 flex-col gap-1">
+										{queuedWorkItemTitle(item) && (
+											<span
+												className="block w-full truncate text-zinc-200"
+												title={queuedWorkItemTitle(item)}
+											>
+												{queuedWorkItemTitle(item)}
+											</span>
+										)}
+										{queuedWorkItemUrl(item) ? (
+											<a
+												href={queuedWorkItemUrl(item)}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="inline-flex self-start items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
+											>
+												{queuedWorkItemLabel(item)}
+												<ExternalLink className="h-3 w-3" />
+											</a>
+										) : (
+											<span className="font-mono text-zinc-400">{queuedWorkItemLabel(item)}</span>
+										)}
+									</div>
 								</td>
 								<td className="px-2 py-2 text-xs">
 									<RunStatusBadge status="queued" />

@@ -584,7 +584,7 @@ describe('listPendingJobs', () => {
 		]);
 		const { listPendingJobs } = await import('@/queue/producer.js');
 
-		zscore.mockResolvedValueOnce('1700000030000');
+		zscore.mockResolvedValueOnce(String(1700000030000 * 0x1000));
 
 		const snapshots = await listPendingJobs();
 

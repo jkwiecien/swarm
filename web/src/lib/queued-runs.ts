@@ -8,6 +8,14 @@
 
 import type { QueuedPhaseHint, QueuedRun } from '@/types/runs.js';
 import { formatPhase } from './format.js';
+import { parseWorkItemRef, workItemLabel } from './work-item.js';
+
+const PR_DRIVEN_PHASES = new Set([
+	'review',
+	'respond-to-review',
+	'respond-to-ci',
+	'resolve-conflicts',
+]);
 
 /**
  * Human-readable label for a job's best-effort phase hint. `board` covers both
@@ -29,30 +37,33 @@ export function queuedPhaseLabel(hint: QueuedPhaseHint): string {
 }
 
 /**
- * Shorten an opaque GitHub Projects item node id to a stable, readable tail so a
- * board item is identifiable without dumping the full ~30-char id. Short ids are
- * returned unchanged.
- */
-export function shortNodeId(nodeId: string): string {
-	return nodeId.length <= 8 ? nodeId : `…${nodeId.slice(-6)}`;
-}
-
-/**
  * A work-item reference for one queued job:
- * - `github` jobs → `owner/repo #<n>` (or `#<n>` if the repo is somehow absent);
- * - `github-projects` jobs → `<contentType> · <shortNodeId>` (either part may be
- *   missing, so it degrades gracefully to a generic "Board item").
+ * - resolved board jobs use the same Issue/PR label as the persisted Runs list;
+ * - PR-driven GitHub jobs use the same `PR #<n>` label as that list;
+ * - unresolved jobs show an honest em dash instead of an opaque node id.
  */
 export function queuedWorkItemLabel(item: QueuedRun): string {
-	if (item.type === 'github') {
-		const ref = `#${item.prNumber ?? '?'}`;
-		return item.repo ? `${item.repo} ${ref}` : ref;
+	const workItemRef = parseWorkItemRef(item.workItemUrl);
+	if (workItemRef) return workItemLabel(workItemRef);
+	if (item.type === 'github' && item.prNumber) return `PR #${item.prNumber}`;
+	return '—';
+}
+
+export function queuedWorkItemTitle(item: QueuedRun): string | undefined {
+	return item.workItemTitle || undefined;
+}
+
+export function queuedWorkItemUrl(item: QueuedRun): string | undefined {
+	if (item.workItemUrl) return item.workItemUrl;
+	if (
+		item.type === 'github' &&
+		item.repo &&
+		item.prNumber &&
+		PR_DRIVEN_PHASES.has(item.phaseHint)
+	) {
+		return `https://github.com/${item.repo}/pull/${item.prNumber}`;
 	}
-	const parts = [
-		item.contentType,
-		item.workItemNodeId ? shortNodeId(item.workItemNodeId) : undefined,
-	].filter((part): part is string => Boolean(part));
-	return parts.length > 0 ? parts.join(' · ') : 'Board item';
+	return undefined;
 }
 
 /** Stable React key for a queued row — the BullMQ job id is unique per pending job. */

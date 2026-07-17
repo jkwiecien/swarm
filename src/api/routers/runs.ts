@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
+import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
 import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
@@ -12,6 +13,8 @@ import {
 } from '../../db/repositories/runsRepository.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
 import { ReasoningLevelSchema } from '../../harness/models.js';
+import { getPMProvider } from '../../integrations/pm/registry.js';
+import { logger } from '../../lib/logger.js';
 import {
 	clearRunCancellation,
 	requestRunCancellation,
@@ -23,8 +26,75 @@ import {
 	promoteRetryForRun,
 	removePendingRetryForRun,
 } from '../../queue/producer.js';
-import { toQueuedRuns } from '../../queue/queued-runs.js';
+import { type QueuedRun, toQueuedRuns } from '../../queue/queued-runs.js';
 import { publicProcedure, router } from '../trpc.js';
+
+const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
+const queuedWorkItemCache = new Map<string, { expiresAt: number; title?: string; url?: string }>();
+
+function queuedWorkItemCacheKey(item: QueuedRun): string | null {
+	return item.type === 'github-projects' && item.workItemNodeId
+		? `${item.projectId}:${item.workItemNodeId}`
+		: null;
+}
+
+function withQueuedWorkItemDetails(
+	item: QueuedRun,
+	details: { title?: string; url?: string },
+): QueuedRun {
+	return { ...item, workItemTitle: details.title, workItemUrl: details.url };
+}
+
+async function resolveQueuedWorkItemDetails(
+	item: QueuedRun,
+	workItemNodeId: string,
+): Promise<{ title?: string; url?: string } | null> {
+	const project = await getProjectByIdFromDb(item.projectId);
+	if (!project) return null;
+
+	const manifest = getPMProvider(project.pm.type);
+	if (!manifest) return null;
+
+	const workItem = await manifest.createProvider(project).getWorkItem(workItemNodeId);
+	return {
+		title: workItem.title || undefined,
+		url: workItem.url || undefined,
+	};
+}
+
+async function enrichQueuedWorkItem(item: QueuedRun): Promise<QueuedRun> {
+	const cacheKey = queuedWorkItemCacheKey(item);
+	const workItemNodeId = item.workItemNodeId;
+	if (!cacheKey || !workItemNodeId) return item;
+
+	const cached = queuedWorkItemCache.get(cacheKey);
+	if (cached && cached.expiresAt > Date.now()) {
+		return withQueuedWorkItemDetails(item, cached);
+	}
+
+	try {
+		const details = await resolveQueuedWorkItemDetails(item, workItemNodeId);
+		if (!details) return item;
+		const cachedDetails = {
+			expiresAt: Date.now() + QUEUED_WORK_ITEM_CACHE_TTL_MS,
+			...details,
+		};
+		queuedWorkItemCache.set(cacheKey, cachedDetails);
+		return withQueuedWorkItemDetails(item, cachedDetails);
+	} catch (error) {
+		logger.debug('runs.queued: backing work item lookup failed; using fallback', {
+			projectId: item.projectId,
+			workItemNodeId: item.workItemNodeId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return item;
+	}
+}
+
+/** Add the same backing Issue/PR metadata that the persisted runs list uses. */
+async function enrichQueuedWorkItems(items: QueuedRun[]): Promise<QueuedRun[]> {
+	return Promise.all(items.map(enrichQueuedWorkItem));
+}
 
 // `RunStatus`/`RunRow` are local (non-exported) types in the repository, so the
 // router declares its own filter enums — keeping Zod the source of truth for the
@@ -120,7 +190,10 @@ export const runsRouter = router({
 		.input(z.object({ projectId: z.string().min(1).optional() }).optional())
 		.query(async ({ input }) => {
 			const items = toQueuedRuns(await listPendingJobs());
-			return input?.projectId ? items.filter((item) => item.projectId === input.projectId) : items;
+			const scoped = input?.projectId
+				? items.filter((item) => item.projectId === input.projectId)
+				: items;
+			return enrichQueuedWorkItems(scoped);
 		}),
 
 	// Single run by id; NOT_FOUND when unknown (the only not-found path).

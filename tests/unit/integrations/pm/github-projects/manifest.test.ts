@@ -21,6 +21,7 @@ describe('github-projects manifest registration', () => {
 			id: 'github-projects',
 			label: 'GitHub Projects',
 			category: 'pm',
+			createProvider: expect.any(Function),
 		});
 	});
 

@@ -1,3 +1,4 @@
+import '../integrations/entrypoint.js';
 import { pingRouter } from './routers/ping.js';
 import { projectsRouter } from './routers/projects.js';
 import { quotaRouter } from './routers/quota.js';

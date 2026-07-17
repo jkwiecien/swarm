@@ -68,6 +68,10 @@ export const QueuedRunSchema = z.object({
 	workItemNodeId: z.string().optional(),
 	/** `github-projects` jobs only — `Issue` | `PullRequest` | `DraftIssue`. */
 	contentType: z.string().optional(),
+	/** Resolved backing Issue/PR title for a board job, when the PM provider can read it. */
+	workItemTitle: z.string().optional(),
+	/** Resolved backing Issue/PR URL for a board job, when the PM provider can read it. */
+	workItemUrl: z.string().optional(),
 	/** Effective BullMQ priority; 0 is highest. */
 	priority: z.number().int().nonnegative(),
 	/** ISO 8601 — `Job.timestamp`. */

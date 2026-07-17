@@ -19,13 +19,11 @@
  *   signature scheme to declare, and credentials are a fixed
  *   implementer/reviewer/webhookSecret triple (`src/config/schema.ts`), not a
  *   provider-specific role list.
- * - `pmIntegration` (the agent-facing `PMProvider` GraphQL adapter),
- *   `triggerHandlers`, `platformClientFactory`, `extractProjectIdFromJob`. The
- *   concrete `PMProvider` (`github-projects/provider.ts`) and the trigger
- *   handlers (`src/triggers/handlers/`) now exist, but they're reached via a
- *   direct factory / the trigger registry — not through the manifest. With one
- *   provider, threading them through the manifest would be indirection for its
- *   own sake; those fields get added the day a second provider makes the
+ * - `triggerHandlers`, `platformClientFactory`, `extractProjectIdFromJob`. The
+ *   concrete `PMProvider` (`github-projects/provider.ts`) is exposed through
+ *   the manifest's `createProvider` factory for provider-agnostic reads; the
+ *   trigger handlers (`src/triggers/handlers/`) remain in the trigger registry.
+ *   The remaining fields get added the day a second provider makes the
  *   registry lookup earn its keep, not before.
  * - wizard / discovery / lifecycle-conformance fields — SWARM has no setup
  *   wizard, and the conformance harness is explicitly deferred until there's a
@@ -39,7 +37,8 @@
  */
 
 import type { z } from 'zod';
-import type { PMType } from '../../pm/types.js';
+import type { ProjectConfig } from '../../config/schema.js';
+import type { PMProvider, PMType } from '../../pm/types.js';
 import type { GitHubProjectsRouterAdapter } from '../../router/adapters/github-projects.js';
 
 export interface PMProviderManifest {
@@ -48,6 +47,8 @@ export interface PMProviderManifest {
 	/** Human-readable provider name (for logs and any future provider-select UI). */
 	readonly label: string;
 	readonly category: 'pm';
+	/** Build the provider implementation for a persisted project config. */
+	readonly createProvider: (project: ProjectConfig) => PMProvider;
 
 	/**
 	 * The provider's own persisted-config Zod schema — the single source of truth

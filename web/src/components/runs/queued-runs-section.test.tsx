@@ -28,6 +28,8 @@ const boardItem: QueuedRun = {
 	phaseHint: 'board',
 	workItemNodeId: 'PVTI_lADODb1Ycc4Bcnwuzabc123',
 	contentType: 'Issue',
+	workItemTitle: 'Fix the widget',
+	workItemUrl: 'https://github.com/acme/widgets/issues/42',
 	priority: 5,
 	// Enqueued *earlier* than the github item on purpose (see the ordering test).
 	enqueuedAt: '2026-07-17T09:00:00.000Z',
@@ -49,14 +51,16 @@ describe('QueuedRunsSection', () => {
 		expect(screen.queryByTestId('queued-runs-section')).toBeNull();
 	});
 
-	it('renders a row per item with the right phase label and work-item reference', () => {
+	it('renders a row per item with the right phase label and Task / ID reference', () => {
 		renderSection(<QueuedRunsSection items={[githubItem, boardItem]} />);
 		const section = screen.getByTestId('queued-runs-section');
 
 		expect(within(section).getByText('Review')).not.toBeNull();
-		expect(within(section).getByText(/acme\/widgets #42/)).not.toBeNull();
+		expect(within(section).getByText(/PR #42/)).not.toBeNull();
 		expect(within(section).getByText('Board (Planning/Impl)')).not.toBeNull();
-		expect(within(section).getByText(/Issue.*abc123/)).not.toBeNull();
+		expect(within(section).getByText('Fix the widget')).not.toBeNull();
+		expect(within(section).getByText('Issue: #42')).not.toBeNull();
+		expect(within(section).getByText('Task / ID')).not.toBeNull();
 	});
 
 	it('preserves the server-provided order (no client-side re-sort)', () => {
@@ -67,8 +71,8 @@ describe('QueuedRunsSection', () => {
 		const bodyRows = within(section).getAllByRole('row').slice(1); // drop the header row
 
 		expect(bodyRows).toHaveLength(2);
-		expect(within(bodyRows[0]).getByText(/acme\/widgets #42/)).not.toBeNull();
-		expect(within(bodyRows[1]).getByText(/Issue.*abc123/)).not.toBeNull();
+		expect(within(bodyRows[0]).getByText(/PR #42/)).not.toBeNull();
+		expect(within(bodyRows[1]).getByText('Issue: #42')).not.toBeNull();
 	});
 
 	it('shows when a delayed item will run', () => {

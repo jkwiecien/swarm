@@ -9,10 +9,23 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	markRunUserTerminated: vi.fn(),
 }));
 
+vi.mock('@/db/repositories/projectsRepository.js', () => ({
+	getProjectByIdFromDb: vi.fn(),
+}));
+
+vi.mock('@/integrations/pm/registry.js', () => ({
+	getPMProvider: vi.fn(),
+}));
+
 vi.mock('@/queue/producer.js', () => ({
+	listPendingJobs: vi.fn(),
 	promoteRetryForRun: vi.fn(),
 	enqueueDelayedRetry: vi.fn(),
 	removePendingRetryForRun: vi.fn(),
+}));
+
+vi.mock('@/queue/queued-runs.js', () => ({
+	toQueuedRuns: vi.fn(),
 }));
 
 vi.mock('@/queue/cancellation.js', () => ({
@@ -22,6 +35,7 @@ vi.mock('@/queue/cancellation.js', () => ({
 }));
 
 import { runsRouter } from '@/api/routers/runs.js';
+import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
@@ -31,6 +45,7 @@ import {
 	resetRunToRunning,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
+import { getPMProvider } from '@/integrations/pm/registry.js';
 import {
 	clearRunCancellation,
 	requestRunCancellation,
@@ -38,10 +53,16 @@ import {
 } from '@/queue/cancellation.js';
 import {
 	enqueueDelayedRetry,
+	listPendingJobs,
 	promoteRetryForRun,
 	removePendingRetryForRun,
 } from '@/queue/producer.js';
-import { createMockGitHubProjectsWebhookJob } from '../../../helpers/factories.js';
+import { toQueuedRuns } from '@/queue/queued-runs.js';
+import {
+	createMockGitHubProjectsWebhookJob,
+	createMockProjectConfig,
+	createMockWorkItem,
+} from '../../../helpers/factories.js';
 
 type RunRow = typeof runs.$inferSelect;
 
@@ -96,6 +117,10 @@ describe('runsRouter', () => {
 		vi.mocked(removePendingRetryForRun).mockReset();
 		vi.mocked(requestRunCancellation).mockReset();
 		vi.mocked(clearRunCancellation).mockReset();
+		vi.mocked(listPendingJobs).mockReset();
+		vi.mocked(toQueuedRuns).mockReset();
+		vi.mocked(getProjectByIdFromDb).mockReset();
+		vi.mocked(getPMProvider).mockReset();
 	});
 
 	describe('list', () => {
@@ -169,6 +194,64 @@ describe('runsRouter', () => {
 				caller.list({ phase: 'bogus' as any }),
 			).rejects.toThrow();
 			expect(listRunsFromDb).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('queued', () => {
+		it('enriches board jobs with the same title and Issue/PR URL metadata as runs', async () => {
+			const queuedItem = {
+				jobId: 'job-board',
+				projectId: 'p1',
+				type: 'github-projects' as const,
+				state: 'prioritized' as const,
+				phaseHint: 'board' as const,
+				workItemNodeId: 'PVTI_item',
+				contentType: 'Issue',
+				priority: 10,
+				enqueuedAt: '2026-07-17T10:00:00.000Z',
+			};
+			const workItem = createMockWorkItem({
+				title: 'Fix the widget',
+				url: 'https://github.com/acme/widgets/issues/42',
+			});
+			const getWorkItem = vi.fn().mockResolvedValue(workItem);
+			vi.mocked(listPendingJobs).mockResolvedValue([]);
+			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem }),
+			} as never);
+
+			const result = await caller.queued({});
+
+			expect(result).toEqual([
+				{
+					...queuedItem,
+					workItemTitle: 'Fix the widget',
+					workItemUrl: 'https://github.com/acme/widgets/issues/42',
+				},
+			]);
+			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
+			expect(getPMProvider).toHaveBeenCalledWith('github-projects');
+			expect(getWorkItem).toHaveBeenCalledWith('PVTI_item');
+		});
+
+		it('returns the queued item when backing metadata cannot be resolved', async () => {
+			const queuedItem = {
+				jobId: 'job-board-missing',
+				projectId: 'missing-project',
+				type: 'github-projects' as const,
+				state: 'prioritized' as const,
+				phaseHint: 'board' as const,
+				workItemNodeId: 'PVTI_missing',
+				priority: 10,
+				enqueuedAt: '2026-07-17T10:00:00.000Z',
+			};
+			vi.mocked(listPendingJobs).mockResolvedValue([]);
+			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
+
+			expect(await caller.queued({})).toEqual([queuedItem]);
 		});
 	});
 

@@ -8,6 +8,7 @@ import {
 	formatTokensCompact,
 } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
+import { runTableColumnWidths } from '@/lib/run-table-layout.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -94,6 +95,7 @@ export function RunsTable({
 	const navigate = useNavigate();
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectsMap = new Map(projectsQuery.data?.map((p) => [p.id, p]) ?? []);
+	const columnWidths = runTableColumnWidths(showProject);
 	const now = useNow(runs.some((run) => run.status === 'running'));
 
 	const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
@@ -107,7 +109,17 @@ export function RunsTable({
 	return (
 		<div className="space-y-4">
 			<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-				<table className="w-full text-left border-collapse">
+				<table className="w-full table-fixed text-left border-collapse">
+					<colgroup>
+						<col className={columnWidths.phase} />
+						{showProject && <col className={columnWidths.project} />}
+						<col className={columnWidths.task} />
+						<col className="w-[10%]" />
+						<col className="w-[11%]" />
+						<col className="w-[11%]" />
+						<col className="w-[12%]" />
+						<col />
+					</colgroup>
 					<thead>
 						<tr className="bg-zinc-800/30 border-b border-zinc-800">
 							<th className="px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400">
@@ -119,7 +131,7 @@ export function RunsTable({
 								</th>
 							)}
 							<th
-								className={`${showProject ? 'w-[24%]' : 'w-[32%]'} px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400`}
+								className={`${columnWidths.task} px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400`}
 							>
 								Task / ID
 							</th>
@@ -155,7 +167,7 @@ export function RunsTable({
 										{projectsMap.get(run.projectId)?.name || run.projectId}
 									</td>
 								)}
-								<td className={`${showProject ? 'w-[24%]' : 'w-[32%]'} px-2 py-3 text-sm`}>
+								<td className={`${columnWidths.task} px-2 py-3 text-sm`}>
 									<WorkItemCell run={run} repo={projectsMap.get(run.projectId)?.repo} />
 								</td>
 								<td className="px-2 py-3 text-sm">

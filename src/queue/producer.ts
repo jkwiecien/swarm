@@ -18,6 +18,17 @@ import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob } from './jobs.js';
 import type { PendingJobSnapshot, PendingJobState } from './queued-runs.js';
 
+/** BullMQ packs delayed timestamps into the sorted-set score with 12 bits of ordering space. */
+const BULLMQ_DELAYED_SCORE_FACTOR = 0x1000;
+
+function decodeBullMQDelayedScore(score: string | null): number | null {
+	if (!score) return null;
+	const packedScore = Number(score);
+	return Number.isFinite(packedScore)
+		? Math.floor(packedScore / BULLMQ_DELAYED_SCORE_FACTOR)
+		: null;
+}
+
 let queue: Queue<SwarmJob> | null = null;
 
 /**
@@ -343,7 +354,7 @@ export async function listPendingJobs(): Promise<PendingJobSnapshot[]> {
 						if (!job.id) return null;
 						try {
 							const score = await client.zscore(delayedKey, job.id);
-							return score ? parseInt(score, 10) : null;
+							return decodeBullMQDelayedScore(score);
 						} catch {
 							return null;
 						}
