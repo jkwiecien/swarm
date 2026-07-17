@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { EmptyRunsState } from '@/components/runs/empty-runs-state.js';
+import { QueuedRunsSection } from '@/components/runs/queued-runs-section.js';
 import { RunFilters } from '@/components/runs/run-filters.js';
 import { RunsTable } from '@/components/runs/runs-table.js';
-import { runsListRefetchInterval } from '@/lib/runs-refresh.js';
+import { queuedListRefetchInterval, runsListRefetchInterval } from '@/lib/runs-refresh.js';
 import { trpc } from '@/lib/trpc.js';
 import type { RunPhaseFilter, RunRow, RunStatusFilter } from '@/types/runs.js';
 
@@ -39,6 +40,13 @@ export function ProjectRunsPanel({ projectId }: ProjectRunsPanelProps) {
 		refetchInterval: (query) => runsListRefetchInterval(query.state.data),
 	});
 
+	// Enqueued-but-not-yet-running work for this project (issue #238). Scoped to
+	// `projectId`; the Project column is dropped since every row is this project.
+	const queuedQuery = useQuery({
+		...trpc.runs.queued.queryOptions({ projectId }),
+		refetchInterval: (query) => queuedListRefetchInterval(query.state.data),
+	});
+
 	const hasActiveFilters = !!(status || phase);
 
 	// Any filter change resets to the first page, matching the global Runs view.
@@ -67,6 +75,8 @@ export function ProjectRunsPanel({ projectId }: ProjectRunsPanelProps) {
 				onPhaseChange={handlePhaseChange}
 				onClear={handleClearFilters}
 			/>
+
+			<QueuedRunsSection items={queuedQuery.data ?? []} showProject={false} />
 
 			{runsQuery.isLoading ? (
 				<div className="text-sm text-zinc-400">Loading runs history…</div>
