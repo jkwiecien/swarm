@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { PersonaIdentities } from '@/integrations/scm/github/personas.js';
+import { GitHubRouterAdapter } from '@/router/adapters/github.js';
 import { createRespondToReviewTrigger } from '@/triggers/handlers/respond-to-review.js';
 import type { TriggerContext } from '@/triggers/types.js';
 import {
@@ -82,6 +83,37 @@ describe('respond-to-review trigger', () => {
 				reviewId: '555',
 				headSha: HEAD_SHA,
 			});
+		});
+
+		it('dispatches with the review-pinned SHA when the PR head SHA is absent', async () => {
+			const event = new GitHubRouterAdapter().parseWebhook('pull_request_review', {
+				action: 'submitted',
+				repository: { full_name: PROJECT.repo },
+				pull_request: { number: 17, head: { ref: 'issue-17' } },
+				review: {
+					id: 555,
+					state: 'changes_requested',
+					commit_id: HEAD_SHA,
+				},
+				sender: { login: 'swarm-rev' },
+			});
+			if (!event) throw new Error('expected pull_request_review to parse');
+
+			const result = await handler.handle({ project: PROJECT, source: 'github', event });
+			expect(result).toMatchObject({ phase: 'respond-to-review', headSha: HEAD_SHA });
+		});
+
+		it('skips a parsed review webhook when neither SHA source is present', async () => {
+			const event = new GitHubRouterAdapter().parseWebhook('pull_request_review', {
+				action: 'submitted',
+				repository: { full_name: PROJECT.repo },
+				pull_request: { number: 17, head: { ref: 'issue-17' } },
+				review: { id: 555, state: 'changes_requested' },
+				sender: { login: 'swarm-rev' },
+			});
+			if (!event) throw new Error('expected pull_request_review to parse');
+
+			expect(await handler.handle({ project: PROJECT, source: 'github', event })).toBeNull();
 		});
 
 		it('re-dispatches the same review once on a prioritized continuation retry', async () => {
