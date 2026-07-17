@@ -1,6 +1,6 @@
 ---
 name: solve-issue
-description: Manual interactive workflow that implements a GitHub issue from the project's GitHub Projects board end-to-end in its own git worktree — implementation, then independent subagent review and response. Never use for a SWARM pipeline agent or a prompt assigning one pipeline phase.
+description: Manual interactive workflow that implements a GitHub issue end-to-end in its own git worktree — implementation, then independent subagent review and response. Never use for a SWARM pipeline agent or a prompt assigning one pipeline phase.
 ---
 
 # Solve Issue Skill
@@ -9,7 +9,7 @@ description: Manual interactive workflow that implements a GitHub issue from the
 
 Trigger with `/solve-issue <issue-number>` — e.g. `/solve-issue 6`. Also trigger by asking to "solve issue 6" / "work issue 6" / "pick up issue 6 from the board".
 
-This is a manual, single-persona stand-in for the automated pipeline described in `PROJECT.md` §5.1–§5.4 (Planning → Implementation → Review → Respond-to-review). It runs a **lightweight** Planning phase — a short written plan appended to the issue, no separate Antigravity/CLI persona — before implementing; see Step 3. Since SWARM's own dual-persona bot setup (`ai/CODING_STANDARDS.md` "Loop prevention") doesn't exist yet, all GitHub actions here happen under whatever `gh` identity is currently active — that's fine because this skill runs once, linearly, on explicit human invocation; it isn't a webhook-triggered loop.
+This is a manual, single-persona stand-in for the automated pipeline described in `PROJECT.md` §5.1–§5.4 (Planning → Implementation → Review → Respond-to-review). It runs a **lightweight** Planning phase — a short written plan appended to the issue, no separate Antigravity/CLI persona — before implementing; see Step 3. Since SWARM's own dual-persona bot setup (`ai/CODING_STANDARDS.md` "Loop prevention") doesn't exist yet, all GitHub actions here happen under whatever `gh` identity is currently active — that's fine because this skill runs once, linearly, on explicit human invocation; it isn't a webhook-triggered loop. This workflow deliberately never reads, adds, or updates GitHub Projects items or statuses.
 
 **Pipeline exclusion:** Never use this skill when the prompt identifies the agent as a
 SWARM pipeline agent or assigns a single phase such as Planning, Implementation, Review,
@@ -30,13 +30,7 @@ Before any GitHub action, run the account check from `ai/RULES.md` §3 (`gh auth
 
 1. The argument is a bare GitHub issue number in `jkwiecien/swarm`.
 2. Fetch it: `gh issue view <N> --repo jkwiecien/swarm --json number,title,body,state,url`. If it doesn't exist, stop and tell the user rather than guessing which task they meant. If it's already closed, confirm with the user before reopening/continuing.
-3. Find its project item and current Status (`ai/RULES.md` §5 has the project id/field ids):
-   ```bash
-   gh project item-list 3 --owner jkwiecien --format json --limit 100 \
-     | jq '.items[] | select(.content.number == <N>)'
-   ```
-   If it isn't on the board, stop and ask. If its Status is already `Planning`, `In progress`, `In review`, or `Done`, confirm with the user before proceeding — someone may already be working it.
-4. Read the issue title/body in full; that's the spec. If it's underspecified and the intent isn't obvious from `PROJECT.md` / `ai/ARCHITECTURE.md`, stop and ask — don't invent scope.
+3. Read the issue title/body in full; that's the spec. If it's underspecified and the intent isn't obvious from `PROJECT.md` / `ai/ARCHITECTURE.md`, stop and ask — don't invent scope.
 
 ### Step 2: Provision a worktree
 
@@ -62,33 +56,23 @@ Per `ai/ARCHITECTURE.md` "Worktree lifecycle": worktrees live under `.swarm-work
    ```
 4. All remaining steps run with CWD set to that worktree path (`cd .swarm-workspaces/issue-<N>-<slug>`), including subagents spawned in Steps 5–6 — give them the absolute worktree path explicitly since they don't inherit your shell CWD.
 
-### Step 3: Plan (move to "Planning", write the plan, then "In progress")
+### Step 3: Plan
 
-Before writing any code, do a short planning pass and record it on the issue. `<item-id>` is the `.id` field from the Step 1.3 lookup; all field/option ids are documented in `ai/RULES.md` §5.
+Before writing any code, do a short planning pass and record it on the issue.
 
-1. Move the project item to **Planning**:
-   ```bash
-   gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
-     --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 61e4505c
-   ```
-2. Read the issue spec (from Step 1) plus `ai/ARCHITECTURE.md` / `PROJECT.md` as needed, and write a **concise** implementation plan: the files you expect to add/change, the approach, and anything you're deliberately leaving out of scope. Keep it short — a handful of bullets, not a design doc.
-3. Append the plan to the **issue body** (not a comment), preserving the original spec. Fetch the current body, append a `## Plan` section, and write it back:
+1. Read the issue spec (from Step 1) plus `ai/ARCHITECTURE.md` / `PROJECT.md` as needed, and write a **concise** implementation plan: the files you expect to add/change, the approach, and anything you're deliberately leaving out of scope. Keep it short — a handful of bullets, not a design doc.
+2. Append the plan to the **issue body** (not a comment), preserving the original spec. Fetch the current body, append a `## Plan` section, and write it back:
    ```bash
    body=$(gh issue view <N> --repo jkwiecien/swarm --json body -q .body)
    printf '%s\n\n## Plan\n\n<your plan markdown>\n' "$body" \
      | gh issue edit <N> --repo jkwiecien/swarm --body-file -
    ```
    (If the body already has a `## Plan` section from a previous run, replace that section rather than appending a second one.)
-4. Move the project item to **In progress**:
-   ```bash
-   gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
-     --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 47fc9ee4
-   ```
 
 ### Step 4: Implement (you do this directly — no subagent)
 
 1. Read `ai/CODING_STANDARDS.md`, `ai/ARCHITECTURE.md`, and `ai/TESTING.md` before writing any code — this codebase is deliberately styled after Cascade, and those docs explain the conventions to match.
-2. Implement the task fully, inside the worktree. Keep the diff small and reviewable — resist scope creep beyond what the issue describes; if you notice unrelated follow-up work, file it as a new issue and add it to the project board with Status `Backlog` instead of doing it now.
+2. Implement the task fully, inside the worktree. Keep the diff small and reviewable — resist scope creep beyond what the issue describes; if you notice unrelated follow-up work, file it as a new issue instead of doing it now.
 3. Run lint, typecheck, and the relevant tests per `ai/TESTING.md`. Fix whatever they surface — don't hand this off to review with a red build.
 4. Commit the implementation with a conventional-commit message (`feat(...): ...`, `fix(...): ...`).
 5. Push and open the PR, closing the issue on merge:
@@ -98,7 +82,6 @@ Before writing any code, do a short planning pass and record it on the issue. `<
 
    <summary of the change>"
    ```
-6. Move the project item's Status to `In review` (same command shape as Step 3, option id `df73e18b`).
 
 ### Step 5: Independent review (subagent)
 
@@ -138,7 +121,7 @@ Spawn another subagent — not the same one, and not you — to act as the imple
 ### Step 7: Wrap up
 
 1. Report the PR URL, what the reviewer subagent flagged, and how the respond subagent handled each point (fixed vs. pushed back, with rationale).
-2. Confirm the project item's Status is still `In review` — leave it there, and leave the worktree in place (don't `git worktree remove` yet — a further review round may still need it).
+2. Leave the worktree in place (don't `git worktree remove` yet — a further review round may still need it).
 3. Leave the PR open for a human to merge.
 
 ### Step 8: Cleanup (only once the user confirms the PR merged)
@@ -148,7 +131,5 @@ Don't do this proactively — only after the user says the PR was merged:
 ```bash
 git worktree remove --force .swarm-workspaces/issue-<N>-<slug>
 git branch -d issue-<N>-<slug> 2>/dev/null || true
-gh project item-edit --id <item-id> --project-id PVT_kwHOAC3TF84BcNwD \
-  --field-id PVTSSF_lAHOAC3TF84BcNwDzhW4MKo --single-select-option-id 98236657
 ```
 The `Closes #<N>` in the PR body auto-closes the issue on merge — no separate `gh issue close` needed.
