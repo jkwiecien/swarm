@@ -114,11 +114,11 @@ export function RunsTable({
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}
 						<col className={columnWidths.task} />
-						<col className="w-[10%]" />
-						<col className="w-[11%]" />
-						<col className="w-[11%]" />
-						<col className="w-[12%]" />
-						<col />
+						<col className={columnWidths.status} />
+						<col className={columnWidths.started} />
+						<col className={columnWidths.duration} />
+						<col className={columnWidths.model} />
+						<col className={columnWidths.tokens} />
 					</colgroup>
 					<thead>
 						<tr className="bg-zinc-800/30 border-b border-zinc-800">

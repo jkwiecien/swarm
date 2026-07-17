@@ -54,7 +54,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}
 						<col className={columnWidths.task} />
-						<col className="w-[10%]" />
+						<col className={columnWidths.status} />
 						<col />
 					</colgroup>
 					<thead>
