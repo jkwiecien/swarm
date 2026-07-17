@@ -211,17 +211,12 @@ export async function commitPreparedTree(
 	identity: { name: string; email: string },
 ): Promise<string> {
 	await validatePreparedTree(cwd);
-	await git(cwd, [
-		'add',
-		'--all',
-		'--',
-		'.',
-		...SCRATCH_PATHSPECS.map((path) =>
-			path.startsWith(':(glob)')
-				? `:(exclude,glob)${path.slice(':(glob)'.length)}`
-				: `:(exclude)${path}`,
-		),
-	]);
+	await git(cwd, ['add', '--all', '--', '.']);
+	// `git add` treats an explicitly named ignored path as an error, even when it
+	// is an exclude pathspec. Unstage scratch after adding instead: ignored files
+	// are never explicitly named, while non-ignored delegation artifacts stay out
+	// of the delivery commit.
+	await git(cwd, ['reset', '--quiet', '--', ...SCRATCH_PATHSPECS]);
 	const staged = await git(cwd, ['diff', '--cached', '--name-only']);
 	if (!staged)
 		throw new Error(

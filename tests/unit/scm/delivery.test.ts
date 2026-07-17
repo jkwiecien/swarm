@@ -89,6 +89,26 @@ describe('SCM delivery hand-offs', () => {
 		);
 	});
 
+	it('commits deliverable changes when hand-off artifacts are ignored', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
+		roots.push(root);
+		fixtureGit(root, ['init']);
+		writeFileSync(
+			join(root, '.gitignore'),
+			['implementation_handoff.json', '.swarm_delivery.json'].join('\n'),
+		);
+		writeFileSync(join(root, 'change.txt'), 'prepared\n');
+		writeFileSync(join(root, 'implementation_handoff.json'), '{}\n');
+		writeFileSync(join(root, '.swarm_delivery.json'), '{}\n');
+
+		const sha = await commitPreparedTree(root, 'feat: deliver', {
+			name: 'swarm-implementer',
+			email: 'swarm-implementer@users.noreply.github.com',
+		});
+		const committed = fixtureGit(root, ['show', '--format=', '--name-only', sha]);
+		expect(committed.trim().split('\n')).toEqual(['.gitignore', 'change.txt']);
+	});
+
 	it('excludes every delegation lifecycle artifact from a delegated prepared tree', async () => {
 		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
 		roots.push(root);
