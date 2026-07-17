@@ -25,6 +25,14 @@ const CAPACITY_TRANSCRIPT = readFileSync(
 	new URL('../../fixtures/agent-failure/codex-capacity-transcript.txt', import.meta.url),
 	'utf8',
 );
+const CLAUDE_529_TRANSCRIPT = readFileSync(
+	new URL('../../fixtures/agent-failure/claude-529-overloaded-transcript.txt', import.meta.url),
+	'utf8',
+);
+const CLAUDE_529_REPEATED_TRANSCRIPT = readFileSync(
+	new URL('../../fixtures/agent-failure/claude-529-repeated-transcript.txt', import.meta.url),
+	'utf8',
+);
 
 describe('classifyAgentFailure', () => {
 	it('classifies the observed Claude session-limit banner as rate-limit', () => {
@@ -158,6 +166,81 @@ describe('classifyAgentFailure', () => {
 			);
 			expect(failure.kind).toBe('error');
 		}
+	});
+
+	it('classifies the observed Claude 529 overload banner as capacity', () => {
+		// The literal terminal banner from run cdbba4f7… (issue #229): Anthropic's
+		// documented temporary-overload response. Transient → defer + retry, not a
+		// terminal failure that clears the session/worktree.
+		const failure = classifyAgentFailure(
+			result({ cli: 'claude', stderr: 'API Error: 529 Overloaded. Try again in a moment.' }),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('classifies a Claude overloaded_error type as capacity', () => {
+		// The raw JSON error type Anthropic returns with a 529, on its own.
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+			}),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('classifies the observed Claude 529 transcript as capacity despite borrowed 429/reset text', () => {
+		const failure = classifyAgentFailure(
+			result({ cli: 'claude', stdout: CLAUDE_529_TRANSCRIPT }),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it("classifies Claude Code's repeated-529 retry transcript as capacity", () => {
+		const failure = classifyAgentFailure(
+			result({ cli: 'claude', stdout: CLAUDE_529_REPEATED_TRANSCRIPT }),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('does not classify a bare 529 with no "overloaded" as Claude capacity', () => {
+		// The issue forbids a bare-status-code matcher: reviewed code, tool output,
+		// or a quoted HTTP number can mention 529 innocuously. Only 529 paired with
+		// "overloaded" (or the overloaded_error type) is the provider banner.
+		for (const text of [
+			'HTTP 529 returned by the upstream proxy',
+			'the retry policy handles 5xx codes including 529',
+			'assert(res.status !== 529)',
+		]) {
+			expect(classifyAgentFailure(result({ cli: 'claude', stderr: text }), NOW).kind).toBe('error');
+		}
+	});
+
+	it('does not classify a non-Claude run as capacity even when 529 Overloaded appears', () => {
+		// Symmetric to the Codex gate: a Codex/Antigravity run reviewing code or logs
+		// about Anthropic's 529 must not be read as that CLI itself being overloaded.
+		for (const cli of ['codex', 'antigravity'] as const) {
+			const failure = classifyAgentFailure(
+				result({ cli, stderr: 'API Error: 529 Overloaded. Try again in a moment.' }),
+				NOW,
+			);
+			expect(failure.kind).toBe('error');
+		}
+	});
+
+	it('does not classify a Claude 529 overload banner outside the terminal window', () => {
+		// A 529 the agent quoted earlier in the transcript (then continued past) is
+		// borrowed text, not the run's terminal cause — it must stay a plain error.
+		const body = ['API Error: 529 Overloaded. Try again in a moment.', ...Array(16).fill('work')];
+		const failure = classifyAgentFailure(
+			result({ cli: 'claude', stdout: `${body.join('\n')}\nTypeError: boom` }),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
 	});
 
 	it('treats a timed-out run as a timeout regardless of its output', () => {

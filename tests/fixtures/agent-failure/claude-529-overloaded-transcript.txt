@@ -1,0 +1,5 @@
+Reviewing the retry policy: the code defers on HTTP 429 Too Many Requests and resets 1:40pm (Europe/Warsaw).
+Reading src/worker/deferred-retry.ts
+Analyzing capacity backoff budget.
+Drafting the classifier change.
+API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment.
