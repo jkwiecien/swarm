@@ -119,7 +119,7 @@ export function RunsTable({
 								</th>
 							)}
 							<th
-								className={`${showProject ? 'w-[30%]' : 'w-[40%]'} px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400`}
+								className={`${showProject ? 'w-[24%]' : 'w-[32%]'} px-2 py-3 text-xs font-semibold uppercase tracking-wider text-zinc-400`}
 							>
 								Task / ID
 							</th>
@@ -155,13 +155,15 @@ export function RunsTable({
 										{projectsMap.get(run.projectId)?.name || run.projectId}
 									</td>
 								)}
-								<td className={`${showProject ? 'w-[30%]' : 'w-[40%]'} px-2 py-3 text-sm`}>
+								<td className={`${showProject ? 'w-[24%]' : 'w-[32%]'} px-2 py-3 text-sm`}>
 									<WorkItemCell run={run} repo={projectsMap.get(run.projectId)?.repo} />
 								</td>
 								<td className="px-2 py-3 text-sm">
 									<RunStatusBadge
 										status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
 										timedOut={run.timedOut}
+										phase={run.phase}
+										reviewVerdict={run.reviewVerdict}
 									/>
 								</td>
 								<td className="px-2 py-3 text-sm text-zinc-400">

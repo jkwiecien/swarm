@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
-// The web package tests pure helpers only (no rendered components yet), so a
-// node environment is enough — no jsdom / @testing-library machinery. Mirror the
-// `@` → web/src alias so imports resolve the same way tsc/vite do.
+// Most web tests exercise pure helpers, so a node environment is the default;
+// component tests opt into jsdom + @testing-library per-file with a
+// `// @vitest-environment jsdom` pragma. Mirror the `@` → web/src alias so
+// imports resolve the same way tsc/vite do.
 export default defineConfig({
 	test: {
 		name: 'web',
