@@ -961,7 +961,6 @@ interface AgentConfigurationFormProps {
 	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleLightModelChange: (cli: 'claude' | 'codex', value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -994,7 +993,6 @@ function AgentConfigurationForm({
 	handleReasoningChange,
 	handleTimeoutChange,
 	handlePromptChange,
-	handleLightModelChange,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -1037,62 +1035,60 @@ function AgentConfigurationForm({
 					onBack={onBack}
 				/>
 			) : (
-				<>
-					<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
-						<div>
-							<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-								Phases Configuration
-							</h2>
-							<p className="text-xs text-zinc-400 mb-4">
-								Select a phase to configure its agent CLI, model, and an optional custom prompt.
-								Unset values fall back to the pipeline's coded defaults.
-							</p>
+				<div className="border border-zinc-800 rounded-lg bg-[#0F0F11]/40 p-6 shadow-sm">
+					<div>
+						<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+							Phases Configuration
+						</h2>
+						<p className="text-xs text-zinc-400 mb-4">
+							Select a phase to configure its agent CLI, model, and an optional custom prompt. Unset
+							values fall back to the pipeline's coded defaults.
+						</p>
 
-							<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
-								<table className="w-full text-left border-collapse">
-									<thead>
-										<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-											<th className="px-4 py-3">Phase</th>
-											<th className="px-4 py-3">Enabled</th>
-											<th className="px-4 py-3">Auto-advance</th>
-											<th className="px-4 py-3">Configuration</th>
-											<th className="px-4 py-3">
-												<span className="sr-only">Open</span>
-											</th>
-										</tr>
-									</thead>
-									<tbody className="divide-y divide-zinc-800/60">
-										{PHASES.map((phase) => {
-											const autoAdvancePhase = autoAdvanceConfigPhase(phase);
-											return (
-												<PhaseConfigRow
-													key={phase}
-													phase={phase}
-													config={agents[phase] ?? {}}
-													isPending={isPending}
-													enabled={
-														TOGGLEABLE_PHASES.has(phase)
-															? pipelineEnabled[phase as PipelineTogglePhase]
-															: undefined
-													}
-													enabledDisabled={
-														phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
-													}
-													autoAdvance={
-														autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
-													}
-													handleEnabledChange={handleEnabledChange}
-													handleAutoAdvanceChange={handleAutoAdvanceChange}
-													onSelect={onSelectPhase}
-												/>
-											);
-										})}
-									</tbody>
-								</table>
-							</div>
+						<div className="border border-zinc-800 rounded-md overflow-hidden bg-[#0F0F11]/20 shadow-sm">
+							<table className="w-full text-left border-collapse">
+								<thead>
+									<tr className="bg-zinc-800/30 border-b border-zinc-800 text-xs uppercase tracking-wider text-zinc-400 font-semibold">
+										<th className="px-4 py-3">Phase</th>
+										<th className="px-4 py-3">Enabled</th>
+										<th className="px-4 py-3">Auto-advance</th>
+										<th className="px-4 py-3">Configuration</th>
+										<th className="px-4 py-3">
+											<span className="sr-only">Open</span>
+										</th>
+									</tr>
+								</thead>
+								<tbody className="divide-y divide-zinc-800/60">
+									{PHASES.map((phase) => {
+										const autoAdvancePhase = autoAdvanceConfigPhase(phase);
+										return (
+											<PhaseConfigRow
+												key={phase}
+												phase={phase}
+												config={agents[phase] ?? {}}
+												isPending={isPending}
+												enabled={
+													TOGGLEABLE_PHASES.has(phase)
+														? pipelineEnabled[phase as PipelineTogglePhase]
+														: undefined
+												}
+												enabledDisabled={
+													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
+												}
+												autoAdvance={
+													autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
+												}
+												handleEnabledChange={handleEnabledChange}
+												handleAutoAdvanceChange={handleAutoAdvanceChange}
+												onSelect={onSelectPhase}
+											/>
+										);
+									})}
+								</tbody>
+							</table>
 						</div>
 					</div>
-				</>
+				</div>
 			)}
 
 			{/* Feedback Banners */}
@@ -1751,7 +1747,6 @@ function ProjectDetailRouteComponent() {
 					handleReasoningChange={handleReasoningChange}
 					handleTimeoutChange={handleTimeoutChange}
 					handlePromptChange={handlePromptChange}
-					handleLightModelChange={handleLightModelChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
