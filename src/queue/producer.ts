@@ -9,6 +9,7 @@
  * enqueue seams share one connection, plus a single `add()` helper they call.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Job, Queue } from 'bullmq';
 import type { AgentCli } from '../harness/agent-cli.js';
 import type { ReasoningLevel } from '../harness/models.js';
@@ -207,6 +208,7 @@ export async function promoteRetryForRun(
 	cli?: AgentCli,
 	model?: string,
 	reasoning?: ReasoningLevel,
+	freshSession = false,
 ): Promise<boolean> {
 	const q = getQueue();
 	// A promotable retry is always `delayed` (it was scheduled with a delay).
@@ -229,6 +231,10 @@ export async function promoteRetryForRun(
 		if (cli) job.data.cliOverride = cli;
 		if (model) job.data.modelOverride = model;
 		if (reasoning) job.data.reasoningOverride = reasoning;
+		if (freshSession) {
+			job.data.agentSessionId = randomUUID();
+			delete job.data.resumeSession;
+		}
 		await job.updateData(job.data);
 	};
 

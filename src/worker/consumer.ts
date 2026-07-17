@@ -933,7 +933,11 @@ async function tryReuseLatestRun(
 ): Promise<string | undefined> {
 	const prior = await getLatestRunForTask(project.id, trigger.taskId, trigger.phase);
 	if (!prior || (prior.status !== 'deferred' && prior.status !== 'failed')) return undefined;
-	if (prior.agentSessionId) job.agentSessionId = prior.agentSessionId;
+	if (job.resumeSession && prior.agentSessionId) {
+		job.agentSessionId = prior.agentSessionId;
+	} else if (!job.resumeSession) {
+		delete job.agentSessionId;
+	}
 	const overrides = agentOverrideFor(
 		project,
 		globalDefaults,
@@ -949,6 +953,7 @@ async function tryReuseLatestRun(
 		overrides.timeoutMs,
 		overrides.reasoning ?? null,
 		overrides.engine,
+		job.resumeSession ? undefined : null,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -980,6 +985,7 @@ async function tryResetCarriedRun(
 			overrides.timeoutMs,
 			overrides.reasoning ?? null,
 			overrides.engine,
+			job.resumeSession ? undefined : null,
 		))
 			? runId
 			: undefined;

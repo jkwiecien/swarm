@@ -379,6 +379,31 @@ describe('promoteRetryForRun', () => {
 		expect(updateData).toHaveBeenCalledWith(data);
 	});
 
+	it('clears resumeSession and assigns a fresh agentSessionId when freshSession is true', async () => {
+		const updateData = vi.fn().mockResolvedValue(undefined);
+		const promote = vi.fn().mockResolvedValue(undefined);
+		const data = {
+			runId: 'run-42',
+			rateLimitRetryAttempt: 4,
+			resumeSession: true,
+			agentSessionId: 'old-session-uuid',
+		} as Record<string, unknown>;
+		const match = { data, updateData, promote };
+		getDelayed.mockResolvedValue([match]);
+		const { promoteRetryForRun } = await import('@/queue/producer.js');
+
+		const result = await promoteRetryForRun('run-42', undefined, undefined, undefined, true);
+
+		expect(result).toBe(true);
+		expect(data.rateLimitRetryAttempt).toBe(0);
+		expect(data.resumeSession).toBeUndefined();
+		expect(data.agentSessionId).not.toBe('old-session-uuid');
+		expect(data.agentSessionId).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+		);
+		expect(updateData).toHaveBeenCalledWith(data);
+	});
+
 	it('returns false when no pending job carries the runId', async () => {
 		getDelayed.mockResolvedValue([{ data: { runId: 'someone-else' }, promote: vi.fn() }]);
 		getWaiting.mockResolvedValue([]);

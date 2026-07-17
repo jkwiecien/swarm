@@ -226,7 +226,13 @@ describe('runsRouter', () => {
 
 	describe('retryNow', () => {
 		it('promotes the pending retry and reports the run as retrying for a deferred run', async () => {
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({
+					id: 'run-1',
+					status: 'deferred',
+					agentSessionId: 'a1b2c3d4-0000-0000-0000-000000000000',
+				}),
+			);
 			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
 
@@ -241,12 +247,25 @@ describe('runsRouter', () => {
 				undefined,
 				undefined,
 				undefined,
+				undefined,
 			);
-			expect(promoteRetryForRun).toHaveBeenCalledWith('run-1', undefined, undefined, undefined);
+			expect(promoteRetryForRun).toHaveBeenCalledWith(
+				'run-1',
+				undefined,
+				undefined,
+				undefined,
+				false,
+			);
 		});
 
 		it('promotes the pending retry with cli and model overrides for a deferred run', async () => {
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({
+					id: 'run-1',
+					status: 'deferred',
+					agentSessionId: 'a1b2c3d4-0000-0000-0000-000000000000',
+				}),
+			);
 			vi.mocked(resetRunToRunning).mockResolvedValue(true);
 			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
 
@@ -263,6 +282,7 @@ describe('runsRouter', () => {
 				'antigravity',
 				'gemini-3.5-flash',
 				'high',
+				true,
 			);
 		});
 
@@ -303,6 +323,7 @@ describe('runsRouter', () => {
 				undefined,
 				'high',
 				'antigravity',
+				null,
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -405,6 +426,7 @@ describe('runsRouter', () => {
 				undefined,
 				null,
 				'claude',
+				null,
 			);
 		});
 
@@ -514,6 +536,7 @@ describe('runsRouter', () => {
 				undefined,
 				undefined,
 				undefined,
+				null,
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 				expect.objectContaining({ runId: 'run-1' }),
