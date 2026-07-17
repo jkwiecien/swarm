@@ -115,6 +115,12 @@ export type TriggerResult =
 			prBranch: string;
 			/** The submitted review's numeric ID the implementer must answer. */
 			reviewId: string;
+			/**
+			 * The PR head SHA the submitted review covered — carried so a `fixed`
+			 * response can tell whether it actually advanced the head before
+			 * scheduling a follow-up Review (issue #241).
+			 */
+			headSha: string;
 	  })
 	| (TriggerResultBase & {
 			phase: 'respond-to-ci';

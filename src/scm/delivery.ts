@@ -91,6 +91,15 @@ export const DeliveryProgressSchema = z.object({
 	pullRequestUrl: z.string().url().optional(),
 	reviewId: z.number().int().positive().optional(),
 	commentId: z.number().int().positive().optional(),
+	/**
+	 * Whether the follow-up Review for a `fixed` Respond-to-review response has
+	 * already been enqueued (issue #241) — checked before
+	 * {@link ScheduleFollowUpReview} runs so a resumed delivery retry doesn't
+	 * re-enqueue once the checkpoint is saved (the queue's own deterministic job
+	 * id already absorbs a repeat in the narrower crash window before this is
+	 * written).
+	 */
+	followUpEnqueued: z.boolean().default(false),
 });
 export type DeliveryProgress = z.infer<typeof DeliveryProgressSchema>;
 
@@ -173,7 +182,7 @@ export function deliveryIdentity(parts: readonly string[]): string {
 
 export function loadDeliveryProgress(cwd: string, deliveryId: string): DeliveryProgress {
 	const path = join(cwd, PROGRESS_FILENAME);
-	if (!existsSync(path)) return { deliveryId, pushed: false };
+	if (!existsSync(path)) return { deliveryId, pushed: false, followUpEnqueued: false };
 	const progress = DeliveryProgressSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
 	if (progress.deliveryId !== deliveryId)
 		throw new Error('Delivery progress belongs to another operation');

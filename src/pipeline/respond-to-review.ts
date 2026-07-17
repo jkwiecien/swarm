@@ -40,9 +40,10 @@
  * a human watching the board sees the response happening rather than a card that
  * looks idle for minutes. These are **status reports, not triggers** — neither
  * "In progress" nor "In review" starts a PM-driven phase (`src/pm/pipeline.ts`),
- * so bouncing the card between them can't re-fire Review or anything else (that
- * re-review is driven only by the *new commit* a fix pushes, deduped per head
- * SHA — `src/triggers/review-dispatch-dedup.ts`). And they are strictly
+ * so bouncing the card between them can't re-fire Review or anything else — that
+ * re-review is driven only by the *new commit* a `fixed` response pushes (see
+ * "Follow-up Review" below), deduped per head SHA —
+ * `src/triggers/review-dispatch-dedup.ts`. And they are strictly
  * **best-effort**: the board item is resolved from the PR branch's issue number
  * (`<branchPrefix><n>`), and a failure to resolve it (a human-named branch, an
  * item not on the board) or to move it is logged and swallowed — a cosmetic
@@ -56,6 +57,23 @@
  * `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15) and
  * `runAgentCli` (SWARM-16), and takes the PR/review coordinates as inputs
  * rather than reaching for a queue or webhook payload.
+ *
+ * **Follow-up Review (issue #241).** A `fixed` outcome whose commit was
+ * actually pushed and differs from the reviewed head (`headSha`) reliably
+ * enqueues exactly one follow-up Review for the new SHA — part of this
+ * phase's own deterministic delivery (`scheduleFollowUpReview`,
+ * `src/pipeline/follow-up-review.ts`), not a best-effort post-success action
+ * like `selfEnqueueNextPhase` (`src/worker/consumer.ts`). It runs after the
+ * push/comment delivery steps but before the checkpoint that guards it
+ * (`DeliveryProgress.followUpEnqueued`), so a queueing failure surfaces as a
+ * `DeliveryDeferredError` and a resumed retry re-schedules rather than
+ * silently dropping it; the default scheduler's job id is a deterministic hash
+ * of (project, PR, new head), so a crash between a successful enqueue and that
+ * checkpoint write can't duplicate the job. `pushed-back`, `no-findings`, a
+ * failed/unpushed response, and an unchanged head all enqueue nothing. A
+ * follow-up Review that approves may arm the same approval-only auto-merge
+ * `runReviewPhase` already exposes (issue #235) — Respond-to-review still never
+ * arms it directly.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -73,6 +91,10 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import {
+	type ScheduleFollowUpReview,
+	scheduleFollowUpReviewDefault,
+} from '@/pipeline/follow-up-review.js';
 import { buildRespondToReviewPrompt } from '@/pipeline/prompts/respond-to-review.js';
 import {
 	acquireResumableWorktree,
@@ -85,6 +107,7 @@ import type { PMProvider } from '@/pm/types.js';
 import {
 	commitPreparedTree,
 	DeliveryDeferredError,
+	type DeliveryProgress,
 	deliveryIdentity,
 	HANDOFF_FILENAMES,
 	hasDeliveryProgress,
@@ -166,6 +189,13 @@ export interface RunRespondToReviewPhaseOptions {
 	 */
 	reviewId: string;
 	/**
+	 * The PR head SHA the submitted review covered. Compared against the fix
+	 * commit this phase pushes so a `fixed` outcome only schedules a follow-up
+	 * Review (issue #241) when the head actually advanced — never for a commit
+	 * that (implausibly) matches the reviewed head.
+	 */
+	headSha: string;
+	/**
 	 * Task identifier for the worktree path (`task-<taskId>`). Passed explicitly
 	 * rather than derived from `prNumber`: the worker that dequeues the job owns
 	 * task naming, and a respond worktree must not collide with a review
@@ -216,6 +246,12 @@ export interface RunRespondToReviewPhaseOptions {
 	/** Injectable implementer-token resolver — defaults to {@link getPersonaToken}; overridden in tests. */
 	delivery?: ScmDeliveryProvider;
 	getToken?: typeof getPersonaToken;
+	/**
+	 * Injectable follow-up-Review scheduler (issue #241) — defaults to
+	 * {@link scheduleFollowUpReviewDefault}; overridden in tests. Not consulted in
+	 * legacy mode (no delivery progress to key the checkpoint on).
+	 */
+	scheduleFollowUpReview?: ScheduleFollowUpReview;
 }
 
 export interface RespondToReviewPhaseResult {
@@ -229,6 +265,13 @@ export interface RespondToReviewPhaseResult {
 	movedTo?: PmStatusKey;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
+	/**
+	 * The newly pushed commit SHA a follow-up Review was scheduled for (issue
+	 * #241) — set only for a `fixed` outcome whose commit was actually pushed and
+	 * differs from the reviewed head; `undefined` for every other outcome, an
+	 * unpushed/unchanged head, or legacy mode.
+	 */
+	pushedHeadSha?: string;
 }
 
 /**
@@ -241,6 +284,22 @@ export function issueNumberFromBranch(branch: string, branchPrefix: string): str
 	if (!branch.startsWith(branchPrefix)) return undefined;
 	const match = branch.slice(branchPrefix.length).match(/^(\d+)/);
 	return match ? match[1] : undefined;
+}
+
+/**
+ * The pushed commit SHA a follow-up Review should be scheduled for (issue
+ * #241), or `undefined` when this response doesn't qualify: any outcome but
+ * `fixed`, a commit that was never actually pushed, or a head that
+ * (implausibly) didn't advance past what was reviewed. Pure so the exclusion
+ * rules unit-test without a real git checkout.
+ */
+export function resolvePushedHeadSha(
+	outcome: RespondOutcome,
+	progress: DeliveryProgress,
+	reviewedHeadSha: string,
+): string | undefined {
+	if (outcome !== 'fixed' || !progress.commitSha || !progress.pushed) return undefined;
+	return progress.commitSha !== reviewedHeadSha ? progress.commitSha : undefined;
 }
 
 /**
@@ -343,6 +402,7 @@ export async function runRespondToReviewPhase(
 		prNumber,
 		prBranch,
 		reviewId,
+		headSha,
 		taskId,
 		pm,
 		cli = DEFAULT_RESPOND_CLI,
@@ -356,6 +416,7 @@ export async function runRespondToReviewPhase(
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
+		scheduleFollowUpReview = scheduleFollowUpReviewDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
@@ -502,6 +563,25 @@ export async function runRespondToReviewPhase(
 		}
 		const outcome = handoff.outcome;
 
+		// Reliably enqueue exactly one follow-up Review for the new head (issue
+		// #241) — never for pushed-back/no-findings, a failed/unpushed response, or
+		// an unchanged head (the commit somehow matching what was reviewed). The
+		// checkpoint guards a resumed retry from re-scheduling once this is saved;
+		// the queue's own deterministic job id (`followUpReviewDeliveryId`) absorbs
+		// a crash between a successful enqueue and that write.
+		const pushedHeadSha = resolvePushedHeadSha(outcome, progress, headSha);
+		if (pushedHeadSha && !progress.followUpEnqueued) {
+			logger.debug('respond-to-review: scheduling follow-up Review for the pushed fix', {
+				taskId,
+				prNumber,
+				reviewedHeadSha: headSha,
+				pushedHeadSha,
+			});
+			await scheduleFollowUpReview({ project, prNumber, prBranch, headSha: pushedHeadSha });
+			progress.followUpEnqueued = true;
+			saveDeliveryProgress(handle.path, progress);
+		}
+
 		// Best-effort: return the card to "In review" now the response is posted.
 		// Only on success — a failed run leaves it at "In progress" (as
 		// Implementation does), with the worker's failure comment explaining why.
@@ -516,9 +596,10 @@ export async function runRespondToReviewPhase(
 			prBranch,
 			outcome,
 			movedTo,
+			pushedHeadSha,
 		});
 
-		return { outcome, movedTo, agent };
+		return { outcome, movedTo, agent, pushedHeadSha };
 	} catch (error) {
 		if (!legacyMode && hasDeliveryProgress(handle.path)) {
 			preserveForResume = true;

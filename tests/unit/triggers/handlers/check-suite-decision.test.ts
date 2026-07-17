@@ -22,8 +22,12 @@ describe('decideCheckSuiteOutcome', () => {
 		expect(decision).toEqual({ action: 'review' });
 	});
 
-	it('reviews when there are no checks at all', () => {
-		expect(decideCheckSuiteOutcome(status([]), '9')).toEqual({ action: 'review' });
+	it('defers when no checks are registered yet', () => {
+		expect(decideCheckSuiteOutcome(status([]), '9')).toEqual({
+			action: 'defer',
+			incompleteChecks: [],
+			message: 'PR #9: no checks are registered yet',
+		});
 	});
 
 	it('reviews when a completed check is skipped/neutral (not a failure)', () => {

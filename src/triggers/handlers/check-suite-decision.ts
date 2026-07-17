@@ -32,14 +32,22 @@ export type CheckSuiteDecision =
  *    the PR to the Respond-to-CI phase (`src/pipeline/respond-to-ci.ts`), which
  *    runs the implementer to fix the build — mirroring Cascade's respond-to-ci
  *    agent. `failedChecks` names the failing runs for the handler's log line.
- *  - `review` — every check completed and none failed. (Zero checks also
- *    resolves here, mirroring Cascade: a `check_suite.completed` event means CI
- *    ran, and the dispatch dedup guards against a premature double-review.)
+ *  - `review` — every check completed and none failed. A zero-check result
+ *    defers instead: the Actions API can temporarily return no runs just after
+ *    a new commit, and treating that as green would bypass CI.
  */
 export function decideCheckSuiteOutcome(
 	checkStatus: CheckSuiteStatus,
 	prNumber: string,
 ): CheckSuiteDecision {
+	if (checkStatus.totalCount === 0) {
+		return {
+			action: 'defer',
+			incompleteChecks: [],
+			message: `PR #${prNumber}: no checks are registered yet`,
+		};
+	}
+
 	const incompleteChecks = checkStatus.checkRuns
 		.filter((cr) => cr.status !== 'completed')
 		.map((cr) => cr.name);

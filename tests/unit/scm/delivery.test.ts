@@ -63,11 +63,17 @@ describe('SCM delivery hand-offs', () => {
 		const root = mkdtempSync(join(tmpdir(), 'swarm-delivery-'));
 		roots.push(root);
 		const deliveryId = deliveryIdentity(['review', 'acme/widgets', '42', 'abc']);
-		saveDeliveryProgress(root, { deliveryId, pushed: true, commitSha: 'abc1234' });
+		saveDeliveryProgress(root, {
+			deliveryId,
+			pushed: true,
+			commitSha: 'abc1234',
+			followUpEnqueued: false,
+		});
 		expect(loadDeliveryProgress(root, deliveryId)).toEqual({
 			deliveryId,
 			pushed: true,
 			commitSha: 'abc1234',
+			followUpEnqueued: false,
 		});
 		expect(readFileSync(join(root, '.swarm_delivery.json'), 'utf8')).not.toContain('token');
 	});
