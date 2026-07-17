@@ -18,6 +18,7 @@ import { and, asc, count, desc, eq, gt, isNotNull, type SQL, sql } from 'drizzle
 import type { DelegationObservation } from '../../delegation/native.js';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { ReviewVerdict } from '../../pipeline/review.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
@@ -119,6 +120,12 @@ export interface CompleteRunInput {
 	usage?: AgentUsage;
 	delegations?: DelegationObservation[];
 	agentSessionId?: string | null;
+	/**
+	 * The verdict a completed Review run submitted (issue #218). Set only by the
+	 * Review phase's success path; omitted (left as-is) for every other phase, so
+	 * a non-review finalize never touches the column.
+	 */
+	reviewVerdict?: ReviewVerdict;
 }
 
 /**
@@ -143,6 +150,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			usage: input.usage,
 			delegations: input.delegations,
 			agentSessionId: input.agentSessionId,
+			reviewVerdict: input.reviewVerdict,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
@@ -195,6 +203,9 @@ export async function resetRunToRunning(
 			durationMs: null,
 			usage: null,
 			delegations: null,
+			// Clear any prior verdict so a re-running Review row shows lifecycle
+			// status, not a stale verdict, until it submits a fresh one (issue #218).
+			reviewVerdict: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),

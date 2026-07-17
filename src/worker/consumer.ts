@@ -57,7 +57,7 @@ import { runPlanningPhase } from '../pipeline/planning.js';
 import { runResolveConflictsPhase } from '../pipeline/resolve-conflicts.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
-import { runReviewPhase } from '../pipeline/review.js';
+import { type ReviewVerdict, runReviewPhase } from '../pipeline/review.js';
 import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
 import type { WorkItem } from '../pm/types.js';
 import {
@@ -617,6 +617,8 @@ function runPhase(
 	agent: AgentCliResult;
 	movedTo?: PmStatusKey;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
+	/** The submitted verdict of a Review run — persisted onto its history row (issue #218). */
+	verdict?: ReviewVerdict;
 }> {
 	const overrides = agentOverrideFor(
 		project,
@@ -1799,6 +1801,9 @@ export async function processJob(
 				durationMs: result.agent.durationMs,
 				usage: result.agent.usage,
 				delegations: result.agent.delegations,
+				// Only a Review run carries a verdict; every other phase leaves it
+				// undefined, so the column is written only for reviews (issue #218).
+				reviewVerdict: result.verdict,
 			},
 			result.agent,
 		);

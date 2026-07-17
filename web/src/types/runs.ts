@@ -51,6 +51,12 @@ export interface RunRow {
 	/** Explicitly requested reasoning level; null = CLI/model default (issue #180). */
 	reasoning: string | null;
 	status: string;
+	/**
+	 * Verdict a completed Review run submitted (`approve`/`request-changes`/
+	 * `comment`, issue #218); null for non-review phases and pre-existing rows.
+	 * Drives the verdict badge a completed Review row shows instead of "Completed".
+	 */
+	reviewVerdict: string | null;
 	exitCode: number | null;
 	timedOut: boolean;
 	error: string | null;

@@ -44,6 +44,7 @@ let phaseImpl: (
 	agent: AgentCliResult;
 	movedTo?: string;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
+	verdict?: string;
 }>;
 
 function mockPhase(phase: string) {
@@ -1943,6 +1944,17 @@ describe('processJob', () => {
 			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
 				'run-1',
 				expect.objectContaining({ usage: { inputTokens: 100, outputTokens: 50 } }),
+			);
+		});
+
+		it('forwards a completed Review run’s verdict into completeRun (issue #218)', async () => {
+			phaseImpl = async () => ({ agent: agentResult(), verdict: 'request-changes' });
+
+			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({ status: 'completed', reviewVerdict: 'request-changes' }),
 			);
 		});
 

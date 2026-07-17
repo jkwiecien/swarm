@@ -369,6 +369,8 @@ function RunDetailHeader({ run }: RunDetailHeaderProps) {
 				<RunStatusBadge
 					status={run.status as RunStatus}
 					timedOut={run.timedOut}
+					phase={run.phase}
+					reviewVerdict={run.reviewVerdict}
 					className="text-sm px-3 py-1"
 				/>
 			</div>
@@ -576,7 +578,12 @@ function RunOverview({ run, project }: RunOverviewProps) {
 					<div>
 						<span className="block text-xs font-medium text-zinc-400">Status</span>
 						<span className="mt-1 block">
-							<RunStatusBadge status={run.status as RunStatus} timedOut={run.timedOut} />
+							<RunStatusBadge
+								status={run.status as RunStatus}
+								timedOut={run.timedOut}
+								phase={run.phase}
+								reviewVerdict={run.reviewVerdict}
+							/>
 						</span>
 					</div>
 

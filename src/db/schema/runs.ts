@@ -43,6 +43,16 @@ export const runs = pgTable(
 		 */
 		reasoning: text('reasoning'),
 		status: text('status').notNull().default('running'),
+		/**
+		 * The formal verdict a completed Review run submitted (`gh pr review`'s
+		 * `approve`/`request-changes`/`comment`, `src/pipeline/review.ts`), issue
+		 * #218. Persisted so the runs list can show the review's actual outcome
+		 * instead of a generic "Completed". Nullable: only Review runs that
+		 * submitted a review set it — every other phase, and any pre-existing row,
+		 * leaves it null. Cleared on a retry ({@link resetRunToRunning}) so a
+		 * re-running review never shows a stale verdict.
+		 */
+		reviewVerdict: text('review_verdict'),
 		exitCode: integer('exit_code'),
 		timedOut: boolean('timed_out').notNull().default(false),
 		error: text('error'),

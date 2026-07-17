@@ -210,6 +210,30 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.nextRetryAt).toEqual(nextRetryAt);
 		});
 
+		it('persists a completed Review run’s submitted verdict (issue #218)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '3c', phase: 'review' });
+
+			await completeRun(id, {
+				status: 'completed',
+				engine: 'claude',
+				exitCode: 0,
+				reviewVerdict: 'request-changes',
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('completed');
+			expect(row?.reviewVerdict).toBe('request-changes');
+		});
+
+		it('leaves reviewVerdict null when the phase submitted none (issue #218)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '3d', phase: 'implementation' });
+
+			await completeRun(id, { status: 'completed', engine: 'claude', exitCode: 0 });
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewVerdict).toBeNull();
+		});
+
 		it('keeps the engine persisted at creation when a deferral omits it (issue #169)', async () => {
 			// A run rate-limited before its agent ran defers with no agent result, so
 			// `completeRun` omits `engine`. The creation-time engine must survive so the
@@ -256,6 +280,17 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.timedOut).toBe(false);
 			expect(row?.durationMs).toBeNull();
 			expect(row?.usage).toBeNull();
+		});
+
+		it('clears a prior Review verdict so a re-running row shows no stale verdict (issue #218)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9c', phase: 'review' });
+			await completeRun(id, { status: 'completed', engine: 'claude', reviewVerdict: 'approve' });
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('running');
+			expect(row?.reviewVerdict).toBeNull();
 		});
 
 		it('records the effective engine for the fresh attempt when one is passed', async () => {

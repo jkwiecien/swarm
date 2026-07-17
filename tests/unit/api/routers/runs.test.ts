@@ -62,6 +62,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		model: null,
 		reasoning: null,
 		status: 'completed',
+		reviewVerdict: null,
 		exitCode: 0,
 		timedOut: false,
 		error: null,
@@ -115,6 +116,16 @@ describe('runsRouter', () => {
 			expect(result).toEqual({ data, total: 2 });
 			expect(result.data[0].nextRetryAt).toEqual(nextRetryAt);
 			expect(listRunsFromDb).toHaveBeenCalledWith({ limit: 50, offset: 0 });
+		});
+
+		it('exposes a completed Review run’s verdict in the list data shape (issue #218)', async () => {
+			const data = [
+				makeRun({ id: 'run-1', phase: 'review', status: 'completed', reviewVerdict: 'approve' }),
+			];
+			vi.mocked(listRunsFromDb).mockResolvedValue({ data, total: 1 });
+
+			const result = await caller.list({ phase: 'review' });
+			expect(result.data[0].reviewVerdict).toBe('approve');
 		});
 
 		it('passes filters and pagination through unchanged', async () => {
