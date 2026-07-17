@@ -514,7 +514,7 @@ describe('runsRouter', () => {
 			});
 		});
 
-		it('reconstructs from jobPayload when a deferred run has no pending retry to promote', async () => {
+		it('reconstructs delivery resume from jobPayload when a deferred run has no pending retry to promote', async () => {
 			// The pending BullMQ retry can be lost (the fire-and-forget window on
 			// worker shutdown, or the completed job reaped from Redis), leaving a
 			// `deferred` row with no job to promote. Rather than a dead-end CONFLICT,
@@ -523,6 +523,7 @@ describe('runsRouter', () => {
 			const mockPayload = {
 				type: 'github' as const,
 				projectId: 'p1',
+				resumeDelivery: true,
 				event: {
 					eventType: 'pull_request' as const,
 					repoFullName: 'jkwiecien/swarm',
@@ -550,7 +551,7 @@ describe('runsRouter', () => {
 				null,
 			);
 			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({ runId: 'run-1' }),
+				expect.objectContaining({ runId: 'run-1', resumeDelivery: true }),
 				0,
 				{ unique: true },
 			);

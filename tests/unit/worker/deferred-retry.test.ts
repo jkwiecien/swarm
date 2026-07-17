@@ -4,6 +4,11 @@ import {
 	createMockGitHubWebhookJob,
 } from '../../helpers/factories.js';
 
+const updateRunJobPayload = vi.fn(async (_runId: string, _job: unknown) => {});
+vi.mock('@/db/repositories/runsRepository.js', () => ({
+	updateRunJobPayload: (runId: string, job: unknown) => updateRunJobPayload(runId, job),
+}));
+
 const isRunCancellationRequested = vi.fn<(runId: string) => Promise<boolean>>();
 vi.mock('@/queue/cancellation.js', () => ({
 	isRunCancellationRequested: (runId: string) => isRunCancellationRequested(runId),
@@ -34,6 +39,7 @@ describe('reenqueueDeferred', () => {
 		enqueueDelayedRetry.mockResolvedValue('retry-1');
 		removePendingRetryForRun.mockClear();
 		registerPendingContinuation.mockClear();
+		updateRunJobPayload.mockClear();
 	});
 
 	it('removes a retry when termination lands in the pre-enqueue window', async () => {
@@ -107,6 +113,33 @@ describe('reenqueueDeferred', () => {
 		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
 			expect.objectContaining({ resumePmPhase: 'implementation', resumeSession: true }),
 			60_000,
+		);
+	});
+
+	it('retries delivery with its own worktree-resume signal, not an agent session', async () => {
+		await reenqueueDeferred('job-1', createMockGitHubWebhookJob(), {
+			status: 'phase-deferred',
+			phase: 'review',
+			taskId: '243',
+			retryDelayMs: 60_000,
+			reason: 'review delivery failed',
+			attempt: 0,
+			resumable: false,
+			resumeDelivery: true,
+			runId: 'run-1',
+		});
+
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.objectContaining({ resumeDelivery: true }),
+			60_000,
+		);
+		expect(enqueueDelayedRetry).toHaveBeenCalledWith(
+			expect.not.objectContaining({ resumeSession: true }),
+			60_000,
+		);
+		expect(updateRunJobPayload).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({ resumeDelivery: true }),
 		);
 	});
 

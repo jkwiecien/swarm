@@ -79,6 +79,17 @@ describe('GitWorktreeManager', () => {
 		});
 	});
 
+	describe('reuse', () => {
+		it('does not adopt an existing worktree when its delivery-progress guard rejects it', async () => {
+			existingPaths.add(WORKTREE_14);
+
+			await expect(
+				makeManager().reuse('14', 'issue-14', false, () => false),
+			).resolves.toBeUndefined();
+			expect(claimWorktreeLeaseMock).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('provision', () => {
 		it('sanity-checks, fetches, then creates a fresh branch off baseBranch by default', async () => {
 			const handle = await makeManager().provision('14');

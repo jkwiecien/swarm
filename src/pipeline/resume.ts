@@ -21,6 +21,7 @@
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import type { AgentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { hasDeliveryProgress } from '@/scm/delivery.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 
 /** The session inputs every resumable phase accepts, threaded to the agent run. */
@@ -51,12 +52,11 @@ export function shouldPreserveForResume(error: AgentRunError): boolean {
 }
 
 /**
- * Acquire a phase's worktree, reusing the preserved checkout when this run is a
- * session resume (`resumeSessionId` set) and its checkout is still on disk, else
- * provisioning a fresh one via `provisionFresh`. `resumed` reports whether an
- * existing checkout was actually reused, so the caller threads the resume id
- * through {@link sessionRunArgs} only when the checkout it belongs to is really
- * in place (a pruned checkout falls back to a from-scratch run).
+ * Acquire a phase's worktree, reusing a preserved checkout for either an agent
+ * session retry or a delivery retry. Delivery reuse additionally requires its
+ * progress sidecar, so an unrelated stale checkout is never adopted. `resumed`
+ * reports whether an agent session was resumed; `deliveryResumed` reports a
+ * verified deterministic-delivery continuation.
  */
 export async function acquireResumableWorktree(
 	worktrees: GitWorktreeManager,
@@ -65,12 +65,20 @@ export async function acquireResumableWorktree(
 	reuseDetached: boolean,
 	resumeSessionId: string | undefined,
 	provisionFresh: () => Promise<WorktreeHandle>,
-): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
-	const reused = resumeSessionId
-		? await worktrees.reuse(taskId, reuseBranch, reuseDetached)
-		: undefined;
-	if (reused) return { handle: reused, resumed: true };
-	return { handle: await provisionFresh(), resumed: false };
+	resumeDelivery = false,
+): Promise<{ handle: WorktreeHandle; resumed: boolean; deliveryResumed: boolean }> {
+	const reused = resumeDelivery
+		? await worktrees.reuse(taskId, reuseBranch, reuseDetached, hasDeliveryProgress)
+		: resumeSessionId
+			? await worktrees.reuse(taskId, reuseBranch, reuseDetached)
+			: undefined;
+	if (reused)
+		return {
+			handle: reused,
+			resumed: resumeSessionId !== undefined,
+			deliveryResumed: resumeDelivery,
+		};
+	return { handle: await provisionFresh(), resumed: false, deliveryResumed: false };
 }
 
 /**

@@ -75,12 +75,12 @@ describe('review production delivery', () => {
 		expect(cleanup).not.toHaveBeenCalled();
 		expect(runAgent).toHaveBeenCalledTimes(1);
 
-		await expect(
-			runReviewPhase({ ...options, resumeSessionId: 'session-1' }),
-		).resolves.toMatchObject({
+		await expect(runReviewPhase({ ...options, resumeDelivery: true })).resolves.toMatchObject({
 			verdict: 'approve',
 		});
 		expect(runAgent).toHaveBeenCalledTimes(1);
+		expect(worktrees.reuse).toHaveBeenCalledWith('review-42', 'abc', true, expect.any(Function));
+		expect(worktrees.provision).toHaveBeenCalledTimes(1);
 		expect(submitReview).toHaveBeenCalledTimes(2);
 		expect(cleanup).toHaveBeenCalledTimes(1);
 	});

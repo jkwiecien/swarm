@@ -71,6 +71,8 @@ export interface RunResolveConflictsPhaseOptions {
 	/** Assign a fresh session id (`sessionId`) or resume from one on retry (`resumeSessionId`). */
 	sessionId?: string;
 	resumeSessionId?: string;
+	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
+	resumeDelivery?: boolean;
 	timeoutMs?: number;
 	signal?: AbortSignal;
 	worktrees?: GitWorktreeManager;
@@ -96,6 +98,7 @@ export async function runResolveConflictsPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		resumeDelivery = false,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -114,19 +117,20 @@ export async function runResolveConflictsPhase(
 	);
 	// On a resume retry, reuse the preserved checkout so a partial merge resolution
 	// and the agent's session carry over.
-	const { handle, resumed } = await acquireResumableWorktree(
+	const { handle, resumed, deliveryResumed } = await acquireResumableWorktree(
 		worktrees,
 		taskId,
 		prBranch,
 		false,
 		resumeSessionId,
 		() => worktrees.provision(taskId, { createBranch: false, branch: prBranch }),
+		resumeDelivery,
 	);
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
-		const resumeDelivery = hasDeliveryProgress(handle.path);
-		const agent = resumeDelivery
+		const shouldResumeDelivery = deliveryResumed;
+		const agent = shouldResumeDelivery
 			? resumedDeliveryAgent(cli)
 			: await runAgent({
 					cli,

@@ -155,6 +155,8 @@ export interface RunImplementationPhaseOptions {
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
 	resumeSessionId?: string;
+	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
+	resumeDelivery?: boolean;
 	/**
 	 * Whether to move the item to "In review" once the PR is opened. Defaults
 	 * to `true`. The pickup move to "In progress" at the start of this phase is
@@ -280,19 +282,27 @@ async function acquireImplementationWorktree(
 	branch: string,
 	resumeSessionId: string | undefined,
 	resumeExistingBranch: boolean,
-): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
+	resumeDelivery: boolean,
+): Promise<{ handle: WorktreeHandle; resumed: boolean; deliveryResumed: boolean }> {
 	// A checkpoint means this run already owns the task branch. Reuse its checkout
 	// when it survived a failed/manual retry so a fresh agent session does not
 	// collide with `task-<id>` or discard partial, unpushed work. A session is only
 	// resumed when an actual resume id is present.
-	if (resumeSessionId || resumeExistingBranch) {
-		const handle = await worktrees.reuse(taskId, branch, false);
-		if (handle) return { handle, resumed: resumeSessionId !== undefined };
+	if (resumeSessionId || resumeExistingBranch || resumeDelivery) {
+		const handle = resumeDelivery
+			? await worktrees.reuse(taskId, branch, false, hasDeliveryProgress)
+			: await worktrees.reuse(taskId, branch, false);
+		if (handle)
+			return {
+				handle,
+				resumed: resumeSessionId !== undefined,
+				deliveryResumed: resumeDelivery,
+			};
 	}
 	const handle = resumeExistingBranch
 		? await worktrees.provision(taskId, { createBranch: false, branch })
 		: await worktrees.provision(taskId);
-	return { handle, resumed: false };
+	return { handle, resumed: false, deliveryResumed: false };
 }
 
 /**
@@ -316,6 +326,7 @@ export async function runImplementationPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		resumeDelivery = false,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		resumeExistingBranch = false,
 		onBranchProvisioned,
@@ -346,20 +357,21 @@ export async function runImplementationPhase(
 
 	// Task-branch checkout (createBranch defaults to true): the agent commits and
 	// pushes here, so — unlike Planning — this is not a detached, throwaway HEAD.
-	const { handle, resumed } = await acquireImplementationWorktree(
+	const { handle, resumed, deliveryResumed } = await acquireImplementationWorktree(
 		worktrees,
 		taskId,
 		`${project.branchPrefix}${taskId}`,
 		resumeSessionId,
 		resumeExistingBranch,
+		resumeDelivery,
 	);
 	await onBranchProvisioned?.();
 	let preserveForResume = false;
 	try {
 		graft(project.repoRoot, handle.path);
 
-		const resumeDelivery = !legacyMode && hasDeliveryProgress(handle.path);
-		const agent = resumeDelivery
+		const shouldResumeDelivery = !legacyMode && deliveryResumed;
+		const agent = shouldResumeDelivery
 			? resumedDeliveryAgent(cli)
 			: await runAgent({
 					cli,

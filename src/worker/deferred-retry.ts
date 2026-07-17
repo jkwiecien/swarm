@@ -1,3 +1,4 @@
+import { updateRunJobPayload } from '../db/repositories/runsRepository.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { isRunCancellationRequested } from '../queue/cancellation.js';
@@ -5,6 +6,18 @@ import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueDelayedRetry, removePendingRetryForRun } from '../queue/producer.js';
 import type { JobOutcome } from './consumer.js';
 import { registerPendingContinuation } from './pending-continuations.js';
+
+async function persistRetryPayload(runId: string | undefined, job: SwarmJob): Promise<void> {
+	// A delayed BullMQ job can disappear before a manual retry promotes it. Keep
+	// the derived retry intent on the run row so that fallback reconstruction
+	// resumes deterministic delivery from its preserved worktree too.
+	if (runId) await updateRunJobPayload(runId, job);
+}
+
+async function getCancelledRunId(runId: string | undefined): Promise<string | undefined> {
+	if (runId && (await isRunCancellationRequested(runId))) return runId;
+	return undefined;
+}
 
 /**
  * Hand a deferred run back to BullMQ. A dashboard termination can arrive after
@@ -23,7 +36,12 @@ export async function reenqueueDeferred(
 		// Retry intent is derived from this outcome. Do not let a stale flag from an
 		// earlier queued job turn a pre-provisioning capacity retry into a branch
 		// resume.
-		const { resumePmPhase, resumeSession: _resumeSession, ...job } = parsed;
+		const {
+			resumePmPhase,
+			resumeSession: _resumeSession,
+			resumeDelivery: _resumeDelivery,
+			...job
+		} = parsed;
 		const next: SwarmJob = {
 			...job,
 			rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1,
@@ -44,16 +62,22 @@ export async function reenqueueDeferred(
 			// the deferral was a resumable one (rate-limit/timeout). Separate from
 			// `resumePmPhase`, which is only the github-projects board-dispatch signal.
 			...(outcome.resumable ? { resumeSession: true } : {}),
+			// Delivery retries reuse a valid progress-marked worktree, independent of
+			// whether the completed agent run exposed a session id.
+			...(outcome.resumeDelivery ? { resumeDelivery: true } : {}),
 			// A prioritized continuation (issue #214) already holds its dispatch dedup
 			// claim; tell the retry's handler to reuse it rather than re-claim (which,
 			// fired within the refreshed TTL, would drop the run as a duplicate).
 			...(outcome.continuationDispatchClaimed ? { continuationDispatchClaimed: true } : {}),
 		};
 
-		if (outcome.runId && (await isRunCancellationRequested(outcome.runId))) {
+		await persistRetryPayload(outcome.runId, next);
+
+		const cancelledRunId = await getCancelledRunId(outcome.runId);
+		if (cancelledRunId) {
 			logger.debug('Skipped retry for a user-terminated deferred run', {
 				jobId,
-				runId: outcome.runId,
+				runId: cancelledRunId,
 			});
 			return;
 		}
@@ -63,11 +87,12 @@ export async function reenqueueDeferred(
 		// If termination raced the queue hand-off, its queue scan may have run
 		// before the retry existed. The durable marker makes that ordering visible
 		// here, and the delayed job cannot become active before we remove it.
-		if (outcome.runId && (await isRunCancellationRequested(outcome.runId))) {
-			await removePendingRetryForRun(outcome.runId);
+		const cancelledAfterEnqueueRunId = await getCancelledRunId(outcome.runId);
+		if (cancelledAfterEnqueueRunId) {
+			await removePendingRetryForRun(cancelledAfterEnqueueRunId);
 			logger.debug('Removed retry enqueued during deferred-run termination', {
 				jobId,
-				runId: outcome.runId,
+				runId: cancelledAfterEnqueueRunId,
 			});
 			return;
 		}
