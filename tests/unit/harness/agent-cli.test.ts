@@ -13,6 +13,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import { type AgentCliResult, describeAgent, runAgentCli } from '@/harness/agent-cli.js';
+import { classifyAgentFailure } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import { createMockRunAgentCliOptions } from '../../helpers/factories.js';
 
@@ -558,6 +559,24 @@ describe('runAgentCli', () => {
 				reasoningTokens: 0,
 			});
 			expect(result.stdout).toBe('pong');
+		});
+
+		it('preserves a Codex capacity event after an earlier agent message for failure classification', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ cli: 'codex' }));
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				[
+					'{"type":"item.completed","item":{"type":"agent_message","text":"I completed useful analysis."}}',
+					'{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+				].join('\n'),
+			);
+			child.emit('close', 1, null);
+
+			const result = await promise;
+			expect(result.stdout).toBe('I completed useful analysis.');
+			expect(result.rawStdout).toContain('"type":"turn.failed"');
+			expect(classifyAgentFailure(result)).toEqual({ kind: 'capacity' });
 		});
 
 		it('leaves usage undefined and stdout raw for non-JSON stdout', async () => {

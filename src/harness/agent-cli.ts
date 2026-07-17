@@ -232,9 +232,18 @@ export interface AgentCliResult {
 	exitCode: number | null;
 	/** Terminating signal, or null on a normal exit. */
 	signal: NodeJS.Signals | null;
-	/** Full captured stdout/stderr (also delivered line-by-line via callbacks). */
+	/**
+	 * Captured stdout/stderr for logs (stdout is human-readable when a CLI emits
+	 * structured output and the harness can normalize it).
+	 */
 	stdout: string;
 	stderr: string;
+	/**
+	 * Codex's original JSONL stdout before log normalization. Its structured
+	 * failure events are retained here so failure classification can inspect them
+	 * even when `stdout` contains only an earlier agent message.
+	 */
+	rawStdout?: string;
 	/** Wall-clock duration of the run, in ms. */
 	durationMs: number;
 	/**
@@ -576,6 +585,7 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				signal,
 				stdout: stdout.truncated ? stdout.text : (parsed.logText ?? stdout.text),
 				stderr: stderr.text,
+				...(cli === 'codex' ? { rawStdout: stdout.text } : {}),
 				durationMs: Date.now() - start,
 				timedOut,
 				aborted,
