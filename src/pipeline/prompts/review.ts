@@ -57,7 +57,7 @@ export function buildReviewPrompt(
 		`6. Write "${REVIEW_VERDICT_FILENAME}" as JSON containing verdict (approve, request-changes, or comment), body (the final review body), and optional findings [{title,body}].`,
 		'Do NOT `git add`/commit the hand-off.',
 		'',
-		'Do not merge the PR — a human does that.',
+		'Do not merge the PR.',
 		...projectInstructionsSection(customPrompt),
 	].join('\n');
 }

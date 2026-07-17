@@ -31,7 +31,7 @@
  * No PM interaction: the item already sits at "In review" (the Implementation
  * phase moved it), and a submitted review doesn't change board status — any
  * verdict drives SWARM-21 (the implementer always responds, even to an
- * approval), and merging is still left to a human.
+ * approval), and merging is either handled by GitHub auto-merge (if enabled) or left to a human.
  *
  * This is the phase's orchestration only, same as Planning/Implementation. It
  * composes `GitWorktreeManager` (SWARM-14), `graftEnvironment` (SWARM-15) and
@@ -59,6 +59,11 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import {
+	type EnablePullRequestAutoMerge,
+	enableAutoMergeIfEligible,
+	enablePullRequestAutoMergeDefault,
+} from '@/pipeline/auto-merge.js';
 import { buildReviewPrompt } from '@/pipeline/prompts/review.js';
 import {
 	acquireResumableWorktree,
@@ -161,6 +166,11 @@ export interface RunReviewPhaseOptions {
 	delivery?: ScmDeliveryProvider;
 	/** @deprecated Compatibility seam for pre-delivery tests; production leaves this unset. */
 	getToken?: typeof getPersonaToken;
+	/**
+	 * Injectable GitHub auto-merge operation; best-effort after an `approve`
+	 * verdict when `pipeline.respondToReview.autoMerge` is on (issue #231).
+	 */
+	enablePullRequestAutoMerge?: EnablePullRequestAutoMerge;
 }
 
 export interface ReviewPhaseResult {
@@ -168,6 +178,12 @@ export interface ReviewPhaseResult {
 	verdict: ReviewVerdict;
 	/** The agent run's result (exit code, duration, captured output). */
 	agent: AgentCliResult;
+	/**
+	 * Whether GitHub accepted the opt-in automatic-merge request after an
+	 * approval; `undefined` when auto-merge is disabled or the verdict wasn't an
+	 * approval, so the provider was never asked.
+	 */
+	autoMergeEnabled?: boolean;
 }
 
 /**
@@ -220,10 +236,28 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		signal,
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
+		enablePullRequestAutoMerge = enablePullRequestAutoMergeDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
 	const agentToken = await (options.getToken ?? getPersonaToken)(project, 'reviewer');
+
+	// Once the review is submitted, an `approve` is the point at which SWARM's
+	// review is satisfied — so when the project opts in, arm GitHub auto-merge
+	// here (issue #231). A normal `approve` skips Respond-to-review, so this is
+	// the only phase that can act on it; the same setting still covers
+	// Respond-to-review's `fixed`/`no-findings` outcomes. Best-effort: a refusal
+	// or error is logged and never fails the completed review.
+	const armAutoMerge = (verdict: ReviewVerdict): Promise<boolean | undefined> =>
+		enableAutoMergeIfEligible({
+			enabled: project.pipeline?.respondToReview?.autoMerge ?? false,
+			eligible: verdict === 'approve',
+			enablePullRequestAutoMerge,
+			project,
+			prNumber,
+			taskId,
+			phase: 'Review',
+		});
 
 	logger.info(`Phase started - Review — running ${describeAgent(cli, model, reasoning)}`, {
 		taskId,
@@ -296,7 +330,8 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			if (!raw) throw new Error(`Review agent (${cli}) wrote an empty ${REVIEW_VERDICT_FILENAME}`);
 			if (!REVIEW_VERDICTS.includes(raw))
 				throw new Error(`Review agent (${cli}) wrote unrecognized verdict '${original}'`);
-			return { verdict: raw, agent };
+			const autoMergeEnabled = await armAutoMerge(raw);
+			return { verdict: raw, agent, autoMergeEnabled };
 		}
 		const handoff = readHandoff(handle.path, REVIEW_VERDICT_FILENAME, ReviewHandoffSchema);
 		const delivery =
@@ -313,10 +348,17 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			});
 		saveDeliveryProgress(handle.path, progress);
 		const verdict = handoff.verdict;
+		const autoMergeEnabled = await armAutoMerge(verdict);
 
-		logger.info('Phase finished - Review', { taskId, prNumber, headSha, verdict });
+		logger.info('Phase finished - Review', {
+			taskId,
+			prNumber,
+			headSha,
+			verdict,
+			autoMergeEnabled,
+		});
 
-		return { verdict, agent };
+		return { verdict, agent, autoMergeEnabled };
 	} catch (error) {
 		if (!legacyMode && hasDeliveryProgress(handle.path)) {
 			preserveForResume = true;

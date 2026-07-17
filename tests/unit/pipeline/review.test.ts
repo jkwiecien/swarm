@@ -195,6 +195,82 @@ describe('runReviewPhase', () => {
 		const result = await runReviewPhase(deps);
 		expect(result.verdict).toBe(expected);
 	});
+
+	describe('auto-merge after approval (issue #231)', () => {
+		it('enables GitHub auto-merge when the setting is on and the verdict is approve', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			const enablePullRequestAutoMerge = vi.fn(async () => ({
+				enabled: true,
+				message: 'GitHub auto-merge enabled',
+			}));
+
+			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+
+			expect(enablePullRequestAutoMerge).toHaveBeenCalledWith(deps.project, 99);
+			expect(result.autoMergeEnabled).toBe(true);
+		});
+
+		it('does not enable auto-merge for a request-changes verdict', async () => {
+			verdictFileContents = 'request-changes\n';
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			const enablePullRequestAutoMerge = vi.fn();
+
+			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+
+			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+			expect(result.autoMergeEnabled).toBeUndefined();
+		});
+
+		it('does not enable auto-merge when the setting is disabled', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps(); // default project leaves autoMerge unset
+			const enablePullRequestAutoMerge = vi.fn();
+
+			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+
+			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+			expect(result.autoMergeEnabled).toBeUndefined();
+		});
+
+		it('never reaches auto-merge when the review run itself fails', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			deps.runAgent = vi.fn(async () => agentResult({ exitCode: 1 }));
+			const enablePullRequestAutoMerge = vi.fn();
+
+			await expect(runReviewPhase({ ...deps, enablePullRequestAutoMerge })).rejects.toThrow(
+				/exited with code 1/,
+			);
+			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+		});
+
+		it('keeps a completed review successful when arming auto-merge fails', async () => {
+			verdictFileContents = 'approve\n';
+			const deps = makeDeps();
+			deps.project = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+			const enablePullRequestAutoMerge = vi.fn(async () => {
+				throw new Error('provider unavailable');
+			});
+
+			const result = await runReviewPhase({ ...deps, enablePullRequestAutoMerge });
+
+			expect(result.verdict).toBe('approve');
+			expect(result.autoMergeEnabled).toBe(false);
+			expect(deps.worktrees.cleanup).toHaveBeenCalledWith('review-20');
+		});
+	});
 });
 
 describe('buildReviewPrompt', () => {
