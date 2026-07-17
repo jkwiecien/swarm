@@ -259,7 +259,10 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	}
 
 	const tail = terminalTail(output);
-	if (result.cli === 'codex' && (hasCodexCapacityEvent(output) || CODEX_CAPACITY_RE.test(tail)))
+	if (
+		result.cli === 'codex' &&
+		(hasCodexCapacityEvent(result.rawStdout ?? output) || CODEX_CAPACITY_RE.test(tail))
+	)
 		return { kind: 'capacity' };
 	if (result.cli === 'claude' && CLAUDE_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
