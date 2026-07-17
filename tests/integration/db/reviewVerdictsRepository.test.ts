@@ -1,5 +1,6 @@
+import { and, eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
-
+import { getDb } from '../../../src/db/client.js';
 import {
 	abandonReviewVerdict,
 	getReviewVerdictByHead,
@@ -7,6 +8,7 @@ import {
 	markReviewVerdictSubmitted,
 	reserveReviewVerdict,
 } from '../../../src/db/repositories/reviewVerdictsRepository.js';
+import { reviewVerdicts } from '../../../src/db/schema/reviewVerdicts.js';
 import { truncateAll } from '../helpers/db.js';
 import { seedProject } from '../helpers/seed.js';
 
@@ -112,6 +114,43 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 					verdict: 'approve',
 				});
 				expect(result).toBeUndefined();
+			});
+
+			it('submits only the active retry after an abandoned same-head reservation', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await abandonReviewVerdict(key('sha-1'));
+				await reserveReviewVerdict(key('sha-1'));
+
+				const submitted = await markReviewVerdictSubmitted(key('sha-1'), {
+					verdict: 'approve',
+					reviewId: '555',
+				});
+				expect(submitted?.ordinal).toBe(1);
+
+				const rows = await getDb()
+					.select({ state: reviewVerdicts.state, reviewId: reviewVerdicts.reviewId })
+					.from(reviewVerdicts)
+					.where(
+						and(
+							eq(reviewVerdicts.projectId, PROJECT_ID),
+							eq(reviewVerdicts.repository, REPO),
+							eq(reviewVerdicts.prNumber, PR),
+							eq(reviewVerdicts.headSha, 'sha-1'),
+						),
+					);
+				expect(rows).toHaveLength(2);
+				expect(rows).toEqual(
+					expect.arrayContaining([
+						{ state: 'abandoned', reviewId: null },
+						{ state: 'submitted', reviewId: '555' },
+					]),
+				);
+
+				const retry = await markReviewVerdictSubmitted(key('sha-1'), {
+					verdict: 'approve',
+					reviewId: '555',
+				});
+				expect(retry?.ordinal).toBe(1);
 			});
 
 			it('survives a fresh repository call — persisted across process lifecycle', async () => {
