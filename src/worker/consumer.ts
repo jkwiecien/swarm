@@ -32,7 +32,6 @@ import {
 	storeRunLogs,
 	updateRunJobPayload,
 } from '../db/repositories/runsRepository.js';
-import { configureDelegationRun, hasUnreviewedCompletedDelegation } from '../delegation/native.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
@@ -638,7 +637,7 @@ function runPhase(
 		job,
 		implementationUnplanned,
 	);
-	const runAgent = createLiveOutputRunner(runId, project, trigger.phase);
+	const runAgent = createLiveOutputRunner(runId);
 	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
 	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
 	// resume id; on a fresh run it's assigned as claude's `--session-id` (codex/agy
@@ -772,23 +771,9 @@ function runPhase(
 	}
 }
 
-function createLiveOutputRunner(
-	runId: string | undefined,
-	project: ProjectConfig,
-	phase: TriggerPhase,
-): typeof runAgentCli {
+function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
 	if (!runId) {
-		return async (options) => {
-			const result = await runAgentCli(configureDelegationRun(options, { project, phase }));
-			if (result.exitCode !== 0 || !hasUnreviewedCompletedDelegation(result.delegations)) {
-				return result;
-			}
-			return {
-				...result,
-				exitCode: 1,
-				stderr: `${result.stderr}\nSWARM delegation failed: primary review disposition was not recorded.`,
-			};
-		};
+		return runAgentCli;
 	}
 	return async (options) => {
 		let pending = Promise.resolve();
@@ -826,31 +811,19 @@ function createLiveOutputRunner(
 			if (queue.length >= 100) flush();
 			else timer ??= setTimeout(flush, 100);
 		};
-		const result = await runAgentCli(
-			configureDelegationRun(
-				{
-					...options,
-					onStdout: (line) => {
-						options.onStdout?.(line);
-						append('stdout', line);
-					},
-					onStderr: (line) => {
-						options.onStderr?.(line);
-						append('stderr', line);
-					},
-				},
-				{ project, phase, runId },
-			),
-		);
+		const result = await runAgentCli({
+			...options,
+			onStdout: (line) => {
+				options.onStdout?.(line);
+				append('stdout', line);
+			},
+			onStderr: (line) => {
+				options.onStderr?.(line);
+				append('stderr', line);
+			},
+		});
 		flush();
 		await pending;
-		if (result.exitCode === 0 && hasUnreviewedCompletedDelegation(result.delegations)) {
-			return {
-				...result,
-				exitCode: 1,
-				stderr: `${result.stderr}\nSWARM delegation failed: primary review disposition was not recorded.`,
-			};
-		}
 		return result;
 	};
 }
@@ -1222,7 +1195,6 @@ function agentColumns(agent: AgentCliResult | undefined): Partial<CompleteRunInp
 		timedOut: agent?.timedOut,
 		durationMs: agent?.durationMs,
 		usage: agent?.usage,
-		delegations: agent?.delegations,
 	};
 }
 
@@ -1821,7 +1793,6 @@ export async function processJob(
 				timedOut: result.agent.timedOut,
 				durationMs: result.agent.durationMs,
 				usage: result.agent.usage,
-				delegations: result.agent.delegations,
 				// Only a Review run carries a verdict; every other phase leaves it
 				// undefined, so the column is written only for reviews (issue #218).
 				reviewVerdict: result.verdict,

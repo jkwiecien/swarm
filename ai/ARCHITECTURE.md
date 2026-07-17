@@ -77,21 +77,7 @@ Per `PROJECT.md` §5, adapted to GitHub Projects as the board and GitHub as the 
 
 Each worker-spawned agent is scoped to one phase. A shared prompt guard forbids the manual
 `solve-issue` skill, arbitrary subagents/skills, and later-phase work; only the worker owns
-phase hand-offs, personas, and worktrees. Curated delegation is provider-neutral and
-**SWARM-orchestrated** (docs/OPTIMIZATION.md §6 "Option B"): no CLI native-subagent mechanism is
-used. When a phase opts in, the primary agent writes a structured delegation contract
-(`.swarm-delegation-<id>.contract.json`) and runs `swarm delegate <file>` — a deterministic SWARM
-command, never a subagent. SWARM launches a lighter-model *child run* in the same worktree
-(`src/delegation/orchestrator.ts`): Claude children are restricted to Read/Edit (no shell → no
-git/commit/nested delegation); Codex children run under the `workspace-write` sandbox rooted at the
-worktree. Both pin the child model and carry a recursion guard (`SWARM_DELEGATION_DEPTH`) so a child
-cannot delegate again. SWARM enforces the contract's `allowedPaths` against what the child actually
-touched (reverting and rejecting anything out of scope), records the child's usage/outcome as a
-provider-neutral observation, and returns the diff for the primary to inspect. The parent phase
-fails if it does not record an accepted/reworked disposition for every completed child. This is the
-single delegation path for **all** child-capable CLIs — Claude and Codex today; Antigravity has no
-usable tool/sandbox controls (ai/RULES.md §6, tracked by #185) and fails closed to the no-subagent
-guard. Contracts, policy, and observations are CLI-agnostic; only the child's argv/env is per-CLI.
+phase hand-offs, personas, and worktrees.
 
 1. **Planning** — item enters "Planning" status → worktree provisioned → the planning agent writes `proposed_plan.md` → plan posted as a comment on the linked Issue. By default the item stays in "Planning" (a human reviews the plan, then moves it to "ToDo" to greenlight Implementation); `pipeline.planning.autoAdvance` flips that to an automatic move. When `pipeline.planning.autoSplit` is on (default) and the agent judges the item too large for one PR, it also writes `proposed_split.json`: the original item is re-scoped into the smaller **first** task (`proposed_plan.md` is that task's plan) and the remaining work is spawned as sibling items via `PMProvider.createWorkItem`. Each sibling starts in "Planning" (so this same trigger plans it), is tagged `swarm:split-child` — the label `runPlanningPhase` reads to force `autoAdvance` off for that sibling's own run, so a split-off task never moves itself to "ToDo" — and gets a comment explaining the split. The parent also writes a concise plan for every sibling while its repo context is live and embeds it as a validated preplanned marker (`<!-- swarm-preplan:v1 … -->`, `src/pipeline/preplan.ts`) in the sibling's issue body; the sibling's own Planning run reuses that plan and completes without provisioning a worktree or launching the agent CLI, falling back to a normal run only when the marker is missing/malformed/stale/mismatched or an operator adds `swarm:replan` (docs/OPTIMIZATION.md §3). This keeps splitting behind the provider-agnostic `PMProvider` (no GitHub Projects specifics leak into the phase).
 2. **Implementation** — item enters "ToDo" → the phase moves it to "In Progress" to report the pickup → the agent implements/verifies and writes a semantic hand-off → SWARM validates the prepared tree, commits/pushes, opens or reuses the PR, and links it back to the item.
@@ -128,13 +114,6 @@ Unchanged from `PROJECT.md` §4 — this part of the original spec is SWARM-spec
 Once the worker has a provisioned worktree, it hands off to the harness (`src/harness/agent-cli.ts`, `runAgentCli`) to actually run the agent. The harness is deliberately narrow: it spawns `claude` or `antigravity` (Node's `child_process.spawn`, no subprocess library) with the worktree as CWD, streams stdout/stderr line-by-line (optional callbacks + `logger.debug`) while accumulating the full output, and resolves with `{ exitCode, signal, stdout, stderr, durationMs, timedOut }`. A non-zero exit is a normal outcome the caller inspects — only a spawn failure (e.g. the CLI isn't installed) throws. `timeoutMs` and an `AbortSignal` both kill the run (SIGTERM, escalating to SIGKILL). Prompt construction, persona/token selection, and the queue→worktree→harness→cleanup lifecycle live in the worker (SWARM-17), not here.
 
 **Model + reasoning mapping (issue #180).** The harness takes a *logical* `model` plus a normalized `reasoning` level and turns them into per-CLI launch args through `resolveModelLaunch` (`src/harness/models.ts`), the one place provider-specific reasoning semantics live: Claude gets `--model <alias> --effort <level>`, Codex gets `--model <id> -c model_reasoning_effort="<level>"`, and Antigravity — which has no reasoning flag — gets the reasoning folded back into the combined `agy models` variant string it passes to `--model` (e.g. logical `gemini-3.5-flash` + `high` → `"Gemini 3.5 Flash (High)"`). A pre-#180 config that stored the combined string directly is recognized and passed through verbatim, so it keeps launching that exact variant. Omitting reasoning preserves each CLI's own default (no flag for Claude/Codex; the model's default variant for Antigravity). `src/harness/models.ts` is the versioned capability catalog — logical models, their supported reasoning levels, and known defaults — cached in code, never discovered by invoking a model.
-
-For enabled curated delegation, the worker injects the delegation policy (child CLI/model, minimum
-size, parent-run linkage) into the primary run's env (`configureDelegationRun`) so the `swarm
-delegate` command the primary invokes can read it — it adds no provider flags. The child runs as a
-separate SWARM-launched process (`src/delegation/orchestrator.ts`), which appends its observation to
-the worktree; the generic harness only reads those observations (scoped by parent run id) before
-worktree cleanup. Deterministic delivery remains outside every model.
 
 ### Failure handling & rate-limit retries (issue #91)
 

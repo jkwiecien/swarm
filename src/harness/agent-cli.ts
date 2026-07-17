@@ -16,8 +16,6 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 
-import type { DelegationObservation } from '@/delegation/native.js';
-import { readDelegationObservations } from '@/delegation/observations.js';
 import { logger } from '@/lib/logger.js';
 import { detectNewConversationId, snapshotConversationIds } from './antigravity-session.js';
 import { type ReasoningLevel, resolveModelLaunch } from './models.js';
@@ -290,8 +288,6 @@ export interface AgentCliResult {
 	 * tail of stdout, unless it too was cut off.
 	 */
 	usage?: AgentUsage;
-	/** Native child-agent lifecycle and usage records linked to this parent run. */
-	delegations?: DelegationObservation[];
 }
 
 /**
@@ -571,14 +567,6 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			// Antigravity has no output id, so diff its conversation store — or, on a
 			// resume run, keep the id we resumed with.
 			const sessionId = resolveSessionId(parsed.sessionId);
-			// Scope delegation observations by parent run id only — the SWARM-controlled
-			// key the `swarm delegate` command stamps. When it's absent (the no-DB path
-			// where no run row exists, so SWARM_PARENT_RUN_ID is empty), the read falls
-			// through to unscoped, so a completed-but-unreviewed delegation is still
-			// caught rather than silently dropped by a session-id filter it never set.
-			const delegations = readDelegationObservations(options.cwd, {
-				parentRunId: options.env?.SWARM_PARENT_RUN_ID,
-			});
 			const result: AgentCliResult = {
 				cli,
 				exitCode: code,
@@ -592,7 +580,6 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				outputTruncated: stdout.truncated || stderr.truncated,
 				usage: parsed.usage,
 				sessionId,
-				delegations: delegations.length > 0 ? delegations : undefined,
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,

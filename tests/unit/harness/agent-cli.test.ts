@@ -1,7 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock the subprocess boundary — unit tests never spawn a real CLI
@@ -107,36 +104,6 @@ describe('runAgentCli', () => {
 			'json',
 			'-p',
 			'implement the thing',
-		]);
-	});
-
-	it('attributes delegation observations to the current parent run', async () => {
-		const cwd = mkdtempSync(join(tmpdir(), 'swarm-agent-cli-'));
-		const base = {
-			contractId: 'docs-update',
-			phase: 'implementation',
-			agent: 'swarm-doc-editor',
-			model: 'haiku',
-			delegationType: 'documentation-edit',
-			allowedPaths: ['README.md'],
-			outcome: 'completed',
-		};
-		writeFileSync(
-			join(cwd, '.swarm-delegation-events.jsonl'),
-			`${JSON.stringify({ ...base, invocationId: 'inv-1', parentRunId: 'other-run' })}\n${JSON.stringify({ ...base, invocationId: 'inv-2', parentRunId: 'run-1' })}\n`,
-		);
-		const promise = runAgentCli(
-			createMockRunAgentCliOptions({
-				cwd,
-				sessionId: 'fresh',
-				env: { SWARM_PARENT_RUN_ID: 'run-1' },
-			}),
-		);
-		lastChild().emit('close', 0, null);
-
-		const result = await promise;
-		expect(result.delegations).toEqual([
-			expect.objectContaining({ invocationId: 'inv-2', parentRunId: 'run-1' }),
 		]);
 	});
 

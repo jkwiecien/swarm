@@ -30,14 +30,13 @@ export function buildReviewPrompt(
 		prNumber: string;
 		headSha: string;
 	},
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	const { repo, prNumber, headSha } = context;
 	return [
 		'You are a senior code reviewer reviewing a pull request.',
 		'',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		...GH_IDENTITY_GUARD,
 		'',
 		'REVIEW ONLY. Do NOT edit files, fix code, commit, push, or change the repository',

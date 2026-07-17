@@ -163,41 +163,6 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.usage).toBeNull();
 		});
 
-		it('links curated child usage and review outcome to its parent run', async () => {
-			const id = await createRun({ projectId: PROJECT_ID, taskId: '6', phase: 'implementation' });
-
-			await completeRun(id, {
-				status: 'completed',
-				engine: 'claude',
-				exitCode: 0,
-				delegations: [
-					{
-						invocationId: 'session-1:agent-1',
-						contractId: 'docs-update',
-						parentRunId: id,
-						phase: 'implementation',
-						agent: 'swarm-doc-editor',
-						model: 'haiku',
-						delegationType: 'documentation-edit',
-						allowedPaths: ['README.md'],
-						usage: { inputTokens: 10, outputTokens: 5 },
-						outcome: 'completed',
-						reviewDisposition: 'accepted',
-					},
-				],
-			});
-
-			const row = await getRunByIdFromDb(id);
-			expect(row?.delegations).toEqual([
-				expect.objectContaining({
-					parentRunId: id,
-					model: 'haiku',
-					usage: { inputTokens: 10, outputTokens: 5 },
-					reviewDisposition: 'accepted',
-				}),
-			]);
-		});
-
 		it('records a deferred run without treating it as an error', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '3', phase: 'review' });
 			const nextRetryAt = new Date('2026-07-10T12:30:00.000Z');
