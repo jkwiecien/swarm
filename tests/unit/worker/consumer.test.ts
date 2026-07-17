@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
-import { AgentRunError } from '@/harness/agent-failure.js';
+import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import type { PMProvider } from '@/pm/types.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
@@ -2136,6 +2136,48 @@ describe('processJob', () => {
 				nextRetryAt: new Date(now.getTime() + outcome.retryDelayMs),
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'ro', 're');
+			vi.useRealTimers();
+		});
+
+		it('finalizes a Codex Review capacity failure as deferred with retry metadata', async () => {
+			vi.useFakeTimers();
+			const now = new Date('2026-07-10T10:00:00.000Z');
+			vi.setSystemTime(now);
+			phaseImpl = async () => {
+				throw agentRunError(
+					agentResult({
+						cli: 'codex',
+						exitCode: 1,
+						stdout:
+							'{"type":"turn.failed","error":{"message":"Selected model is at capacity. Please try a different model."}}',
+					}),
+					'Review agent (codex) exited with code 1',
+					' for PR #17',
+				);
+			};
+
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome).toMatchObject({
+				status: 'phase-deferred',
+				phase: 'review',
+				runId: 'run-1',
+				attempt: 0,
+				retryDelayMs: 6 * 60 * 1000,
+				reason: 'Review agent (codex) exited with code 1 (model at capacity) for PR #17',
+				resumable: false,
+			});
+			expect(completeRun).toHaveBeenCalledExactlyOnceWith(
+				'run-1',
+				expect.objectContaining({
+					status: 'deferred',
+					nextRetryAt: new Date(now.getTime() + 6 * 60 * 1000),
+					engine: 'codex',
+				}),
+			);
 			vi.useRealTimers();
 		});
 

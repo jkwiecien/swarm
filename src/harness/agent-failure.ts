@@ -93,9 +93,11 @@ const CODEX_CAPACITY_RE = /selected model is at capacity/i;
 // "overloaded", or the literal `overloaded_error` type token — never a bare 529,
 // which reviewed code, tool output, or an unrelated log can mention innocuously.
 const CLAUDE_CAPACITY_RE = /\b529\s+overloaded\b|\boverloaded_error\b/i;
-// Provider errors are terminal output; borrowed task/code/CI text lives earlier
-// in the transcript. Fifteen non-empty lines comfortably contain real banners
-// while keeping those unrelated body matches out of classification.
+// Unstructured provider errors are terminal output; borrowed task/code/CI text
+// lives earlier in the transcript. Fifteen non-empty lines comfortably contain
+// real banners while keeping those unrelated body matches out of classification.
+// Codex's machine-readable error events are an exception: their explicit shape
+// lets us safely recognise a capacity failure anywhere in the transcript.
 const TERMINAL_TAIL_LINES = 15;
 // A clock time optionally followed by a parenthesised IANA timezone, e.g.
 // `1:40pm (Europe/Warsaw)` or `13:40 (Europe/Warsaw)`.
@@ -108,6 +110,34 @@ function terminalTail(output: string): string {
 		.filter(Boolean)
 		.slice(-TERMINAL_TAIL_LINES)
 		.join('\n');
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+/**
+ * Codex emits newline-delimited JSON events. Unlike a human-readable capacity
+ * banner, these records remain trustworthy even when later stream messages
+ * push them out of the terminal-output window.
+ */
+function hasCodexCapacityEvent(output: string): boolean {
+	return output.split('\n').some((line) => {
+		try {
+			const event = asRecord(JSON.parse(line));
+			if (!event) return false;
+
+			if (event.type === 'error') return CODEX_CAPACITY_RE.test(String(event.message ?? ''));
+			if (event.type !== 'turn.failed') return false;
+
+			const error = asRecord(event.error);
+			return CODEX_CAPACITY_RE.test(String(error?.message ?? ''));
+		} catch {
+			return false;
+		}
+	});
 }
 
 /** Compute a timezone's UTC offset (ms) at a given instant via the Intl trick. */
@@ -205,13 +235,13 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * output and `signal: null`, since it trapped SIGTERM and called `process.exit`
  * itself rather than being torn down by the OS — {@link AgentCliResult.aborted}
  * exists precisely because `result.signal` can't be trusted to reflect this).
- * Otherwise a stalled run is classified as `stalled`. Next, a terminal
- * provider-capacity banner is `capacity`, matched per CLI so one CLI's provider
- * error can't be triggered by another CLI merely quoting or discussing the text:
- * Codex's `selected model is at capacity` (gated on `result.cli === 'codex'`)
- * and Claude's transient `529 Overloaded` / `overloaded_error` (gated on
- * `result.cli === 'claude'`). A recognisable terminal limit banner is a
- * `rate-limit`, and everything else is a plain `error`.
+ * Otherwise a stalled run is classified as `stalled`. Next, a provider-capacity
+ * error is `capacity`, matched per CLI so one CLI's provider error can't be
+ * triggered by another CLI merely quoting or discussing the text: Codex's
+ * structured `error` / `turn.failed` events anywhere in its output, or its
+ * terminal `selected model is at capacity` banner; and Claude's terminal
+ * `529 Overloaded` / `overloaded_error` banner. A recognisable terminal limit
+ * banner is a `rate-limit`, and everything else is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
 	if (result.timedOut) return { kind: 'timeout' };
@@ -229,7 +259,8 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	}
 
 	const tail = terminalTail(output);
-	if (result.cli === 'codex' && CODEX_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
+	if (result.cli === 'codex' && (hasCodexCapacityEvent(output) || CODEX_CAPACITY_RE.test(tail)))
+		return { kind: 'capacity' };
 	if (result.cli === 'claude' && CLAUDE_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
 	const resetMatch = RESET_RE.exec(tail);
