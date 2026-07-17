@@ -15,6 +15,7 @@ import type { ReasoningLevel } from '../harness/models.js';
 import { requireEnv } from '../lib/env.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { QUEUE_NAME, type SwarmJob } from './jobs.js';
+import type { PendingJobSnapshot, PendingJobState } from './queued-runs.js';
 
 let queue: Queue<SwarmJob> | null = null;
 
@@ -299,6 +300,50 @@ export async function removePendingRetryForRun(runId: string): Promise<number> {
 	const pending = [...delayed, ...waiting].filter(matches);
 	await Promise.all(pending.map((job) => job.remove()));
 	return pending.length;
+}
+
+/**
+ * Snapshot every job not yet picked up by the worker — the queue-introspection
+ * half of the `runs.queued` API (issue #234), the read-only counterpart to
+ * {@link enqueueJob}. Pending work lives across three BullMQ sets: `waiting`
+ * (fresh `github` jobs, no priority), `prioritized` (`github-projects` board
+ * jobs, demoted to {@link PM_BOARD_JOB_PRIORITY} by `priorityFor` — BullMQ v5
+ * stores anything with an explicit priority here, not in `waiting`), and
+ * `delayed` (coalesced review rechecks, deferred retries). Querying only
+ * `getWaiting()` would silently miss every board pickup this feature targets.
+ *
+ * Mapping a snapshot to the `runs.queued` API shape (deriving the phase hint,
+ * filtering out jobs already tracked as a `deferred` run, ordering) is
+ * `toQueuedRuns`'s job (`src/queue/queued-runs.ts`) — kept out of here so that
+ * mapper stays Redis-free and unit-testable on its own.
+ */
+export async function listPendingJobs(): Promise<PendingJobSnapshot[]> {
+	const q = getQueue();
+	const [waiting, prioritized, delayed] = await Promise.all([
+		q.getWaiting(),
+		q.getPrioritized(),
+		q.getDelayed(),
+	]);
+
+	const toSnapshot =
+		(state: PendingJobState) =>
+		(job: (typeof waiting)[number]): PendingJobSnapshot => ({
+			// `job.id` is optional only before a job is first persisted; every job
+			// returned by these getters is already in Redis and always has one.
+			jobId: job.id ?? '',
+			type: job.data.type,
+			state,
+			data: job.data,
+			enqueuedAt: job.timestamp,
+			delayMs: job.delay ?? 0,
+			priority: job.priority ?? 0,
+		});
+
+	return [
+		...waiting.map(toSnapshot('waiting')),
+		...prioritized.map(toSnapshot('prioritized')),
+		...delayed.map(toSnapshot('delayed')),
+	];
 }
 
 /**

@@ -8,7 +8,7 @@ import {
 // Mock BullMQ's Queue so nothing touches Redis — capture constructor args and
 // the add()/close() calls the producer makes. Hoisted so the vi.mock factory
 // (itself hoisted above imports) can reference them.
-const { QueueMock, add, close, getDelayed, getWaiting, fromId } = vi.hoisted(() => {
+const { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId } = vi.hoisted(() => {
 	// Typed with add()'s (name, data, opts) signature so `mock.calls[0]` is a
 	// real tuple that destructures/indexes under typecheck (see ai/TESTING.md).
 	const add =
@@ -20,18 +20,24 @@ const { QueueMock, add, close, getDelayed, getWaiting, fromId } = vi.hoisted(() 
 			) => Promise<unknown>
 		>();
 	const close = vi.fn();
-	// Job shape covers both what `scheduleCoalescedJob` uses (`name`/`remove`) and
-	// what `promoteRetryForRun` uses (`data`/`updateData`/`promote`); all optional
-	// so a test supplies only the fields its assertion touches.
+	// Job shape covers what `scheduleCoalescedJob` uses (`name`/`remove`),
+	// `promoteRetryForRun` uses (`data`/`updateData`/`promote`), and
+	// `listPendingJobs` uses (`id`/`data`/`timestamp`/`delay`/`priority`); all
+	// optional so a test supplies only the fields its assertion touches.
 	type MockJob = {
+		id?: string;
 		name?: string;
 		remove?: () => Promise<void>;
-		data?: { runId?: string; rateLimitRetryAttempt?: number };
+		data?: { runId?: string; rateLimitRetryAttempt?: number; [key: string]: unknown };
+		timestamp?: number;
+		delay?: number;
+		priority?: number;
 		updateData?: (data: unknown) => Promise<void>;
 		promote?: () => Promise<void>;
 	};
 	const getDelayed = vi.fn<() => Promise<MockJob[]>>();
 	const getWaiting = vi.fn<() => Promise<MockJob[]>>();
+	const getPrioritized = vi.fn<() => Promise<MockJob[]>>();
 	// `Job.fromId(queue, id)` — the lookup `promoteJobById` uses. Resolves a job
 	// exposing `getState`/`promote`, or `undefined` for a reaped/absent id.
 	const fromId =
@@ -53,9 +59,10 @@ const { QueueMock, add, close, getDelayed, getWaiting, fromId } = vi.hoisted(() 
 			close: typeof close;
 			getDelayed: typeof getDelayed;
 			getWaiting: typeof getWaiting;
+			getPrioritized: typeof getPrioritized;
 		}
-	>(() => ({ add, close, getDelayed, getWaiting }));
-	return { QueueMock, add, close, getDelayed, getWaiting, fromId };
+	>(() => ({ add, close, getDelayed, getWaiting, getPrioritized }));
+	return { QueueMock, add, close, getDelayed, getWaiting, getPrioritized, fromId };
 });
 
 vi.mock('bullmq', () => ({ Queue: QueueMock, Job: { fromId } }));
@@ -73,6 +80,8 @@ beforeEach(() => {
 	getDelayed.mockResolvedValue([]);
 	getWaiting.mockReset();
 	getWaiting.mockResolvedValue([]);
+	getPrioritized.mockReset();
+	getPrioritized.mockResolvedValue([]);
 	fromId.mockReset();
 	fromId.mockResolvedValue(undefined);
 	process.env.REDIS_URL = 'redis://localhost:6379';
@@ -451,6 +460,87 @@ describe('removePendingRetryForRun', () => {
 		const { removePendingRetryForRun } = await import('@/queue/producer.js');
 
 		expect(await removePendingRetryForRun('run-9')).toBe(0);
+	});
+});
+
+describe('listPendingJobs', () => {
+	it('queries all three pending sets and tags each snapshot with its source state', async () => {
+		const githubJob = createMockGitHubWebhookJob();
+		const boardJob = createMockGitHubProjectsWebhookJob();
+		getWaiting.mockResolvedValue([
+			{ id: 'w-1', data: githubJob, timestamp: 1000, delay: 0, priority: 0 },
+		]);
+		// The critical case this test guards: board (`github-projects`) jobs carry
+		// `priority: 10` and BullMQ v5 stores them in `prioritized`, not `waiting` —
+		// a `listPendingJobs` that only queried `getWaiting` would miss them.
+		getPrioritized.mockResolvedValue([
+			{ id: 'p-1', data: boardJob, timestamp: 2000, delay: 0, priority: 10 },
+		]);
+		getDelayed.mockResolvedValue([
+			{ id: 'd-1', data: githubJob, timestamp: 3000, delay: 30_000, priority: 0 },
+		]);
+		const { listPendingJobs } = await import('@/queue/producer.js');
+
+		const snapshots = await listPendingJobs();
+
+		expect(getWaiting).toHaveBeenCalledOnce();
+		expect(getPrioritized).toHaveBeenCalledOnce();
+		expect(getDelayed).toHaveBeenCalledOnce();
+		expect(snapshots).toEqual([
+			{
+				jobId: 'w-1',
+				type: 'github',
+				state: 'waiting',
+				data: githubJob,
+				enqueuedAt: 1000,
+				delayMs: 0,
+				priority: 0,
+			},
+			{
+				jobId: 'p-1',
+				type: 'github-projects',
+				state: 'prioritized',
+				data: boardJob,
+				enqueuedAt: 2000,
+				delayMs: 0,
+				priority: 10,
+			},
+			{
+				jobId: 'd-1',
+				type: 'github',
+				state: 'delayed',
+				data: githubJob,
+				enqueuedAt: 3000,
+				delayMs: 30_000,
+				priority: 0,
+			},
+		]);
+	});
+
+	it('copies timestamp/delay/priority through, defaulting delay/priority when absent', async () => {
+		getWaiting.mockResolvedValue([
+			{ id: 'w-1', data: createMockGitHubWebhookJob(), timestamp: 1000 },
+		]);
+		const { listPendingJobs } = await import('@/queue/producer.js');
+
+		const [snapshot] = await listPendingJobs();
+
+		expect(snapshot.enqueuedAt).toBe(1000);
+		expect(snapshot.delayMs).toBe(0);
+		expect(snapshot.priority).toBe(0);
+	});
+
+	it('falls back to an empty jobId when the job carries none', async () => {
+		getWaiting.mockResolvedValue([{ data: createMockGitHubWebhookJob(), timestamp: 1000 }]);
+		const { listPendingJobs } = await import('@/queue/producer.js');
+
+		expect((await listPendingJobs())[0].jobId).toBe('');
+	});
+
+	it('returns an empty array when nothing is pending', async () => {
+		const { listPendingJobs } = await import('@/queue/producer.js');
+
+		expect(await listPendingJobs()).toEqual([]);
 	});
 });
 
