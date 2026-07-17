@@ -23,7 +23,7 @@
  * slot.
  */
 
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { getDb } from '../client.js';
 import { reviewVerdicts } from '../schema/reviewVerdicts.js';
 
@@ -136,6 +136,7 @@ export async function markReviewVerdictSubmitted(
 				eq(reviewVerdicts.repository, key.repository),
 				eq(reviewVerdicts.prNumber, key.prNumber),
 				eq(reviewVerdicts.headSha, key.headSha),
+				ne(reviewVerdicts.state, 'abandoned'),
 			),
 		)
 		.returning({ id: reviewVerdicts.id, ordinal: reviewVerdicts.ordinal });
