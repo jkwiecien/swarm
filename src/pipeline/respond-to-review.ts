@@ -80,7 +80,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -478,7 +477,6 @@ export async function runRespondToReviewPhase(
 					args: [
 						buildRespondToReviewPrompt(
 							{ repo: project.repo, prNumber, prBranch, reviewId },
-							delegationEnabled(project, 'respond-to-review', cli),
 							customPrompt,
 						),
 					],

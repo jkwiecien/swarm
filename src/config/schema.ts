@@ -189,35 +189,6 @@ export const AgentDefaultsSchema = z
 	)
 	.describe('Per-CLI default model — used when a phase omits its own model override');
 
-export const DelegationConfigSchema = z
-	.object({
-		enabled: z.boolean().default(false),
-		/**
-		 * Per-CLI lighter model a curated delegation child runs under (the phase's
-		 * own CLI, pinned down a tier). Omitted CLIs fall back to the coded defaults
-		 * in `src/delegation/native.ts` (`DEFAULT_LIGHT_MODEL`): Claude→haiku,
-		 * Codex→gpt-5.4-mini. Antigravity cannot host a child (ai/RULES.md §6, #185).
-		 */
-		lightModels: z
-			.object({
-				claude: z.string().min(1).optional(),
-				codex: z.string().min(1).optional(),
-			})
-			.optional(),
-		minimumSemanticOperations: z.number().int().min(3).default(3),
-		phases: z
-			.object({
-				planning: z.boolean().optional(),
-				implementation: z.boolean().optional(),
-				review: z.boolean().optional(),
-				respondToReview: z.boolean().optional(),
-				respondToCi: z.boolean().optional(),
-				resolveConflicts: z.boolean().optional(),
-			})
-			.default({ implementation: true }),
-	})
-	.describe('Bounded curated semantic delegation policy (SWARM-orchestrated child runs)');
-
 /**
  * Per-phase agent overrides, keyed by the same phase names the trigger/worker
  * layer already uses (`TriggerResult['phase']`, `src/triggers/types.ts`) —
@@ -238,7 +209,6 @@ export const DelegationConfigSchema = z
 export const AgentsConfigSchema = z
 	.object({
 		defaults: AgentDefaultsSchema.optional(),
-		delegation: DelegationConfigSchema.optional(),
 		planning: AgentConfigSchema.optional(),
 		implementation: AgentConfigSchema.optional(),
 		implementationUnplanned: AgentConfigSchema.optional(),
@@ -394,7 +364,6 @@ export const SwarmConfigSchema = z.object({
 export type Credentials = z.infer<typeof CredentialsSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
-export type DelegationConfig = z.infer<typeof DelegationConfigSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
 export type PipelineConfig = z.infer<typeof PipelineConfigSchema>;
 export type WorktreeRetentionConfig = z.infer<typeof WorktreeRetentionConfigSchema>;

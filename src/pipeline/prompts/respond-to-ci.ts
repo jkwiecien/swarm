@@ -31,14 +31,13 @@ export function buildRespondToCiPrompt(
 		prBranch: string;
 		headSha: string;
 	},
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	const { repo, prNumber, prBranch, headSha } = context;
 	return [
 		'You are a senior software engineer whose pull request has failing CI checks.',
 		'',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		...GH_IDENTITY_GUARD,
 		'',
 		`This worktree has branch "${prBranch}" checked out — the head branch of PR`,

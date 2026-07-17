@@ -49,27 +49,25 @@ describe('projectInstructionsParagraph (issue #135)', () => {
 
 /** Every phase's prompt builder, invoked with a trailing `customPrompt` arg. */
 const BUILDERS: Array<{ name: string; build: (customPrompt?: string) => string }> = [
-	{ name: 'planning', build: (p) => buildPlanningPrompt(createMockWorkItem(), false, false, p) },
+	{ name: 'planning', build: (p) => buildPlanningPrompt(createMockWorkItem(), false, p) },
 	{
 		name: 'implementation',
 		build: (p) =>
 			buildImplementationPrompt(
 				createMockWorkItem(),
 				{ repo: 'o/r', taskId: '7', branch: 'issue-7', baseBranch: 'main' },
-				false,
 				p,
 			),
 	},
 	{
 		name: 'review',
-		build: (p) => buildReviewPrompt({ repo: 'o/r', prNumber: '7', headSha: 'abc123' }, false, p),
+		build: (p) => buildReviewPrompt({ repo: 'o/r', prNumber: '7', headSha: 'abc123' }, p),
 	},
 	{
 		name: 'respond-to-review',
 		build: (p) =>
 			buildRespondToReviewPrompt(
 				{ repo: 'o/r', prNumber: '7', prBranch: 'issue-7', reviewId: '99' },
-				false,
 				p,
 			),
 	},
@@ -78,7 +76,6 @@ const BUILDERS: Array<{ name: string; build: (customPrompt?: string) => string }
 		build: (p) =>
 			buildRespondToCiPrompt(
 				{ repo: 'o/r', prNumber: '7', prBranch: 'issue-7', headSha: 'abc123' },
-				false,
 				p,
 			),
 	},
@@ -94,7 +91,6 @@ const BUILDERS: Array<{ name: string; build: (customPrompt?: string) => string }
 					baseBranch: 'main',
 					baseSha: 'def456',
 				},
-				false,
 				p,
 			),
 	},
@@ -121,7 +117,7 @@ describe.each(BUILDERS)('$name prompt composition (issue #135)', ({ build }) => 
 
 describe('custom prompt placement relative to task context', () => {
 	it('planning places the section after the instructions and before the work item', () => {
-		const prompt = buildPlanningPrompt(createMockWorkItem(), false, false, CUSTOM);
+		const prompt = buildPlanningPrompt(createMockWorkItem(), false, CUSTOM);
 		expect(prompt.indexOf(SECTION_HEADER)).toBeLessThan(prompt.indexOf('--- WORK ITEM ---'));
 	});
 
@@ -129,7 +125,6 @@ describe('custom prompt placement relative to task context', () => {
 		const prompt = buildImplementationPrompt(
 			createMockWorkItem(),
 			{ repo: 'o/r', taskId: '7', branch: 'issue-7', baseBranch: 'main' },
-			false,
 			CUSTOM,
 		);
 		expect(prompt.indexOf(SECTION_HEADER)).toBeLessThan(prompt.indexOf('--- WORK ITEM ---'));

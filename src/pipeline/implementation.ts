@@ -43,7 +43,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -393,7 +392,6 @@ export async function runImplementationPhase(
 								// so it stays unset and their prompt is unchanged.
 								worktreePath: cli === 'antigravity' ? handle.path : undefined,
 							},
-							delegationEnabled(project, 'implementation', cli),
 							customPrompt,
 						),
 					],

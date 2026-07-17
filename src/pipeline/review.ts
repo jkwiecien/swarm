@@ -54,7 +54,6 @@ import {
 	isCapReachingRequestChanges,
 	markReviewVerdictSubmitted as markReviewVerdictSubmittedDefault,
 } from '@/db/repositories/reviewVerdictsRepository.js';
-import { delegationEnabled } from '@/delegation/native.js';
 import {
 	type AgentCli,
 	type AgentCliResult,
@@ -343,13 +342,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 					reasoning,
 					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 					cwd: handle.path,
-					args: [
-						buildReviewPrompt(
-							{ repo: project.repo, prNumber, headSha },
-							delegationEnabled(project, 'review', cli),
-							customPrompt,
-						),
-					],
+					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha }, customPrompt)],
 					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
 					// call the agent makes acts as the reviewer persona.
 					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,

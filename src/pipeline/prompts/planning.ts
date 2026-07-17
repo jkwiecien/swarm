@@ -40,13 +40,12 @@ export const PROPOSED_SPLIT_FILENAME = 'proposed_split.json';
 export function buildPlanningPrompt(
 	workItem: WorkItem,
 	allowSplit = false,
-	delegationAllowed = false,
 	customPrompt?: string,
 ): string {
 	const lines = [
 		'You are a senior software architect creating a detailed implementation plan.',
 		'',
-		...pipelinePhaseGuard(delegationAllowed),
+		...pipelinePhaseGuard(),
 		'',
 		'PLANNING ONLY. Do NOT implement, edit, or create any source files, and do NOT',
 		'run any command that changes the repository. Your sole deliverable is a plan',
