@@ -7,6 +7,7 @@ import {
 	Info,
 	Loader2,
 	OctagonX,
+	Play,
 	RefreshCw,
 	Terminal,
 } from 'lucide-react';
@@ -17,7 +18,12 @@ import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { Modal, ModalFooter } from '@/components/ui/modal.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
-import { canRetryRun, retryButtonLabel } from '@/lib/run-retry.js';
+import {
+	canRetryRun,
+	type RetryActionKind,
+	retryActionKind,
+	retryButtonLabel,
+} from '@/lib/run-retry.js';
 import {
 	canTerminateRun,
 	terminateButtonLabel,
@@ -49,9 +55,91 @@ function capitalizeLevel(value: string): string {
 }
 
 /**
- * Split "Retry" button (issue #153): clicking the main left button retries the run
+ * The split button's color treatment (issue #227): emerald for a session
+ * "Resume", violet for a fresh "Retry now". Shared by the wrapper (shadow), the
+ * main button, and the chevron so the whole control reads as one green/violet
+ * piece.
+ */
+function retrySplitPalette(isResume: boolean): { wrapper: string; main: string; chevron: string } {
+	return isResume
+		? {
+				wrapper: 'shadow-emerald-950/10',
+				main: 'bg-emerald-600 hover:bg-emerald-500 focus:ring-emerald-500 border-emerald-700/50',
+				chevron: 'bg-emerald-600 hover:bg-emerald-500 focus:ring-emerald-500',
+			}
+		: {
+				wrapper: 'shadow-violet-950/10',
+				main: 'bg-violet-600 hover:bg-violet-500 focus:ring-violet-500 border-violet-700/50',
+				chevron: 'bg-violet-600 hover:bg-violet-500 focus:ring-violet-500',
+			};
+}
+
+/**
+ * The main-action + chevron pair of the retry control. A resumable deferred run
+ * shows a green "Resume" (Play glyph); every other retryable run shows the violet
+ * "Retry now" (RefreshCw). The chevron opens the override popup the parent owns.
+ */
+function RetrySplitButton({
+	kind,
+	palette,
+	isPending,
+	onPrimary,
+	onToggle,
+}: {
+	kind: RetryActionKind;
+	palette: { main: string; chevron: string };
+	isPending: boolean;
+	onPrimary: () => void;
+	onToggle: () => void;
+}) {
+	const isResume = kind === 'resume';
+	return (
+		<>
+			{/* Main Button — resume or fresh retry, per the run's server semantics. */}
+			<button
+				type="button"
+				onClick={onPrimary}
+				disabled={isPending}
+				className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white rounded-l-md focus:outline-none focus:ring-1 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r cursor-pointer ${palette.main}`}
+			>
+				{isResume ? (
+					<Play className={`h-4 w-4 ${isPending ? 'animate-pulse' : ''}`} />
+				) : (
+					<RefreshCw className={`h-4 w-4 ${isPending ? 'animate-spin' : ''}`} />
+				)}
+				{retryButtonLabel(kind, isPending)}
+			</button>
+
+			{/* Chevron button (the separate right part) */}
+			<button
+				type="button"
+				onClick={onToggle}
+				disabled={isPending}
+				className={`inline-flex items-center px-2 py-2 text-sm font-semibold text-white rounded-r-md focus:outline-none focus:ring-1 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${palette.chevron}`}
+				title={
+					isResume
+						? 'Retry with a different model/agent (starts fresh, not a resume)'
+						: 'Retry with different model/agent'
+				}
+			>
+				<ChevronDown className="h-4 w-4" />
+			</button>
+		</>
+	);
+}
+
+/**
+ * Split retry button (issue #153): clicking the main left button retries the run
  * with its existing/preselected settings; clicking the chevron right button opens
  * a popup allowing overrides for the agent CLI and model.
+ *
+ * The main button's identity tracks the server's retry semantics (issue #227): a
+ * `deferred` run that still holds a captured agent session resumes it — a green
+ * "Resume" firing the retry path with no overrides (which promotes the pending
+ * session-resume job) — while a non-resumable deferred run and a terminally
+ * failed run relaunch from scratch as the original violet "Retry now". The
+ * override popup is always a fresh retry, so choosing a different CLI/model never
+ * masquerades as a resume.
  */
 function RetryNowButton({ run }: { run: RunRow }) {
 	const queryClient = useQueryClient();
@@ -102,30 +190,22 @@ function RetryNowButton({ run }: { run: RunRow }) {
 
 	const reasoningOptions = reasoningChoicesFor(selectedCli, selectedModel);
 
+	// A resumable deferred run continues its captured CLI session (green
+	// "Resume"); everything else relaunches from scratch (violet "Retry now").
+	const kind = retryActionKind(run.status, run.agentSessionId);
+	const isResume = kind === 'resume';
+	const palette = retrySplitPalette(isResume);
+
 	return (
 		<div className="mt-3">
-			<div className="relative inline-flex items-stretch rounded-md shadow-lg shadow-violet-950/10">
-				{/* Main Button */}
-				<button
-					type="button"
-					onClick={() => mutation.mutate({})}
-					disabled={mutation.isPending}
-					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-l-md hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-r border-violet-700/50 cursor-pointer"
-				>
-					<RefreshCw className={`h-4 w-4 ${mutation.isPending ? 'animate-spin' : ''}`} />
-					{retryButtonLabel(mutation.isPending)}
-				</button>
-
-				{/* Chevron button (the separate right part) */}
-				<button
-					type="button"
-					onClick={() => setIsOpen(!isOpen)}
-					disabled={mutation.isPending}
-					className="inline-flex items-center px-2 py-2 text-sm font-semibold text-white bg-violet-600 rounded-r-md hover:bg-violet-500 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-					title="Retry with different model/agent"
-				>
-					<ChevronDown className="h-4 w-4" />
-				</button>
+			<div className={`relative inline-flex items-stretch rounded-md shadow-lg ${palette.wrapper}`}>
+				<RetrySplitButton
+					kind={kind}
+					palette={palette}
+					isPending={mutation.isPending}
+					onPrimary={() => mutation.mutate({})}
+					onToggle={() => setIsOpen(!isOpen)}
+				/>
 
 				{/* Popup */}
 				{isOpen && (
@@ -140,9 +220,17 @@ function RetryNowButton({ run }: { run: RunRow }) {
 
 						{/* The actual popover */}
 						<div className="absolute left-0 top-full mt-2 z-50 w-72 bg-zinc-900 border border-zinc-850 rounded-lg shadow-2xl p-4 animate-in fade-in slide-in-from-top-2 duration-150">
-							<h4 className="text-xs font-semibold text-zinc-300 mb-3 tracking-wide uppercase">
-								Retry Options
-							</h4>
+							<div className="mb-3">
+								<h4 className="text-xs font-semibold text-zinc-300 tracking-wide uppercase">
+									Retry Options
+								</h4>
+								{isResume && (
+									<p className="mt-1.5 text-[11px] font-normal normal-case tracking-normal leading-snug text-zinc-500">
+										Choosing a different CLI or model starts a fresh retry instead of resuming this
+										run's session.
+									</p>
+								)}
+							</div>
 
 							<div className="space-y-3 text-left">
 								<div>

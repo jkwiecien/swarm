@@ -15,7 +15,33 @@ export function canRetryRun(status: string): boolean {
 	return status === 'deferred' || status === 'failed';
 }
 
-/** Button label: the in-flight state reads "Retrying…", otherwise "Retry now". */
-export function retryButtonLabel(isPending: boolean): string {
+/**
+ * The two shapes the primary retry action takes (issue #227):
+ * - `resume` — continue the captured CLI session a deferred run preserved.
+ * - `retry`  — start a fresh agent session from scratch.
+ */
+export type RetryActionKind = 'resume' | 'retry';
+
+/**
+ * Which primary action the run offers. A `deferred` run that still holds a
+ * captured `agentSessionId` is one whose pending retry will *continue* that
+ * session (the exact condition the router pins the worktree for —
+ * `hasResumableDeferredRun`: `status = 'deferred' AND agent_session_id IS NOT
+ * NULL`), so it's a "resume". Every other retryable run — a non-resumable
+ * deferred run (session cleared) or a terminally `failed` run — relaunches from
+ * scratch, so it's a plain "retry". Mirroring the server's own guard keeps the
+ * green Resume button from ever promising a resume the retry path won't perform.
+ */
+export function retryActionKind(status: string, agentSessionId: string | null): RetryActionKind {
+	return status === 'deferred' && agentSessionId !== null ? 'resume' : 'retry';
+}
+
+/**
+ * Button label for the primary action. A resume reads "Resume"/"Resuming…"; a
+ * fresh retry keeps the original "Retry now"/"Retrying…". The in-flight variant
+ * is shown while the mutation is pending.
+ */
+export function retryButtonLabel(kind: RetryActionKind, isPending: boolean): string {
+	if (kind === 'resume') return isPending ? 'Resuming…' : 'Resume';
 	return isPending ? 'Retrying…' : 'Retry now';
 }

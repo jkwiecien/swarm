@@ -60,4 +60,12 @@ export interface RunRow {
 	durationMs: number | null;
 	usage: AgentUsage | null;
 	jobPayload: unknown | null;
+	/**
+	 * Captured agent-session id kept on a resumable `deferred` run, so its pending
+	 * retry can continue the CLI session rather than start fresh (issue #227).
+	 * Non-null only while `deferred` and resumable — the server clears it for a
+	 * non-resumable deferral and a terminal `failed` run (see the router's
+	 * `hasResumableDeferredRun` guard). Mirrors the `agent_session_id` column.
+	 */
+	agentSessionId: string | null;
 }
