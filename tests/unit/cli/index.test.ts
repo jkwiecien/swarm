@@ -5,7 +5,9 @@ vi.mock('@/cli/commands/start.js', () => ({ run: vi.fn(async () => 0) }));
 vi.mock('@/cli/commands/stop.js', () => ({ run: vi.fn(async () => 0) }));
 vi.mock('@/cli/commands/status.js', () => ({ run: vi.fn(async () => 0) }));
 vi.mock('@/cli/commands/logs.js', () => ({ run: vi.fn(async () => 0) }));
+vi.mock('@/cli/commands/queue.js', () => ({ run: vi.fn(async () => 0) }));
 
+import { run as queueRun } from '@/cli/commands/queue.js';
 import { run as startRun } from '@/cli/commands/start.js';
 import { run } from '@/cli/index.js';
 
@@ -18,6 +20,12 @@ describe('cli dispatch', () => {
 	it('dispatches to the matching command with the remaining args', async () => {
 		const code = await run(['start', '--build']);
 		expect(startRun).toHaveBeenCalledWith(['--build']);
+		expect(code).toBe(0);
+	});
+
+	it('dispatches queue subcommands', async () => {
+		const code = await run(['queue', 'clear']);
+		expect(queueRun).toHaveBeenCalledWith(['clear']);
 		expect(code).toBe(0);
 	});
 

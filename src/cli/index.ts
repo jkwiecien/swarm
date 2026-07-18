@@ -14,6 +14,7 @@ import * as out from './_shared/output.js';
 import * as config from './commands/config.js';
 import * as init from './commands/init.js';
 import * as logs from './commands/logs.js';
+import * as queue from './commands/queue.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
@@ -28,6 +29,7 @@ const COMMANDS: Record<string, Command> = {
 	stop,
 	status,
 	logs,
+	queue,
 	worktrees,
 };
 
@@ -42,6 +44,7 @@ Commands:
   stop [-v]        Stop the stack (-v/--volumes also drops its volumes)
   status           Show stack container states and probe the router's health
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
+	queue clear      Remove all pending queue jobs (not active runs)
   worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;

@@ -185,6 +185,24 @@ describe('enqueueJob', () => {
 	});
 });
 
+describe('clearPendingJobs', () => {
+	it('removes every waiting, prioritized, and delayed job without touching active work', async () => {
+		const removeWaiting = vi.fn().mockResolvedValue(undefined);
+		const removePrioritized = vi.fn().mockResolvedValue(undefined);
+		const removeDelayed = vi.fn().mockResolvedValue(undefined);
+		getWaiting.mockResolvedValue([{ remove: removeWaiting }]);
+		getPrioritized.mockResolvedValue([{ remove: removePrioritized }]);
+		getDelayed.mockResolvedValue([{ remove: removeDelayed }]);
+		const { clearPendingJobs } = await import('@/queue/producer.js');
+
+		await expect(clearPendingJobs()).resolves.toBe(3);
+
+		expect(removeWaiting).toHaveBeenCalledOnce();
+		expect(removePrioritized).toHaveBeenCalledOnce();
+		expect(removeDelayed).toHaveBeenCalledOnce();
+	});
+});
+
 describe('scheduleCoalescedJob', () => {
 	it('adds a delayed job named by the coalesce key, with a unique colon-free id', async () => {
 		const { scheduleCoalescedJob } = await import('@/queue/producer.js');

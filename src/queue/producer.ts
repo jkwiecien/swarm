@@ -461,6 +461,23 @@ export async function listPendingJobs(): Promise<PendingJobSnapshot[]> {
 }
 
 /**
+ * Remove every job that has not started processing. Active jobs are deliberately
+ * excluded: cancelling a live run requires the run-cancellation path so its
+ * worker and durable run record are kept consistent.
+ */
+export async function clearPendingJobs(): Promise<number> {
+	const q = getQueue();
+	const [waiting, prioritized, delayed] = await Promise.all([
+		q.getWaiting(),
+		q.getPrioritized(),
+		q.getDelayed(),
+	]);
+	const jobs = [...waiting, ...prioritized, ...delayed];
+	await Promise.all(jobs.map((job) => job.remove()));
+	return jobs.length;
+}
+
+/**
  * Close the producer connection — called from the router's shutdown handler so
  * the process exits cleanly instead of hanging on an open Redis socket. A no-op
  * if nothing was ever enqueued (the queue is created lazily).
