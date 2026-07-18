@@ -300,6 +300,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			mergePullRequest,
 			project,
 			prNumber,
+			headSha,
 			taskId,
 			phase: 'Review',
 		});

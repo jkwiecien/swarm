@@ -214,7 +214,7 @@ describe('runReviewPhase', () => {
 
 			const result = await runReviewPhase({ ...deps, mergePullRequest });
 
-			expect(mergePullRequest).toHaveBeenCalledWith(deps.project, 99);
+			expect(mergePullRequest).toHaveBeenCalledWith(deps.project, 99, HEAD_SHA);
 			expect(result.mergeOutcome).toEqual({
 				status: 'merged',
 				message: 'merged via GitHub direct API',

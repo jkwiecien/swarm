@@ -37,6 +37,7 @@ import {
 	getGitHubUserForToken,
 	getPullRequestAuthorLogin,
 	getPullRequestMergeState,
+	getPullRequestReviewDecision,
 	getScopedClient,
 	mergePullRequestDirect,
 	withGitHubToken,
@@ -233,6 +234,37 @@ describe('github client', () => {
 				draft: false,
 				headSha: 'merged-head',
 			});
+		});
+	});
+
+	describe('getPullRequestReviewDecision (issue #278)', () => {
+		it('resolves the aggregate review decision via GraphQL', async () => {
+			graphql.mockResolvedValue({ repository: { pullRequest: { reviewDecision: 'APPROVED' } } });
+
+			await expect(
+				withGitHubToken('tok', () => getPullRequestReviewDecision('jkwiecien', 'swarm', 42)),
+			).resolves.toBe('APPROVED');
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('reviewDecision'), {
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				number: 42,
+			});
+		});
+
+		it('returns null when the repository requires no reviews', async () => {
+			graphql.mockResolvedValue({ repository: { pullRequest: { reviewDecision: null } } });
+
+			await expect(
+				withGitHubToken('tok', () => getPullRequestReviewDecision('jkwiecien', 'swarm', 42)),
+			).resolves.toBeNull();
+		});
+
+		it('returns null when the PR or repository is missing from the response', async () => {
+			graphql.mockResolvedValue({ repository: null });
+
+			await expect(
+				withGitHubToken('tok', () => getPullRequestReviewDecision('jkwiecien', 'swarm', 42)),
+			).resolves.toBeNull();
 		});
 	});
 

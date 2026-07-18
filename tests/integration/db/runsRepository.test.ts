@@ -10,6 +10,7 @@ import {
 	failOrphanedRunningRuns,
 	failStaleRunningRuns,
 	getLatestRunForTask,
+	getPendingReviewMergeFollowUps,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	getRunOutputEvents,
@@ -19,6 +20,7 @@ import {
 	markRunUserTerminated,
 	resetRunToRunning,
 	storeRunLogs,
+	updateReviewMergeOutcome,
 } from '../../../src/db/repositories/runsRepository.js';
 import { runLogs, runs } from '../../../src/db/schema/runs.js';
 import { truncateAll } from '../helpers/db.js';
@@ -306,6 +308,25 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			const row = await getRunByIdFromDb(id);
 			expect(row?.reviewOrdinal).toBeNull();
 			expect(row?.reviewAutomationOutcome).toBeNull();
+		});
+
+		it('clears a prior merge-automation outcome so a re-run starts a fresh generation (issue #278)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9e', phase: 'review' });
+			await completeRun(id, { status: 'completed', engine: 'claude', reviewVerdict: 'approve' });
+			await updateReviewMergeOutcome(id, {
+				status: 'not-ready',
+				message: 'pending checks',
+				attempt: 0,
+				approvedHeadSha: 'sha-old',
+			});
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewMergeOutcome).toBeNull();
+			expect(row?.reviewMergeMessage).toBeNull();
+			expect(row?.reviewMergeAttempt).toBeNull();
+			expect(row?.reviewMergeApprovedHeadSha).toBeNull();
 		});
 
 		it('records the effective engine for the fresh attempt when one is passed', async () => {
@@ -709,6 +730,114 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			await completeRun(id, { status: 'deferred', engine: 'claude' });
 			expect(await hasResumableDeferredRun(PROJECT_ID, '81')).toBe(false);
 			expect(await hasResumableDeferredRun('proj-other', '80')).toBe(false);
+		});
+	});
+
+	describe('updateReviewMergeOutcome / getPendingReviewMergeFollowUps (issue #278)', () => {
+		it('persists the outcome, message, attempt, and approved head', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '90', phase: 'review' });
+
+			const updated = await updateReviewMergeOutcome(id, {
+				status: 'not-ready',
+				message: 'required checks are still pending',
+				attempt: 0,
+				approvedHeadSha: 'sha-1',
+			});
+
+			expect(updated).toBe(true);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewMergeOutcome).toBe('not-ready');
+			expect(row?.reviewMergeMessage).toBe('required checks are still pending');
+			expect(row?.reviewMergeAttempt).toBe(0);
+			expect(row?.reviewMergeApprovedHeadSha).toBe('sha-1');
+		});
+
+		it('accepts a later attempt for the same approved head (same generation)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '91', phase: 'review' });
+			await updateReviewMergeOutcome(id, {
+				status: 'not-ready',
+				message: 'first attempt',
+				attempt: 0,
+				approvedHeadSha: 'sha-1',
+			});
+
+			const updated = await updateReviewMergeOutcome(id, {
+				status: 'merged',
+				message: 'merged on retry',
+				attempt: 1,
+				approvedHeadSha: 'sha-1',
+			});
+
+			expect(updated).toBe(true);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewMergeOutcome).toBe('merged');
+			expect(row?.reviewMergeAttempt).toBe(1);
+		});
+
+		it('rejects a write for a superseded approved-head generation (issue #278 dedup guard)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '92', phase: 'review' });
+			await updateReviewMergeOutcome(id, {
+				status: 'not-ready',
+				message: 'first generation',
+				attempt: 0,
+				approvedHeadSha: 'sha-old',
+			});
+			// The row moved on to a new approval generation (e.g. a re-run Review),
+			// which — like every real retry — resets through `resetRunToRunning`
+			// first, clearing the guard column so the new generation can claim it.
+			await resetRunToRunning(id);
+			await updateReviewMergeOutcome(id, {
+				status: 'not-ready',
+				message: 'second generation',
+				attempt: 0,
+				approvedHeadSha: 'sha-new',
+			});
+
+			// A stale follow-up from the first generation must not clobber it.
+			const stale = await updateReviewMergeOutcome(id, {
+				status: 'merged',
+				message: 'stale merge from the old generation',
+				attempt: 3,
+				approvedHeadSha: 'sha-old',
+			});
+
+			expect(stale).toBe(false);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.reviewMergeOutcome).toBe('not-ready');
+			expect(row?.reviewMergeMessage).toBe('second generation');
+		});
+
+		it('returns false for an unknown run id', async () => {
+			expect(
+				await updateReviewMergeOutcome('00000000-0000-0000-0000-000000000000', {
+					status: 'merged',
+					message: 'x',
+					attempt: 0,
+					approvedHeadSha: 'sha-1',
+				}),
+			).toBe(false);
+		});
+
+		it('lists only review runs whose merge outcome is durably pending (not-ready)', async () => {
+			const pending = await createRun({ projectId: PROJECT_ID, taskId: '93', phase: 'review' });
+			await updateReviewMergeOutcome(pending, {
+				status: 'not-ready',
+				message: 'waiting',
+				attempt: 1,
+				approvedHeadSha: 'sha-1',
+			});
+			const merged = await createRun({ projectId: PROJECT_ID, taskId: '94', phase: 'review' });
+			await updateReviewMergeOutcome(merged, {
+				status: 'merged',
+				message: 'done',
+				attempt: 0,
+				approvedHeadSha: 'sha-2',
+			});
+			await createRun({ projectId: PROJECT_ID, taskId: '95', phase: 'implementation' });
+
+			const rows = await getPendingReviewMergeFollowUps();
+
+			expect(rows.map((r) => r.id)).toEqual([pending]);
 		});
 	});
 });

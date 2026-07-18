@@ -233,6 +233,39 @@ export async function getPullRequestMergeState(
 	};
 }
 
+/** GitHub's aggregate review-decision states for a pull request (GraphQL `reviewDecision`). */
+export type PullRequestReviewDecision = 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED';
+
+/**
+ * Resolve a PR's aggregate review decision via GraphQL — REST has no
+ * equivalent field. Used by the merge-eligibility recheck
+ * (`mergeReadyPullRequest`, `scm-integration.ts`) to tell a genuinely
+ * overridden/dismissed approval (`CHANGES_REQUESTED`) apart from GitHub still
+ * converging on a just-submitted approval (`REVIEW_REQUIRED`, which briefly
+ * shows right after a review is submitted and clears on its own — issue
+ * #278). `null` when the repository requires no reviews, so there is no
+ * decision to report — every prior approval remains sufficient as far as
+ * GitHub is concerned.
+ */
+export async function getPullRequestReviewDecision(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<PullRequestReviewDecision | null> {
+	const client = getScopedClient();
+	const result = await client.graphql<{
+		repository: { pullRequest: { reviewDecision: PullRequestReviewDecision | null } | null } | null;
+	}>(
+		`query($owner: String!, $repo: String!, $number: Int!) {
+			repository(owner: $owner, name: $repo) {
+				pullRequest(number: $number) { reviewDecision }
+			}
+		}`,
+		{ owner, repo, number: prNumber },
+	);
+	return result.repository?.pullRequest?.reviewDecision ?? null;
+}
+
 /** Result of a direct (non-auto) pull-request merge attempt. */
 export interface DirectMergeResult {
 	merged: boolean;
@@ -389,6 +422,24 @@ export async function createPullRequest(
 		body: input.body,
 	});
 	return { number: data.number, url: data.html_url };
+}
+
+export async function getPullRequestReviews(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<{ state: string; commitId: string }[]> {
+	const client = getScopedClient();
+	const reviews = await client.paginate(client.pulls.listReviews, {
+		owner,
+		repo,
+		pull_number: prNumber,
+		per_page: 100,
+	});
+	return reviews.map((r) => ({
+		state: r.state,
+		commitId: r.commit_id ?? '',
+	}));
 }
 
 export async function submitPullRequestReview(

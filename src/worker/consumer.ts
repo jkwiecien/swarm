@@ -71,6 +71,7 @@ import {
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { enqueueJob, enqueuePendingDispatch } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
+import type { MergePullRequestOutcome } from '../scm/merge.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import {
 	buildConflictResolutionKey,
@@ -88,6 +89,7 @@ import {
 	type TriggerResult,
 } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
+import { recordReviewMergeOutcome } from './merge-follow-up.js';
 import {
 	acknowledgePendingContinuationClaim,
 	claimNextPendingContinuation,
@@ -620,6 +622,12 @@ function runPhase(
 	reviewOrdinal?: number;
 	/** This Review run's automation outcome (e.g. `manual-intervention-required`) — persisted onto its history row (issue #235). */
 	automationOutcome?: ReviewAutomationOutcome;
+	/**
+	 * The provider-neutral merge attempt's outcome after an `approve` verdict
+	 * (issue #278); `undefined` when merge automation is disabled or the
+	 * verdict wasn't an approval, so nothing was recorded or scheduled.
+	 */
+	mergeOutcome?: MergePullRequestOutcome;
 }> {
 	const overrides = agentOverrideFor(
 		project,
@@ -1294,6 +1302,31 @@ async function selfEnqueueSplitChildPlanning(
 }
 
 /**
+ * Persist a completed Review run's merge-automation outcome and, when it's a
+ * transient `not-ready`, schedule a durable follow-up (issue #278). Called
+ * unconditionally from `processJob`'s success path — split out (like
+ * `selfEnqueueNextPhase` above) both to keep that function's own branching
+ * within the complexity budget and because pipeline code itself must never
+ * schedule queue work (`ai/RULES.md` §2): the Review phase only reports the
+ * structured outcome of its own single immediate attempt.
+ */
+async function handleReviewMergeOutcome(
+	trigger: TriggerResult,
+	project: ProjectConfig,
+	runId: string | undefined,
+	mergeOutcome: MergePullRequestOutcome | undefined,
+): Promise<void> {
+	if (trigger.phase !== 'review' || !runId || !mergeOutcome) return;
+	await recordReviewMergeOutcome({
+		projectId: project.id,
+		runId,
+		prNumber: trigger.prNumber,
+		approvedHeadSha: trigger.headSha,
+		outcome: mergeOutcome,
+	});
+}
+
+/**
  * The comment SWARM posts on a work item's backing Issue when its phase fails
  * terminally. It names the phase and carries the failure message so a human
  * watching the board sees *why* the item stalled without digging through worker
@@ -1805,6 +1838,7 @@ export async function processJob(
 		if (trigger.phase === 'planning' && result.split) {
 			await selfEnqueueSplitChildPlanning(project, result.split.subTaskItemIds);
 		}
+		await handleReviewMergeOutcome(trigger, project, runId, result.mergeOutcome);
 		return {
 			status: 'phase-succeeded',
 			phase: trigger.phase,

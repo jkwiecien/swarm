@@ -25,6 +25,7 @@ import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { closeRunCancellationRedis, subscribeToRunCancellations } from '../queue/cancellation.js';
 import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
+import { MERGE_FOLLOW_UP_QUEUE_NAME, MergeFollowUpJobSchema } from '../queue/merge-follow-up.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
 import {
@@ -36,6 +37,7 @@ import {
 } from './consumer.js';
 import { reenqueueDeferred } from './deferred-retry.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
+import { processMergeFollowUp, recoverPendingMergeFollowUps } from './merge-follow-up.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 import { resolveWorkerLockOptions } from './runtime-options.js';
@@ -136,6 +138,12 @@ try {
 		error: describeError(err),
 	});
 }
+
+// Reschedule any durable Review merge-follow-up whose delayed job didn't
+// survive a restart (issue #278) — best-effort and safe to run before the
+// queue workers start, since re-scheduling an already-queued attempt is a
+// no-op (its job id is deterministic).
+await recoverPendingMergeFollowUps();
 
 // Aborted on SIGTERM/SIGINT so an in-flight agent run is killed (SIGTERM→SIGKILL
 // via `runAgentCli`'s signal option) instead of outliving the stop grace period.
@@ -254,6 +262,37 @@ worker.on('lockRenewalFailed', (jobIds) => {
 	logger.error('Worker failed to renew active job locks', { jobIds });
 });
 
+// A separate, single-concurrency worker for the Review phase's durable merge
+// follow-ups (issue #278) — deliberately its own `Worker` on its own queue
+// (`src/queue/merge-follow-up.ts`), not a case inside the job processor above:
+// a follow-up carries no trigger event and must never re-run the review
+// agent, so it stays off the `swarm-jobs` dispatch path entirely.
+// `processMergeFollowUp` schedules its own next attempt (or records
+// exhaustion) internally, so this handler has nothing to return.
+const mergeFollowUpWorker = new Worker(
+	MERGE_FOLLOW_UP_QUEUE_NAME,
+	async (job) => {
+		await processMergeFollowUp(MergeFollowUpJobSchema.parse(job.data));
+	},
+	{
+		connection: parseRedisUrl(requireEnv('REDIS_URL')),
+		concurrency: 1,
+		lockDuration,
+		lockRenewTime,
+	},
+);
+mergeFollowUpWorker.on('error', (err) => {
+	logger.error('Merge-follow-up worker queue error', { error: err.message });
+});
+mergeFollowUpWorker.on('failed', (job, err) => {
+	// A merge follow-up never throws out of `processMergeFollowUp` for a
+	// merge-provider refusal (every outcome is caught and persisted) — reaching
+	// here means something unexpected (a bad job payload, a DB outage). Logged
+	// only: the originating Review run already completed, and the next durable
+	// follow-up (if any) is unaffected.
+	logger.error('Review merge follow-up job failed', { jobId: job?.id, error: err.message });
+});
+
 // Subscribe to user-initiated run terminations from the dashboard (issue #166):
 // when a cancellation for a run running in this worker arrives, abort its agent
 // via the per-run controller registered in `processJob`. A notification for a run
@@ -346,7 +385,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		shutdown.abort();
 		void cancellationSubscription.close();
 		void closeRunCancellationRedis();
-		void worker.close().then(
+		void Promise.all([worker.close(), mergeFollowUpWorker.close()]).then(
 			() => process.exit(0),
 			(err) => {
 				logger.error('Worker close failed', {
