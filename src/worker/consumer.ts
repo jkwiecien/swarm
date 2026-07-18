@@ -664,6 +664,7 @@ function runPhase(
 				customPrompt: overrides.customPrompt,
 				autoAdvance: project.pipeline?.planning?.autoAdvance,
 				autoSplit: project.pipeline?.planning?.autoSplit,
+				maxConcerns: project.pipeline?.planning?.maxConcerns,
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				...session,

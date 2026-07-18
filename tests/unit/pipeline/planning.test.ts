@@ -1,15 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The plan and split files are read via node:fs; presence + contents are
-// controlled per test, keyed on the filename so the two files are independent.
+// The plan, split, and scope files are read via node:fs; presence + contents are
+// controlled per test, keyed on the filename so the files are independent.
 let planExists: boolean;
 let planContents: string;
 let splitExists: boolean;
 let splitContents: string;
+let scopeExists: boolean;
+let scopeContents: string;
 function fsFor(path: unknown): { exists: boolean; contents: string } {
-	return String(path).endsWith('proposed_split.json')
-		? { exists: splitExists, contents: splitContents }
-		: { exists: planExists, contents: planContents };
+	const p = String(path);
+	if (p.endsWith('proposed_split.json')) return { exists: splitExists, contents: splitContents };
+	if (p.endsWith('proposed_scope.json')) return { exists: scopeExists, contents: scopeContents };
+	return { exists: planExists, contents: planContents };
 }
 vi.mock('node:fs', () => ({
 	existsSync: (path: unknown) => fsFor(path).exists,
@@ -20,6 +23,7 @@ import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js'
 import {
 	buildPlanningPrompt,
 	PROPOSED_PLAN_FILENAME,
+	PROPOSED_SCOPE_FILENAME,
 	PROPOSED_SPLIT_FILENAME,
 	planCommentBody,
 	runPlanningPhase,
@@ -145,6 +149,15 @@ describe('runPlanningPhase', () => {
 		// No split by default — most tests exercise the single-task path.
 		splitExists = false;
 		splitContents = '';
+		// A valid, within-budget scope gate by default — autoSplit is on by default,
+		// so the guard reads this on every agent-path run (issue #268).
+		scopeExists = true;
+		scopeContents = JSON.stringify({
+			whyOneTask: 'One cohesive lifecycle change plus its tests.',
+			independentConcerns: ['the planning phase'],
+			affectedAreas: ['src/pipeline/planning.ts'],
+			outOfScope: ['unrelated dashboard work'],
+		});
 	});
 
 	it('provisions a detached worktree, runs the planning agent, posts the plan, and leaves the item in Planning by default (autoAdvance off)', async () => {
@@ -416,6 +429,103 @@ describe('runPlanningPhase', () => {
 		expect(deps.worktrees.provision).toHaveBeenCalledWith('18', { detach: true });
 	});
 
+	it('accepts a focused single task that declares one concern and several affected files', async () => {
+		// Touching several closely-related files (and having tests) is NOT a reason to
+		// reject — the guard only looks at declared independent concerns (issue #268).
+		scopeContents = JSON.stringify({
+			whyOneTask: 'One policy change and its focused tests.',
+			independentConcerns: ['the retry policy'],
+			affectedAreas: [
+				'src/pipeline/planning.ts',
+				'src/config/schema.ts',
+				'tests/unit/pipeline/planning.test.ts',
+			],
+			outOfScope: ['provider selection'],
+		});
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, autoAdvance: true });
+		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
+		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
+		expect(result).toMatchObject({ movedTo: 'todo' });
+	});
+
+	it('rejects an oversized single task that declares two independent concerns without splitting', async () => {
+		scopeContents = JSON.stringify({
+			whyOneTask: 'It all relates to stalled failures.',
+			independentConcerns: ['retry policy', 'provider selection/configuration'],
+			affectedAreas: ['src/pipeline/planning.ts', 'src/config/schema.ts'],
+			outOfScope: [],
+		});
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow(
+			/oversized single task|independent concerns/i,
+		);
+		// Nothing is posted or advanced when the guard rejects the plan.
+		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('allows a plan that declares two concerns when it also splits the work', async () => {
+		// A split is the sanctioned way to carry multiple concerns — the budget check
+		// is only applied to the no-split path.
+		scopeContents = JSON.stringify({
+			whyOneTask: 'First slice only.',
+			independentConcerns: ['retry policy', 'provider selection'],
+			affectedAreas: ['src/pipeline/planning.ts'],
+			outOfScope: [],
+		});
+		splitExists = true;
+		splitContents = JSON.stringify({
+			subTasks: [
+				{ title: 'Provider selection', description: 'Pick provider', plan: '# plan\n\nDo it.' },
+			],
+		});
+		const deps = makeDeps();
+		const result = await runPlanningPhase(deps);
+		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(1);
+		expect(result.split).toMatchObject({ subTaskItemIds: ['PVTI_Provider selection'] });
+	});
+
+	it('honours a raised maxConcerns budget', async () => {
+		scopeContents = JSON.stringify({
+			whyOneTask: 'Two tightly-coupled concerns this team treats as one task.',
+			independentConcerns: ['retry policy', 'provider selection'],
+			affectedAreas: ['src/pipeline/planning.ts'],
+			outOfScope: [],
+		});
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, maxConcerns: 2 });
+		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
+		expect(result.movedTo).toBeUndefined();
+	});
+
+	it('fails Planning when the scope file is missing under autoSplit', async () => {
+		scopeExists = false;
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow(
+			new RegExp(`did not write ${PROPOSED_SCOPE_FILENAME}`),
+		);
+		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('fails Planning when the scope file is malformed under autoSplit', async () => {
+		scopeContents = JSON.stringify({ affectedAreas: [] }); // missing whyOneTask, empty areas
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow();
+		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('does not require a scope file when autoSplit is off', async () => {
+		scopeExists = false;
+		const deps = makeDeps();
+		const result = await runPlanningPhase({ ...deps, autoSplit: false });
+		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
+		expect(result.plan).toBe('# Plan\n\n1. Do the thing.');
+	});
+
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
 		const deps = makeDeps();
 		const signal = new AbortController().signal;
@@ -596,15 +706,35 @@ describe('buildPlanningPrompt', () => {
 		expect(prompt).toContain('(no description provided)');
 	});
 
+	it('always states the minimal-scope rule (smallest change, no speculative generalization)', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem());
+		expect(prompt).toMatch(/SCOPE DISCIPLINE/);
+		expect(prompt).toMatch(/smallest change/i);
+		expect(prompt).toMatch(/speculative extensibility/i);
+		expect(prompt).toMatch(/upper bound of scope/i);
+	});
+
 	it('omits split instructions by default', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem());
 		expect(prompt).not.toContain(PROPOSED_SPLIT_FILENAME);
+		expect(prompt).not.toContain(PROPOSED_SCOPE_FILENAME);
 	});
 
 	it('invites splitting when allowSplit is on', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
 		expect(prompt).toContain(PROPOSED_SPLIT_FILENAME);
 		expect(prompt).toMatch(/too large/i);
+	});
+
+	it('gives concrete split criteria and requires the scope gate when allowSplit is on', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
+		expect(prompt).toMatch(/two or more INDEPENDENT concerns/i);
+		expect(prompt).toContain(PROPOSED_SCOPE_FILENAME);
+		expect(prompt).toMatch(/## Scope gate/);
+		expect(prompt).toMatch(/Why this is one task/);
+		expect(prompt).toMatch(/Affected areas/);
+		expect(prompt).toMatch(/Explicitly out of scope/);
+		expect(prompt).toContain('independentConcerns');
 	});
 
 	it('asks for a reusable per-child plan when splitting', () => {

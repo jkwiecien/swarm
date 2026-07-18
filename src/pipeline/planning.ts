@@ -48,6 +48,7 @@ import {
 import {
 	buildPlanningPrompt,
 	PROPOSED_PLAN_FILENAME,
+	PROPOSED_SCOPE_FILENAME,
 	PROPOSED_SPLIT_FILENAME,
 } from '@/pipeline/prompts/planning.js';
 import {
@@ -64,7 +65,12 @@ import { graftEnvironment } from '@/worktree/graft.js';
 // The static planning prompt and the hand-off filenames it names now live in
 // `src/pipeline/prompts/planning.ts` (issue #135); re-exported here so existing
 // importers of `@/pipeline/planning.js` keep resolving them unchanged.
-export { buildPlanningPrompt, PROPOSED_PLAN_FILENAME, PROPOSED_SPLIT_FILENAME };
+export {
+	buildPlanningPrompt,
+	PROPOSED_PLAN_FILENAME,
+	PROPOSED_SCOPE_FILENAME,
+	PROPOSED_SPLIT_FILENAME,
+};
 
 /**
  * Label applied to every sibling item Planning spawns when it splits a task.
@@ -110,6 +116,36 @@ const ProposedSplitSchema = z.object({
 export type ProposedSplit = z.infer<typeof ProposedSplitSchema>;
 
 /**
+ * Shape of {@link PROPOSED_SCOPE_FILENAME} — the planner-declared scope gate for
+ * the single task `proposed_plan.md` covers (the first task, when the item is
+ * split). Zod is the source of truth for the on-disk contract
+ * (ai/CODING_STANDARDS.md "Zod as source of truth"), so the deterministic
+ * post-plan guard ({@link enforceSingleTaskBudget}) reads structured,
+ * planner-declared metadata rather than parsing free text out of the plan
+ * (issue #268).
+ *
+ * - `whyOneTask` — the single-task justification (also mirrored as prose in the
+ *   plan's "## Scope gate" section for the human reviewing the posted plan).
+ * - `independentConcerns` — every genuinely independent concern the task
+ *   combines. This is the concrete split trigger: two or more entries with no
+ *   `proposed_split.json` is an oversized single task. Defaults to an empty list
+ *   (a single cohesive concern the planner didn't feel the need to enumerate),
+ *   which the guard treats as within budget.
+ * - `affectedAreas` — the areas/files the task changes (informational; the guard
+ *   deliberately does NOT gate on their count, so a focused change touching
+ *   several closely-related files is never rejected for that alone).
+ * - `outOfScope` — what the plan deliberately excludes.
+ */
+const ProposedScopeSchema = z.object({
+	whyOneTask: z.string().trim().min(1),
+	independentConcerns: z.array(z.string().trim().min(1)).default([]),
+	affectedAreas: z.array(z.string().trim().min(1)).min(1),
+	outOfScope: z.array(z.string().trim().min(1)).default([]),
+});
+
+export type ProposedScope = z.infer<typeof ProposedScopeSchema>;
+
+/**
  * PROJECT.md §5.1 designs Antigravity as SWARM's planning agent, splitting the
  * planning and implementation roles across two different CLIs. Defaulting to
  * it here breaks Planning on any host that doesn't have `antigravity`
@@ -138,6 +174,17 @@ const DEFAULT_AUTO_ADVANCE = false;
  * inert for right-sized work).
  */
 const DEFAULT_AUTO_SPLIT = true;
+
+/**
+ * `maxConcerns` default when `project.pipeline.planning.maxConcerns` is unset —
+ * the largest number of independent concerns a single unsplit task may declare
+ * before {@link enforceSingleTaskBudget} rejects it (issue #268). `1` encodes
+ * the concrete rule "two or more independent concerns must split": a task
+ * declaring one cohesive concern (or none) is within budget; two or more with
+ * no `proposed_split.json` fails Planning. Configurable per project so a team
+ * can loosen the budget, but the default is deliberately conservative.
+ */
+const DEFAULT_MAX_CONCERNS = 1;
 
 /**
  * Status a spawned sibling starts in: "Planning", so the existing
@@ -201,6 +248,13 @@ export interface RunPlanningPhaseOptions {
 	 * task (today's behavior) and any `proposed_split.json` it writes is ignored.
 	 */
 	autoSplit?: boolean;
+	/**
+	 * Largest number of independent concerns a single unsplit task may declare in
+	 * {@link PROPOSED_SCOPE_FILENAME} before the post-plan guard rejects it and
+	 * fails Planning (issue #268). Defaults to {@link DEFAULT_MAX_CONCERNS} (`1`).
+	 * Only consulted when `autoSplit` is on.
+	 */
+	maxConcerns?: number;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
 	timeoutMs?: number;
 	/** External cancellation — aborting kills the agent run. */
@@ -253,6 +307,67 @@ export function readProposedSplit(worktreePath: string): ProposedSplit | undefin
 	const parsed = ProposedSplitSchema.parse(JSON.parse(raw));
 	if (parsed.subTasks.length === 0) return undefined;
 	return parsed;
+}
+
+/**
+ * Read and validate {@link PROPOSED_SCOPE_FILENAME} — the planner's scope gate
+ * for the single task it planned. Throws an actionable error when the file is
+ * missing, empty, unparseable, or violates {@link ProposedScopeSchema}: with
+ * splitting enabled the planner is explicitly told to write it, so its absence
+ * or a broken shape is a failed Planning run (the scope gate never got recorded),
+ * not a soft miss (ai/CODING_STANDARDS.md "Error handling"). Only called on the
+ * agent path when `autoSplit` is on.
+ */
+export function readProposedScope(worktreePath: string): ProposedScope {
+	const scopePath = join(worktreePath, PROPOSED_SCOPE_FILENAME);
+	if (!existsSync(scopePath)) {
+		throw new Error(
+			`Planning agent did not write ${PROPOSED_SCOPE_FILENAME}. Record the scope gate ` +
+				`(whyOneTask, independentConcerns, affectedAreas, outOfScope) so the plan's scope is explicit.`,
+		);
+	}
+	const raw = readFileSync(scopePath, 'utf8').trim();
+	if (raw.length === 0) {
+		throw new Error(
+			`Planning agent wrote an empty ${PROPOSED_SCOPE_FILENAME}. Record the scope gate ` +
+				`(whyOneTask, independentConcerns, affectedAreas, outOfScope).`,
+		);
+	}
+	return ProposedScopeSchema.parse(JSON.parse(raw));
+}
+
+/**
+ * Deterministic post-plan guard (issue #268). Rejects an unsplit single task
+ * whose declared `independentConcerns` exceed `maxConcerns` — the objective
+ * "two or more independent concerns must split" rule, driven by structured,
+ * planner-declared metadata rather than a fragile free-text size heuristic.
+ * Only reached on the no-split path (when a split is proposed the item is
+ * already being decomposed), so it never blocks a legitimate split. It also
+ * never inspects file or test counts, so a focused change touching several
+ * closely-related files or carrying several tests is left alone. The throw
+ * fails Planning with an actionable message rather than auto-advancing an
+ * oversized plan to Implementation.
+ */
+function enforceSingleTaskBudget(
+	scope: ProposedScope,
+	maxConcerns: number,
+	taskId: string,
+	workItem: WorkItem,
+): void {
+	if (scope.independentConcerns.length <= maxConcerns) return;
+	logger.warn('Planning — rejecting oversized single-task plan (declared concerns over budget)', {
+		taskId,
+		workItemId: workItem.id,
+		declaredConcerns: scope.independentConcerns,
+		maxConcerns,
+	});
+	throw new Error(
+		`Planning produced an oversized single task: ${PROPOSED_SCOPE_FILENAME} declares ` +
+			`${scope.independentConcerns.length} independent concerns ` +
+			`(${scope.independentConcerns.map((c) => `"${c}"`).join(', ')}) but the single-task budget ` +
+			`is ${maxConcerns}. Narrow the plan to one cohesive concern, or split the work by emitting ` +
+			`${PROPOSED_SPLIT_FILENAME} with one child per concern.`,
+	);
 }
 
 /**
@@ -442,10 +557,17 @@ async function applySplit(
  * (first task) still honors `autoAdvance` as usual, unless it is itself a
  * split-child.
  *
- * Throws if the agent exits non-zero or produces no plan — a planning run that
- * didn't yield a plan is a failed job, not a soft miss (ai/CODING_STANDARDS.md
- * "Error handling"), and the throw lets the worker mark the job failed. The
- * worktree is always removed, success or failure.
+ * With `autoSplit` on, the run also enforces a deterministic scope gate (issue
+ * #268): the agent must write a validated {@link PROPOSED_SCOPE_FILENAME}, and an
+ * unsplit single task declaring more than `maxConcerns` (default `1`) independent
+ * concerns fails Planning with an actionable request to narrow or split, rather
+ * than auto-advancing an oversized plan to Implementation.
+ *
+ * Throws if the agent exits non-zero, produces no plan, or fails the scope gate —
+ * a planning run that didn't yield a usable, right-sized plan is a failed job,
+ * not a soft miss (ai/CODING_STANDARDS.md "Error handling"), and the throw lets
+ * the worker mark the job failed. The worktree is always removed, success or
+ * failure.
  */
 /**
  * Acquire the read-only (detached-HEAD) checkout for the planning run. When
@@ -532,6 +654,7 @@ export async function runPlanningPhase(
 		resumeSessionId,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		autoSplit = DEFAULT_AUTO_SPLIT,
+		maxConcerns = DEFAULT_MAX_CONCERNS,
 		timeoutMs,
 		signal,
 		runAgent = runAgentCli,
@@ -632,6 +755,15 @@ export async function runPlanningPhase(
 		// The re-scope/rename and sibling spawns happen before the first task is
 		// greenlit below, so autoAdvance never fires ahead of the siblings existing.
 		const split = autoSplit ? readProposedSplit(handle.path) : undefined;
+
+		// Deterministic scope gate (issue #268), only when splitting is enabled: the
+		// planner must have recorded a validated scope declaration, and an unsplit
+		// single task that declares too many independent concerns is rejected here —
+		// before anything is posted or advanced — rather than reaching Implementation.
+		if (autoSplit) {
+			const scope = readProposedScope(handle.path);
+			if (!split) enforceSingleTaskBudget(scope, maxConcerns, taskId, workItem);
+		}
 
 		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
 

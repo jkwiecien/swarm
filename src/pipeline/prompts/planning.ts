@@ -13,6 +13,19 @@ import type { WorkItem } from '@/pm/types.js';
 export const PROPOSED_PLAN_FILENAME = 'proposed_plan.md';
 
 /**
+ * The machine-readable scope declaration the planning agent writes alongside
+ * `proposed_plan.md` when splitting is enabled (issue #268). It mirrors the
+ * human-readable "Scope gate" section of the plan as a validated shape SWARM's
+ * deterministic post-plan guard reads (`ProposedScopeSchema` / `readProposedScope`
+ * in `src/pipeline/planning.ts`) — structured, planner-declared metadata rather
+ * than a fragile free-text heuristic. Its `independentConcerns` list is the
+ * concrete split trigger: two or more entries with no `proposed_split.json`
+ * means an oversized single task, which fails Planning instead of silently
+ * advancing to Implementation.
+ */
+export const PROPOSED_SCOPE_FILENAME = 'proposed_scope.json';
+
+/**
  * The file the planning agent writes when it decides the task is too large for
  * a single PR and should be split (see {@link buildPlanningPrompt}). Absent (or
  * empty `subTasks`) means "no split — plan as a single task". Read-and-validated
@@ -27,11 +40,18 @@ export const PROPOSED_SPLIT_FILENAME = 'proposed_split.json';
  * this is a read-only phase, explicitly *not* to modify code or implement
  * anything (mirroring Cascade's planning agent, which is read/write-to-PM only).
  *
+ * The prompt always carries a minimal-scope rule (plan the smallest change that
+ * satisfies the item; no speculative generalization — issue #268).
+ *
  * When `allowSplit` is on (the project's `pipeline.planning.autoSplit`), the
- * agent is additionally told to judge whether the work is too large for a single
- * focused PR and, if so, to split it: `proposed_plan.md` then covers only the
- * first (now-smaller) task, and `proposed_split.json` lists the remaining sibling
- * tasks (see {@link PROPOSED_SPLIT_FILENAME}). A right-sized task is left whole.
+ * agent is additionally told concrete split criteria and to judge whether the
+ * work is too large for a single focused PR and, if so, to split it:
+ * `proposed_plan.md` then covers only the first (now-smaller) task, and
+ * `proposed_split.json` lists the remaining sibling tasks (see
+ * {@link PROPOSED_SPLIT_FILENAME}). A right-sized task is left whole. It is also
+ * told to record a scope gate — a "## Scope gate" section in `proposed_plan.md`
+ * and a machine-readable {@link PROPOSED_SCOPE_FILENAME} — that SWARM's
+ * deterministic post-plan guard validates.
  *
  * `customPrompt` is the project's optional per-phase instructions (issue #135):
  * appended after the SWARM instructions and before the work-item context as a
@@ -55,10 +75,28 @@ export function buildPlanningPrompt(
 		'then write a concrete, step-by-step implementation plan for the work item below.',
 		'The plan must cover: the files to add/change, the approach, the testing strategy,',
 		'and anything intentionally left out of scope.',
+		'',
+		'SCOPE DISCIPLINE — plan the SMALLEST change that fully satisfies the work item:',
+		'  - Prefer existing mechanisms, patterns, and call sites over new configuration,',
+		'    abstractions, or generalized frameworks.',
+		'  - Do NOT add fallback providers, new settings, cross-cutting lifecycle changes,',
+		'    or speculative extensibility unless the work item explicitly requires them.',
+		'  - Treat the acceptance criteria as the UPPER BOUND of scope, not a starting',
+		'    point for adjacent improvements or refactors.',
 	];
 
 	if (allowSplit) {
 		lines.push(
+			'',
+			'SPLIT DECISION — concrete criteria, not a subjective call:',
+			'  - A task MUST be split when it combines two or more INDEPENDENT concerns —',
+			'    e.g. retry policy + provider selection/configuration; worker scheduling +',
+			'    worktree lifecycle; backend behavior + unrelated dashboard/configuration work.',
+			'  - A task that changes ONE existing lifecycle or policy together with its',
+			'    focused tests normally stays a SINGLE task. Several tests, or several',
+			'    closely-related files, are NOT by themselves a reason to split.',
+			'  - Each split child must be independently shippable with a narrow acceptance',
+			'    boundary.',
 			'',
 			'FIRST, judge the size of this work item. If it is too large to implement well',
 			'in a single focused pull request, SPLIT it into smaller, independently-shippable',
@@ -94,6 +132,24 @@ export function buildPlanningPrompt(
 			`  - Do NOT write "${PROPOSED_SPLIT_FILENAME}" (or write it with an empty`,
 			'    "subTasks" array) when the item is already right-sized — then just write the',
 			`    single "${PROPOSED_PLAN_FILENAME}" as usual.`,
+			'',
+			'SCOPE GATE — required whether or not you split, describing the SINGLE task you',
+			`plan in "${PROPOSED_PLAN_FILENAME}" (the FIRST task, if you split). Open the plan`,
+			'with a "## Scope gate" section carrying three short bullet lists:',
+			'  - "Why this is one task" — the single-task justification;',
+			'  - "Affected areas / files" — the areas and files this task changes;',
+			'  - "Explicitly out of scope" — what you are deliberately NOT doing.',
+			`Also write "${PROPOSED_SCOPE_FILENAME}" at the worktree root — the machine-readable`,
+			'mirror SWARM validates — of this exact shape:',
+			'  {',
+			'    "whyOneTask": "<one or two sentences: why this is a single cohesive task>",',
+			'    "independentConcerns": ["<each genuinely independent concern this task combines>"],',
+			'    "affectedAreas": ["<area or file>", "..."],',
+			'    "outOfScope": ["<thing deliberately excluded>", "..."]',
+			'  }',
+			'List EVERY genuinely independent concern in "independentConcerns". If that list',
+			'has TWO OR MORE entries you MUST split (emit the split file above) — an',
+			`unsplit oversized plan is REJECTED. A single cohesive task leaves one entry.`,
 		);
 	}
 

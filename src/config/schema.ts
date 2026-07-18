@@ -242,9 +242,19 @@ export const PipelineConfigSchema = z
 		 * first task (re-scoped, possibly renamed), and the remaining work is spawned
 		 * as sibling items that are each planned automatically but never auto-advance
 		 * to "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
+		 *
+		 * `maxConcerns` (default `1`, only used when `autoSplit` is on) is the
+		 * single-task budget the deterministic post-plan guard enforces: the largest
+		 * number of independent concerns an unsplit task may declare in
+		 * `proposed_scope.json` before Planning fails and asks for a split or a
+		 * narrower plan (issue #268). Raise it to loosen the guard.
 		 */
 		planning: z
-			.object({ autoAdvance: z.boolean().optional(), autoSplit: z.boolean().optional() })
+			.object({
+				autoAdvance: z.boolean().optional(),
+				autoSplit: z.boolean().optional(),
+				maxConcerns: z.number().int().positive().optional(),
+			})
 			.optional(),
 		/**
 		 * Whether Implementation moves the item to "In review" once it opens the
