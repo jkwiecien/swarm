@@ -26,6 +26,7 @@ import {
 	getPullRequest,
 	getPullRequestMergeState,
 	getPullRequestReviewDecision,
+	getPullRequestReviews,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
 	mergePullRequestDirect,
@@ -117,11 +118,11 @@ async function mergeReadyPullRequest(
 
 	// The head is unchanged, but the approval itself may no longer be in
 	// effect (a reviewer dismissed it, or another review requested changes).
-	// `REVIEW_REQUIRED` is left to flow into the merge attempt below rather
-	// than treated as ineligible here: GitHub briefly reports it right after a
-	// review is submitted (the decision hasn't propagated yet), which is
-	// exactly the transient condition this retry loop exists to ride out —
-	// the merge attempt's own 405 naturally becomes `not-ready` for that case.
+	// `REVIEW_REQUIRED` is only left to flow into the merge attempt below when
+	// we verify that the approved review at the head Sha is still active (e.g.
+	// during the short propagation window right after a review is submitted).
+	// If the approval has been dismissed (meaning there is no active APPROVED
+	// review at the expected head Sha), we return not-eligible immediately.
 	let reviewDecision: Awaited<ReturnType<typeof getPullRequestReviewDecision>>;
 	try {
 		reviewDecision = await getPullRequestReviewDecision(owner, repo, prNumber);
@@ -133,6 +134,23 @@ async function mergeReadyPullRequest(
 			status: 'not-eligible',
 			message: 'the approving review is no longer in effect — changes have since been requested',
 		};
+	if (reviewDecision === 'REVIEW_REQUIRED') {
+		let reviews: Awaited<ReturnType<typeof getPullRequestReviews>>;
+		try {
+			reviews = await getPullRequestReviews(owner, repo, prNumber);
+		} catch (error) {
+			return { status: 'provider-error', message: errorMessage(error) };
+		}
+		const hasApproved = reviews.some(
+			(r) => r.state === 'APPROVED' && r.commitId === approvedHeadSha,
+		);
+		if (!hasApproved) {
+			return {
+				status: 'not-eligible',
+				message: 'the approving review is no longer in effect — it has since been dismissed',
+			};
+		}
+	}
 
 	try {
 		const armed = await enablePullRequestAutoMerge(owner, repo, prNumber);

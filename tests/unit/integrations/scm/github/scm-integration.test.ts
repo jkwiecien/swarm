@@ -24,6 +24,7 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 	getGitHubUserForToken: vi.fn(),
 	getPullRequestMergeState: vi.fn(),
 	getPullRequestReviewDecision: vi.fn(),
+	getPullRequestReviews: vi.fn(),
 	mergePullRequestDirect: vi.fn(),
 }));
 
@@ -33,6 +34,7 @@ import {
 	getGitHubUserForToken,
 	getPullRequestMergeState,
 	getPullRequestReviewDecision,
+	getPullRequestReviews,
 	mergePullRequestDirect,
 	withGitHubToken,
 } from '@/integrations/scm/github/client.js';
@@ -133,9 +135,11 @@ describe('GitHubSCMIntegration', () => {
 			vi.mocked(mergePullRequestDirect).mockReset();
 			vi.mocked(enablePullRequestAutoMerge).mockReset();
 			vi.mocked(getPullRequestReviewDecision).mockReset();
+			vi.mocked(getPullRequestReviews).mockReset();
 			// The default fixture models an unambiguously-approved PR, so every test
 			// that doesn't care about the review-decision recheck proceeds past it.
 			vi.mocked(getPullRequestReviewDecision).mockResolvedValue('APPROVED');
+			vi.mocked(getPullRequestReviews).mockResolvedValue([{ state: 'APPROVED', commitId: 'reviewed-head' }]);
 		});
 
 		it('runs under the implementer credentials', async () => {
@@ -252,6 +256,27 @@ describe('GitHubSCMIntegration', () => {
 				message: 'GitHub auto-merge enabled; waiting for required checks and reviews',
 			});
 		});
+
+		it('is not-eligible when the required-review decision is REVIEW_REQUIRED and the approval is dismissed', async () => {
+			vi.mocked(getPullRequestMergeState).mockResolvedValue({
+				merged: false,
+				state: 'open',
+				draft: false,
+				headSha: 'reviewed-head',
+			});
+			vi.mocked(getPullRequestReviewDecision).mockResolvedValue('REVIEW_REQUIRED');
+			vi.mocked(getPullRequestReviews).mockResolvedValue([
+				{ state: 'DISMISSED', commitId: 'reviewed-head' },
+			]);
+
+			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
+				status: 'not-eligible',
+				message: 'the approving review is no longer in effect — it has since been dismissed',
+			});
+			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+			expect(mergePullRequestDirect).not.toHaveBeenCalled();
+		});
+
 
 		it('proceeds to attempt the merge when the repository has no review-decision opinion (null)', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({

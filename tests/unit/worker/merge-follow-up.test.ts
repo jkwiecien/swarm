@@ -163,7 +163,22 @@ describe('scheduleMergeFollowUp', () => {
 			expect.objectContaining({ status: 'retry-exhausted', approvedHeadSha: 'sha-1' }),
 		);
 	});
+
+	it('propagates the error when scheduling a follow-up fails', async () => {
+		enqueueMergeFollowUp.mockRejectedValueOnce(new Error('redis outage'));
+
+		await expect(
+			scheduleMergeFollowUp({
+				projectId: 'proj-1',
+				runId: 'run-1',
+				prNumber: '42',
+				approvedHeadSha: 'sha-1',
+				attempt: 3,
+			}),
+		).rejects.toThrow('redis outage');
+	});
 });
+
 
 describe('processMergeFollowUp', () => {
 	beforeEach(() => {

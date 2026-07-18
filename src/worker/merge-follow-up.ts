@@ -108,6 +108,7 @@ export async function scheduleMergeFollowUp(input: ScheduleMergeFollowUpInput): 
 			attempt: input.attempt,
 			error: describeError(err),
 		});
+		throw err;
 	}
 }
 

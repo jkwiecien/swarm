@@ -424,6 +424,24 @@ export async function createPullRequest(
 	return { number: data.number, url: data.html_url };
 }
 
+export async function getPullRequestReviews(
+	owner: string,
+	repo: string,
+	prNumber: number,
+): Promise<{ state: string; commitId: string }[]> {
+	const client = getScopedClient();
+	const reviews = await client.paginate(client.pulls.listReviews, {
+		owner,
+		repo,
+		pull_number: prNumber,
+		per_page: 100,
+	});
+	return reviews.map((r) => ({
+		state: r.state,
+		commitId: r.commit_id ?? '',
+	}));
+}
+
 export async function submitPullRequestReview(
 	owner: string,
 	repo: string,

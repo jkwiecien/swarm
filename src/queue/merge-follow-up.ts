@@ -42,10 +42,12 @@ function getMergeFollowUpQueue(): Queue<MergeFollowUpJob> {
 		queue = new Queue<MergeFollowUpJob>(MERGE_FOLLOW_UP_QUEUE_NAME, {
 			connection: parseRedisUrl(requireEnv('REDIS_URL')),
 			defaultJobOptions: {
-				// Retry policy for a follow-up is entirely explicit
-				// (`scheduleMergeFollowUp`'s own bounded backoff) — BullMQ's own retry
-				// would double-schedule on top of it.
-				attempts: 1,
+				// Retry policy for a follow-up's functional not-ready outcome is entirely
+				// explicit (scheduleMergeFollowUp's own bounded backoff). However, we set
+				// attempts: 3 for infrastructure/system failures (like transient Redis
+				// outages during enqueueMergeFollowUp) so the job is retried by BullMQ.
+				attempts: 3,
+				backoff: { type: 'exponential', delay: 5_000 },
 				removeOnComplete: { age: 24 * 60 * 60, count: 100 },
 				removeOnFail: { age: 7 * 24 * 60 * 60 },
 			},

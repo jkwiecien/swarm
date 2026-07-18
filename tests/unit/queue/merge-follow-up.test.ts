@@ -43,7 +43,7 @@ describe('enqueueMergeFollowUp', () => {
 		expect(opts).toMatchObject({ connection: { host: 'localhost', port: 6379 } });
 	});
 
-	it('disables BullMQ’s own retries — the follow-up module owns its own bounded backoff', async () => {
+	it('configures BullMQ retries for infrastructure/system failures — functional retries are handled explicitly', async () => {
 		const { enqueueMergeFollowUp } = await import('@/queue/merge-follow-up.js');
 		await enqueueMergeFollowUp(
 			{ projectId: 'p1', runId: 'run-1', prNumber: '42', approvedHeadSha: 'sha-1', attempt: 1 },
@@ -51,7 +51,12 @@ describe('enqueueMergeFollowUp', () => {
 		);
 
 		const [, opts] = QueueMock.mock.calls[0];
-		expect(opts).toMatchObject({ defaultJobOptions: { attempts: 1 } });
+		expect(opts).toMatchObject({
+			defaultJobOptions: {
+				attempts: 3,
+				backoff: { type: 'exponential', delay: 5_000 },
+			},
+		});
 	});
 
 	it('schedules the job after the given delay with a deterministic run+attempt job id', async () => {
