@@ -36,6 +36,23 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('projectsRepository (integ
 			expect(resolved?.maxConcurrentJobs).toBe(4);
 		});
 
+		it('round-trips the Review check policy alongside another pipeline value through JSONB', async () => {
+			const config = createMockProjectConfig({
+				id: 'proj-review-checks',
+				name: 'Review Checks Project',
+				repo: 'jkwiecien/review-checks',
+				pipeline: {
+					planning: { autoAdvance: true },
+					review: { checks: 'if-present' },
+				},
+			});
+			await createProjectInDb(config);
+
+			const resolved = await findProjectByIdFromDb('proj-review-checks');
+			expect(resolved?.pipeline?.review?.checks).toBe('if-present');
+			expect(resolved?.pipeline?.planning?.autoAdvance).toBe(true);
+		});
+
 		it('rejects if the project ID already exists', async () => {
 			await seedProject({ id: 'dup-id', name: 'Original Name', repo: 'jkwiecien/original' });
 

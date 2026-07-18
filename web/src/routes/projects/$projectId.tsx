@@ -32,9 +32,11 @@ import {
 	autoAdvanceConfigPhase,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	buildReviewChecksPolicyUpdate,
 	isPipelineAutoAdvanceDirty,
 	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
+	isReviewChecksPolicyDirty,
 	PIPELINE_TOGGLE_PHASES,
 	type PipelineAutoAdvanceForm,
 	type PipelineAutoAdvancePhase,
@@ -44,6 +46,7 @@ import {
 	setPhaseEnabled,
 	toPipelineAutoAdvanceForm,
 	toPipelineEnabledForm,
+	toReviewChecksPolicyForm,
 } from '@/lib/pipeline-enabled.js';
 import {
 	agentConfigSearch,
@@ -55,7 +58,12 @@ import {
 	tabSearch,
 } from '@/lib/project-nav.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
-import type { AgentConfig, AgentsConfig, PipelineConfig } from '../../../../src/config/schema.js';
+import type {
+	AgentConfig,
+	AgentsConfig,
+	PipelineConfig,
+	ReviewChecksPolicy,
+} from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
 import {
 	AGENT_MODELS,
@@ -1126,11 +1134,32 @@ function AgentConfigurationForm({
 	);
 }
 
+const REVIEW_CHECKS_POLICY_OPTIONS: Array<{
+	value: ReviewChecksPolicy;
+	label: string;
+	description: string;
+}> = [
+	{
+		value: 'required',
+		label: 'Require CI checks',
+		description:
+			'A pull request whose head commit reports zero checks stays pending and is rechecked. Use this when the repository runs CI.',
+	},
+	{
+		value: 'if-present',
+		label: 'Review when no checks exist',
+		description:
+			'Dispatches Review immediately when GitHub reports zero checks at all. Only for repositories with no CI — a pull request with real pending, passing, or failing checks keeps the same behavior either way; this is not a way to bypass CI that exists.',
+	},
+];
+
 interface PipelineSettingsFormProps {
 	autoMerge: boolean;
 	setAutoMerge: (value: boolean) => void;
 	skipRespondToReviewOnMinors: boolean;
 	setSkipRespondToReviewOnMinors: (value: boolean) => void;
+	reviewChecksPolicy: ReviewChecksPolicy;
+	setReviewChecksPolicy: (value: ReviewChecksPolicy) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
@@ -1140,11 +1169,13 @@ interface PipelineSettingsFormProps {
 	errorMessage?: string;
 }
 
-function PipelineSettingsForm({
+export function PipelineSettingsForm({
 	autoMerge,
 	setAutoMerge,
 	skipRespondToReviewOnMinors,
 	setSkipRespondToReviewOnMinors,
+	reviewChecksPolicy,
+	setReviewChecksPolicy,
 	handleSubmit,
 	handleReset,
 	isDirty,
@@ -1194,6 +1225,46 @@ function PipelineSettingsForm({
 							</span>
 						</span>
 					</label>
+				</div>
+
+				<div>
+					<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
+						Review
+					</h2>
+					<p className="text-xs text-zinc-400 mb-4">
+						Controls how the Review phase treats a pull request whose head commit has zero
+						registered CI checks.
+					</p>
+					<fieldset className="space-y-2">
+						<legend className="sr-only">Review check policy</legend>
+						{REVIEW_CHECKS_POLICY_OPTIONS.map(({ value, label, description }) => {
+							const checked = reviewChecksPolicy === value;
+							return (
+								<label
+									key={value}
+									className={`flex items-start gap-3 p-4 border rounded-md cursor-pointer transition-colors ${
+										checked
+											? 'border-violet-500 bg-zinc-800/20'
+											: 'border-zinc-800 bg-panel/20 hover:bg-zinc-800/20'
+									}`}
+								>
+									<input
+										type="radio"
+										name="review-checks-policy"
+										value={value}
+										checked={checked}
+										disabled={isPending}
+										onChange={() => setReviewChecksPolicy(value)}
+										className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
+									/>
+									<span>
+										<span className="block text-sm font-medium text-zinc-200">{label}</span>
+										<span className="block text-xs text-zinc-400 mt-1">{description}</span>
+									</span>
+								</label>
+							);
+						})}
+					</fieldset>
 				</div>
 
 				{isSuccess && (
@@ -1282,6 +1353,9 @@ function ProjectDetailRouteComponent() {
 	);
 	const [autoMerge, setAutoMerge] = useState(false);
 	const [skipRespondToReviewOnMinors, setSkipRespondToReviewOnMinors] = useState(true);
+	const [reviewChecksPolicy, setReviewChecksPolicy] = useState<ReviewChecksPolicy>(() =>
+		toReviewChecksPolicyForm(undefined),
+	);
 	const [boardMapping, setBoardMapping] = useState<BoardMappingForm>(() =>
 		toBoardMappingForm(undefined),
 	);
@@ -1310,6 +1384,7 @@ function ProjectDetailRouteComponent() {
 			setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
 			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
 			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
+			setReviewChecksPolicy(toReviewChecksPolicyForm(project.pipeline));
 			setBoardMapping(toBoardMappingForm(project.githubProjects));
 		}
 	}, [project]);
@@ -1381,8 +1456,9 @@ function ProjectDetailRouteComponent() {
 	const isPipelineDirty = useMemo(
 		() =>
 			autoMerge !== (project?.pipeline?.respondToReview?.autoMerge ?? false) ||
-			skipRespondToReviewOnMinors !== (project?.pipeline?.respondToReview?.skipOnMinors ?? true),
-		[project, autoMerge, skipRespondToReviewOnMinors],
+			skipRespondToReviewOnMinors !== (project?.pipeline?.respondToReview?.skipOnMinors ?? true) ||
+			isReviewChecksPolicyDirty(reviewChecksPolicy, project?.pipeline),
+		[project, autoMerge, skipRespondToReviewOnMinors, reviewChecksPolicy],
 	);
 
 	const isBoardMappingFormDirty = useMemo(
@@ -1505,20 +1581,21 @@ function ProjectDetailRouteComponent() {
 		e.preventDefault();
 		updateMutation.mutate({
 			id: projectId,
-			pipeline: {
+			pipeline: buildReviewChecksPolicyUpdate(reviewChecksPolicy, {
 				...project?.pipeline,
 				respondToReview: {
 					...project?.pipeline?.respondToReview,
 					autoMerge,
 					skipOnMinors: skipRespondToReviewOnMinors,
 				},
-			},
+			}),
 		});
 	};
 
 	const handlePipelineReset = () => {
 		setAutoMerge(project?.pipeline?.respondToReview?.autoMerge ?? false);
 		setSkipRespondToReviewOnMinors(project?.pipeline?.respondToReview?.skipOnMinors ?? true);
+		setReviewChecksPolicy(toReviewChecksPolicyForm(project?.pipeline));
 		updateMutation.reset();
 	};
 
@@ -1768,6 +1845,11 @@ function ProjectDetailRouteComponent() {
 					skipRespondToReviewOnMinors={skipRespondToReviewOnMinors}
 					setSkipRespondToReviewOnMinors={(value) => {
 						setSkipRespondToReviewOnMinors(value);
+						updateMutation.reset();
+					}}
+					reviewChecksPolicy={reviewChecksPolicy}
+					setReviewChecksPolicy={(value) => {
+						setReviewChecksPolicy(value);
 						updateMutation.reset();
 					}}
 					handleSubmit={handlePipelineSubmit}

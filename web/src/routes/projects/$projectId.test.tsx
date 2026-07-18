@@ -8,6 +8,7 @@ import {
 	PhaseEnabledCell,
 	PhaseSettingsDetail,
 	PhaseToggleSwitch,
+	PipelineSettingsForm,
 } from './$projectId.js';
 
 describe('PhaseToggleSwitch', () => {
@@ -373,5 +374,110 @@ describe('PhaseSettingsDetail', () => {
 
 		expect(screen.getByText('Enabled')).toBeDefined();
 		expect(screen.getByText('Locked off while Review is disabled.')).toBeDefined();
+	});
+});
+
+describe('PipelineSettingsForm — Review check policy', () => {
+	const noop = () => {};
+
+	it('defaults to Require CI checks selected', () => {
+		render(
+			<PipelineSettingsForm
+				autoMerge={false}
+				setAutoMerge={noop}
+				skipRespondToReviewOnMinors={true}
+				setSkipRespondToReviewOnMinors={noop}
+				reviewChecksPolicy="required"
+				setReviewChecksPolicy={noop}
+				handleSubmit={(e) => e.preventDefault()}
+				handleReset={noop}
+				isDirty={false}
+				isPending={false}
+				isSuccess={false}
+				isError={false}
+			/>,
+		);
+
+		const required = screen.getByRole('radio', {
+			name: /^Require CI checks/,
+		}) as HTMLInputElement;
+		const ifPresent = screen.getByRole('radio', {
+			name: /^Review when no checks exist/,
+		}) as HTMLInputElement;
+		expect(required.checked).toBe(true);
+		expect(ifPresent.checked).toBe(false);
+	});
+
+	it('reflects a stored if-present selection', () => {
+		render(
+			<PipelineSettingsForm
+				autoMerge={false}
+				setAutoMerge={noop}
+				skipRespondToReviewOnMinors={true}
+				setSkipRespondToReviewOnMinors={noop}
+				reviewChecksPolicy="if-present"
+				setReviewChecksPolicy={noop}
+				handleSubmit={(e) => e.preventDefault()}
+				handleReset={noop}
+				isDirty={false}
+				isPending={false}
+				isSuccess={false}
+				isError={false}
+			/>,
+		);
+
+		const required = screen.getByRole('radio', {
+			name: /^Require CI checks/,
+		}) as HTMLInputElement;
+		const ifPresent = screen.getByRole('radio', {
+			name: /^Review when no checks exist/,
+		}) as HTMLInputElement;
+		expect(required.checked).toBe(false);
+		expect(ifPresent.checked).toBe(true);
+	});
+
+	it('calls setReviewChecksPolicy when a different option is picked', () => {
+		const setReviewChecksPolicy = vi.fn();
+		render(
+			<PipelineSettingsForm
+				autoMerge={false}
+				setAutoMerge={noop}
+				skipRespondToReviewOnMinors={true}
+				setSkipRespondToReviewOnMinors={noop}
+				reviewChecksPolicy="required"
+				setReviewChecksPolicy={setReviewChecksPolicy}
+				handleSubmit={(e) => e.preventDefault()}
+				handleReset={noop}
+				isDirty={false}
+				isPending={false}
+				isSuccess={false}
+				isError={false}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole('radio', { name: /^Review when no checks exist/ }));
+		expect(setReviewChecksPolicy).toHaveBeenCalledWith('if-present');
+	});
+
+	it('includes explanatory copy limiting the no-CI option to repositories without CI', () => {
+		render(
+			<PipelineSettingsForm
+				autoMerge={false}
+				setAutoMerge={noop}
+				skipRespondToReviewOnMinors={true}
+				setSkipRespondToReviewOnMinors={noop}
+				reviewChecksPolicy="required"
+				setReviewChecksPolicy={noop}
+				handleSubmit={(e) => e.preventDefault()}
+				handleReset={noop}
+				isDirty={false}
+				isPending={false}
+				isSuccess={false}
+				isError={false}
+			/>,
+		);
+
+		expect(screen.getByText(/Only for repositories with no CI/)).toBeDefined();
+		expect(screen.getByText(/not a way to bypass CI that exists/)).toBeDefined();
 	});
 });
