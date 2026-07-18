@@ -61,6 +61,7 @@ export function buildPlanningPrompt(
 	workItem: WorkItem,
 	allowSplit = false,
 	customPrompt?: string,
+	maxConcerns = 1,
 ): string {
 	const lines = [
 		'You are a senior software architect creating a detailed implementation plan.',
@@ -89,7 +90,7 @@ export function buildPlanningPrompt(
 		lines.push(
 			'',
 			'SPLIT DECISION — concrete criteria, not a subjective call:',
-			'  - A task MUST be split when it combines two or more INDEPENDENT concerns —',
+			`  - A task MUST be split when it combines more than ${maxConcerns} INDEPENDENT ${maxConcerns === 1 ? 'concern' : 'concerns'} —`,
 			'    e.g. retry policy + provider selection/configuration; worker scheduling +',
 			'    worktree lifecycle; backend behavior + unrelated dashboard/configuration work.',
 			'  - A task that changes ONE existing lifecycle or policy together with its',
@@ -148,8 +149,8 @@ export function buildPlanningPrompt(
 			'    "outOfScope": ["<thing deliberately excluded>", "..."]',
 			'  }',
 			'List EVERY genuinely independent concern in "independentConcerns". If that list',
-			'has TWO OR MORE entries you MUST split (emit the split file above) — an',
-			`unsplit oversized plan is REJECTED. A single cohesive task leaves one entry.`,
+			`has more than ${maxConcerns} ${maxConcerns === 1 ? 'entry' : 'entries'} you MUST split (emit the split file above) — an`,
+			`unsplit oversized plan is REJECTED. A single cohesive task leaves at most ${maxConcerns} ${maxConcerns === 1 ? 'entry' : 'entries'}.`,
 		);
 	}
 

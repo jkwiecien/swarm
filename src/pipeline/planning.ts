@@ -138,7 +138,7 @@ export type ProposedSplit = z.infer<typeof ProposedSplitSchema>;
  */
 const ProposedScopeSchema = z.object({
 	whyOneTask: z.string().trim().min(1),
-	independentConcerns: z.array(z.string().trim().min(1)).default([]),
+	independentConcerns: z.array(z.string().trim().min(1)).min(1),
 	affectedAreas: z.array(z.string().trim().min(1)).min(1),
 	outOfScope: z.array(z.string().trim().min(1)).default([]),
 });
@@ -731,7 +731,7 @@ export async function runPlanningPhase(
 			reasoning,
 			...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
 			cwd: handle.path,
-			args: [buildPlanningPrompt(workItem, autoSplit, customPrompt)],
+			args: [buildPlanningPrompt(workItem, autoSplit, customPrompt, maxConcerns)],
 			maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
 			logContext: { taskId, phase: 'planning', workItemId: workItem.id },
 			timeoutMs,
@@ -750,6 +750,17 @@ export async function runPlanningPhase(
 		}
 
 		const plan = readPlanOrThrow(handle.path, cli, taskId, workItem, agent);
+
+		// Validate human-readable scope gate exists in the plan (issue #268)
+		if (autoSplit) {
+			if (!/##\s*scope\s*gate/i.test(plan)) {
+				logAgentFailure(taskId, workItem.id, agent);
+				throw new Error(
+					`Planning agent (${cli}) did not include the required "## Scope gate" section in ${PROPOSED_PLAN_FILENAME}. ` +
+						`Ensure the plan opens with this section describing the scope.`,
+				);
+			}
+		}
 
 		// The agent may have decided to split (only honored when autoSplit is on).
 		// The re-scope/rename and sibling spawns happen before the first task is

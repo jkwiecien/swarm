@@ -145,7 +145,7 @@ function makeDeps() {
 describe('runPlanningPhase', () => {
 	beforeEach(() => {
 		planExists = true;
-		planContents = '# Plan\n\n1. Do the thing.';
+		planContents = '## Scope gate\n- Why this is one task: cohesive change\n- Affected areas / files: planning.ts\n- Explicitly out of scope: none\n\n# Plan\n\n1. Do the thing.';
 		// No split by default — most tests exercise the single-task path.
 		splitExists = false;
 		splitContents = '';
@@ -192,7 +192,7 @@ describe('runPlanningPhase', () => {
 
 		expect(result).toMatchObject({
 			commentId: 'comment-1',
-			plan: '# Plan\n\n1. Do the thing.',
+			plan: '## Scope gate\n- Why this is one task: cohesive change\n- Affected areas / files: planning.ts\n- Explicitly out of scope: none\n\n# Plan\n\n1. Do the thing.',
 			movedTo: undefined,
 		});
 	});
@@ -519,11 +519,34 @@ describe('runPlanningPhase', () => {
 	});
 
 	it('does not require a scope file when autoSplit is off', async () => {
+		planContents = '# Plan\n\n1. Do the thing.';
 		scopeExists = false;
 		const deps = makeDeps();
 		const result = await runPlanningPhase({ ...deps, autoSplit: false });
 		expect(deps.pm.addComment).toHaveBeenCalledTimes(1);
 		expect(result.plan).toBe('# Plan\n\n1. Do the thing.');
+	});
+
+	it('fails Planning when the human-readable scope gate is missing in the plan under autoSplit', async () => {
+		planContents = '# Plan\n\n1. Do the thing.'; // missing ## Scope gate
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow(
+			/did not include the required "## Scope gate" section/i,
+		);
+		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('fails Planning when the concern list is omitted in the scope file under autoSplit', async () => {
+		scopeContents = JSON.stringify({
+			whyOneTask: 'One cohesive change.',
+			affectedAreas: ['src/pipeline/planning.ts'],
+			outOfScope: [],
+		}); // independentConcerns is omitted
+		const deps = makeDeps();
+		await expect(runPlanningPhase(deps)).rejects.toThrow();
+		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 
 	it('forwards timeoutMs, signal, and maxOutputBytes to the agent runner', async () => {
@@ -728,13 +751,20 @@ describe('buildPlanningPrompt', () => {
 
 	it('gives concrete split criteria and requires the scope gate when allowSplit is on', () => {
 		const prompt = buildPlanningPrompt(createMockWorkItem(), true);
-		expect(prompt).toMatch(/two or more INDEPENDENT concerns/i);
+		expect(prompt).toMatch(/more than 1 INDEPENDENT concern/i);
 		expect(prompt).toContain(PROPOSED_SCOPE_FILENAME);
 		expect(prompt).toMatch(/## Scope gate/);
 		expect(prompt).toMatch(/Why this is one task/);
 		expect(prompt).toMatch(/Affected areas/);
 		expect(prompt).toMatch(/Explicitly out of scope/);
 		expect(prompt).toContain('independentConcerns');
+	});
+
+	it('adapts the prompt instructions dynamically to a raised maxConcerns budget', () => {
+		const prompt = buildPlanningPrompt(createMockWorkItem(), true, undefined, 2);
+		expect(prompt).toMatch(/more than 2 INDEPENDENT concerns/i);
+		expect(prompt).toMatch(/more than 2 entries you MUST split/i);
+		expect(prompt).toMatch(/at most 2 entries/i);
 	});
 
 	it('asks for a reusable per-child plan when splitting', () => {
