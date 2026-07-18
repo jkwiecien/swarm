@@ -598,7 +598,10 @@ async function scheduleMergeabilityRecheck(
 		return null;
 	}
 
-	const coalesceKey = `review-mergeability:${ctx.project.repo}:${prNumber}:${headSha}`;
+	// A synchronize event intentionally never dispatches Review; a completed
+	// check-suite event can. Keep their rechecks separate so a later synchronize
+	// delivery cannot replace the follow-up Review's dispatch-capable recheck.
+	const coalesceKey = `review-mergeability:${ctx.project.repo}:${prNumber}:${headSha}:${ctx.event.eventType}`;
 	await scheduleCoalescedJob(
 		{
 			type: 'github',

@@ -690,7 +690,43 @@ describe('review trigger', () => {
 						action: 'synchronize',
 					}),
 				}),
-				'review-mergeability:jkwiecien/swarm:42:abc123',
+				'review-mergeability:jkwiecien/swarm:42:abc123:pull_request',
+				30000,
+			);
+		});
+
+		it('keeps a check-suite mergeability recheck when synchronize arrives for the same head', async () => {
+			getPullRequest.mockResolvedValue({
+				number: 42,
+				headBranch: 'task-42',
+				headSha: 'abc123',
+				baseBranch: 'main',
+				baseSha: 'base123',
+				mergeable: null,
+				authorLogin: 'swarm-impl',
+			});
+
+			await handler.handle(
+				ctx({
+					eventType: 'check_suite',
+					action: 'completed',
+					workItemId: '42',
+					headSha: 'abc123',
+					prBranch: 'task-42',
+				}),
+			);
+			await handler.handle(ctx(synchronized));
+
+			expect(scheduleCoalescedJob).toHaveBeenNthCalledWith(
+				1,
+				expect.any(Object),
+				'review-mergeability:jkwiecien/swarm:42:abc123:check_suite',
+				30000,
+			);
+			expect(scheduleCoalescedJob).toHaveBeenNthCalledWith(
+				2,
+				expect.any(Object),
+				'review-mergeability:jkwiecien/swarm:42:abc123:pull_request',
 				30000,
 			);
 		});
