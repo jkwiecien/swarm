@@ -39,6 +39,57 @@ export const CREDENTIAL_ROLE_DESCRIPTIONS: Record<CredentialRole, string> = {
 	webhookSecret: 'HMAC secret GitHub signs webhook deliveries with. Not tied to a GitHub identity.',
 };
 
+/** A source-control provider the Source Control tab's provider selector can offer. */
+export type ScmProviderId = 'github';
+
+export interface ScmProviderOption {
+	id: ScmProviderId;
+	label: string;
+	/** Whether this provider has a working integration and can be selected. */
+	available: boolean;
+}
+
+/**
+ * UI-only catalogue backing the Source Control tab's provider selector.
+ * GitHub is the only provider with a working integration
+ * (`GitHubSCMIntegration`, `scm.verifyGithubToken`) — this list exists so the
+ * selector and its copy are data-driven rather than a step toward a shared
+ * `SCMProvider` interface (`ai/RULES.md` §2 explicitly defers that).
+ */
+export const SCM_PROVIDERS: readonly ScmProviderOption[] = [
+	{ id: 'github', label: 'GitHub', available: true },
+];
+
+export const DEFAULT_SCM_PROVIDER_ID: ScmProviderId = SCM_PROVIDERS[0].id;
+
+/** Provider-facing copy for the Source Control tab, projected off the selected provider. */
+export interface ScmProviderCopy {
+	/** Introductory paragraph explaining what the credentials are for. */
+	intro: string;
+	roleDescriptions: Record<CredentialRole, string>;
+	/** Shown under a verifiable field when `scm.verifyGithubToken` resolves invalid. */
+	verifyFailureMessage: string;
+	sameAccountWarningTitle: (login: string) => string;
+	sameAccountWarningBody: string;
+}
+
+const SCM_PROVIDER_COPY: Record<ScmProviderId, ScmProviderCopy> = {
+	github: {
+		intro:
+			'The implementer and reviewer personas authenticate to GitHub with separate tokens so their pull requests and reviews are attributed to distinct accounts. Verify each PAT to confirm the account it resolves to before saving. Secrets are stored encrypted and only ever shown as a masked preview.',
+		roleDescriptions: CREDENTIAL_ROLE_DESCRIPTIONS,
+		verifyFailureMessage: 'Token did not resolve to a GitHub account. Check it and try again.',
+		sameAccountWarningTitle: (login) => `Both PATs resolve to @${login}`,
+		sameAccountWarningBody:
+			"The implementer and reviewer tokens map to the same GitHub account. Dual-persona loop prevention relies on two distinct identities — the reviewer's comments will be treated as the implementer's own. This is allowed but not recommended.",
+	},
+};
+
+/** Project the selected provider onto the Source Control tab's display copy. */
+export function getScmProviderCopy(providerId: ScmProviderId): ScmProviderCopy {
+	return SCM_PROVIDER_COPY[providerId];
+}
+
 /**
  * Whether a role's token maps to a GitHub identity and can be verified via
  * `scm.verifyGithubToken`. The webhook secret is an HMAC secret, not a token, so
