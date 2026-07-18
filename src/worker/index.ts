@@ -18,6 +18,11 @@ import {
 	failOrphanedRunningRuns,
 	failStaleRunningRuns,
 } from '../db/repositories/runsRepository.js';
+import { cancelDispatchAndWake, promoteNextCapacityDispatch } from '../dispatch/dispatcher.js';
+import {
+	reconcileDispatchesAtStartup,
+	reconcileDispatchesPeriodically,
+} from '../dispatch/reconciler.js';
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
@@ -31,11 +36,9 @@ import { pruneStaleWorktrees } from '../worktree/retention.js';
 import {
 	type JobOutcome,
 	processJob,
-	promoteNextPendingContinuation,
 	reportInterruptedJobToBoard,
 	resolveAgentTimeoutMs,
 } from './consumer.js';
-import { reenqueueDeferred } from './deferred-retry.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { processMergeFollowUp, recoverPendingMergeFollowUps } from './merge-follow-up.js';
 import { resetProjectSlot } from './project-concurrency.js';
@@ -139,6 +142,13 @@ try {
 	});
 }
 
+// Reconcile the durable dispatch state machine (issue #284, ADR-002): reclaim
+// leases abandoned by a dead process, import legacy Redis pending-continuation
+// entries and orphaned deferred runs as durable dispatches, and re-publish any
+// wake-up a crash window lost. Runs before the queue workers start so a
+// backfilled dispatch can't race its own legacy delayed job.
+await reconcileDispatchesAtStartup();
+
 // Reschedule any durable Review merge-follow-up whose delayed job didn't
 // survive a restart (issue #278) — best-effort and safe to run before the
 // queue workers start, since re-scheduling an already-queued attempt is a
@@ -158,7 +168,7 @@ async function resetProjectSlots(): Promise<void> {
 		await Promise.all(projects.map((project) => resetProjectSlot(project.id)));
 		await Promise.all(
 			projects.map((project) =>
-				promoteNextPendingContinuation(
+				promoteNextCapacityDispatch(
 					project.id,
 					project.pipeline?.prioritizeContinuations !== false,
 				),
@@ -203,6 +213,22 @@ const worker = new Worker(
 				ageMs: Date.now() - job.timestamp,
 				maxJobAgeMs,
 			});
+			// A stale wake-up must also settle its durable dispatch, or the
+			// reconciler would faithfully re-publish the work the operator already
+			// handled while the worker was offline. Cancelling is canonical and
+			// board-visible in the queue history (issue #284).
+			const parsed = SwarmJobSchema.safeParse(job.data);
+			if (parsed.success && parsed.data.dispatchId) {
+				await cancelDispatchAndWake(
+					parsed.data.dispatchId,
+					'Wake-up exceeded the maximum job age while the worker was offline',
+				).catch((err) =>
+					logger.warn('Failed to cancel stale dispatch', {
+						dispatchId: parsed.data.dispatchId,
+						error: describeError(err),
+					}),
+				);
+			}
 			return { status: 'no-trigger' } as const;
 		}
 		return await processJob(SwarmJobSchema.parse(job.data), registry, shutdown.signal);
@@ -225,19 +251,11 @@ const worker = new Worker(
 );
 
 worker.on('completed', (job, outcome: JobOutcome) => {
+	// A `phase-deferred` outcome needs no action here (issue #284): `processJob`
+	// already persisted the derived retry intent on the dispatch record and
+	// published its delayed wake-up before returning — the fire-and-forget
+	// re-enqueue window this handler used to own no longer exists.
 	logger.debug('Job completed', { jobId: job.id, name: job.name, outcome });
-	// A rate-limited or worker-aborted phase completes (from BullMQ's view) as
-	// `phase-deferred`: re-enqueue it delayed so it retries once quota is back, or
-	// once whatever restarted the worker mid-run has settled (issue #91; aborted
-	// case added after a dev `--watch` restart permanently failed an in-flight
-	// review). Done here, not in `processJob`, to keep the consumer
-	// BullMQ-agnostic — the entrypoint owns the queue. Fire-and-forget with its
-	// own error handling so a re-enqueue failure can't reject the completed-event
-	// handler; the (small) window where a worker crash between completion and
-	// re-enqueue loses the retry is an accepted MVP tradeoff.
-	if (outcome?.status === 'phase-deferred') {
-		void reenqueueDeferred(job.id, job.data, outcome);
-	}
 });
 
 worker.on('failed', (job, err) => {
@@ -366,6 +384,31 @@ const staleRunSweepInterval = setInterval(() => {
 }, staleRunSweepIntervalMs);
 staleRunSweepInterval.unref();
 
+/**
+ * Periodic dispatch reconciliation (issue #284): reclaim expired dispatch
+ * leases, re-publish wake-ups a crash window lost, and nudge capacity-blocked
+ * dispatches whose slot-release wake-up went missing. Shares the stale-run
+ * sweep's cadence — both are cheap bounded queries.
+ */
+async function runDispatchReconcile(): Promise<void> {
+	try {
+		const projects = await listAllProjectsFromDb();
+		const prioritize = new Map(
+			projects.map((p) => [p.id, p.pipeline?.prioritizeContinuations !== false]),
+		);
+		await reconcileDispatchesPeriodically((projectId) => prioritize.get(projectId) ?? true);
+	} catch (err) {
+		logger.error('Failed to run periodic dispatch reconciliation', {
+			error: describeError(err),
+		});
+	}
+}
+
+const dispatchReconcileInterval = setInterval(() => {
+	void runDispatchReconcile();
+}, staleRunSweepIntervalMs);
+dispatchReconcileInterval.unref();
+
 const HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const quotaDiscoveryInterval = setInterval(() => {
 	void runQuotaDiscovery(true);
@@ -381,6 +424,7 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		logger.debug(`Received ${signal} — aborting in-flight agent run and closing worker`);
 		clearInterval(sweepInterval);
 		clearInterval(staleRunSweepInterval);
+		clearInterval(dispatchReconcileInterval);
 		clearInterval(quotaDiscoveryInterval);
 		shutdown.abort();
 		void cancellationSubscription.close();

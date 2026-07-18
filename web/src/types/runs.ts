@@ -35,6 +35,8 @@ export type RunPhaseFilter = z.infer<typeof runPhaseFilterSchema>;
  */
 export const queuedPhaseHintSchema = z.enum([
 	'board',
+	'planning',
+	'implementation',
 	'review',
 	'respond-to-review',
 	'respond-to-ci',
@@ -43,9 +45,30 @@ export const queuedPhaseHintSchema = z.enum([
 ]);
 export type QueuedPhaseHint = z.infer<typeof queuedPhaseHintSchema>;
 
-/** Which BullMQ pending set a job was read from (mirrors `PendingJobStateSchema`). */
-export const queuedRunStateSchema = z.enum(['waiting', 'prioritized', 'delayed']);
+/**
+ * The queue-facing state of a waiting dispatch (mirrors
+ * `PendingJobStateSchema`, issue #284): `waiting`/`prioritized` for
+ * eligible-now work, `blocked` for a dispatch waiting on a free project slot,
+ * `delayed` for a scheduled retry/recheck.
+ */
+export const queuedRunStateSchema = z.enum(['waiting', 'prioritized', 'delayed', 'blocked']);
 export type QueuedRunState = z.infer<typeof queuedRunStateSchema>;
+
+/** Why a waiting dispatch isn't running (mirrors `QueuedWaitReasonSchema`). */
+export const queuedWaitReasonSchema = z.enum([
+	'project-capacity',
+	'rate-limit',
+	'agent-capacity',
+	'timeout',
+	'worker-shutdown',
+	'delivery',
+	'worktree-exists',
+	'stalled',
+	'recheck',
+	'manual-retry',
+	'recovered',
+]);
+export type QueuedWaitReason = z.infer<typeof queuedWaitReasonSchema>;
 
 /** The raw GitHub lifecycle event a review-gate job's metadata was derived from (mirrors `ReviewGateSourceEventSchema`). */
 export const queuedReviewGateSourceEventSchema = z.enum(['pull_request', 'check_suite']);
@@ -70,11 +93,18 @@ export const queuedReviewGateSchema = z.object({
 export type QueuedReviewGate = z.infer<typeof queuedReviewGateSchema>;
 
 export const queuedRunSchema = z.object({
+	/** The canonical dispatch id (issue #284) — the handle Put back operates on. */
 	jobId: z.string(),
 	projectId: z.string(),
 	type: z.enum(['github', 'github-projects']),
 	state: queuedRunStateSchema,
 	phaseHint: queuedPhaseHintSchema,
+	/** Why this dispatch is waiting, when it recorded a reason. */
+	waitReason: queuedWaitReasonSchema.optional(),
+	/** The run row this dispatch retries, when one exists (deferred runs). */
+	runId: z.string().optional(),
+	/** Deferred-retry attempt counter. */
+	attempt: z.number().int().nonnegative().optional(),
 	/** `github` jobs only — `owner/repo`. */
 	repo: z.string().optional(),
 	/** `github` jobs only — the PR/issue number. */

@@ -262,6 +262,21 @@ export async function markRunUserTerminated(
 	reason: string,
 	fromStatus?: RunStatus,
 ): Promise<boolean> {
+	return failRunFromStatus(runId, reason, fromStatus);
+}
+
+/**
+ * Atomically fail a run with `reason`, clearing the retry-shaped columns
+ * (`nextRetryAt`, `agentSessionId`) so it can't be picked up or resumed. The
+ * generic primitive behind {@link markRunUserTerminated} and the dispatch
+ * reconciler's dead-lease repair (issue #284). `fromStatus` makes the write a
+ * conditional claim; returns whether a row was updated.
+ */
+export async function failRunFromStatus(
+	runId: string,
+	reason: string,
+	fromStatus?: RunStatus,
+): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
 		.set({

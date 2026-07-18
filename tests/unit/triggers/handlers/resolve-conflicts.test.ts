@@ -26,7 +26,7 @@ vi.mock('@/integrations/scm/github/personas.js', () => ({
 	})),
 	isSwarmBot: vi.fn((login: string) => login.startsWith('swarm-')),
 }));
-vi.mock('@/queue/producer.js', () => ({ scheduleCoalescedJob }));
+vi.mock('@/dispatch/dispatcher.js', () => ({ scheduleCoalescedDispatch: scheduleCoalescedJob }));
 vi.mock('@/triggers/resolve-conflicts-dedup.js', () => ({
 	claimConflictResolution,
 	buildConflictResolutionKey: (repo: string, prNumber: string, headSha: string, baseSha: string) =>

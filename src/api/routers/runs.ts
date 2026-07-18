@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
+import {
+	getActiveDispatchByRunId,
+	getDispatchById,
+	listWaitingDispatches,
+	reopenDispatchForManualRetry,
+} from '../../db/repositories/dispatchesRepository.js';
 import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
 import {
 	getRunByIdFromDb,
@@ -9,34 +15,33 @@ import {
 	getRunOutputEvents,
 	listRunsFromDb,
 	markRunUserTerminated,
-	resetRunToRunning,
 } from '../../db/repositories/runsRepository.js';
+import {
+	cancelDispatchAndWake,
+	cancelDispatchForRun,
+	createAndPublishDispatch,
+	publishDispatchWakeUp,
+} from '../../dispatch/dispatcher.js';
 import { AgentCliSchema } from '../../harness/agent-cli.js';
 import { ReasoningLevelSchema } from '../../harness/models.js';
 import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { getPMProvider } from '../../integrations/pm/registry.js';
+import { describeError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import {
 	clearRunCancellation,
 	requestRunCancellation,
 	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
-import type { SwarmJob } from '../../queue/jobs.js';
-import {
-	enqueueDelayedRetry,
-	getQueuedJobData,
-	listPendingJobs,
-	promoteRetryForRun,
-	removePendingRetryForRun,
-	removeQueuedJob,
-} from '../../queue/producer.js';
+import { type SwarmJob, SwarmJobSchema } from '../../queue/jobs.js';
+import { priorityFor } from '../../queue/producer.js';
 import {
 	deriveQueuedPhaseHint,
 	type QueuedPhaseHint,
 	type QueuedRun,
 	toQueuedRuns,
 } from '../../queue/queued-runs.js';
-import { removePendingContinuationForRun } from '../../worker/pending-continuations.js';
+import type { TriggerPhase } from '../../triggers/types.js';
 import { publicProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
@@ -190,50 +195,22 @@ const ListRunsInputSchema = z.object({
 	offset: z.number().int().nonnegative().default(0),
 });
 
-async function claimRunOrThrow(
-	runId: string,
-	jobPayload: Parameters<typeof resetRunToRunning>[1],
-	fromStatus: 'deferred' | 'failed',
-	model?: string,
-	reasoning?: string | null,
-	engine?: z.infer<typeof AgentCliSchema>,
-	agentSessionId?: string | null,
-): Promise<void> {
-	if (
-		await resetRunToRunning(
-			runId,
-			jobPayload,
-			fromStatus,
-			model,
-			undefined,
-			reasoning,
-			engine,
-			agentSessionId,
-		)
-	)
-		return;
-	throw new TRPCError({
-		code: 'CONFLICT',
-		message: 'This run is already retrying. Refresh to see its current status.',
-	});
-}
-
 /**
- * Rebuild a fresh retry job from a run's stored payload: carry the originating
- * `runId` forward (so the retry reuses that row) and reset the rate-limit
- * attempt counter to 0 (a manual retry bypasses the automatic cap), applying any
- * cli/model overrides. Shared by the terminally-`failed` path and the
- * lost-pending-job fallback on the `deferred` path.
+ * Rebuild a retry job payload from a stored one: carry the originating `runId`
+ * forward (so the retry reuses that row) and reset the rate-limit attempt
+ * counter to 0 (a manual retry bypasses the automatic cap), applying any
+ * cli/model overrides. Shared by the reopen-existing-dispatch path and the
+ * reconstruct-from-run-row fallback.
  */
 function reconstructRetryJob(
-	jobPayload: NonNullable<Parameters<typeof resetRunToRunning>[1]>,
+	jobPayload: SwarmJob,
 	runId: string,
 	phase: string,
 	cli?: z.infer<typeof AgentCliSchema>,
 	model?: string,
 	reasoning?: z.infer<typeof ReasoningLevelSchema>,
 	freshSession = false,
-): NonNullable<Parameters<typeof resetRunToRunning>[1]> {
+): SwarmJob {
 	const job = { ...jobPayload };
 	job.runId = runId;
 	job.rateLimitRetryAttempt = 0;
@@ -250,23 +227,28 @@ function reconstructRetryJob(
 	return job;
 }
 
+function alreadyRetrying(): TRPCError {
+	return new TRPCError({
+		code: 'CONFLICT',
+		message: 'This run is already retrying. Refresh to see its current status.',
+	});
+}
+
 export const runsRouter = router({
 	// Paginated, filtered list; returns { data, total } straight from the repo.
 	list: publicProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
 		return await listRunsFromDb(input);
 	}),
 
-	// Work enqueued in BullMQ but not yet picked up by the worker — invisible to
-	// `list` above, which only reads the `runs` table (issue #234). No pagination:
+	// Every canonical waiting dispatch (pending / capacity-blocked /
+	// retry-scheduled) — the durable queue read model (issues #234, #284), never
+	// a BullMQ snapshot, so nothing pending can be invisible here. No pagination:
 	// the pending set is small and bounded by worker throughput.
 	queued: publicProcedure
 		.input(z.object({ projectId: z.string().min(1).optional() }).optional())
 		.query(async ({ input }) => {
-			const items = toQueuedRuns(await listPendingJobs());
-			const scoped = input?.projectId
-				? items.filter((item) => item.projectId === input.projectId)
-				: items;
-			return enrichQueuedWorkItems(scoped);
+			const items = toQueuedRuns(await listWaitingDispatches(input?.projectId));
+			return enrichQueuedWorkItems(items);
 		}),
 
 	// Single run by id; NOT_FOUND when unknown (the only not-found path).
@@ -293,33 +275,27 @@ export const runsRouter = router({
 		.input(z.object({ runId: z.string().min(1), after: z.number().int().nonnegative().default(0) }))
 		.query(async ({ input }) => await getRunOutputEvents(input.runId, input.after)),
 
-	// Fire a run's retry immediately ("Retry now", issue #136).
+	// Fire a run's retry immediately ("Retry now", issues #136, #284).
 	//
-	// Scope: `deferred` or terminally `failed` runs. The duplicate guard is the
-	// atomic `claimRunOrThrow` (a conditional `deferred|failed → running` update):
-	// whichever caller flips the row wins, and a concurrent manual retry or the
-	// automatic pickup gets a CONFLICT — so two concurrent runs can't start.
+	// Scope: `deferred` or terminally `failed` runs. The retry is a *dispatch*
+	// transition, never a direct run-row flip: the run stays `deferred`/`failed`
+	// until the worker actually claims the dispatch and starts the attempt, so a
+	// failed enqueue can no longer strand a false `running` run (the exact
+	// orphan issue #284 calls out). Two shapes:
 	//
-	// After claiming, three shapes reach the same end (a fresh run at delay 0):
+	//  1. The run has an active dispatch (`retry-scheduled`, or capacity-blocked
+	//     `pending`) — the common case. Its stored payload gets the operator's
+	//     overrides folded in and the dispatch is atomically re-opened for an
+	//     immediate attempt (`reopenDispatchForManualRetry`); losing that
+	//     conditional update to a concurrent pickup returns CONFLICT.
+	//  2. No active dispatch (a terminally `failed` run, or a legacy row whose
+	//     retry intent was lost) — reconstruct from the run's stored
+	//     `jobPayload` and create a fresh dispatch. The one-active-dispatch-per-
+	//     run unique index turns a double-click into CONFLICT, not two runs.
 	//
-	//  1. `deferred` with its pending retry still in Redis — the common case: one
-	//     delayed BullMQ job carries this `runId`; `promoteRetryForRun` promotes it
-	//     (delay → 0).
-	//  2. `deferred` but the pending job was lost — the re-enqueue never landed (the
-	//     fire-and-forget window on worker shutdown, or the completed job reaped
-	//     from Redis; see `reenqueueDeferred` in `src/worker/index.ts`). Promotion
-	//     finds nothing, so we reconstruct from the stored `jobPayload` and enqueue,
-	//     reusing the claim we already hold — instead of the dead-end CONFLICT this
-	//     used to return.
-	//  3. terminally `failed` (every automatic attempt consumed) — no pending job
-	//     ever survives; reconstruct from `jobPayload` and claim atomically.
-	//
-	// Cap-bypass covers the *entire* deferred window: every path resets
-	// `rateLimitRetryAttempt` to 0 before firing, so a manual retry always gets a
-	// fresh budget — including a run whose next *automatic* attempt would itself
-	// have tripped `MAX_RATE_LIMIT_RETRIES`. Thus a run stays manually retryable
-	// for the whole time it is `deferred`, satisfying issue #136's "manual retry
-	// remains available after the [automatic] cap is reached".
+	// Cap-bypass: every path resets `rateLimitRetryAttempt` to 0, so a manual
+	// retry always gets a fresh budget — including a run whose next *automatic*
+	// attempt would itself have tripped `MAX_RATE_LIMIT_RETRIES`.
 	//
 	// Only limit: reconstruction needs a stored `jobPayload`. A run recorded
 	// without one (older rows, or a create path that didn't persist it) can't be
@@ -354,67 +330,23 @@ export const runsRouter = router({
 			// start-check would instantly terminate the fresh attempt.
 			await clearRunCancellation(input.runId);
 
-			// Reasoning to persist on the row (issue #180). When the retry dialog
-			// applies an override (it always sends an explicit `cli`+`model`, and
-			// `reasoning` is authoritative — an omitted level means "Default"), coerce a
-			// missing level to `null` so a stale level is CLEARED rather than left in
-			// place; otherwise the row would keep an old reasoning that no longer
-			// matches the relaunch (`resetRunToRunning` treats `undefined` as
-			// "leave as-is"). A plain "Retry now" with no override at all leaves the
-			// column untouched (`undefined`). The worker re-resolves and resets the
-			// carried row on pickup, but this keeps the row consistent in the meantime.
 			const applyingOverride =
 				input.cli !== undefined || input.model !== undefined || input.reasoning !== undefined;
-			const reasoningForRow = applyingOverride ? (input.reasoning ?? null) : undefined;
+			const startFresh = run.status === 'failed' || run.agentSessionId === null || applyingOverride;
 
-			// Engine to persist on the row (issue #169). The retry dialog sends an
-			// explicit `cli` whenever it applies an override, so recording `input.cli`
-			// makes an override CLI visible the instant the row flips to `running`
-			// rather than waiting for the worker to re-resolve it on pickup. A plain
-			// "Retry now" sends no `cli` (`undefined`), so the column clears and the
-			// worker's own reset repopulates the effective CLI when it picks the job up.
-			const engineForRow = input.cli;
-
-			if (run.status === 'deferred') {
-				const startFresh = run.agentSessionId === null || applyingOverride;
-				// Atomic claim (deferred → running); CONFLICT if a concurrent retry or
-				// the automatic pickup already flipped it — the real duplicate guard.
-				await claimRunOrThrow(
-					run.id,
-					undefined,
-					'deferred',
-					input.model,
-					reasoningForRow,
-					engineForRow,
-					startFresh ? null : undefined,
-				);
-				// Common case: promote the pending delayed job in place (delay → 0).
-				const promoted = await promoteRetryForRun(
-					input.runId,
-					input.cli,
-					input.model,
-					input.reasoning,
-					startFresh,
-				);
-				if (promoted) {
-					await removePendingContinuationForRun(run.id);
-					return { runId: input.runId, status: 'retrying' as const };
-				}
-				// No pending job to promote — the re-enqueue was lost (the
-				// fire-and-forget window on worker shutdown, or the completed job reaped
-				// from Redis; see `reenqueueDeferred` in `src/worker/index.ts`). Fall
-				// through to reconstruct from the stored payload, exactly as the
-				// terminally-`failed` path does. We already hold the claim (the row is
-				// now `running`), so no second claim is needed — but a run with no stored
-				// payload can't be rebuilt.
-				if (!run.jobPayload) {
+			const active = await getActiveDispatchByRunId(run.id);
+			if (active) {
+				// Fold the overrides into the dispatch's stored payload (authoritative
+				// at claim time) and re-open it for an immediate attempt.
+				const stored = SwarmJobSchema.safeParse(active.jobPayload);
+				if (!stored.success) {
 					throw new TRPCError({
 						code: 'PRECONDITION_FAILED',
-						message: `Cannot retry run "${input.runId}" — it was created without a job payload.`,
+						message: `Cannot retry run "${input.runId}" — its dispatch payload no longer validates.`,
 					});
 				}
 				const job = reconstructRetryJob(
-					run.jobPayload,
+					stored.data,
 					run.id,
 					run.phase,
 					input.cli,
@@ -422,32 +354,25 @@ export const runsRouter = router({
 					input.reasoning,
 					startFresh,
 				);
-				// Persist the reconstructed payload onto the already-claimed row, then
-				// enqueue at delay 0.
-				await resetRunToRunning(
-					run.id,
-					job,
-					undefined,
-					input.model,
-					undefined,
-					reasoningForRow,
-					engineForRow,
-					startFresh ? null : undefined,
-				);
-				await removePendingContinuationForRun(run.id);
-				await enqueueDelayedRetry(job, 0, {
-					unique: true,
-					...(job.pendingDispatchId ? { jobId: `pending_${job.pendingDispatchId}` } : {}),
-				});
+				const reopened = await reopenDispatchForManualRetry(active.id, job);
+				if (!reopened) throw alreadyRetrying();
+				try {
+					await publishDispatchWakeUp(reopened);
+				} catch (err) {
+					// The durable intent is already recorded; the reconciler re-publishes.
+					logger.warn('retryNow: failed to publish wake-up (reconciler will repair)', {
+						dispatchId: reopened.id,
+						error: describeError(err),
+					});
+				}
 				return { runId: input.runId, status: 'retrying' as const };
 			}
 
-			// Terminally `failed` — no pending job ever survives; reconstruct from the
-			// stored payload and claim atomically (failed → running).
+			// No active dispatch — reconstruct from the run row's stored payload.
 			if (!run.jobPayload) {
 				throw new TRPCError({
 					code: 'PRECONDITION_FAILED',
-					message: `Cannot retry failed run "${input.runId}" — it was created without a job payload.`,
+					message: `Cannot retry run "${input.runId}" — it was created without a job payload.`,
 				});
 			}
 			const job = reconstructRetryJob(
@@ -457,18 +382,30 @@ export const runsRouter = router({
 				input.cli,
 				input.model,
 				input.reasoning,
-				true,
+				startFresh,
 			);
-			await claimRunOrThrow(
-				run.id,
-				job,
-				'failed',
-				input.model,
-				reasoningForRow,
-				engineForRow,
-				null,
-			);
-			await enqueueDelayedRetry(job, 0, { unique: true });
+			try {
+				await createAndPublishDispatch({
+					projectId: run.projectId,
+					jobPayload: job,
+					priority: priorityFor(job) ?? 0,
+					source: 'manual',
+					waitReason: 'manual-retry',
+					runId: run.id,
+					taskId: run.taskId,
+					phase: run.phase as TriggerPhase,
+				});
+			} catch (err) {
+				const message = describeError(err);
+				// The one-active-dispatch-per-run unique index: a concurrent retry won.
+				if (message.includes('uq_dispatches_active_run') || message.includes('duplicate key')) {
+					throw alreadyRetrying();
+				}
+				throw new TRPCError({
+					code: 'INTERNAL_SERVER_ERROR',
+					message: `Failed to create the retry dispatch: ${message}`,
+				});
+			}
 
 			return { runId: input.runId, status: 'retrying' as const };
 		}),
@@ -521,11 +458,11 @@ export const runsRouter = router({
 			await requestRunCancellation(run.id);
 
 			if (run.status === 'deferred') {
-				// Cancel either scheduled retry-shaped work or a slot-release pending
-				// dispatch so no automatic pickup resurrects it,
-				// then atomically fail the row while it's still deferred.
-				await removePendingRetryForRun(run.id);
-				await removePendingContinuationForRun(run.id);
+				// Cancel the canonical dispatch first (issue #284): a cancelled
+				// dispatch refuses every future claim — a late retry wake-up, a slot
+				// release, or reconciliation — so nothing can resurrect this run.
+				// Then atomically fail the row while it's still deferred.
+				await cancelDispatchForRun(run.id, USER_TERMINATION_MESSAGE);
 				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
 					// Keep the durable marker until an explicit retry clears it. The
 					// completed handler can still be between persisting `deferred` and
@@ -547,11 +484,13 @@ export const runsRouter = router({
 			return { runId: run.id, status: 'terminating' as const };
 		}),
 
-	// Put back action for queued work items (issue #251).
-	// Safely removes a waiting, prioritized, or delayed job and moves its linked card back to backlog.
+	// Put back action for queued work items (issues #251, #284).
+	// Cancels a waiting dispatch (the canonical record — nothing can resurrect
+	// it afterwards) and moves its linked card back to backlog.
 	putBack: publicProcedure
 		.input(
 			z.object({
+				/** The dispatch id shown by `runs.queued` as `jobId`. */
 				jobId: z.string().min(1),
 				projectId: z.string().min(1),
 			}),
@@ -565,16 +504,27 @@ export const runsRouter = router({
 				});
 			}
 
-			let jobData: SwarmJob;
-			try {
-				jobData = await getQueuedJobData(input.jobId);
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
+			const dispatch = await getDispatchById(input.jobId);
+			if (!dispatch) {
 				throw new TRPCError({
-					code: msg.includes('not found') ? 'NOT_FOUND' : 'PRECONDITION_FAILED',
-					message: msg,
+					code: 'NOT_FOUND',
+					message: `Queued dispatch with ID "${input.jobId}" not found`,
 				});
 			}
+			if (dispatch.state !== 'pending' && dispatch.state !== 'retry-scheduled') {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Dispatch "${input.jobId}" is ${dispatch.state} and cannot be put back.`,
+				});
+			}
+			const parsedJob = SwarmJobSchema.safeParse(dispatch.jobPayload);
+			if (!parsedJob.success) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Dispatch "${input.jobId}" has an invalid stored payload.`,
+				});
+			}
+			const jobData: SwarmJob = parsedJob.data;
 
 			const phaseHint = deriveQueuedPhaseHint(jobData);
 			if (phaseHint !== 'board' && phaseHint !== 'review') {
@@ -634,22 +584,28 @@ export const runsRouter = router({
 				});
 			}
 
+			// Cancel the canonical dispatch *before* moving the card: once cancelled,
+			// no wake-up or reconciliation can start the phase, so the card move can
+			// never race a pickup. Losing the conditional cancel means a worker
+			// claimed it in the meantime — surface that instead of moving the card
+			// out from under a starting run.
+			const cancelled = await cancelDispatchAndWake(
+				dispatch.id,
+				'Put back to Backlog from the dashboard',
+			);
+			if (!cancelled) {
+				throw new TRPCError({
+					code: 'PRECONDITION_FAILED',
+					message: `Dispatch "${input.jobId}" was picked up while putting it back — refresh to see its run.`,
+				});
+			}
+
 			try {
 				await pm.moveWorkItem(workItemNodeId, 'backlog');
 			} catch (error) {
 				throw new TRPCError({
 					code: 'INTERNAL_SERVER_ERROR',
-					message: `Failed to move board card to backlog: ${error instanceof Error ? error.message : String(error)}`,
-				});
-			}
-
-			try {
-				await removeQueuedJob(input.jobId);
-			} catch (error) {
-				const msg = error instanceof Error ? error.message : String(error);
-				throw new TRPCError({
-					code: 'INTERNAL_SERVER_ERROR',
-					message: `Failed to remove job from queue after moving board card: ${msg}`,
+					message: `Dispatch cancelled, but moving the board card to backlog failed: ${error instanceof Error ? error.message : String(error)}`,
 				});
 			}
 

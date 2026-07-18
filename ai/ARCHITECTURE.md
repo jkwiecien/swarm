@@ -22,9 +22,10 @@ Cloudflare Tunnel (external, not our concern — just a public HTTPS URL pointed
 Router  (Hono HTTP server, local Docker container)
    — verifies webhook signatures
    — resolves which SWARM project the event belongs to
-   — enqueues a job (BullMQ / Redis; PR review-lifecycle jobs are prioritized
-     ahead of PM-board jobs, so a review never queues behind a planning or
-     implementation run — `src/queue/producer.ts`'s `priorityFor`)
+   — records a durable dispatch (Postgres, ADR-002) and publishes its BullMQ
+     wake-up (PR review-lifecycle jobs are prioritized ahead of PM-board jobs,
+     so a review never queues behind a planning or implementation run —
+     `src/queue/producer.ts`'s `priorityFor`)
    ▼
 Worker  (host process — NOT containerized, one job at a time or a small pool)
    — looks up the trigger handler for the event
@@ -115,6 +116,31 @@ Once the worker has a provisioned worktree, it hands off to the harness (`src/ha
 
 **Model + reasoning mapping (issue #180).** The harness takes a *logical* `model` plus a normalized `reasoning` level and turns them into per-CLI launch args through `resolveModelLaunch` (`src/harness/models.ts`), the one place provider-specific reasoning semantics live: Claude gets `--model <alias> --effort <level>`, Codex gets `--model <id> -c model_reasoning_effort="<level>"`, and Antigravity — which has no reasoning flag — gets the reasoning folded back into the combined `agy models` variant string it passes to `--model` (e.g. logical `gemini-3.5-flash` + `high` → `"Gemini 3.5 Flash (High)"`). A pre-#180 config that stored the combined string directly is recognized and passed through verbatim, so it keeps launching that exact variant. Omitting reasoning preserves each CLI's own default (no flag for Claude/Codex; the model's default variant for Antigravity). `src/harness/models.ts` is the versioned capability catalog — logical models, their supported reasoning levels, and known defaults — cached in code, never discovered by invoking a model.
 
+### Durable dispatch state machine (issue #284, ADR-002)
+
+Every attempt to start or resume a pipeline phase is one row in the Postgres
+`dispatches` table — the single source of truth for pending/in-flight
+orchestration state (`docs/decisions/ADR-002-durable-dispatch-state-machine.md`).
+BullMQ jobs are pure wake-ups carrying a `dispatchId`; the worker acts only
+after atomically claiming the dispatch (`pending`/`retry-scheduled` → `leased`),
+so a cancelled, completed, or superseded dispatch refuses every late delivery —
+redelivery, delayed retry, slot release, or reconciliation. The lifecycle is
+`pending → leased → running → completed/failed`, with `retry-scheduled` for
+deferred attempts (the derived retry payload is persisted on the row *before*
+any queue work, so a crash never loses retry intent) and `cancelled` for
+user/operator cancellation. Wake-up job ids are deterministic per
+(dispatch, wake sequence), so the reconciler's re-publish is a queue no-op when
+the wake-up already exists. Project-capacity waits are `pending` dispatches with
+wait reason `project-capacity`, woken by slot releases under the
+continuation-priority policy — there is no separate Redis registry. A worker
+startup + periodic reconciler (`src/dispatch/reconciler.ts`) reclaims expired
+leases (failing the dispatch and its still-`running` run together), re-publishes
+lost wake-ups, and — once, at startup — imports legacy shapes (Redis
+pending-continuation entries, deferred runs with no active dispatch) as durable
+dispatches. The Queue API/UI (`runs.queued`) reads waiting dispatches from
+Postgres — state, wait reason, priority, scheduled time — never a BullMQ
+snapshot, and `swarm queue clear` cancels the canonical records first.
+
 ### Failure handling & rate-limit retries (issue #91)
 
 A phase whose agent exits non-zero throws, and `processJob` turns that into a `phase-failed` `JobOutcome` rather than rethrowing — an agent run isn't idempotent, so a BullMQ retry storm is worse than surfacing the failure (the phase already logged the agent's stdout/stderr, and the `attempts: 3` default only ever fires for the infra throws that happen *before* the agent runs). The exceptions are transient failures: a **usage/session-limit** hit where the agent never did any work, an **aborted** run where the worker itself shuts down mid-phase, or a deterministic-delivery failure after the agent has already produced a valid checkpoint. Delivery deferrals preserve the worktree and expose the wrapped push/hook/API cause in the run rather than misreporting it as a worker shutdown.
@@ -123,7 +149,7 @@ A phase whose agent exits non-zero throws, and `processJob` turns that into a `p
 
 `capacity` is a transient **provider-capacity** signal, matched per CLI so one CLI's provider error isn't triggered by another merely quoting it: Codex's structured `error` / `turn.failed` events containing `selected model is at capacity` anywhere in captured output (or its textual terminal banner), and Claude/Claude Code's terminal `529 Overloaded` / `overloaded_error` banner (Anthropic's documented temporary-overload response — issue #229). It defers on a shorter capacity budget (`MAX_CAPACITY_RETRIES`, `MIN_RETRY_DELAY_MS` backoff) and retries **fresh, not resumed** — the provider rejected the request before the model did any work, so there is no partial reasoning or edit to continue. Only a bare status number never matches; human-readable provider banners use a conservative terminal-output window, so borrowed CI logs or reviewed code mentioning these numbers stay a plain `error`.
 
-A retry **reuses the originating `runs` row** rather than inserting a second one (issues #136 and #146): the `phase-deferred` outcome carries the run's `runId`, `reenqueueDeferred` threads it onto the re-enqueued job (`jobBase.runId` in `src/queue/jobs.ts`), and on dequeue `processJob` resets that row to `running` (clearing `completedAt`/`error`/`nextRetryAt` and the outcome columns) instead of creating a new one. A fresh webhook that intentionally reruns a deferred or failed task/phase also claims and resets its latest terminal row, so automatic retries, manual retries, and user-triggered reruns all remain one logical dashboard run. A **manual "Retry now"** (the `runs.retryNow` tRPC mutation, offered for both `deferred` and `failed` runs) atomically claims the terminal row before retrying. Deferred runs promote their pending BullMQ job via `promoteRetryForRun`, which resets `rateLimitRetryAttempt` to 0 (bypassing the automatic cap); failed runs reconstruct an immediate job from the row's persisted `jobPayload`. The status-conditioned claim prevents concurrent automatic/manual retries from starting the same row twice.
+A retry **reuses the originating `runs` row** rather than inserting a second one (issues #136 and #146): the `phase-deferred` outcome carries the run's `runId`, the dispatch settle path (`settleDispatchRetry`, `src/worker/consumer.ts`) persists it in the derived retry payload on the dispatch record, and on the next claim `processJob` resets that same row to `running` (clearing `completedAt`/`error`/`nextRetryAt` and the outcome columns) instead of creating a new one. A fresh webhook that intentionally reruns a deferred or failed task/phase also claims and resets its latest terminal row, so automatic retries, manual retries, and user-triggered reruns all remain one logical dashboard run. A **manual "Retry now"** (the `runs.retryNow` tRPC mutation, offered for both `deferred` and `failed` runs) never flips the run row itself — the run turns `running` only when the worker actually claims the dispatch, so a failed enqueue can't strand a false `running` run (issue #284). It re-opens the run's active dispatch for an immediate attempt with `rateLimitRetryAttempt` reset to 0 (bypassing the automatic cap), folding any cli/model/reasoning overrides into the stored payload; a run with no active dispatch (terminally `failed`, or a legacy orphan) gets a fresh dispatch reconstructed from the row's persisted `jobPayload`. The conditional dispatch transition plus the one-active-dispatch-per-run unique index prevent concurrent automatic/manual retries from starting the same row twice.
 
 PM retry dispatch intent is separate from Implementation branch reuse. Manual and automatic retries
 carry `resumePmPhase` so an item already reporting "In progress" still re-enters its original phase,
@@ -133,7 +159,7 @@ never proves that provisioning happened.
 
 ### User-initiated termination (issue #166)
 
-A **running** or **deferred** run can be terminated from the dashboard (the `runs.terminate` tRPC mutation). The dashboard and worker are separate processes, so termination never touches a PID: `terminate` records the intent in a durable, run-id-keyed Redis set and publishes a notification (`src/queue/cancellation.ts`). For a **running** run the worker aborts the agent via the per-run `AbortController` threaded into `runPhase` (the same SIGTERM→SIGKILL path shutdown uses), so the phase runs its normal worktree/lease cleanup and settles the row as `failed` with a user-termination reason — `handlePhaseFailure` checks the cancellation set to tell a user termination apart from a worker-shutdown abort (which still defers). For a **deferred** run `terminate` removes the pending BullMQ retry job (`removePendingRetryForRun`) and atomically flips the row `deferred → failed` (`markRunUserTerminated`); if a concurrent automatic pickup wins that race, the run is now `running` and the cancellation flag drives the worker to terminate it instead. Keying on the immutable run id (not the task id) means a later retry of the same task is never terminated by an old request, and `retryNow` clears the flag before re-running. The mutation is idempotent: an already-terminal run returns its settled state rather than erroring. Captured logs are preserved (the aborted agent's output is stored like any failed run); only the board "failed" comment is skipped, since an intentional stop isn't a stall to investigate.
+A **running** or **deferred** run can be terminated from the dashboard (the `runs.terminate` tRPC mutation). The dashboard and worker are separate processes, so termination never touches a PID: `terminate` records the intent in a durable, run-id-keyed Redis set and publishes a notification (`src/queue/cancellation.ts`). For a **running** run the worker aborts the agent via the per-run `AbortController` threaded into `runPhase` (the same SIGTERM→SIGKILL path shutdown uses), so the phase runs its normal worktree/lease cleanup and settles the row as `failed` with a user-termination reason — `handlePhaseFailure` checks the cancellation set to tell a user termination apart from a worker-shutdown abort (which still defers). For a **deferred** run `terminate` cancels the canonical dispatch record first (`cancelDispatchForRun` — a cancelled dispatch refuses every future claim, so no retry, slot release, or reconciliation can resurrect the work; issue #284), then atomically flips the row `deferred → failed` (`markRunUserTerminated`); if a concurrent automatic pickup wins that race, the run is now `running` and the cancellation flag drives the worker to terminate it instead. Keying on the immutable run id (not the task id) means a later retry of the same task is never terminated by an old request, and `retryNow` clears the flag before re-running. The mutation is idempotent: an already-terminal run returns its settled state rather than erroring. Captured logs are preserved (the aborted agent's output is stored like any failed run); only the board "failed" comment is skipped, since an intentional stop isn't a stall to investigate.
 
 On a **terminal** `phase-failed` (such as `error`, `timeout`, or `stalled`), `processJob` also posts a failure comment on the backing Issue for the work-item-carrying phases (planning/implementation) via `reportPhaseFailureToBoard` → `pm.addComment`, so a human watching the board sees *why* the item stalled. If the failure kind is `stalled` or `timeout` (the agent gave up waiting for a model response), the posted comment appends a hedged splitting suggestion, recommending that the task be split by hand into smaller pieces before re-triggering. The comment is best-effort and skipped for PR-driven phases (review/respond-*), which have no board work item.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PendingJobSnapshot } from '@/queue/queued-runs.js';
+import type { DispatchRow } from '@/db/repositories/dispatchesRepository.js';
 import {
 	deriveQueuedPhaseHint,
 	deriveReviewGate,
@@ -12,15 +12,34 @@ import {
 	createMockGitHubWebhookJob,
 } from '../../helpers/factories.js';
 
-function makeSnapshot(overrides: Partial<PendingJobSnapshot> = {}): PendingJobSnapshot {
+/** A waiting dispatch row, shaped like `listWaitingDispatches()` returns them. */
+function makeDispatch(overrides: Partial<DispatchRow> = {}): DispatchRow {
 	return {
-		jobId: 'job-1',
-		type: 'github',
-		state: 'waiting',
-		data: createMockGitHubWebhookJob(),
-		enqueuedAt: 1_700_000_000_000,
-		delayMs: 0,
+		id: 'dispatch-1',
+		projectId: 'p1',
+		taskId: null,
+		phase: null,
+		state: 'pending',
+		waitReason: null,
+		outcome: null,
+		dedupKey: null,
+		coalesceKey: null,
+		continuation: false,
 		priority: 0,
+		attempt: 0,
+		wakeSeq: 0,
+		// In the past relative to the test run, so a plain pending row is
+		// eligible now (`waiting`), not `delayed`.
+		availableAt: new Date(1_700_000_000_000),
+		jobPayload: createMockGitHubWebhookJob(),
+		runId: null,
+		leaseOwner: null,
+		leaseExpiresAt: null,
+		lastError: null,
+		source: 'webhook',
+		createdAt: new Date(1_700_000_000_000),
+		updatedAt: new Date(1_700_000_000_000),
+		completedAt: null,
 		...overrides,
 	};
 }
@@ -187,16 +206,39 @@ describe('deriveReviewGate', () => {
 });
 
 describe('toQueuedRuns', () => {
-	it('excludes a job whose data carries a runId (already a deferred run)', () => {
-		const deferred = createMockGitHubWebhookJob({ runId: 'run-1' });
-		const fresh = createMockGitHubWebhookJob({ deliveryId: 'delivery-fresh' });
+	it('includes a retry-scheduled dispatch (linked run) as a delayed queue item', () => {
+		const deferred = makeDispatch({
+			id: 'deferred',
+			state: 'retry-scheduled',
+			waitReason: 'rate-limit',
+			runId: 'run-1',
+			attempt: 2,
+			availableAt: new Date(1_700_000_030_000),
+			jobPayload: createMockGitHubWebhookJob({ runId: 'run-1' }),
+		});
+		const fresh = makeDispatch({ id: 'fresh' });
 
-		const result = toQueuedRuns([
-			makeSnapshot({ jobId: 'deferred', data: deferred }),
-			makeSnapshot({ jobId: 'fresh', data: fresh }),
+		const result = toQueuedRuns([deferred, fresh]);
+
+		// Canonical queue completeness (issue #284): nothing pending is invisible —
+		// a scheduled retry shows with its run link, wait reason and schedule.
+		expect(result.map((r) => r.jobId)).toEqual(['fresh', 'deferred']);
+		const deferredItem = result[1];
+		expect(deferredItem).toMatchObject({
+			state: 'delayed',
+			waitReason: 'rate-limit',
+			runId: 'run-1',
+			attempt: 2,
+			runsAt: new Date(1_700_000_030_000).toISOString(),
+		});
+	});
+
+	it('maps a capacity-blocked dispatch to the blocked state with its wait reason', () => {
+		const [item] = toQueuedRuns([
+			makeDispatch({ waitReason: 'project-capacity', continuation: true }),
 		]);
-
-		expect(result.map((r) => r.jobId)).toEqual(['fresh']);
+		expect(item).toMatchObject({ state: 'blocked', waitReason: 'project-capacity' });
+		expect(item.runsAt).toBeUndefined();
 	});
 
 	it('maps a github job to repo + prNumber, no board fields', () => {
@@ -208,7 +250,7 @@ describe('toQueuedRuns', () => {
 			},
 		});
 
-		const [item] = toQueuedRuns([makeSnapshot({ data: job, state: 'waiting' })]);
+		const [item] = toQueuedRuns([makeDispatch({ jobPayload: job })]);
 
 		expect(item).toMatchObject({
 			type: 'github',
@@ -229,9 +271,7 @@ describe('toQueuedRuns', () => {
 			},
 		});
 
-		const [item] = toQueuedRuns([
-			makeSnapshot({ data: job, type: 'github-projects', state: 'prioritized', priority: 10 }),
-		]);
+		const [item] = toQueuedRuns([makeDispatch({ jobPayload: job, priority: 10 })]);
 
 		expect(item).toMatchObject({
 			type: 'github-projects',
@@ -242,6 +282,13 @@ describe('toQueuedRuns', () => {
 		});
 		expect(item.repo).toBeUndefined();
 		expect(item.prNumber).toBeUndefined();
+	});
+
+	it('prefers the worker-resolved phase over the event-derived hint', () => {
+		const [item] = toQueuedRuns([
+			makeDispatch({ phase: 'implementation', jobPayload: createMockGitHubProjectsWebhookJob() }),
+		]);
+		expect(item.phaseHint).toBe('implementation');
 	});
 
 	it('carries reviewGate metadata through for a review-hinted github job', () => {
@@ -255,7 +302,7 @@ describe('toQueuedRuns', () => {
 			},
 		});
 
-		const [item] = toQueuedRuns([makeSnapshot({ data: job })]);
+		const [item] = toQueuedRuns([makeDispatch({ jobPayload: job })]);
 
 		expect(item.reviewGate).toEqual({
 			sourceEvent: 'check_suite',
@@ -265,7 +312,9 @@ describe('toQueuedRuns', () => {
 	});
 
 	it('omits reviewGate for a job that is not a review-gate input', () => {
-		const [item] = toQueuedRuns([makeSnapshot({ data: createMockGitHubProjectsWebhookJob() })]);
+		const [item] = toQueuedRuns([
+			makeDispatch({ jobPayload: createMockGitHubProjectsWebhookJob() }),
+		]);
 		expect(item.reviewGate).toBeUndefined();
 	});
 
@@ -300,8 +349,8 @@ describe('toQueuedRuns', () => {
 		});
 
 		const items = toQueuedRuns([
-			makeSnapshot({ jobId: 'job-followup', data: followUp }),
-			makeSnapshot({ jobId: 'job-synchronize', data: synchronize }),
+			makeDispatch({ id: 'dispatch-followup', jobPayload: followUp }),
+			makeDispatch({ id: 'dispatch-synchronize', jobPayload: synchronize }),
 		]);
 
 		expect(items).toHaveLength(2);
@@ -313,86 +362,109 @@ describe('toQueuedRuns', () => {
 		]);
 	});
 
-	it('computes runsAt only for a delayed job', () => {
-		const [waitingItem] = toQueuedRuns([
-			makeSnapshot({ state: 'waiting', enqueuedAt: 1_700_000_000_000, delayMs: 0 }),
-		]);
+	it('computes runsAt only for a scheduled (delayed) dispatch', () => {
+		const [waitingItem] = toQueuedRuns([makeDispatch()]);
 		expect(waitingItem.runsAt).toBeUndefined();
 
 		const [delayedItem] = toQueuedRuns([
-			makeSnapshot({ state: 'delayed', enqueuedAt: 1_700_000_000_000, delayMs: 30_000 }),
+			makeDispatch({
+				state: 'retry-scheduled',
+				waitReason: 'timeout',
+				availableAt: new Date(1_700_000_030_000),
+			}),
 		]);
+		expect(delayedItem.state).toBe('delayed');
 		expect(delayedItem.runsAt).toBe(new Date(1_700_000_030_000).toISOString());
 	});
 
-	it('prioritizes the runsAt property on PendingJobSnapshot for the computed runsAt', () => {
-		const [delayedItem] = toQueuedRuns([
-			makeSnapshot({
-				state: 'delayed',
-				enqueuedAt: 1_700_000_000_000,
-				delayMs: 30_000,
-				runsAt: 1_700_000_100_000,
-			}),
-		]);
-		expect(delayedItem.runsAt).toBe(new Date(1_700_000_100_000).toISOString());
+	it('treats a pending dispatch with a future availableAt as delayed', () => {
+		const future = new Date(Date.now() + 60_000);
+		const [item] = toQueuedRuns([makeDispatch({ waitReason: 'recheck', availableAt: future })]);
+		expect(item.state).toBe('delayed');
+		expect(item.runsAt).toBe(future.toISOString());
 	});
 
 	it('carries the effective priority through', () => {
-		const [item] = toQueuedRuns([makeSnapshot({ priority: 10 })]);
+		const [item] = toQueuedRuns([
+			makeDispatch({ priority: 10, jobPayload: createMockGitHubProjectsWebhookJob() }),
+		]);
 		expect(item.priority).toBe(10);
 	});
 
+	it('skips a dispatch whose stored payload no longer parses instead of breaking the list', () => {
+		const items = toQueuedRuns([
+			makeDispatch({ id: 'broken', jobPayload: { nonsense: true } as never }),
+			makeDispatch({ id: 'good' }),
+		]);
+		expect(items.map((i) => i.jobId)).toEqual(['good']);
+	});
+
 	it('round-trips a representative object through QueuedRunSchema', () => {
-		const [item] = toQueuedRuns([makeSnapshot()]);
+		const [item] = toQueuedRuns([makeDispatch()]);
 		expect(() => QueuedRunSchema.parse(item)).not.toThrow();
 	});
 });
 
 describe('sortQueuedRuns', () => {
-	it('orders runnable jobs before delayed jobs', () => {
+	it('orders runnable dispatches before blocked, before delayed', () => {
 		const items = toQueuedRuns([
-			makeSnapshot({ jobId: 'delayed', state: 'delayed', enqueuedAt: 0, delayMs: 1000 }),
-			makeSnapshot({ jobId: 'waiting', state: 'waiting', enqueuedAt: 5000 }),
+			makeDispatch({
+				id: 'delayed',
+				state: 'retry-scheduled',
+				waitReason: 'rate-limit',
+				availableAt: new Date(1_700_000_030_000),
+			}),
+			makeDispatch({ id: 'blocked', waitReason: 'project-capacity' }),
+			makeDispatch({ id: 'waiting', createdAt: new Date(1_700_000_005_000) }),
 		]);
-		expect(items.map((i) => i.jobId)).toEqual(['waiting', 'delayed']);
+		expect(items.map((i) => i.jobId)).toEqual(['waiting', 'blocked', 'delayed']);
 	});
 
 	it('orders priority-0 github ahead of priority-10 github-projects within the runnable group', () => {
 		const items = toQueuedRuns([
-			makeSnapshot({
-				jobId: 'board',
-				type: 'github-projects',
-				state: 'prioritized',
+			makeDispatch({
+				id: 'board',
 				priority: 10,
-				data: createMockGitHubProjectsWebhookJob(),
-				enqueuedAt: 0,
+				jobPayload: createMockGitHubProjectsWebhookJob(),
+				createdAt: new Date(1_700_000_000_000),
 			}),
-			makeSnapshot({ jobId: 'review', state: 'waiting', priority: 0, enqueuedAt: 5000 }),
+			makeDispatch({ id: 'review', priority: 0, createdAt: new Date(1_700_000_005_000) }),
 		]);
 		expect(items.map((i) => i.jobId)).toEqual(['review', 'board']);
 	});
 
-	it('breaks ties within the same priority by FIFO enqueuedAt', () => {
+	it('breaks ties within the same priority by FIFO creation time', () => {
 		const items = toQueuedRuns([
-			makeSnapshot({ jobId: 'later', enqueuedAt: 2000 }),
-			makeSnapshot({ jobId: 'earlier', enqueuedAt: 1000 }),
+			makeDispatch({ id: 'later', createdAt: new Date(1_700_000_002_000) }),
+			makeDispatch({ id: 'earlier', createdAt: new Date(1_700_000_001_000) }),
 		]);
 		expect(items.map((i) => i.jobId)).toEqual(['earlier', 'later']);
 	});
 
-	it('orders delayed jobs by scheduled run time (runsAt), not raw enqueuedAt', () => {
+	it('orders delayed dispatches by scheduled run time (runsAt), not creation time', () => {
 		const items = toQueuedRuns([
-			// Enqueued later but scheduled to run sooner.
-			makeSnapshot({ jobId: 'runs-sooner', state: 'delayed', enqueuedAt: 5000, delayMs: 0 }),
-			makeSnapshot({ jobId: 'runs-later', state: 'delayed', enqueuedAt: 0, delayMs: 10_000 }),
+			makeDispatch({
+				id: 'runs-later',
+				state: 'retry-scheduled',
+				waitReason: 'timeout',
+				availableAt: new Date(1_700_000_050_000),
+				createdAt: new Date(1_700_000_000_000),
+			}),
+			makeDispatch({
+				id: 'runs-sooner',
+				state: 'retry-scheduled',
+				waitReason: 'timeout',
+				availableAt: new Date(1_700_000_030_000),
+				createdAt: new Date(1_700_000_005_000),
+			}),
 		]);
 		expect(items.map((i) => i.jobId)).toEqual(['runs-sooner', 'runs-later']);
 	});
 
 	it('does not mutate its input array', () => {
 		const items = toQueuedRuns([
-			makeSnapshot({ jobId: 'b', enqueuedAt: 2000 }),
-			makeSnapshot({ jobId: 'a', enqueuedAt: 1000 }),
+			makeDispatch({ id: 'b', createdAt: new Date(1_700_000_002_000) }),
+			makeDispatch({ id: 'a', createdAt: new Date(1_700_000_001_000) }),
 		]);
 		const copy = [...items];
 		sortQueuedRuns(items);

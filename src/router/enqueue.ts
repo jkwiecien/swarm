@@ -1,41 +1,76 @@
 /**
- * Enqueue seam — the boundary between the webhook receiver and the job queue.
+ * Enqueue seam — the boundary between the webhook receiver and the dispatch
+ * layer.
  *
  * The receiver's job (SWARM-9) ends once an event has been authenticated,
  * matched to a project, and cleared by loop prevention; at that point it hands
- * the normalized event here. This module shapes it into the router→worker job
- * contract (`SwarmJobSchema` on `QUEUE_NAME`, `src/queue/jobs.ts`) and enqueues
- * it via the BullMQ producer (`src/queue/producer.ts`, SWARM-35), which the
- * worker consumer (`src/worker/consumer.ts`) then processes. The trigger
- * decision is not embedded here — the worker runs the trigger registry against
- * the parsed event — so the job just carries the event, the project id, and the
- * delivery id.
+ * the normalized event here. Since issue #284 (ADR-002) this creates a durable
+ * dispatch record and publishes its wake-up (`src/dispatch/dispatcher.ts`)
+ * rather than writing business state into BullMQ: the delivery id becomes the
+ * dispatch's permanent dedup identity, so a redelivered webhook can never mint
+ * a second dispatch. The trigger decision is not embedded here — the worker
+ * runs the trigger registry against the parsed event after claiming the
+ * dispatch.
+ *
+ * The router does not run DB migrations; if the dispatch table is unavailable
+ * (a mid-deploy window), the event falls back to a legacy dispatch-less queue
+ * job, which the worker adopts into the durable model at dequeue — a webhook is
+ * never dropped because the dispatch layer was mid-deploy.
  */
 
 import type { ProjectConfig } from '../config/schema.js';
+import { createAndPublishDispatch, deliveryDedupKey } from '../dispatch/dispatcher.js';
+import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
-import { enqueueJob } from '../queue/producer.js';
+import type { SwarmJob } from '../queue/jobs.js';
+import { enqueueJob, priorityFor } from '../queue/producer.js';
 import type { GitHubParsedEvent } from '../router/adapters/github.js';
 import type { GitHubProjectsParsedEvent } from '../router/adapters/github-projects.js';
 
+async function dispatchWebhookJob(job: SwarmJob): Promise<void> {
+	try {
+		const { dispatch, created } = await createAndPublishDispatch({
+			projectId: job.projectId,
+			jobPayload: job,
+			dedupKey: job.deliveryId ? deliveryDedupKey(job.deliveryId) : undefined,
+			priority: priorityFor(job) ?? 0,
+			source: 'webhook',
+		});
+		if (!created) {
+			logger.debug('Webhook delivery already dispatched — deduplicated', {
+				projectId: job.projectId,
+				deliveryId: job.deliveryId,
+				dispatchId: dispatch.id,
+			});
+		}
+	} catch (err) {
+		// Degraded fallback: enqueue a legacy job the worker adopts at dequeue.
+		logger.warn('Dispatch record creation failed — enqueueing legacy job', {
+			projectId: job.projectId,
+			deliveryId: job.deliveryId,
+			error: describeError(err),
+		});
+		await enqueueJob(job);
+	}
+}
+
 /**
  * Hand a verified, project-matched, non-self-authored webhook event off to the
- * job queue. `deliveryId` is GitHub's `X-GitHub-Delivery` — carried through for
- * idempotency (the producer uses it as the BullMQ job id) and tracing.
+ * dispatch layer. `deliveryId` is GitHub's `X-GitHub-Delivery` — the dispatch's
+ * dedup identity and the tracing handle.
  */
 export async function enqueueWebhookEvent(
 	event: GitHubParsedEvent,
 	project: ProjectConfig,
 	deliveryId: string | undefined,
 ): Promise<void> {
-	const jobId = await enqueueJob({
+	await dispatchWebhookJob({
 		type: 'github',
 		projectId: project.id,
 		deliveryId,
 		event,
 	});
-	logger.debug('Webhook event enqueued', {
-		jobId,
+	logger.debug('Webhook event dispatched', {
 		projectId: project.id,
 		repo: event.repoFullName,
 		eventType: event.eventType,
@@ -47,25 +82,23 @@ export async function enqueueWebhookEvent(
 
 /**
  * Hand a verified, project-matched, non-self-authored `projects_v2_item` status
- * change off to the job queue — the PM-side counterpart of
+ * change off to the dispatch layer — the PM-side counterpart of
  * {@link enqueueWebhookEvent}. The worker re-reads the authoritative item state
  * itself (`src/worker/consumer.ts` re-reads config from Postgres and dispatches
- * against the parsed event), so this stays symmetric with the SCM path: shape
- * the event into a job and enqueue it.
+ * against the parsed event), so this stays symmetric with the SCM path.
  */
 export async function enqueueProjectsEvent(
 	event: GitHubProjectsParsedEvent,
 	project: ProjectConfig,
 	deliveryId: string | undefined,
 ): Promise<void> {
-	const jobId = await enqueueJob({
+	await dispatchWebhookJob({
 		type: 'github-projects',
 		projectId: project.id,
 		deliveryId,
 		event,
 	});
-	logger.debug('Projects webhook event enqueued', {
-		jobId,
+	logger.debug('Projects webhook event dispatched', {
 		projectId: project.id,
 		projectNodeId: event.projectNodeId,
 		eventType: event.eventType,

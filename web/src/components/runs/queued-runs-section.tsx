@@ -6,6 +6,7 @@ import {
 	groupQueuedRuns,
 	queuedPhaseLabel,
 	queuedRunKey,
+	queuedWaitReasonLabel,
 	queuedWorkItemLabel,
 	queuedWorkItemTitle,
 	queuedWorkItemUrl,
@@ -195,6 +196,12 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 										{formatRelativeTime(item.enqueuedAt)}
 										{item.state === 'delayed' && item.runsAt && (
 											<span className="text-zinc-500"> · runs {formatTimeUntil(item.runsAt)}</span>
+										)}
+										{item.waitReason && (
+											<span className="text-zinc-500">
+												{' '}
+												· {queuedWaitReasonLabel(item.waitReason)}
+											</span>
 										)}
 									</td>
 									<td className="px-2 py-2 text-xs">
