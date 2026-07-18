@@ -12,6 +12,7 @@
  * unit-tests without any GitHub or queue plumbing.
  */
 
+import type { ReviewChecksPolicy } from '../../config/schema.js';
 import type { CheckSuiteStatus } from '../../integrations/scm/github/client.js';
 
 /** Conclusions that count as a failed check — a suite in any of these is not reviewable. */
@@ -33,14 +34,19 @@ export type CheckSuiteDecision =
  *    runs the implementer to fix the build — mirroring Cascade's respond-to-ci
  *    agent. `failedChecks` names the failing runs for the handler's log line.
  *  - `review` — every check completed and none failed. A zero-check result
- *    defers instead: the Actions API can temporarily return no runs just after
- *    a new commit, and treating that as green would bypass CI.
+ *    defers under the default `required` policy: the Actions API can
+ *    temporarily return no runs just after a new commit, and treating that as
+ *    green would bypass CI. Projects with no CI at all opt into `if-present`
+ *    (`pipeline.review.checks`, `src/config/schema.ts`), where a zero-check
+ *    result reviews immediately instead — see the `policy` parameter (issue #274).
  */
 export function decideCheckSuiteOutcome(
 	checkStatus: CheckSuiteStatus,
 	prNumber: string,
+	policy: ReviewChecksPolicy = 'required',
 ): CheckSuiteDecision {
 	if (checkStatus.totalCount === 0) {
+		if (policy === 'if-present') return { action: 'review' };
 		return {
 			action: 'defer',
 			incompleteChecks: [],

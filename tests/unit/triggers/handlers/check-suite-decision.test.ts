@@ -30,6 +30,36 @@ describe('decideCheckSuiteOutcome', () => {
 		});
 	});
 
+	it('defers on zero checks under the explicit required policy — same as the default', () => {
+		expect(decideCheckSuiteOutcome(status([]), '9', 'required')).toEqual({
+			action: 'defer',
+			incompleteChecks: [],
+			message: 'PR #9: no checks are registered yet',
+		});
+	});
+
+	it('reviews on zero checks under the if-present policy (issue #274)', () => {
+		expect(decideCheckSuiteOutcome(status([]), '9', 'if-present')).toEqual({ action: 'review' });
+	});
+
+	it('still defers present-but-incomplete checks under the if-present policy', () => {
+		const decision = decideCheckSuiteOutcome(
+			status([['test', 'in_progress', null]]),
+			'9',
+			'if-present',
+		);
+		expect(decision).toMatchObject({ action: 'defer', incompleteChecks: ['test'] });
+	});
+
+	it('still routes a present failed check to respond-to-ci under the if-present policy', () => {
+		const decision = decideCheckSuiteOutcome(
+			status([['test', 'completed', 'failure']]),
+			'9',
+			'if-present',
+		);
+		expect(decision).toEqual({ action: 'respond-to-ci', failedChecks: ['test'] });
+	});
+
 	it('reviews when a completed check is skipped/neutral (not a failure)', () => {
 		const decision = decideCheckSuiteOutcome(
 			status([
