@@ -45,24 +45,25 @@ import type { GitHubParsedEvent } from '../../router/adapters/github.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 
 /**
- * Resolve the PR/branch/review/head coordinates the phase (and the safety-cap
- * ledger fallback lookup) need, or `null` — logging why — when any is
- * missing from the event.
+ * Resolve the webhook coordinates that cannot be recovered from the verdict
+ * ledger, or `null` — logging why — when any is missing from the event. The
+ * head SHA is deliberately excluded: GitHub can omit both of its webhook SHA
+ * fields, while a SWARM-submitted review has already recorded its exact head in
+ * the durable ledger under `reviewId`.
  */
-function resolveReviewCoordinates(
+function resolveWebhookCoordinates(
 	event: GitHubParsedEvent,
-): { prNumber: string; prBranch: string; reviewId: string; headSha: string } | null {
-	const { workItemId: prNumber, prBranch, reviewId, headSha } = event;
-	if (!prNumber || !prBranch || !reviewId || !headSha) {
-		logger.warn('respond-to-review: event missing PR/branch/review/head coordinates — skipping', {
+): { prNumber: string; prBranch: string; reviewId: string } | null {
+	const { workItemId: prNumber, prBranch, reviewId } = event;
+	if (!prNumber || !prBranch || !reviewId) {
+		logger.warn('respond-to-review: event missing PR/branch/review coordinates — skipping', {
 			prNumber,
 			hasBranch: !!prBranch,
 			hasReviewId: !!reviewId,
-			hasHeadSha: !!headSha,
 		});
 		return null;
 	}
-	return { prNumber, prBranch, reviewId, headSha };
+	return { prNumber, prBranch, reviewId };
 }
 
 export interface RespondToReviewTriggerDeps {
@@ -87,42 +88,39 @@ export function createRespondToReviewTrigger(
 	const getReviewVerdictByHead = deps.getReviewVerdictByHead ?? getReviewVerdictByHeadDefault;
 
 	/**
-	 * Whether the safety cap clears this event for dispatch — `true` for
-	 * anything but a `changes_requested` review, which must resolve the
-	 * review-verdict ledger first. Returns `false` (skip the dispatch) for the
-	 * cap-reaching second verdict, a lookup error, or a missing ledger record
-	 * (all "fail closed" — see the module header); all logging for the skip
-	 * case happens here so `handle` stays a single guard clause.
+	 * Resolve the safety-cap record for a changes-requested verdict. A matching
+	 * record also supplies the authoritative reviewed SHA when GitHub omitted it
+	 * from the webhook. Returns `null` for a cap-reaching verdict, lookup error,
+	 * or missing record — all fail closed (see the module header).
 	 */
-	async function isClearedForDispatch(
+	async function resolveChangesRequestedVerdict(
 		project: ProjectConfig,
-		reviewState: string | undefined,
 		prNumber: string,
-		headSha: string,
 		reviewId: string,
-	): Promise<boolean> {
-		if (reviewState !== 'changes_requested') return true;
+		headSha: string | undefined,
+	): Promise<Awaited<ReturnType<typeof getReviewVerdictByReviewId>> | null> {
 		try {
 			const record =
 				(await getReviewVerdictByReviewId(project.id, project.repo, reviewId)) ??
-				(await getReviewVerdictByHead(project.id, project.repo, prNumber, headSha));
+				(headSha
+					? await getReviewVerdictByHead(project.id, project.repo, prNumber, headSha)
+					: undefined);
 			if (!record) {
 				logger.error(
 					'respond-to-review: no review-verdict ledger record for this changes-requested review — failing closed',
 					{ prNumber, headSha, reviewId },
 				);
-				return false;
+				return null;
 			}
-			const verdict =
-				record.verdict ?? (reviewState === 'changes_requested' ? 'request-changes' : reviewState);
+			const verdict = record.verdict ?? 'request-changes';
 			if (isCapReachingRequestChanges(record.ordinal, verdict)) {
 				logger.warn(
 					'respond-to-review: second changes-requested verdict reached the review cap — stopping the automatic cycle (manual intervention required)',
 					{ prNumber, headSha, reviewId },
 				);
-				return false;
+				return null;
 			}
-			return true;
+			return record;
 		} catch (err) {
 			logger.error('respond-to-review: failed to read review-verdict cap state — failing closed', {
 				prNumber,
@@ -130,8 +128,36 @@ export function createRespondToReviewTrigger(
 				reviewId,
 				error: err instanceof Error ? err.message : String(err),
 			});
-			return false;
+			return null;
 		}
+	}
+
+	async function resolveDispatchHeadSha(
+		project: ProjectConfig,
+		event: GitHubParsedEvent,
+		coords: { prNumber: string; reviewId: string },
+	): Promise<string | null> {
+		if (event.reviewState !== 'changes_requested') return event.headSha ?? null;
+
+		const record = await resolveChangesRequestedVerdict(
+			project,
+			coords.prNumber,
+			coords.reviewId,
+			event.headSha,
+		);
+		if (!record) return null;
+
+		const headSha = event.headSha ?? record.headSha;
+		if (headSha) return headSha;
+
+		logger.warn(
+			'respond-to-review: event and verdict ledger both lack reviewed head SHA — skipping',
+			{
+				prNumber: coords.prNumber,
+				reviewId: coords.reviewId,
+			},
+		);
+		return null;
 	}
 
 	return {
@@ -183,13 +209,11 @@ export function createRespondToReviewTrigger(
 				return null;
 			}
 
-			const coords = resolveReviewCoordinates(event);
+			const coords = resolveWebhookCoordinates(event);
 			if (!coords) return null;
-			const { prNumber, prBranch, reviewId, headSha } = coords;
-
-			if (!(await isClearedForDispatch(project, event.reviewState, prNumber, headSha, reviewId))) {
-				return null;
-			}
+			const { prNumber, prBranch, reviewId } = coords;
+			const headSha = await resolveDispatchHeadSha(project, event, coords);
+			if (!headSha) return null;
 
 			logger.debug('respond-to-review: dispatching Respond-to-review phase', {
 				prNumber,

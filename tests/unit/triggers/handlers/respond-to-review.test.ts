@@ -103,7 +103,7 @@ describe('respond-to-review trigger', () => {
 			expect(result).toMatchObject({ phase: 'respond-to-review', headSha: HEAD_SHA });
 		});
 
-		it('skips a parsed review webhook when neither SHA source is present', async () => {
+		it('recovers a parsed review webhook with neither SHA source from the verdict ledger', async () => {
 			const event = new GitHubRouterAdapter().parseWebhook('pull_request_review', {
 				action: 'submitted',
 				repository: { full_name: PROJECT.repo },
@@ -113,7 +113,10 @@ describe('respond-to-review trigger', () => {
 			});
 			if (!event) throw new Error('expected pull_request_review to parse');
 
-			expect(await handler.handle({ project: PROJECT, source: 'github', event })).toBeNull();
+			expect(await handler.handle({ project: PROJECT, source: 'github', event })).toMatchObject({
+				phase: 'respond-to-review',
+				headSha: HEAD_SHA,
+			});
 		});
 
 		it('re-dispatches the same review once on a prioritized continuation retry', async () => {
@@ -172,10 +175,18 @@ describe('respond-to-review trigger', () => {
 			expect(result).toMatchObject({ phase: 'respond-to-review', prNumber: '17' });
 		});
 
-		it('skips when the review coordinates are incomplete', async () => {
+		it('skips when the webhook coordinates that cannot be recovered are incomplete', async () => {
 			expect(await handler.handle(ctx({ prBranch: undefined }))).toBeNull();
 			expect(await handler.handle(ctx({ reviewId: undefined }))).toBeNull();
-			expect(await handler.handle(ctx({ headSha: undefined }))).toBeNull();
+		});
+
+		it('skips a missing-SHA review only when its verdict ledger record is unavailable', async () => {
+			const noRecordHandler = createRespondToReviewTrigger({
+				resolveIdentities: async () => IDENTITIES,
+				getReviewVerdictByReviewId: vi.fn(async () => undefined),
+				getReviewVerdictByHead: vi.fn(async () => undefined),
+			});
+			expect(await noRecordHandler.handle(ctx({ headSha: undefined }))).toBeNull();
 		});
 
 		it('skips when the review has no author', async () => {
