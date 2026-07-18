@@ -3,11 +3,14 @@ import { ExternalLink, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import { formatRelativeTime, formatTimeUntil } from '@/lib/format.js';
 import {
+	groupQueuedRuns,
 	queuedPhaseLabel,
 	queuedRunKey,
 	queuedWorkItemLabel,
 	queuedWorkItemTitle,
 	queuedWorkItemUrl,
+	REVIEW_GATE_GROUP_LABEL,
+	reviewGateSourceEventLabel,
 } from '@/lib/queued-runs.js';
 import { runTableColumnWidths } from '@/lib/run-table-layout.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
@@ -33,7 +36,11 @@ interface QueuedRunsSectionProps {
  * - Hidden entirely when there is nothing queued — returns `null` so there's no
  *   empty box and no layout shift for the table below.
  * - Rows render in the exact order the server returns them (dispatch priority +
- *   FIFO); this component never re-sorts.
+ *   FIFO); this component never re-sorts — it only folds pending review-gate
+ *   jobs sharing the same project/repo/PR/head SHA into one logical row via
+ *   {@link groupQueuedRuns} (issue #275), so a duplicate raw lifecycle event
+ *   (e.g. a Respond-to-review follow-up alongside GitHub's own
+ *   `pull_request:synchronize`) doesn't read as two queued Review agents.
  * - Rows are static (not clickable): a queued job has no run detail page yet.
  */
 export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSectionProps) {
@@ -42,6 +49,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectsMap = new Map(projectsQuery.data?.map((p) => [p.id, p]) ?? []);
 	const columnWidths = runTableColumnWidths(showProject);
+	const rows = groupQueuedRuns(items);
 
 	const [confirmOpen, setConfirmOpen] = useState(false);
 	const [selectedItem, setSelectedItem] = useState<QueuedRun | null>(null);
@@ -83,7 +91,7 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 	return (
 		<section data-testid="queued-runs-section" className="space-y-2">
 			<h2 className="text-sm font-semibold tracking-tight text-zinc-300">
-				Queued <span className="text-zinc-500">({items.length})</span>
+				Queued <span className="text-zinc-500">({rows.length})</span>
 			</h2>
 			{successMessage && (
 				<div className="p-3 bg-emerald-950/40 border border-emerald-800 rounded text-xs text-emerald-200">
@@ -125,7 +133,8 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-zinc-800/60">
-						{items.map((item) => {
+						{rows.map((row) => {
+							const item = row.representative;
 							const isSupportedPhase = item.phaseHint === 'board' || item.phaseHint === 'review';
 							const hasLinkedCard = !!item.workItemNodeId;
 							const showPutBack = isSupportedPhase && hasLinkedCard;
@@ -133,7 +142,21 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 							return (
 								<tr key={queuedRunKey(item)}>
 									<td className="px-2 py-2 text-xs font-semibold text-zinc-100">
-										{queuedPhaseLabel(item.phaseHint)}
+										{row.isReviewGateGroup ? (
+											<div className="flex flex-col gap-1">
+												<span>{REVIEW_GATE_GROUP_LABEL}</span>
+												<span className="text-[11px] font-normal text-zinc-400">
+													{row.sourceEvents.length} source events
+												</span>
+												<ul className="space-y-0.5 font-mono text-[11px] font-normal text-zinc-500">
+													{row.sourceEvents.map((event) => (
+														<li key={event.jobId}>{reviewGateSourceEventLabel(event)}</li>
+													))}
+												</ul>
+											</div>
+										) : (
+											queuedPhaseLabel(item.phaseHint)
+										)}
 									</td>
 									{showProject && (
 										<td className="px-2 py-2 text-xs text-zinc-300 font-mono">

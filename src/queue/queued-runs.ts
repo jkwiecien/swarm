@@ -33,6 +33,35 @@ export type QueuedPhaseHint = z.infer<typeof QueuedPhaseHintSchema>;
 export const PendingJobStateSchema = z.enum(['waiting', 'prioritized', 'delayed']);
 export type PendingJobState = z.infer<typeof PendingJobStateSchema>;
 
+/** The raw GitHub lifecycle event a review-gate job's metadata was derived from. */
+export const ReviewGateSourceEventSchema = z.enum(['pull_request', 'check_suite']);
+export type ReviewGateSourceEvent = z.infer<typeof ReviewGateSourceEventSchema>;
+
+/**
+ * Diagnostic metadata for a job whose best-effort {@link QueuedPhaseHint} is
+ * `review` (issue #275): a raw `pull_request`/`check_suite` lifecycle event that
+ * *enters* the `pr-review` trigger handler (`src/triggers/handlers/review.ts`)
+ * as a gate input, not proof that a Review agent is already queued — the
+ * handler's own PR+SHA dispatch dedup (`review-dispatch-dedup.ts`) folds every
+ * such event for the same head SHA into at most one Review run. Two common
+ * sources for duplicates at the same head SHA: the synthetic `check_suite`
+ * `completed` follow-up event a fixed Respond-to-review push enqueues
+ * (`src/pipeline/follow-up-review.ts`) and GitHub's own `pull_request`
+ * `synchronize` webhook for that same push. The UI groups rows carrying the
+ * same `(project, repo, PR, headSha)` using this field instead of rendering one
+ * `Review queued` row per source event.
+ */
+export const QueuedReviewGateSchema = z.object({
+	sourceEvent: ReviewGateSourceEventSchema,
+	/** The webhook `action` on the source event (e.g. `opened`, `synchronize`, `completed`). */
+	sourceAction: z.string().optional(),
+	/** The PR head commit SHA this event evaluates — the review dispatch dedup key. */
+	headSha: z.string(),
+	/** Deferred check-suite recheck attempt count, when this job is a coalesced recheck. */
+	recheckAttempt: z.number().int().nonnegative().optional(),
+});
+export type QueuedReviewGate = z.infer<typeof QueuedReviewGateSchema>;
+
 /**
  * A plain, Redis-free view of one BullMQ job, handed over by the producer's
  * `listPendingJobs()`. Kept separate from BullMQ's own `Job` type so this
@@ -78,6 +107,11 @@ export const QueuedRunSchema = z.object({
 	enqueuedAt: z.string(),
 	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
 	runsAt: z.string().optional(),
+	/**
+	 * Present only for a `review`-hinted `github` job carrying the PR number and
+	 * head SHA needed to classify it safely (see {@link QueuedReviewGateSchema}).
+	 */
+	reviewGate: QueuedReviewGateSchema.optional(),
 });
 export type QueuedRun = z.infer<typeof QueuedRunSchema>;
 
@@ -103,9 +137,32 @@ export function deriveQueuedPhaseHint(job: SwarmJob): QueuedPhaseHint {
 	}
 }
 
+/**
+ * Extract review-gate diagnostic metadata (see {@link QueuedReviewGateSchema})
+ * for a `github` job whose best-effort phase hint is `review` — `undefined`
+ * for every other job, and for a review-hinting event missing the PR number or
+ * head SHA a safe grouping needs. Never calls GitHub — derived purely from the
+ * job's already-parsed event, same as {@link deriveQueuedPhaseHint}.
+ */
+export function deriveReviewGate(job: SwarmJob): QueuedReviewGate | undefined {
+	if (job.type !== 'github') return undefined;
+	const { event } = job;
+	if (event.eventType !== 'pull_request' && event.eventType !== 'check_suite') return undefined;
+	if (deriveQueuedPhaseHint(job) !== 'review') return undefined;
+	if (!event.workItemId || !event.headSha) return undefined;
+
+	return QueuedReviewGateSchema.parse({
+		sourceEvent: event.eventType,
+		sourceAction: event.action,
+		headSha: event.headSha,
+		recheckAttempt: job.recheckAttempt,
+	});
+}
+
 function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
 	const { data } = snapshot;
 	const runsAtTime = snapshot.runsAt ?? snapshot.enqueuedAt + snapshot.delayMs;
+	const reviewGate = deriveReviewGate(data);
 	const shared = {
 		jobId: snapshot.jobId,
 		projectId: data.projectId,
@@ -115,6 +172,7 @@ function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
 		priority: snapshot.priority,
 		enqueuedAt: new Date(snapshot.enqueuedAt).toISOString(),
 		...(snapshot.state === 'delayed' ? { runsAt: new Date(runsAtTime).toISOString() } : {}),
+		...(reviewGate ? { reviewGate } : {}),
 	};
 
 	return QueuedRunSchema.parse(

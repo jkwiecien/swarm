@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { QueuedRun } from '@/types/runs.js';
@@ -158,5 +158,90 @@ describe('QueuedRunsSection', () => {
 		expect(
 			screen.getByText(/Are you sure you want to put this queued work item back\?/),
 		).not.toBeNull();
+	});
+
+	describe('review-gate grouping (issue #275)', () => {
+		// A fixed Respond-to-review push enqueues both SWARM's synthetic
+		// `check_suite` follow-up and GitHub's real `pull_request:synchronize`
+		// webhook for the same PR/SHA — the exact duplicate the grouping folds
+		// into one row instead of two apparent "Review" rows.
+		const followUpItem: QueuedRun = {
+			...githubItem,
+			jobId: 'job-followup',
+			reviewGate: { sourceEvent: 'check_suite', sourceAction: 'completed', headSha: 'sha-fix' },
+		};
+		const synchronizeItem: QueuedRun = {
+			...githubItem,
+			jobId: 'job-synchronize',
+			enqueuedAt: '2026-07-17T10:00:05.000Z',
+			reviewGate: { sourceEvent: 'pull_request', sourceAction: 'synchronize', headSha: 'sha-fix' },
+		};
+
+		it('renders duplicate review-gate jobs for the same PR/SHA as one row with gate wording and diagnostics', () => {
+			renderSection(<QueuedRunsSection items={[followUpItem, synchronizeItem]} />);
+			const section = screen.getByTestId('queued-runs-section');
+			const bodyRows = within(section).getAllByRole('row').slice(1);
+
+			expect(bodyRows).toHaveLength(1);
+			expect(within(section).queryByText('Review')).toBeNull();
+			expect(within(section).getByText('Awaiting review decision/checks')).not.toBeNull();
+			expect(within(section).getByText('2 source events')).not.toBeNull();
+			expect(within(section).getByText('Check suite · completed')).not.toBeNull();
+			expect(within(section).getByText('Pull request · synchronize')).not.toBeNull();
+		});
+
+		it('does not group review-gate jobs for a different PR or head SHA', () => {
+			const otherSha: QueuedRun = {
+				...githubItem,
+				jobId: 'job-other-sha',
+				reviewGate: { sourceEvent: 'pull_request', sourceAction: 'opened', headSha: 'sha-other' },
+			};
+			renderSection(<QueuedRunsSection items={[followUpItem, otherSha]} />);
+			const section = screen.getByTestId('queued-runs-section');
+			const bodyRows = within(section).getAllByRole('row').slice(1);
+
+			expect(bodyRows).toHaveLength(2);
+			expect(within(section).queryByText('Awaiting review decision/checks')).toBeNull();
+		});
+
+		it('still renders an ordinary (non-review-gate) queued job one-to-one alongside a grouped row', () => {
+			renderSection(<QueuedRunsSection items={[followUpItem, synchronizeItem, boardItem]} />);
+			const section = screen.getByTestId('queued-runs-section');
+			const bodyRows = within(section).getAllByRole('row').slice(1);
+
+			expect(bodyRows).toHaveLength(2);
+			expect(within(section).getByText('Board (Planning/Impl)')).not.toBeNull();
+		});
+
+		it('ties Put back to the retained representative job (the first source event)', async () => {
+			const groupedBoardFollowUp: QueuedRun = {
+				...boardItem,
+				jobId: 'job-board-followup',
+				type: 'github',
+				repo: 'acme/widgets',
+				prNumber: '42',
+				reviewGate: { sourceEvent: 'check_suite', sourceAction: 'completed', headSha: 'sha-fix' },
+			};
+			const groupedBoardSync: QueuedRun = {
+				...groupedBoardFollowUp,
+				jobId: 'job-board-sync',
+				reviewGate: {
+					sourceEvent: 'pull_request',
+					sourceAction: 'synchronize',
+					headSha: 'sha-fix',
+				},
+			};
+			renderSection(<QueuedRunsSection items={[groupedBoardFollowUp, groupedBoardSync]} />);
+
+			fireEvent.click(screen.getByRole('button', { name: /Put back/i }));
+			fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+
+			await waitFor(() =>
+				expect(trpcClient.runs.putBack.mutate).toHaveBeenCalledWith({
+					jobId: 'job-board-followup',
+					projectId: groupedBoardFollowUp.projectId,
+				}),
+			);
+		});
 	});
 });

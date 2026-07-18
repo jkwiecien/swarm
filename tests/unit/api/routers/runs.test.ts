@@ -277,6 +277,32 @@ describe('runsRouter', () => {
 
 			expect(await caller.queued({})).toEqual([queuedItem]);
 		});
+
+		it('passes reviewGate metadata through unchanged alongside normal github enrichment (issue #275)', async () => {
+			const queuedItem = {
+				jobId: 'job-review-gate',
+				projectId: 'p1',
+				type: 'github' as const,
+				state: 'waiting' as const,
+				phaseHint: 'review' as const,
+				repo: 'acme/widgets',
+				prNumber: '42',
+				priority: 0,
+				enqueuedAt: '2026-07-17T10:00:00.000Z',
+				reviewGate: {
+					sourceEvent: 'check_suite' as const,
+					sourceAction: 'completed',
+					headSha: 'sha-fix',
+				},
+			};
+			vi.mocked(listPendingJobs).mockResolvedValue([]);
+			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
+			// No project on file — enrichment can't resolve a backing work item, so
+			// the item (reviewGate included) is returned exactly as the read model built it.
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
+
+			expect(await caller.queued({})).toEqual([queuedItem]);
+		});
 	});
 
 	describe('getById', () => {
