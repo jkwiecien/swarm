@@ -124,6 +124,16 @@ export interface RunRow {
 	 * and run-detail callout (issue #242).
 	 */
 	reviewAutomationOutcome: string | null;
+	/**
+	 * Provider-neutral merge-automation outcome for a completed Review run's
+	 * `approve` verdict (issue #278): one of `merged`/`not-ready`/
+	 * `not-eligible`/`policy-blocked`/`unsupported`/`provider-error`/
+	 * `retry-exhausted`. Null when merge automation never ran (disabled, or the
+	 * verdict wasn't an approval) and for pre-existing rows.
+	 */
+	reviewMergeOutcome: string | null;
+	/** Human-readable detail for `reviewMergeOutcome`; null alongside it. */
+	reviewMergeMessage: string | null;
 	exitCode: number | null;
 	timedOut: boolean;
 	error: string | null;

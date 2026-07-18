@@ -33,6 +33,12 @@ export interface MergeAfterReviewOptions {
 	mergePullRequest: MergePullRequest;
 	project: ProjectConfig;
 	prNumber: string;
+	/**
+	 * The reviewed commit this approval covers — passed straight through to the
+	 * provider so every merge attempt (including a later durable retry) can
+	 * verify the PR's current head still matches what was actually approved.
+	 */
+	headSha: string;
 	taskId: string;
 	/** Human phase name for the log lines — always `'Review'`, the sole call site. */
 	phase: string;
@@ -51,12 +57,13 @@ export interface MergeAfterReviewOptions {
 export async function mergeAfterReviewIfEligible(
 	options: MergeAfterReviewOptions,
 ): Promise<MergePullRequestOutcome | undefined> {
-	const { enabled, eligible, mergePullRequest, project, prNumber, taskId, phase } = options;
+	const { enabled, eligible, mergePullRequest, project, prNumber, headSha, taskId, phase } =
+		options;
 	if (!enabled || !eligible) return undefined;
 
 	let outcome: MergePullRequestOutcome;
 	try {
-		outcome = await mergePullRequest(project, Number(prNumber));
+		outcome = await mergePullRequest(project, Number(prNumber), headSha);
 	} catch (error) {
 		outcome = {
 			status: 'provider-error',

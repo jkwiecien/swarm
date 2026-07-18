@@ -12,6 +12,7 @@ function baseOptions(overrides: Partial<Parameters<typeof mergeAfterReviewIfElig
 		mergePullRequest: vi.fn<() => Promise<MergePullRequestOutcome>>(),
 		project: createMockProjectConfig(),
 		prNumber: '99',
+		headSha: 'deadbeef',
 		taskId: 'review-20',
 		phase: 'Review',
 		...overrides,
@@ -42,7 +43,7 @@ describe('mergeAfterReviewIfEligible', () => {
 		const result = await mergeAfterReviewIfEligible(options);
 
 		expect(result).toEqual(outcome);
-		expect(options.mergePullRequest).toHaveBeenCalledWith(options.project, 99);
+		expect(options.mergePullRequest).toHaveBeenCalledWith(options.project, 99, 'deadbeef');
 		expect(info).toHaveBeenCalledWith(
 			'Review merged pull request',
 			expect.objectContaining({ taskId: 'review-20', prNumber: '99' }),
@@ -52,6 +53,7 @@ describe('mergeAfterReviewIfEligible', () => {
 
 	it.each([
 		['not-ready', { status: 'not-ready', message: 'pending required checks' }],
+		['not-eligible', { status: 'not-eligible', message: 'pull request head changed' }],
 		['policy-blocked', { status: 'policy-blocked', message: 'branch protection forbids merge' }],
 		['unsupported', { status: 'unsupported', message: 'repository requires a merge queue' }],
 		['provider-error', { status: 'provider-error', message: '502 Bad Gateway' }],

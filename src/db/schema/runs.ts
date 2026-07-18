@@ -70,6 +70,34 @@ export const runs = pgTable(
 		 * null. Cleared on a retry alongside `reviewVerdict`.
 		 */
 		reviewAutomationOutcome: text('review_automation_outcome'),
+		/**
+		 * Provider-neutral merge-automation outcome for this Review run's approval
+		 * (`src/scm/merge.ts`, issue #278) — one of
+		 * `MergePullRequestOutcome['status']` (`merged`/`not-ready`/`not-eligible`/
+		 * `policy-blocked`/`unsupported`/`provider-error`) or `retry-exhausted`
+		 * once the bounded durable-follow-up budget is spent while still
+		 * `not-ready`. Nullable: only a Review run whose verdict was `approve`
+		 * with merge automation enabled ever sets it. Cleared on a retry
+		 * alongside `reviewVerdict`.
+		 */
+		reviewMergeOutcome: text('review_merge_outcome'),
+		/** Human-readable detail for `reviewMergeOutcome` — always set alongside it. */
+		reviewMergeMessage: text('review_merge_message'),
+		/**
+		 * How many durable merge-follow-up attempts have run for the current
+		 * `reviewMergeOutcome` generation (0 = the Review phase's own immediate
+		 * attempt). Lets a worker restart resume follow-up numbering instead of
+		 * restarting the backoff schedule from scratch.
+		 */
+		reviewMergeAttempt: integer('review_merge_attempt'),
+		/**
+		 * The head SHA the current `reviewMergeOutcome` generation covers. A
+		 * follow-up attempt's write is only accepted while this still matches the
+		 * generation it was scheduled for (`updateReviewMergeOutcome`), so a
+		 * stale follow-up left over from a superseded review (e.g. after a
+		 * retried Review re-submits) can't clobber a newer outcome.
+		 */
+		reviewMergeApprovedHeadSha: text('review_merge_approved_head_sha'),
 		exitCode: integer('exit_code'),
 		timedOut: boolean('timed_out').notNull().default(false),
 		error: text('error'),

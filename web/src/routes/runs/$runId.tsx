@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link } from '@tanstack/react-router';
 import {
 	AlertTriangle,
+	CheckCircle2,
 	ChevronDown,
 	ExternalLink,
 	Info,
@@ -480,6 +481,95 @@ export function ReviewCapCallout({ run, project }: ReviewCapCalloutProps) {
 	);
 }
 
+/** Human-readable heading for each terminal (non-merged, non-waiting) merge-automation outcome. */
+const MERGE_TERMINAL_LABELS: Record<string, string> = {
+	'not-eligible': 'No longer eligible for automatic merge',
+	'policy-blocked': 'Blocked by repository policy',
+	unsupported: 'Merge automation unsupported',
+	'provider-error': 'Merge automation hit a provider error',
+	'retry-exhausted': 'Automatic merge retry budget exhausted',
+};
+
+interface ReviewMergeCalloutProps {
+	run: RunRow;
+	project?: { name: string; repo: string } | null;
+}
+
+/**
+ * Run-detail callout surfacing the Review phase's provider-neutral merge
+ * automation state (issue #278): merged automatically, waiting on a durable
+ * retry, a terminal refusal, or retry exhaustion. A no-op when the run never
+ * attempted a merge (automation disabled, or the verdict wasn't an approval).
+ */
+export function ReviewMergeCallout({ run, project }: ReviewMergeCalloutProps) {
+	if (run.phase !== 'review' || !run.reviewMergeOutcome) return null;
+
+	const prLink = project?.repo && run.prNumber && (
+		<a
+			href={`https://github.com/${project.repo}/pull/${run.prNumber}`}
+			target="_blank"
+			rel="noopener noreferrer"
+			className="inline-flex items-center gap-1 mt-2 font-mono hover:underline"
+		>
+			View PR #{run.prNumber}
+			<ExternalLink className="h-3 w-3" />
+		</a>
+	);
+
+	if (run.reviewMergeOutcome === 'merged') {
+		return (
+			<div className="p-4 bg-emerald-950/20 border border-emerald-900/30 rounded flex items-start gap-3">
+				<CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" />
+				<div>
+					<h3 className="text-xs font-semibold text-emerald-200">Merged automatically</h3>
+					{run.reviewMergeMessage && (
+						<p className="text-xs text-emerald-200/70 mt-1 font-mono whitespace-pre-wrap">
+							{run.reviewMergeMessage}
+						</p>
+					)}
+					{prLink && <div className="text-emerald-300 hover:text-emerald-200">{prLink}</div>}
+				</div>
+			</div>
+		);
+	}
+
+	if (run.reviewMergeOutcome === 'not-ready') {
+		return (
+			<div className="p-4 bg-amber-950/20 border border-amber-900/30 rounded flex items-start gap-3">
+				<AlertTriangle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
+				<div>
+					<h3 className="text-xs font-semibold text-amber-200">
+						Merge automation waiting — retrying automatically
+					</h3>
+					{run.reviewMergeMessage && (
+						<p className="text-xs text-amber-200/70 mt-1 font-mono whitespace-pre-wrap">
+							{run.reviewMergeMessage}
+						</p>
+					)}
+					{prLink && <div className="text-amber-300 hover:text-amber-200">{prLink}</div>}
+				</div>
+			</div>
+		);
+	}
+
+	const label =
+		MERGE_TERMINAL_LABELS[run.reviewMergeOutcome] ?? 'Merge automation did not complete';
+	return (
+		<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
+			<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+			<div>
+				<h3 className="text-xs font-semibold text-red-200">{label}</h3>
+				{run.reviewMergeMessage && (
+					<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
+						{run.reviewMergeMessage}
+					</p>
+				)}
+				{prLink && <div className="text-red-300 hover:text-red-200">{prLink}</div>}
+			</div>
+		</div>
+	);
+}
+
 interface RunDetailHeaderProps {
 	run: RunRow;
 	project?: { name: string; repo: string } | null;
@@ -569,6 +659,7 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 			)}
 
 			<ReviewCapCallout run={run} project={project} />
+			<ReviewMergeCallout run={run} project={project} />
 		</div>
 	);
 }

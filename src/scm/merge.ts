@@ -25,11 +25,18 @@ import type { ProjectConfig } from '../config/schema.js';
  * - `merged` — the request is merged now, or was already merged (a retry
  *   after a prior success is idempotent).
  * - `not-ready` — a transient readiness condition blocks merging right now:
- *   draft state, unsatisfied/pending required checks, unresolved conflicts,
- *   or missing required approvals (including "the provider's own auto-merge
- *   is now armed and waiting on those same conditions"). Expected to clear on
- *   its own; the request is left open for a later attempt or the provider's
- *   own automation to complete.
+ *   unsatisfied/pending required checks, unresolved conflicts, or GitHub
+ *   still converging on required-review state right after a submission
+ *   (including "the provider's own auto-merge is now armed and waiting on
+ *   those same conditions"). Expected to clear on its own; the request is
+ *   left open for a later attempt or the provider's own automation to
+ *   complete.
+ * - `not-eligible` — the approval this attempt was requested for no longer
+ *   holds: the head moved (new commits pushed since the review), the PR was
+ *   closed or converted back to a draft, or the approving review was
+ *   overridden (changes requested since). Distinct from `not-ready`: this
+ *   will not clear on its own — it needs a fresh review before merge
+ *   automation can proceed again.
  * - `policy-blocked` — a repository policy (branch protection, a ruleset, a
  *   permission restriction) refuses the merge outright; it will not clear on
  *   its own and needs a human to change the policy or merge manually.
@@ -45,6 +52,7 @@ import type { ProjectConfig } from '../config/schema.js';
 export type MergePullRequestOutcome =
 	| { status: 'merged'; message: string; sha?: string }
 	| { status: 'not-ready'; message: string }
+	| { status: 'not-eligible'; message: string }
 	| { status: 'policy-blocked'; message: string }
 	| { status: 'unsupported'; message: string }
 	| { status: 'provider-error'; message: string };
@@ -53,10 +61,17 @@ export type MergePullRequestOutcome =
  * Provider-neutral capability: merge an approved, ready pull/merge request.
  * `prNumber` is deliberately generic (GitLab calls it an "IID"; GitHub a PR
  * number) — the concrete adapter resolves whatever identifier its own API
- * needs from `project` + `prNumber`.
+ * needs from `project` + `prNumber`. `approvedHeadSha` is the commit the
+ * approval actually covers (the reviewed head) — every call, including a
+ * durable retry long after the original approval, re-checks the PR's
+ * *current* head against it so a merge never lands a commit nobody reviewed.
  */
 export interface ScmMergeProvider {
-	mergePullRequest(project: ProjectConfig, prNumber: number): Promise<MergePullRequestOutcome>;
+	mergePullRequest(
+		project: ProjectConfig,
+		prNumber: number,
+		approvedHeadSha: string,
+	): Promise<MergePullRequestOutcome>;
 }
 
 /** Injectable function type mirroring {@link ScmMergeProvider.mergePullRequest} for phase options. */

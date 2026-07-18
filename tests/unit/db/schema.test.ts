@@ -155,6 +155,17 @@ describe('db schema', () => {
 			expect(columns.get('review_automation_outcome')?.getSQLType()).toBe('text');
 			expect(columns.get('review_automation_outcome')?.notNull).toBe(false);
 		});
+
+		it('carries a nullable review merge-automation outcome, message, attempt, and approved head (issue #278)', () => {
+			expect(columns.get('review_merge_outcome')?.getSQLType()).toBe('text');
+			expect(columns.get('review_merge_outcome')?.notNull).toBe(false);
+			expect(columns.get('review_merge_message')?.getSQLType()).toBe('text');
+			expect(columns.get('review_merge_message')?.notNull).toBe(false);
+			expect(columns.get('review_merge_attempt')?.getSQLType()).toBe('integer');
+			expect(columns.get('review_merge_attempt')?.notNull).toBe(false);
+			expect(columns.get('review_merge_approved_head_sha')?.getSQLType()).toBe('text');
+			expect(columns.get('review_merge_approved_head_sha')?.notNull).toBe(false);
+		});
 	});
 
 	describe('review_verdicts', () => {

@@ -25,6 +25,7 @@ import {
 	getGitHubUserForToken,
 	getPullRequest,
 	getPullRequestMergeState,
+	getPullRequestReviewDecision,
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
 	mergePullRequestDirect,
@@ -77,11 +78,17 @@ function classifyDirectMergeError(error: unknown): MergePullRequestOutcome {
 	return { status: 'provider-error', message };
 }
 
-/** The credential-scoped body of {@link GitHubSCMIntegration.mergePullRequest}. */
+/**
+ * The credential-scoped body of {@link GitHubSCMIntegration.mergePullRequest}.
+ * Re-reads the PR's current state on every call (never trusts a cached
+ * lookup from an earlier attempt), so a durable retry re-evaluates
+ * eligibility from scratch rather than merging stale approval context.
+ */
 async function mergeReadyPullRequest(
 	owner: string,
 	repo: string,
 	prNumber: number,
+	approvedHeadSha: string,
 ): Promise<MergePullRequestOutcome> {
 	let state: Awaited<ReturnType<typeof getPullRequestMergeState>>;
 	try {
@@ -90,9 +97,42 @@ async function mergeReadyPullRequest(
 		return { status: 'provider-error', message: errorMessage(error) };
 	}
 	if (state.merged) return { status: 'merged', message: 'pull request already merged' };
-	if (state.draft) return { status: 'not-ready', message: 'pull request is still a draft' };
+	// The approval this attempt was requested for only covers one exact commit.
+	// A push since then (including a rebase/force-push that keeps the same
+	// diff) means nobody has reviewed the PR's *current* head, so merging it
+	// would silently ship unreviewed content — this needs a fresh review, not a
+	// retry.
+	if (state.headSha !== approvedHeadSha)
+		return {
+			status: 'not-eligible',
+			message: `pull request head changed since the reviewed commit (reviewed ${approvedHeadSha}, now ${state.headSha}); a fresh review is required before merge automation can proceed`,
+		};
+	if (state.draft)
+		return {
+			status: 'not-eligible',
+			message: 'pull request was converted back to a draft after the review was approved',
+		};
 	if (state.state !== 'open')
-		return { status: 'not-ready', message: `pull request is ${state.state}` };
+		return { status: 'not-eligible', message: `pull request is ${state.state}` };
+
+	// The head is unchanged, but the approval itself may no longer be in
+	// effect (a reviewer dismissed it, or another review requested changes).
+	// `REVIEW_REQUIRED` is left to flow into the merge attempt below rather
+	// than treated as ineligible here: GitHub briefly reports it right after a
+	// review is submitted (the decision hasn't propagated yet), which is
+	// exactly the transient condition this retry loop exists to ride out —
+	// the merge attempt's own 405 naturally becomes `not-ready` for that case.
+	let reviewDecision: Awaited<ReturnType<typeof getPullRequestReviewDecision>>;
+	try {
+		reviewDecision = await getPullRequestReviewDecision(owner, repo, prNumber);
+	} catch (error) {
+		return { status: 'provider-error', message: errorMessage(error) };
+	}
+	if (reviewDecision === 'CHANGES_REQUESTED')
+		return {
+			status: 'not-eligible',
+			message: 'the approving review is no longer in effect — changes have since been requested',
+		};
 
 	try {
 		const armed = await enablePullRequestAutoMerge(owner, repo, prNumber);
@@ -213,21 +253,29 @@ export class GitHubSCMIntegration {
 	}
 
 	/**
-	 * {@link ScmMergeProvider.mergePullRequest} for GitHub (issue #253): merge an
-	 * approved, ready PR as the implementer, preferring GitHub's own auto-merge
-	 * and falling back to a direct merge only once auto-merge is confirmed
-	 * unavailable for the repository. Idempotent — a PR found already merged
-	 * (e.g. a retried call) reports `merged` without attempting anything.
-	 * Never throws: every refusal or unexpected failure comes back as a
-	 * terminal, non-`merged` {@link MergePullRequestOutcome} so a completed,
-	 * already-submitted Review can't be retroactively failed by this call.
+	 * {@link ScmMergeProvider.mergePullRequest} for GitHub (issue #253, retried
+	 * durably per issue #278): merge an approved, ready PR as the implementer,
+	 * preferring GitHub's own auto-merge and falling back to a direct merge
+	 * only once auto-merge is confirmed unavailable for the repository.
+	 * Idempotent — a PR found already merged (e.g. a retried call) reports
+	 * `merged` without attempting anything. Re-reads the PR's current state on
+	 * every call, so a retry made long after the original approval re-checks
+	 * eligibility rather than trusting stale context: a changed head, a
+	 * dismissed/overridden approval, or a closed/draft PR reports
+	 * `not-eligible` instead of merging. Never throws: every refusal or
+	 * unexpected failure comes back as a terminal, non-`merged`
+	 * {@link MergePullRequestOutcome} so a completed, already-submitted Review
+	 * can't be retroactively failed by this call.
 	 */
 	async mergePullRequest(
 		project: ProjectConfig,
 		prNumber: number,
+		approvedHeadSha: string,
 	): Promise<MergePullRequestOutcome> {
 		const [owner, repo] = project.repo.split('/');
-		return this.withCredentials(project, () => mergeReadyPullRequest(owner, repo, prNumber));
+		return this.withCredentials(project, () =>
+			mergeReadyPullRequest(owner, repo, prNumber, approvedHeadSha),
+		);
 	}
 
 	/** Provider seam for conflict detection after a base branch advances. */

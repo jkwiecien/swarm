@@ -159,6 +159,14 @@ vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	},
 }));
 
+// The durable merge-follow-up module (issue #278) is mocked at its own boundary:
+// these tests only assert that a completed Review run's merge outcome is handed
+// off to it with the right identity, not its internal scheduling/persistence.
+const recordReviewMergeOutcome = vi.fn(async (_input: unknown) => {});
+vi.mock('@/worker/merge-follow-up.js', () => ({
+	recordReviewMergeOutcome: (input: unknown) => recordReviewMergeOutcome(input),
+}));
+
 type SlotAcquisition = { acquired: false } | { acquired: true; tracked: boolean };
 const acquireProjectSlot = vi.fn<(projectId: string, limit: number) => Promise<SlotAcquisition>>(
 	async () => ({ acquired: true, tracked: true }),
@@ -835,11 +843,14 @@ describe('processJob', () => {
 			taskId: '17',
 		});
 		expect(phaseCalls[0].args.mergePullRequest).toEqual(expect.any(Function));
-		await (phaseCalls[0].args.mergePullRequest as (project: ProjectConfig, pr: number) => unknown)(
-			PROJECT,
-			17,
-		);
-		expect(mergePullRequest).toHaveBeenCalledWith(PROJECT, 17);
+		await (
+			phaseCalls[0].args.mergePullRequest as (
+				project: ProjectConfig,
+				pr: number,
+				approvedHeadSha: string,
+			) => unknown
+		)(PROJECT, 17, 'deadbeef');
+		expect(mergePullRequest).toHaveBeenCalledWith(PROJECT, 17, 'deadbeef');
 		expect(outcome).toEqual({
 			status: 'phase-succeeded',
 			phase: 'review',
@@ -2095,6 +2106,46 @@ describe('processJob', () => {
 					reviewAutomationOutcome: 'manual-intervention-required',
 				}),
 			);
+		});
+
+		describe('review merge-outcome hand-off (issue #278)', () => {
+			it('hands a completed Review run’s merge outcome to the durable follow-up module', async () => {
+				phaseImpl = async () => ({
+					agent: agentResult(),
+					verdict: 'approve',
+					mergeOutcome: { status: 'not-ready', message: 'pending required checks' },
+				});
+
+				await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+				expect(recordReviewMergeOutcome).toHaveBeenCalledExactlyOnceWith({
+					projectId: PROJECT.id,
+					runId: 'run-1',
+					prNumber: '17',
+					approvedHeadSha: 'deadbeef',
+					outcome: { status: 'not-ready', message: 'pending required checks' },
+				});
+			});
+
+			it('does not hand off when the phase result carries no merge outcome', async () => {
+				phaseImpl = async () => ({ agent: agentResult(), verdict: 'request-changes' });
+
+				await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+				expect(recordReviewMergeOutcome).not.toHaveBeenCalled();
+			});
+
+			it('does not hand off for a non-Review phase even if it carried a mergeOutcome-shaped field', async () => {
+				const workItem = createMockWorkItem();
+				phaseImpl = async () => ({ agent: agentResult() });
+
+				await processJob(
+					createMockGitHubProjectsWebhookJob(),
+					registryReturning({ phase: 'planning', taskId: '10', workItem }),
+				);
+
+				expect(recordReviewMergeOutcome).not.toHaveBeenCalled();
+			});
 		});
 
 		it('records the work item metadata and requested model/reasoning for a PM-driven phase', async () => {

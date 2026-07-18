@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gt, isNotNull, type SQL, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, isNotNull, isNull, or, type SQL, sql } from 'drizzle-orm';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { ReviewAutomationOutcome, ReviewVerdict } from '../../pipeline/review.js';
@@ -32,7 +32,7 @@ export interface RunOutputEventInput {
 	emittedAt: Date;
 }
 
-type RunRow = typeof runs.$inferSelect;
+export type RunRow = typeof runs.$inferSelect;
 
 /** A run's terminal state — everything but the initial `running`. */
 type RunStatus = 'running' | 'completed' | 'failed' | 'deferred';
@@ -221,6 +221,13 @@ export async function resetRunToRunning(
 			// re-marks them once it re-submits.
 			reviewOrdinal: null,
 			reviewAutomationOutcome: null,
+			// Same for merge-automation state (issue #278): a re-run Review that
+			// approves again starts a fresh outcome generation rather than showing
+			// a previous attempt's stale merge status while it re-submits.
+			reviewMergeOutcome: null,
+			reviewMergeMessage: null,
+			reviewMergeAttempt: null,
+			reviewMergeApprovedHeadSha: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -285,6 +292,67 @@ export async function getLatestRunForTask(
 		.orderBy(desc(runs.startedAt))
 		.limit(1);
 	return rows[0];
+}
+
+export interface ReviewMergeOutcomeUpdate {
+	/** `MergePullRequestOutcome['status']` or `'retry-exhausted'` (`src/worker/merge-follow-up.ts`). */
+	status: string;
+	message: string;
+	/** This write's follow-up attempt number (0 = the Review phase's own immediate attempt). */
+	attempt: number;
+	/** The head SHA this outcome generation's approval covers. */
+	approvedHeadSha: string;
+}
+
+/**
+ * Persist a Review run's provider-neutral merge-automation outcome (issue
+ * #278) — called once right after the Review phase's own immediate attempt
+ * (`attempt: 0`), and again by each durable merge-follow-up attempt.
+ *
+ * The write only lands while the row's `reviewMergeApprovedHeadSha` is either
+ * unset or already equal to `input.approvedHeadSha` — i.e. it belongs to the
+ * *current* outcome generation. This is the guard against a stale follow-up
+ * left over from a superseded review (the run row was retried and re-approved
+ * a different head in the meantime): its write simply no-ops instead of
+ * overwriting the newer generation's outcome. Returns whether the row was
+ * updated.
+ */
+export async function updateReviewMergeOutcome(
+	runId: string,
+	input: ReviewMergeOutcomeUpdate,
+): Promise<boolean> {
+	const rows = await getDb()
+		.update(runs)
+		.set({
+			reviewMergeOutcome: input.status,
+			reviewMergeMessage: input.message,
+			reviewMergeAttempt: input.attempt,
+			reviewMergeApprovedHeadSha: input.approvedHeadSha,
+		})
+		.where(
+			and(
+				eq(runs.id, runId),
+				or(
+					isNull(runs.reviewMergeApprovedHeadSha),
+					eq(runs.reviewMergeApprovedHeadSha, input.approvedHeadSha),
+				),
+			),
+		)
+		.returning({ id: runs.id });
+	return rows.length > 0;
+}
+
+/**
+ * Review runs whose merge automation is still durably pending a follow-up
+ * attempt (`reviewMergeOutcome === 'not-ready'`) — read once at worker startup
+ * to reschedule any whose delayed BullMQ job did not survive a restart
+ * (`recoverPendingMergeFollowUps`, `src/worker/merge-follow-up.ts`).
+ */
+export async function getPendingReviewMergeFollowUps(): Promise<RunRow[]> {
+	return getDb()
+		.select()
+		.from(runs)
+		.where(and(eq(runs.phase, 'review'), eq(runs.reviewMergeOutcome, 'not-ready')));
 }
 
 /**
