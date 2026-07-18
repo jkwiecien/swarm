@@ -307,6 +307,44 @@ describe('projectsRouter', () => {
 			expect(result.pipeline?.respondToReview?.skipOnMinors).toBe(false);
 		});
 
+		it('saves the Review check policy while leaving unrelated pipeline fields intact', async () => {
+			const withPipeline = createMockProjectConfig({
+				id: 'p1',
+				name: 'Original Name',
+				repo: 'jkwiecien/original',
+				pipeline: {
+					planning: { autoAdvance: true },
+					review: { enabled: true },
+					respondToReview: { autoMerge: true, skipOnMinors: false },
+				},
+			});
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(withPipeline);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			const result = await caller.update({
+				id: 'p1',
+				pipeline: {
+					...withPipeline.pipeline,
+					review: { ...withPipeline.pipeline?.review, checks: 'if-present' },
+				},
+			});
+
+			expect(result.pipeline?.review?.checks).toBe('if-present');
+			// Unrelated pipeline fields, including the rest of `review`, survive the update.
+			expect(result.pipeline?.review?.enabled).toBe(true);
+			expect(result.pipeline?.planning?.autoAdvance).toBe(true);
+			expect(result.pipeline?.respondToReview).toEqual({ autoMerge: true, skipOnMinors: false });
+		});
+
+		it('does not invent a Review check policy for an unrelated update on a project with none stored', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			const result = await caller.update({ id: 'p1', name: 'Renamed' });
+
+			expect(result.pipeline?.review?.checks).toBeUndefined();
+		});
+
 		it.each([0, -1, 1.5, 'many'])('rejects invalid maximum concurrent jobs: %s', async (value) => {
 			await expect(
 				caller.update({ id: 'p1', maxConcurrentJobs: value as number }),
