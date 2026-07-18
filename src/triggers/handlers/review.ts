@@ -33,6 +33,9 @@
  * (`check-suite-decision.ts`): review if all complete and none failed,
  * respond-to-ci if a check failed, or **defer** if some check is still
  * incomplete. Ported from Cascade's `check-suite-success`/`-failure` triggers.
+ * A zero-check head defers too, under the default `pipeline.review.checks:
+ * 'required'` policy — a project with no CI at all can instead set
+ * `'if-present'` to review immediately on zero checks (issue #274).
  *
  * **Respond-to-CI loop guard.** Fixing a build pushes a commit → a new head SHA
  * → a fresh `check_suite`, so if the fix doesn't stick the same PR routes back
@@ -365,7 +368,8 @@ async function resolveCheckSuiteReview(
 		);
 	}
 
-	const decision = decideCheckSuiteOutcome(checkStatus, prNumber);
+	const checksPolicy = project.pipeline?.review?.checks ?? 'required';
+	const decision = decideCheckSuiteOutcome(checkStatus, prNumber, checksPolicy);
 	if (decision.action === 'review') return { kind: 'review' };
 
 	if (decision.action === 'respond-to-ci') {

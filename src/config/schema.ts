@@ -220,6 +220,17 @@ export const AgentsConfigSchema = z
 	.describe('Per-phase agent CLI/model overrides — omit any phase to keep its coded default');
 
 /**
+ * Review-trigger policy for a head SHA with zero registered checks
+ * (`decideCheckSuiteOutcome`, `src/triggers/handlers/check-suite-decision.ts`).
+ * `required` (the default) defers, treating zero checks the same as CI not
+ * having caught up yet. `if-present` dispatches Review immediately on zero
+ * checks — for projects with no CI at all — while still waiting on any
+ * checks that are present and routing a failure to Respond-to-CI (issue #274).
+ */
+export const ReviewChecksPolicySchema = z.enum(['required', 'if-present']);
+export type ReviewChecksPolicy = z.infer<typeof ReviewChecksPolicySchema>;
+
+/**
  * Per-phase pipeline controls. Planning and Implementation configure whether
  * they move the board item on completion by themselves or leave that to a
  * human. The SCM-event-driven Review, Respond-to-review, and Respond-to-CI
@@ -264,7 +275,13 @@ export const PipelineConfigSchema = z
 		 * for that look, so there's nothing to gate on first.
 		 */
 		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
-		review: z.object({ enabled: z.boolean().optional() }).optional(),
+		review: z
+			.object({
+				enabled: z.boolean().optional(),
+				/** See {@link ReviewChecksPolicySchema}. Unset defaults to `required`. */
+				checks: ReviewChecksPolicySchema.optional(),
+			})
+			.optional(),
 		respondToReview: z
 			.object({
 				enabled: z.boolean().optional(),

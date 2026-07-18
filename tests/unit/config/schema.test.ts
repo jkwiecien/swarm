@@ -200,6 +200,22 @@ describe('ProjectConfigSchema', () => {
 		});
 	});
 
+	it.each(['required', 'if-present'])('accepts the review checks policy %s', (checks) => {
+		expect(PipelineConfigSchema.parse({ review: { checks } })).toMatchObject({
+			review: { checks },
+		});
+	});
+
+	it('rejects an unsupported review checks policy', () => {
+		expect(PipelineConfigSchema.safeParse({ review: { checks: 'always' } }).success).toBe(false);
+	});
+
+	it('omits the review checks policy when unset, leaving the required default to the consumer', () => {
+		expect(PipelineConfigSchema.parse({ review: { enabled: true } })).toEqual({
+			review: { enabled: true },
+		});
+	});
+
 	it('limits per-phase timeouts to five through forty-five minutes', () => {
 		expect(() => AgentConfigSchema.parse({ timeoutMs: 5 * 60 * 1000 })).not.toThrow();
 		expect(() => AgentConfigSchema.parse({ timeoutMs: 45 * 60 * 1000 })).not.toThrow();

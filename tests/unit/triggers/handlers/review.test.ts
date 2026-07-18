@@ -276,6 +276,74 @@ describe('review trigger', () => {
 			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
 		});
 
+		it('defers on zero checks by default (required policy)', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([]));
+			expect(
+				await handler.handle(ctx({ ...base, headSha: 'cafe' }, { deliveryId: 'd-3' })),
+			).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
+			expect(scheduleCoalescedJob.mock.calls[0][0]).toMatchObject({
+				recheckAttempt: 1,
+				deliveryId: 'd-3',
+			});
+		});
+
+		it('dispatches exactly one Review on zero checks when the project opts into if-present', async () => {
+			// This is the shape `scheduleFollowUpReviewDefault` enqueues after a
+			// fixed Respond-to-review response (`src/pipeline/follow-up-review.ts`):
+			// a synthetic `check_suite completed` carrying only the new head SHA and
+			// PR branch, no check-run data of its own — the real decision happens
+			// here once the handler re-queries live Actions-API state (issue #274).
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([]));
+			const project = createMockProjectConfig({ pipeline: { review: { checks: 'if-present' } } });
+			const result = await handler.handle({
+				...ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' }),
+				project,
+			});
+			expect(result).toEqual({ phase: 'review', taskId: '9', prNumber: '9', headSha: 'cafe' });
+			expect(claimReviewDispatch).toHaveBeenCalledTimes(1);
+			expect(scheduleCoalescedJob).not.toHaveBeenCalled();
+		});
+
+		it('the PR/SHA dispatch dedup still guards a duplicate follow-up event under if-present', async () => {
+			// A second delivery of the same follow-up event (retry, or a sibling
+			// check_suite for the same commit) must not burn a second Review.
+			claimReviewDispatch.mockResolvedValue(false);
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([]));
+			const project = createMockProjectConfig({ pipeline: { review: { checks: 'if-present' } } });
+			const result = await handler.handle({
+				...ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' }),
+				project,
+			});
+			expect(result).toBeNull();
+			expect(reserveReviewVerdict).not.toHaveBeenCalled();
+		});
+
+		it('still defers a present but incomplete check under if-present', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'in_progress', null]]));
+			const project = createMockProjectConfig({ pipeline: { review: { checks: 'if-present' } } });
+			expect(await handler.handle({ ...ctx({ ...base, headSha: 'cafe' }), project })).toBeNull();
+			expect(claimReviewDispatch).not.toHaveBeenCalled();
+			expect(scheduleCoalescedJob).toHaveBeenCalledTimes(1);
+		});
+
+		it('still routes a present failed check to Respond-to-CI under if-present', async () => {
+			getCheckSuiteStatus.mockResolvedValue(checkStatus([['test', 'completed', 'failure']]));
+			const project = createMockProjectConfig({ pipeline: { review: { checks: 'if-present' } } });
+			const result = await handler.handle({
+				...ctx({ ...base, headSha: 'cafe', prBranch: 'issue-9' }),
+				project,
+			});
+			expect(result).toEqual({
+				phase: 'respond-to-ci',
+				taskId: '9-ci',
+				prNumber: '9',
+				prBranch: 'issue-9',
+				headSha: 'cafe',
+			});
+		});
+
 		it('skips a PR not authored by a SWARM persona — before the aggregate query', async () => {
 			getPullRequestAuthorLogin.mockResolvedValue('a-human');
 			const result = await handler.handle(ctx({ ...base, headSha: 'cafe' }));

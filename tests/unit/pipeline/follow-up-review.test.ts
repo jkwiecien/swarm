@@ -76,4 +76,34 @@ describe('scheduleFollowUpReviewDefault', () => {
 			(secondCall[0] as { deliveryId: string }).deliveryId,
 		);
 	});
+
+	it('carries no check-run data of its own — a no-CI project relies entirely on the pr-review handler policy', async () => {
+		// This module only ever builds and dedups the delivery; whether a fixed
+		// response on a PR with zero checks reaches Review is decided by
+		// `decideCheckSuiteOutcome`'s `pipeline.review.checks` policy once the
+		// `pr-review` handler re-queries live check state for this event
+		// (see `tests/unit/triggers/handlers/review.test.ts`'s "if-present" cases,
+		// issue #274) — never by anything encoded on this synthetic event.
+		enqueueJob.mockClear();
+
+		await scheduleFollowUpReviewDefault({
+			project: PROJECT,
+			prNumber: '42',
+			prBranch: 'issue-42',
+			headSha: 'newsha123',
+		});
+
+		const [job] = enqueueJob.mock.calls[0];
+		expect(Object.keys((job as { event: object }).event).sort()).toEqual(
+			[
+				'action',
+				'eventType',
+				'headSha',
+				'isCommentEvent',
+				'prBranch',
+				'repoFullName',
+				'workItemId',
+			].sort(),
+		);
+	});
 });
