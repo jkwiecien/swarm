@@ -44,7 +44,7 @@ Commands:
   stop [-v]        Stop the stack (-v/--volumes also drops its volumes)
   status           Show stack container states and probe the router's health
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
-	queue clear      Remove all pending queue jobs (not active runs)
+  queue clear      Remove all pending queue jobs (not active runs)
   worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;
