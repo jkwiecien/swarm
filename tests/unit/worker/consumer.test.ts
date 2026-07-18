@@ -1318,7 +1318,7 @@ describe('processJob', () => {
 		};
 
 		const outcome = await processJob(
-			createMockGitHubProjectsWebhookJob(),
+			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 6 }),
 			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
 		);
 
@@ -1545,6 +1545,60 @@ describe('processJob', () => {
 	});
 
 	it('does not defer a non-rate-limit AgentRunError', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 1', { kind: 'error' });
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+	});
+
+	it('defers a stalled phase instead of failing it, using minimum delayed-retry floor', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (antigravity) exited with code 1 (stalled)', {
+				kind: 'stalled',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob(),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
+		expect(outcome.phase).toBe('review');
+		expect(outcome.taskId).toBe('17');
+		expect(outcome.attempt).toBe(0);
+		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000); // MIN_RETRY_DELAY_MS
+		expect(outcome.resumable).toBe(true);
+	});
+
+	it('fails a stalled phase once the retry budget is exhausted', async () => {
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (antigravity) exited with code 1 (stalled)', {
+				kind: 'stalled',
+			});
+		};
+
+		const outcome = await processJob(
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning(REVIEW_TRIGGER),
+		);
+
+		expect(outcome).toEqual({
+			status: 'phase-failed',
+			phase: 'review',
+			taskId: '17',
+			error: 'Review agent (antigravity) exited with code 1 (stalled)',
+		});
+	});
+
+	it('retains the case that an ordinary exit-1 remains terminal', async () => {
 		phaseImpl = async () => {
 			throw new AgentRunError('Review agent (claude) exited with code 1', { kind: 'error' });
 		};

@@ -54,7 +54,7 @@ The CLIs don't share flag semantics (`ai/RULES.md §6`), so resume is shaped per
 ### (c) Preserve, persist, resume — the phase + worker path
 
 - Each phase (via the shared `src/pipeline/resume.ts`) keeps its worktree instead of
-  cleaning it up when a run fails on a `rate-limit` or a genuinely-interrupted `timeout`
+  cleaning it up when a run fails on a `rate-limit`, a `stalled` response, or a genuinely-interrupted `timeout`
   **and** captured a session id (`shouldPreserveForResume`); it reuses that checkout on the
   retry so partial edits and the session carry over.
 - `src/worker/consumer.ts` persists the captured id on the deferred `runs` row

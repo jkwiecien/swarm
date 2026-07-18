@@ -47,7 +47,7 @@ export interface PhaseSessionOptions {
  */
 export function shouldPreserveForResume(error: AgentRunError): boolean {
 	const kind = error.failure.kind;
-	if (kind !== 'rate-limit' && kind !== 'timeout') return false;
+	if (kind !== 'rate-limit' && kind !== 'timeout' && kind !== 'stalled') return false;
 	return error.agent?.sessionId !== undefined;
 }
 

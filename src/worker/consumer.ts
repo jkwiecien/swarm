@@ -273,6 +273,7 @@ function retryDelayForFailure(failure: DeferrableFailure, now: number): number {
 		failure.kind === 'capacity' ||
 		failure.kind === 'delivery' ||
 		failure.kind === 'worktree-exists' ||
+		failure.kind === 'stalled' ||
 		// A timeout has no "resets at…" hint and needs no long wait — the run
 		// simply ran long; retry after the same dedup-claim floor as an abort.
 		failure.kind === 'timeout'
@@ -294,6 +295,8 @@ function deferredPhaseMessage(failure: DeferrableFailure, phase: TriggerPhase): 
 			return `Phase stopped - ${phaseLabel(phase)} — delivery failed, deferring retry`;
 		case 'worktree-exists':
 			return `Phase stopped - ${phaseLabel(phase)} — worktree already exists, deferring retry`;
+		case 'stalled':
+			return `Phase stopped - ${phaseLabel(phase)} — response stalled, deferring resume retry`;
 		case 'timeout':
 			return `Phase stopped - ${phaseLabel(phase)} — timed out, deferring resume retry`;
 		default:
@@ -361,7 +364,8 @@ function deferAgentRunError(
 		// resume, and the captured session id (if any) points at a run that never
 		// progressed. Starting fresh matches the pre-existing Codex-capacity
 		// contract; only an explicit safety case would justify resuming instead.
-		resumable: failure.kind === 'rate-limit' || failure.kind === 'timeout',
+		resumable:
+			failure.kind === 'rate-limit' || failure.kind === 'timeout' || failure.kind === 'stalled',
 		resumeDelivery: failure.kind === 'delivery' || undefined,
 		pmPhaseStarted:
 			job.type === 'github-projects' &&
@@ -1613,6 +1617,7 @@ async function handlePhaseFailure(
 			(err.failure.kind === 'rate-limit' ||
 				err.failure.kind === 'capacity' ||
 				err.failure.kind === 'aborted' ||
+				err.failure.kind === 'stalled' ||
 				// A timeout resumes only when the run was genuinely interrupted: it
 				// carries an agent result whose exit was non-zero/null (the phase threw
 				// and preserved its worktree). A run that trapped SIGTERM and still
