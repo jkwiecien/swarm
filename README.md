@@ -260,7 +260,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 
 **`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
 - **`defaults`** — optional map of `cli` -> default `model` override for the whole project. This is the tier above the **global** `agents.defaults` (see [Global settings](#global-settings-app_settings)). Defaults store a **model only**, never a reasoning level (a per-CLI default reasoning can be invalid for another model — see the `reasoning` field below).
-- **Phases** — `planning`, `implementation`, `implementationUnplanned`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object. `implementationUnplanned` applies only when an Implementation run has no prior Planning run-history row for the same item; it falls back to `implementation` when unset, preserving current behavior, and is a dispatch-time config variant rather than a pipeline phase:
+- **Phases** — `planning`, `implementation`, `implementationUnplanned`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object. `implementationUnplanned` applies only when an Implementation run has no prior *completed* Planning run-history row for the same item — a failed or deferred attempt does not count; it falls back to `implementation` when unset, preserving current behavior, and is a dispatch-time config variant rather than a pipeline phase:
   | Field | Purpose |
   | --- | --- |
   | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
@@ -292,7 +292,7 @@ App-wide settings that apply across **every** project, as opposed to the per-pro
 
 **`appearance.theme`** — the dashboard's theme choice (issue #250): `dark` (default), `light`, or `system` (follows the OS/browser `prefers-color-scheme` and updates live when it changes). Unlike `agents.defaults`, this key always materializes — `AppSettingsSchema` defaults it to `dark` even when parsing `{}` — so every `settings.get` response carries an effective theme rather than requiring callers to fall back manually. Applied dashboard-wide by `web/src/components/theme/theme-provider.tsx`, which sets a `data-theme` attribute the whole palette (`web/src/index.css`) responds to.
 
-Before the four-tier chain runs, Implementation selects `agents.implementationUnplanned` for work items with no prior Planning run-history row, otherwise `agents.implementation`; an unset unplanned variant falls back to `implementation`. The worker then resolves the model for the selected config through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
+Before the four-tier chain runs, Implementation selects `agents.implementationUnplanned` for work items with no prior *completed* Planning run-history row (a failed or deferred attempt does not count), otherwise `agents.implementation`; an unset unplanned variant falls back to `implementation`. The worker then resolves the model for the selected config through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
 
 1. the phase's own `model` (project `agents.<phase>.model`);
 2. the **project** default — project `agents.defaults[cli]`;

@@ -309,6 +309,32 @@ export async function getLatestRunForTask(
 	return rows[0];
 }
 
+/**
+ * Whether this project's task has a *completed* run for the given phase — a
+ * failed or deferred attempt does not count (issue #247). Implementation's
+ * planned/unplanned config selection uses this so a merely-attempted Planning
+ * run doesn't make the item look planned.
+ */
+export async function hasCompletedRunForTask(
+	projectId: string,
+	taskId: string,
+	phase: TriggerPhase,
+): Promise<boolean> {
+	const rows = await getDb()
+		.select({ id: runs.id })
+		.from(runs)
+		.where(
+			and(
+				eq(runs.projectId, projectId),
+				eq(runs.taskId, taskId),
+				eq(runs.phase, phase),
+				eq(runs.status, 'completed'),
+			),
+		)
+		.limit(1);
+	return rows.length > 0;
+}
+
 export interface ReviewMergeOutcomeUpdate {
 	/** `MergePullRequestOutcome['status']` or `'retry-exhausted'` (`src/worker/merge-follow-up.ts`). */
 	status: string;

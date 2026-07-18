@@ -38,6 +38,7 @@ import {
 	createRun,
 	getLatestRunForTask,
 	getRunByIdFromDb,
+	hasCompletedRunForTask,
 	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
@@ -682,13 +683,14 @@ function resolveModel(
 }
 
 /**
- * Check whether Planning already ran for this work item. The history lookup is
+ * Check whether Planning **completed** for this work item — a failed or
+ * deferred attempt does not count (issue #247). The history lookup is
  * best-effort: an error assumes planning occurred so dispatch keeps using the
  * established Implementation config rather than changing behavior on a DB hiccup.
  */
 async function wasPrecededByPlanning(projectId: string, taskId: string): Promise<boolean> {
 	try {
-		return (await getLatestRunForTask(projectId, taskId, 'planning')) !== undefined;
+		return await hasCompletedRunForTask(projectId, taskId, 'planning');
 	} catch (err) {
 		logger.error('Failed to check for a prior planning run (assuming planned)', {
 			projectId,
