@@ -184,6 +184,9 @@ const updateRunJobPayload = vi.fn(async (_id: string, _job: unknown) => {});
 const getLatestRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => undefined,
 );
+const hasCompletedRunForTask = vi.fn(
+	async (_projectId: string, _taskId: string, _phase: string) => false,
+);
 const resetRunToRunning = vi.fn(async (_id: string, _job?: unknown, _fromStatus?: string) => true);
 const getRunByIdFromDb = vi.fn(
 	async (_id: string) => undefined as { agentSessionId?: string | null } | undefined,
@@ -195,6 +198,8 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	updateRunJobPayload: (id: string, job: unknown) => updateRunJobPayload(id, job),
 	getLatestRunForTask: (projectId: string, taskId: string, phase: string) =>
 		getLatestRunForTask(projectId, taskId, phase),
+	hasCompletedRunForTask: (projectId: string, taskId: string, phase: string) =>
+		hasCompletedRunForTask(projectId, taskId, phase),
 	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
 		resetRunToRunning(id, job, fromStatus),
 	getRunByIdFromDb: (id: string) => getRunByIdFromDb(id),
@@ -392,6 +397,8 @@ describe('processJob', () => {
 		getRunByIdFromDb.mockResolvedValue(undefined);
 		getLatestRunForTask.mockClear();
 		getLatestRunForTask.mockResolvedValue(undefined);
+		hasCompletedRunForTask.mockClear();
+		hasCompletedRunForTask.mockResolvedValue(false);
 		getAppSettings.mockClear();
 		getAppSettings.mockResolvedValue({});
 		acquireProjectSlot.mockClear();
@@ -1052,7 +1059,11 @@ describe('processJob', () => {
 			workItem: createMockWorkItem(),
 		});
 
-		it('uses the unplanned config and records it when no Planning run exists', async () => {
+		it.each([
+			'failed',
+			'deferred',
+			'absent',
+		] as const)('uses the unplanned config and records it when Planning history is %s', async () => {
 			projectLookup = () =>
 				createMockProjectConfig({
 					agents: {
@@ -1064,13 +1075,14 @@ describe('processJob', () => {
 						},
 					},
 				});
+			hasCompletedRunForTask.mockResolvedValueOnce(false);
 
 			await processJob(
 				createMockGitHubProjectsWebhookJob(),
 				registryReturning(implementationTrigger()),
 			);
 
-			expect(getLatestRunForTask).toHaveBeenCalledWith(PROJECT.id, '10', 'planning');
+			expect(hasCompletedRunForTask).toHaveBeenCalledWith(PROJECT.id, '10', 'planning');
 			expect(phaseCalls[0].args).toMatchObject({
 				cli: 'codex',
 				model: 'gpt-5.6-terra',
@@ -1081,7 +1093,7 @@ describe('processJob', () => {
 			);
 		});
 
-		it('uses the normal config after Planning ran and when the unplanned config is unset', async () => {
+		it('uses the normal config after Planning completed and when the unplanned config is unset', async () => {
 			const projectWithVariant = createMockProjectConfig({
 				agents: {
 					implementation: { cli: 'claude', model: 'opus' },
@@ -1089,7 +1101,7 @@ describe('processJob', () => {
 				},
 			});
 			projectLookup = () => projectWithVariant;
-			getLatestRunForTask.mockImplementationOnce(async () => ({ id: 'planning-run' }) as never);
+			hasCompletedRunForTask.mockResolvedValueOnce(true);
 
 			await processJob(
 				createMockGitHubProjectsWebhookJob(),
@@ -1100,6 +1112,7 @@ describe('processJob', () => {
 			phaseCalls.length = 0;
 			projectLookup = () =>
 				createMockProjectConfig({ agents: { implementation: { cli: 'claude', model: 'opus' } } });
+			hasCompletedRunForTask.mockResolvedValueOnce(false);
 			await processJob(
 				createMockGitHubProjectsWebhookJob(),
 				registryReturning(implementationTrigger()),
@@ -1115,7 +1128,7 @@ describe('processJob', () => {
 						implementationUnplanned: { cli: 'codex', model: 'gpt-5.6-terra' },
 					},
 				});
-			getLatestRunForTask.mockRejectedValueOnce(new Error('postgres down'));
+			hasCompletedRunForTask.mockRejectedValueOnce(new Error('postgres down'));
 
 			await expect(
 				processJob(
@@ -1129,7 +1142,7 @@ describe('processJob', () => {
 		it('does not query planning history for non-implementation phases', async () => {
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
-			expect(getLatestRunForTask).not.toHaveBeenCalledWith(PROJECT.id, '17', 'planning');
+			expect(hasCompletedRunForTask).not.toHaveBeenCalledWith(PROJECT.id, '17', 'planning');
 		});
 	});
 

@@ -203,7 +203,8 @@ export const AgentDefaultsSchema = z
  * `model`. Without it, the CLI runs with its own built-in default.
  *
  * `implementationUnplanned` is a config-only Implementation variant used when
- * no Planning run exists for the same work item. It falls back to
+ * there is no prior *completed* Planning run for the same work item — a
+ * failed or deferred attempt does not count (issue #247). It falls back to
  * `implementation` when omitted; it is not a pipeline phase.
  */
 export const AgentsConfigSchema = z

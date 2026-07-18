@@ -14,6 +14,7 @@ import {
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	getRunOutputEvents,
+	hasCompletedRunForTask,
 	hasResumableDeferredRun,
 	listRunsFromDb,
 	MAX_RUN_OUTPUT_BYTES,
@@ -435,6 +436,57 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			expect((await getLatestRunForTask(PROJECT_ID, '42', 'review'))?.id).toBe(newest);
 			expect(await getLatestRunForTask(PROJECT_ID, 'missing', 'review')).toBeUndefined();
+		});
+	});
+
+	describe('hasCompletedRunForTask', () => {
+		it('is true only when a completed row exists for the given project, task, and phase', async () => {
+			await seedProject({ id: 'proj-other', repo: 'jkwiecien/other-repo' });
+			const completed = await createRun({ projectId: PROJECT_ID, taskId: '50', phase: 'planning' });
+			await completeRun(completed, { status: 'completed' });
+			// Same task/phase, other project — must not count.
+			const otherProjectRun = await createRun({
+				projectId: 'proj-other',
+				taskId: '50',
+				phase: 'planning',
+			});
+			await completeRun(otherProjectRun, { status: 'completed' });
+			// Same project/task, other phase — must not count.
+			const otherPhaseRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '50',
+				phase: 'implementation',
+			});
+			await completeRun(otherPhaseRun, { status: 'completed' });
+
+			expect(await hasCompletedRunForTask(PROJECT_ID, '50', 'planning')).toBe(true);
+			expect(await hasCompletedRunForTask('proj-other', '50', 'planning')).toBe(true);
+			expect(await hasCompletedRunForTask(PROJECT_ID, '50', 'implementation')).toBe(true);
+			expect(await hasCompletedRunForTask(PROJECT_ID, '51', 'planning')).toBe(false);
+		});
+
+		it('is false for a failed Planning run', async () => {
+			const failed = await createRun({ projectId: PROJECT_ID, taskId: '51', phase: 'planning' });
+			await completeRun(failed, { status: 'failed', error: 'boom' });
+
+			expect(await hasCompletedRunForTask(PROJECT_ID, '51', 'planning')).toBe(false);
+		});
+
+		it('is false for a deferred Planning run', async () => {
+			const deferred = await createRun({ projectId: PROJECT_ID, taskId: '52', phase: 'planning' });
+			await completeRun(deferred, { status: 'deferred', error: 'rate limited' });
+
+			expect(await hasCompletedRunForTask(PROJECT_ID, '52', 'planning')).toBe(false);
+		});
+
+		it('is false when no run exists for the task', async () => {
+			expect(await hasCompletedRunForTask(PROJECT_ID, 'missing', 'planning')).toBe(false);
+		});
+
+		it('is false while the run is still running', async () => {
+			await createRun({ projectId: PROJECT_ID, taskId: '53', phase: 'planning' });
+
+			expect(await hasCompletedRunForTask(PROJECT_ID, '53', 'planning')).toBe(false);
 		});
 	});
 
