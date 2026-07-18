@@ -4,8 +4,8 @@ import {
 	ChevronLeft,
 	ChevronRight,
 	Cpu,
+	GitBranch,
 	GitMerge,
-	KeyRound,
 	Play,
 	Settings,
 	SquareKanban,
@@ -1772,8 +1772,8 @@ function ProjectDetailRouteComponent() {
 							: 'border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-800'
 					}`}
 				>
-					<KeyRound className="h-4 w-4 text-violet-400" />
-					Credentials
+					<GitBranch className="h-4 w-4 text-violet-400" />
+					Source Control
 				</button>
 			</div>
 

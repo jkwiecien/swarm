@@ -3,12 +3,15 @@ import { AlertTriangle, Check, Pencil, ShieldCheck, Trash2, X } from 'lucide-rea
 import type React from 'react';
 import { useState } from 'react';
 import {
-	CREDENTIAL_ROLE_DESCRIPTIONS,
 	CREDENTIAL_ROLE_LABELS,
 	type CredentialEntry,
 	type CredentialRole,
+	DEFAULT_SCM_PROVIDER_ID,
+	getScmProviderCopy,
 	isVerifiableRole,
 	maskedPreview,
+	SCM_PROVIDERS,
+	type ScmProviderId,
 	sameVerifiedLogin,
 } from '@/lib/credentials.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
@@ -23,12 +26,16 @@ const SECONDARY_BUTTON_CLASS =
 const PRIMARY_BUTTON_CLASS =
 	'inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed';
 
+const SELECT_CLASS =
+	'block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500 transition-shadow disabled:opacity-50 disabled:bg-zinc-950 disabled:border-zinc-800 disabled:text-zinc-500';
+
 /** Result shape of `scm.verifyGithubToken` (see `src/api/routers/scm.ts`). */
 type VerifyResult = { valid: true; login: string } | { valid: false };
 
 interface CredentialFieldEditorProps {
 	entry: CredentialEntry;
 	verifiable: boolean;
+	verifyFailureMessage: string;
 	value: string;
 	isSaving: boolean;
 	isVerifying: boolean;
@@ -46,6 +53,7 @@ interface CredentialFieldEditorProps {
 function CredentialFieldEditor({
 	entry,
 	verifiable,
+	verifyFailureMessage,
 	value,
 	isSaving,
 	isVerifying,
@@ -81,9 +89,7 @@ function CredentialFieldEditor({
 				</p>
 			)}
 			{verifiable && verifyResult && !verifyResult.valid && (
-				<p className="text-xs text-red-400">
-					Token did not resolve to a GitHub account. Check it and try again.
-				</p>
+				<p className="text-xs text-red-400">{verifyFailureMessage}</p>
 			)}
 			{verifyErrorMsg && (
 				<p className="text-xs text-red-400">Verification failed: {verifyErrorMsg}</p>
@@ -188,6 +194,8 @@ function CredentialFieldPreview({
 interface CredentialFieldProps {
 	projectId: string;
 	entry: CredentialEntry;
+	roleDescription: string;
+	verifyFailureMessage: string;
 	verifiedLogin: string | undefined;
 	onVerified: (role: CredentialRole, login: string | undefined) => void;
 	onRequestRemove: (entry: CredentialEntry) => void;
@@ -202,6 +210,8 @@ interface CredentialFieldProps {
 function CredentialField({
 	projectId,
 	entry,
+	roleDescription,
+	verifyFailureMessage,
 	verifiedLogin,
 	onVerified,
 	onRequestRemove,
@@ -260,13 +270,14 @@ function CredentialField({
 					</span>
 					<span className="text-xs text-zinc-500 font-mono select-all">{entry.envVarKey}</span>
 				</div>
-				<p className="text-xs text-zinc-500 mt-1">{CREDENTIAL_ROLE_DESCRIPTIONS[entry.role]}</p>
+				<p className="text-xs text-zinc-500 mt-1">{roleDescription}</p>
 			</div>
 
 			{editing ? (
 				<CredentialFieldEditor
 					entry={entry}
 					verifiable={verifiable}
+					verifyFailureMessage={verifyFailureMessage}
 					value={value}
 					isSaving={saveMutation.isPending}
 					isVerifying={verifyMutation.isPending}
@@ -306,6 +317,13 @@ function CredentialField({
 export function CredentialsPanel({ projectId }: { projectId: string }) {
 	const queryClient = useQueryClient();
 	const credentialsQuery = useQuery(trpc.projects.credentials.list.queryOptions({ projectId }));
+
+	// UI-only selected-provider state (issue #200). GitHub is the sole working
+	// provider; the selector exists so the panel's copy is data-driven off a
+	// selected provider rather than embedded GitHub literals throughout.
+	const [selectedProviderId, setSelectedProviderId] =
+		useState<ScmProviderId>(DEFAULT_SCM_PROVIDER_ID);
+	const providerCopy = getScmProviderCopy(selectedProviderId);
 
 	// Session-only record of the login each PAT last verified to; drives the
 	// loop-prevention warning. Never persisted — the plaintext token is gone once
@@ -360,14 +378,28 @@ export function CredentialsPanel({ projectId }: { projectId: string }) {
 		<div className="border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm space-y-6">
 			<div>
 				<h2 className="text-sm font-semibold text-zinc-200 border-b border-zinc-800 pb-2 mb-4">
-					SCM Credentials
+					Source Control
 				</h2>
-				<p className="text-xs text-zinc-400">
-					The implementer and reviewer personas authenticate to GitHub with separate tokens so their
-					pull requests and reviews are attributed to distinct accounts. Verify each PAT to confirm
-					the account it resolves to before saving. Secrets are stored encrypted and only ever shown
-					as a masked preview.
-				</p>
+
+				<div className="max-w-xs">
+					<label htmlFor="scm-provider" className="block text-xs font-medium text-zinc-400 mb-1.5">
+						Provider
+					</label>
+					<select
+						id="scm-provider"
+						value={selectedProviderId}
+						onChange={(e) => setSelectedProviderId(e.target.value as ScmProviderId)}
+						className={SELECT_CLASS}
+					>
+						{SCM_PROVIDERS.map((provider) => (
+							<option key={provider.id} value={provider.id} disabled={!provider.available}>
+								{provider.label}
+							</option>
+						))}
+					</select>
+				</div>
+
+				<p className="text-xs text-zinc-400 mt-4">{providerCopy.intro}</p>
 			</div>
 
 			{showSameAccountWarning && (
@@ -375,13 +407,9 @@ export function CredentialsPanel({ projectId }: { projectId: string }) {
 					<AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
 					<div>
 						<h3 className="text-xs font-semibold text-amber-200">
-							Both PATs resolve to @{verifiedLogins.implementer}
+							{providerCopy.sameAccountWarningTitle(verifiedLogins.implementer ?? '')}
 						</h3>
-						<p className="text-xs text-amber-200/70 mt-1">
-							The implementer and reviewer tokens map to the same GitHub account. Dual-persona loop
-							prevention relies on two distinct identities — the reviewer's comments will be treated
-							as the implementer's own. This is allowed but not recommended.
-						</p>
+						<p className="text-xs text-amber-200/70 mt-1">{providerCopy.sameAccountWarningBody}</p>
 					</div>
 				</div>
 			)}
@@ -392,6 +420,8 @@ export function CredentialsPanel({ projectId }: { projectId: string }) {
 						key={entry.role}
 						projectId={projectId}
 						entry={entry}
+						roleDescription={providerCopy.roleDescriptions[entry.role]}
+						verifyFailureMessage={providerCopy.verifyFailureMessage}
 						verifiedLogin={verifiedLogins[entry.role]}
 						onVerified={handleVerified}
 						onRequestRemove={setRemoveTarget}
