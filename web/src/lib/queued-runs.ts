@@ -6,7 +6,7 @@
  * matching the other `web/src/lib/*.test.ts` helpers.
  */
 
-import type { QueuedPhaseHint, QueuedRun } from '@/types/runs.js';
+import type { QueuedPhaseHint, QueuedReviewGateSourceEvent, QueuedRun } from '@/types/runs.js';
 import { formatPhase } from './format.js';
 import { parseWorkItemRef, workItemLabel } from './work-item.js';
 
@@ -70,3 +70,96 @@ export function queuedWorkItemUrl(item: QueuedRun): string | undefined {
 export function queuedRunKey(item: QueuedRun): string {
 	return item.jobId;
 }
+
+/** One source event folded into a grouped review-gate row, for diagnostics display. */
+export interface QueuedReviewGateSourceEventDisplay {
+	jobId: string;
+	sourceEvent: QueuedReviewGateSourceEvent;
+	sourceAction?: string;
+	recheckAttempt?: number;
+}
+
+/**
+ * One row for the Queued table (issue #275): a plain queued job rendered
+ * one-to-one, or several pending review-gate jobs for the same PR + head SHA
+ * folded into one logical row. `representative` is always the *first* source
+ * job in the supplied order — the same job {@link queuedRunKey} and the Put
+ * back action key off, so grouping never changes which underlying job an
+ * action targets.
+ */
+export interface QueuedDisplayRow {
+	representative: QueuedRun;
+	/** True once a second (or later) source event has joined this row's group. */
+	isReviewGateGroup: boolean;
+	/** One entry per source event folded into this row; empty when the job carries no review-gate metadata. */
+	sourceEvents: QueuedReviewGateSourceEventDisplay[];
+}
+
+/** Grouping identity for a review-gate job: same project, repo, PR, and head SHA never split across rows. */
+function reviewGateGroupKey(item: QueuedRun): string | null {
+	if (!item.reviewGate || !item.repo || !item.prNumber) return null;
+	return [item.projectId, item.repo, item.prNumber, item.reviewGate.headSha].join(':');
+}
+
+function toSourceEventDisplay(item: QueuedRun): QueuedReviewGateSourceEventDisplay {
+	// Only called once `item.reviewGate` has already been checked truthy.
+	const gate = item.reviewGate as NonNullable<QueuedRun['reviewGate']>;
+	return {
+		jobId: item.jobId,
+		sourceEvent: gate.sourceEvent,
+		sourceAction: gate.sourceAction,
+		recheckAttempt: gate.recheckAttempt,
+	};
+}
+
+/**
+ * Turn the server's already-ordered `runs.queued` rows into display rows,
+ * grouping pending review-gate jobs — raw `pull_request`/`check_suite`
+ * lifecycle events hinting `review` (see {@link QueuedRun.reviewGate}) — that
+ * share the same project, repo, PR number, and head SHA into one row. Every
+ * other job renders one row per job, exactly as before. A row's position is
+ * the position of the first job that started its group, so this never
+ * reorders the server's dispatch order; it only folds later duplicates into
+ * an earlier row. Never groups across a different project, repo, PR, or SHA
+ * (or a job missing the identity a safe group needs).
+ */
+export function groupQueuedRuns(items: QueuedRun[]): QueuedDisplayRow[] {
+	const rowByGroupKey = new Map<string, QueuedDisplayRow>();
+	const rows: QueuedDisplayRow[] = [];
+
+	for (const item of items) {
+		const key = reviewGateGroupKey(item);
+		const existingRow = key ? rowByGroupKey.get(key) : undefined;
+		if (existingRow) {
+			existingRow.isReviewGateGroup = true;
+			existingRow.sourceEvents.push(toSourceEventDisplay(item));
+			continue;
+		}
+
+		const row: QueuedDisplayRow = {
+			representative: item,
+			isReviewGateGroup: false,
+			sourceEvents: item.reviewGate ? [toSourceEventDisplay(item)] : [],
+		};
+		rows.push(row);
+		if (key) rowByGroupKey.set(key, row);
+	}
+
+	return rows;
+}
+
+const REVIEW_GATE_SOURCE_LABELS: Record<QueuedReviewGateSourceEvent, string> = {
+	pull_request: 'Pull request',
+	check_suite: 'Check suite',
+};
+
+/** Compact diagnostic label for one source event folded into a review-gate group. */
+export function reviewGateSourceEventLabel(event: QueuedReviewGateSourceEventDisplay): string {
+	const base = REVIEW_GATE_SOURCE_LABELS[event.sourceEvent];
+	const action = event.sourceAction ? ` · ${event.sourceAction}` : '';
+	const recheck = event.recheckAttempt !== undefined ? ` · recheck #${event.recheckAttempt}` : '';
+	return `${base}${action}${recheck}`;
+}
+
+/** The wording a grouped review-gate row uses instead of claiming a Review agent is queued. */
+export const REVIEW_GATE_GROUP_LABEL = 'Awaiting review decision/checks';

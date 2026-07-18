@@ -47,6 +47,28 @@ export type QueuedPhaseHint = z.infer<typeof queuedPhaseHintSchema>;
 export const queuedRunStateSchema = z.enum(['waiting', 'prioritized', 'delayed']);
 export type QueuedRunState = z.infer<typeof queuedRunStateSchema>;
 
+/** The raw GitHub lifecycle event a review-gate job's metadata was derived from (mirrors `ReviewGateSourceEventSchema`). */
+export const queuedReviewGateSourceEventSchema = z.enum(['pull_request', 'check_suite']);
+export type QueuedReviewGateSourceEvent = z.infer<typeof queuedReviewGateSourceEventSchema>;
+
+/**
+ * Mirrors the server `QueuedReviewGateSchema` (`src/queue/queued-runs.ts`,
+ * issue #275): diagnostic metadata for a `review`-hinted `github` job — a raw
+ * lifecycle event *entering* the review-gate, not proof a Review agent is
+ * already queued. Present only when the job carries the PR number and head SHA
+ * needed to classify it safely.
+ */
+export const queuedReviewGateSchema = z.object({
+	sourceEvent: queuedReviewGateSourceEventSchema,
+	/** The webhook `action` on the source event (e.g. `opened`, `synchronize`, `completed`). */
+	sourceAction: z.string().optional(),
+	/** The PR head commit SHA this event evaluates — the review dispatch dedup key. */
+	headSha: z.string(),
+	/** Deferred check-suite recheck attempt count, when this job is a coalesced recheck. */
+	recheckAttempt: z.number().int().nonnegative().optional(),
+});
+export type QueuedReviewGate = z.infer<typeof queuedReviewGateSchema>;
+
 export const queuedRunSchema = z.object({
 	jobId: z.string(),
 	projectId: z.string(),
@@ -71,6 +93,11 @@ export const queuedRunSchema = z.object({
 	enqueuedAt: z.string(),
 	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
 	runsAt: z.string().optional(),
+	/**
+	 * Present only for a `review`-hinted `github` job carrying the PR number and
+	 * head SHA needed to classify it safely (see {@link queuedReviewGateSchema}).
+	 */
+	reviewGate: queuedReviewGateSchema.optional(),
 });
 export type QueuedRun = z.infer<typeof queuedRunSchema>;
 

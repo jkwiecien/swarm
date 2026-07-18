@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { QueuedRun } from '@/types/runs.js';
 import {
+	groupQueuedRuns,
 	queuedPhaseLabel,
 	queuedRunKey,
 	queuedWorkItemLabel,
 	queuedWorkItemTitle,
 	queuedWorkItemUrl,
+	reviewGateSourceEventLabel,
 } from './queued-runs.js';
 
 function githubRun(overrides: Partial<QueuedRun> = {}): QueuedRun {
@@ -91,5 +93,188 @@ describe('queuedWorkItemLabel', () => {
 describe('queuedRunKey', () => {
 	it('is the BullMQ job id', () => {
 		expect(queuedRunKey(githubRun({ jobId: 'unique-job-id' }))).toBe('unique-job-id');
+	});
+});
+
+function reviewGateRun(overrides: Partial<QueuedRun> = {}): QueuedRun {
+	return githubRun({
+		reviewGate: { sourceEvent: 'pull_request', sourceAction: 'opened', headSha: 'sha-1' },
+		...overrides,
+	});
+}
+
+describe('groupQueuedRuns', () => {
+	it('renders a job with no reviewGate metadata as its own ungrouped row', () => {
+		const rows = groupQueuedRuns([boardRun()]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ isReviewGateGroup: false, sourceEvents: [] });
+		expect(rows[0].representative.jobId).toBe('job-board');
+	});
+
+	it('renders a single review-gate job as an ungrouped row carrying its one source event', () => {
+		const rows = groupQueuedRuns([reviewGateRun()]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].isReviewGateGroup).toBe(false);
+		expect(rows[0].sourceEvents).toEqual([
+			{
+				jobId: 'job-gh',
+				sourceEvent: 'pull_request',
+				sourceAction: 'opened',
+				recheckAttempt: undefined,
+			},
+		]);
+	});
+
+	// Regression (issue #275): a fixed Respond-to-review push produces both
+	// SWARM's synthetic `check_suite` follow-up and GitHub's real
+	// `pull_request:synchronize` webhook for the same PR/SHA — the exact
+	// scenario the grouping must collapse into one logical row.
+	it('groups a synthetic check_suite follow-up with a real pull_request:synchronize webhook for the same PR/SHA', () => {
+		const followUp = reviewGateRun({
+			jobId: 'job-followup',
+			reviewGate: { sourceEvent: 'check_suite', sourceAction: 'completed', headSha: 'sha-fix' },
+		});
+		const synchronize = reviewGateRun({
+			jobId: 'job-synchronize',
+			reviewGate: { sourceEvent: 'pull_request', sourceAction: 'synchronize', headSha: 'sha-fix' },
+		});
+
+		const rows = groupQueuedRuns([followUp, synchronize]);
+
+		expect(rows).toHaveLength(1);
+		expect(rows[0].isReviewGateGroup).toBe(true);
+		expect(rows[0].representative.jobId).toBe('job-followup');
+		expect(rows[0].sourceEvents).toEqual([
+			{
+				jobId: 'job-followup',
+				sourceEvent: 'check_suite',
+				sourceAction: 'completed',
+				recheckAttempt: undefined,
+			},
+			{
+				jobId: 'job-synchronize',
+				sourceEvent: 'pull_request',
+				sourceAction: 'synchronize',
+				recheckAttempt: undefined,
+			},
+		]);
+	});
+
+	it('preserves the position of the first job in a group within the overall row order', () => {
+		const before = boardRun({ jobId: 'job-before' });
+		const followUp = reviewGateRun({
+			jobId: 'job-followup',
+			reviewGate: { sourceEvent: 'check_suite', headSha: 'sha-fix' },
+		});
+		const after = boardRun({ jobId: 'job-after' });
+		const synchronize = reviewGateRun({
+			jobId: 'job-synchronize',
+			reviewGate: { sourceEvent: 'pull_request', sourceAction: 'synchronize', headSha: 'sha-fix' },
+		});
+
+		const rows = groupQueuedRuns([before, followUp, after, synchronize]);
+
+		expect(rows.map((r) => r.representative.jobId)).toEqual([
+			'job-before',
+			'job-followup',
+			'job-after',
+		]);
+		expect(rows[1].isReviewGateGroup).toBe(true);
+		expect(rows[1].sourceEvents.map((e) => e.jobId)).toEqual(['job-followup', 'job-synchronize']);
+	});
+
+	it('never groups across a different PR number', () => {
+		const first = reviewGateRun({
+			jobId: 'job-pr-42',
+			prNumber: '42',
+			reviewGate: { sourceEvent: 'check_suite', headSha: 'sha-fix' },
+		});
+		const second = reviewGateRun({
+			jobId: 'job-pr-43',
+			prNumber: '43',
+			reviewGate: { sourceEvent: 'pull_request', headSha: 'sha-fix' },
+		});
+
+		const rows = groupQueuedRuns([first, second]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => !r.isReviewGateGroup)).toBe(true);
+	});
+
+	it('never groups across a different head SHA', () => {
+		const first = reviewGateRun({
+			jobId: 'job-sha-1',
+			reviewGate: { sourceEvent: 'check_suite', headSha: 'sha-1' },
+		});
+		const second = reviewGateRun({
+			jobId: 'job-sha-2',
+			reviewGate: { sourceEvent: 'pull_request', headSha: 'sha-2' },
+		});
+
+		const rows = groupQueuedRuns([first, second]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => !r.isReviewGateGroup)).toBe(true);
+	});
+
+	it('never groups across a different project', () => {
+		const first = reviewGateRun({
+			jobId: 'job-proj-a',
+			projectId: 'proj-a',
+			reviewGate: { sourceEvent: 'check_suite', headSha: 'sha-fix' },
+		});
+		const second = reviewGateRun({
+			jobId: 'job-proj-b',
+			projectId: 'proj-b',
+			reviewGate: { sourceEvent: 'pull_request', headSha: 'sha-fix' },
+		});
+
+		const rows = groupQueuedRuns([first, second]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => !r.isReviewGateGroup)).toBe(true);
+	});
+
+	it('does not group a review-gate job missing a PR number', () => {
+		const noPr = reviewGateRun({ jobId: 'job-no-pr', prNumber: undefined });
+		const withPr = reviewGateRun({ jobId: 'job-with-pr' });
+
+		const rows = groupQueuedRuns([noPr, withPr]);
+		expect(rows).toHaveLength(2);
+	});
+
+	it('leaves unrelated phase hints (e.g. respond-to-review, resolve-conflicts) ungrouped', () => {
+		const respondToReview = githubRun({ jobId: 'job-rtr', phaseHint: 'respond-to-review' });
+		const resolveConflicts = githubRun({ jobId: 'job-rc', phaseHint: 'resolve-conflicts' });
+
+		const rows = groupQueuedRuns([respondToReview, resolveConflicts]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => !r.isReviewGateGroup && r.sourceEvents.length === 0)).toBe(true);
+	});
+});
+
+describe('reviewGateSourceEventLabel', () => {
+	it('labels a pull_request source event with its action', () => {
+		expect(
+			reviewGateSourceEventLabel({
+				jobId: 'j1',
+				sourceEvent: 'pull_request',
+				sourceAction: 'synchronize',
+			}),
+		).toBe('Pull request · synchronize');
+	});
+
+	it('labels a check_suite source event and includes its recheck attempt', () => {
+		expect(
+			reviewGateSourceEventLabel({
+				jobId: 'j1',
+				sourceEvent: 'check_suite',
+				sourceAction: 'completed',
+				recheckAttempt: 3,
+			}),
+		).toBe('Check suite · completed · recheck #3');
+	});
+
+	it('omits the action/recheck segments when absent', () => {
+		expect(reviewGateSourceEventLabel({ jobId: 'j1', sourceEvent: 'pull_request' })).toBe(
+			'Pull request',
+		);
 	});
 });

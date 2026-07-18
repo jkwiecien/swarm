@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { PendingJobSnapshot } from '@/queue/queued-runs.js';
 import {
 	deriveQueuedPhaseHint,
+	deriveReviewGate,
 	QueuedRunSchema,
 	sortQueuedRuns,
 	toQueuedRuns,
@@ -104,6 +105,87 @@ describe('deriveQueuedPhaseHint', () => {
 	});
 });
 
+describe('deriveReviewGate', () => {
+	it('classifies a completed check_suite carrying a PR number and head SHA', () => {
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'check_suite',
+				action: 'completed',
+				workItemId: '42',
+				headSha: 'abc123',
+			},
+		});
+		expect(deriveReviewGate(job)).toEqual({
+			sourceEvent: 'check_suite',
+			sourceAction: 'completed',
+			headSha: 'abc123',
+		});
+	});
+
+	it('classifies a synchronize pull_request event and carries its recheckAttempt', () => {
+		const job = createMockGitHubWebhookJob({
+			recheckAttempt: 2,
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'pull_request',
+				action: 'synchronize',
+				workItemId: '42',
+				headSha: 'abc123',
+			},
+		});
+		expect(deriveReviewGate(job)).toEqual({
+			sourceEvent: 'pull_request',
+			sourceAction: 'synchronize',
+			headSha: 'abc123',
+			recheckAttempt: 2,
+		});
+	});
+
+	it('is undefined for a github-projects job', () => {
+		expect(deriveReviewGate(createMockGitHubProjectsWebhookJob())).toBeUndefined();
+	});
+
+	it('is undefined for a non-review-hinted github job (e.g. a failed check_suite)', () => {
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'check_suite',
+				checkConclusion: 'failure',
+				workItemId: '42',
+				headSha: 'abc123',
+			},
+		});
+		expect(deriveReviewGate(job)).toBeUndefined();
+	});
+
+	it('is undefined when the event carries no head SHA', () => {
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'pull_request',
+				action: 'opened',
+				workItemId: '42',
+				headSha: undefined,
+			},
+		});
+		expect(deriveReviewGate(job)).toBeUndefined();
+	});
+
+	it('is undefined when the event carries no PR number', () => {
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'check_suite',
+				action: 'completed',
+				workItemId: undefined,
+				headSha: 'abc123',
+			},
+		});
+		expect(deriveReviewGate(job)).toBeUndefined();
+	});
+});
+
 describe('toQueuedRuns', () => {
 	it('excludes a job whose data carries a runId (already a deferred run)', () => {
 		const deferred = createMockGitHubWebhookJob({ runId: 'run-1' });
@@ -160,6 +242,75 @@ describe('toQueuedRuns', () => {
 		});
 		expect(item.repo).toBeUndefined();
 		expect(item.prNumber).toBeUndefined();
+	});
+
+	it('carries reviewGate metadata through for a review-hinted github job', () => {
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'check_suite',
+				action: 'completed',
+				workItemId: '42',
+				headSha: 'abc123',
+			},
+		});
+
+		const [item] = toQueuedRuns([makeSnapshot({ data: job })]);
+
+		expect(item.reviewGate).toEqual({
+			sourceEvent: 'check_suite',
+			sourceAction: 'completed',
+			headSha: 'abc123',
+		});
+	});
+
+	it('omits reviewGate for a job that is not a review-gate input', () => {
+		const [item] = toQueuedRuns([makeSnapshot({ data: createMockGitHubProjectsWebhookJob() })]);
+		expect(item.reviewGate).toBeUndefined();
+	});
+
+	// Regression (issue #275): a fixed Respond-to-review push enqueues both a
+	// synthetic `check_suite` `completed` follow-up (`src/pipeline/follow-up-review.ts`)
+	// and GitHub delivers its own `pull_request` `synchronize` webhook for that
+	// same push — two raw events, same PR + new head SHA. The dispatch dedup
+	// folds these into at most one Review run; this asserts the read model
+	// exposes matching reviewGate identity so the UI can group them into one row.
+	it('exposes matching reviewGate identity for a synthetic follow-up and the real pull_request:synchronize webhook', () => {
+		const followUp = createMockGitHubWebhookJob({
+			deliveryId: 'respond-to-review-followup-jkwiecien-swarm-42-def456',
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'check_suite',
+				action: 'completed',
+				repoFullName: 'jkwiecien/swarm',
+				workItemId: '42',
+				headSha: 'def456',
+			},
+		});
+		const synchronize = createMockGitHubWebhookJob({
+			deliveryId: 'delivery-real-webhook',
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'pull_request',
+				action: 'synchronize',
+				repoFullName: 'jkwiecien/swarm',
+				workItemId: '42',
+				headSha: 'def456',
+			},
+		});
+
+		const items = toQueuedRuns([
+			makeSnapshot({ jobId: 'job-followup', data: followUp }),
+			makeSnapshot({ jobId: 'job-synchronize', data: synchronize }),
+		]);
+
+		expect(items).toHaveLength(2);
+		expect(items.every((item) => item.phaseHint === 'review')).toBe(true);
+		expect(items.map((item) => item.reviewGate?.headSha)).toEqual(['def456', 'def456']);
+		expect(items.map((item) => item.reviewGate?.sourceEvent)).toEqual([
+			'check_suite',
+			'pull_request',
+		]);
 	});
 
 	it('computes runsAt only for a delayed job', () => {
