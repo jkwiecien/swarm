@@ -1,18 +1,24 @@
 /**
- * Provider-neutral merge capability (issue #253). GitHub's built-in auto-merge
- * can be disallowed by repository settings even when a SWARM Review approves a
- * PR and the project opts into merge automation, so the Review pipeline needs
- * a direct-merge fallback — without hard-coding GitHub into the pipeline
- * (`ai/RULES.md` "Source-control features must not hard-code GitHub").
+ * Provider-neutral merge capability (issue #253; direct-merge-only per issue
+ * #292). The adapter performs the provider's *direct* PR/MR merge operation
+ * under the project's implementer credential — never the provider's own merge
+ * automation (GitHub's native auto-merge is unavailable on many private
+ * repositories and has no portable equivalent in Bitbucket/GitLab, so SWARM
+ * neither requests nor relies on it). Orchestration — when to ask, how to
+ * retry a transient refusal — lives in the durable merge dispatch
+ * (`src/worker/merge-automation.ts`), which re-invokes this capability with
+ * the approved head SHA on every attempt.
  *
- * Mirrors `src/scm/delivery.ts`'s `ScmDeliveryProvider` seam: pipeline code
- * depends on {@link ScmMergeProvider} only, never on a provider's own client or
- * vocabulary ("pull request" here, not GitHub's `pulls.merge` or GitLab's
- * "merge request"). GitHub is the only implementation today
+ * Mirrors `src/scm/delivery.ts`'s `ScmDeliveryProvider` seam: dispatch/worker
+ * code depends on {@link ScmMergeProvider} only, never on a provider's own
+ * client or vocabulary ("pull request" here, not GitHub's `pulls.merge` or
+ * GitLab's "merge request"). GitHub is the only implementation today
  * (`GitHubSCMIntegration.mergePullRequest`,
- * `src/integrations/scm/github/scm-integration.ts`); Bitbucket and GitLab
- * adapters implement the same interface, mapping their native PR/MR merge
- * responses onto {@link MergePullRequestOutcome}, with no pipeline changes.
+ * `src/integrations/scm/github/scm-integration.ts`). A Bitbucket/GitLab
+ * adapter implements the same interface — re-read current PR/MR state, verify
+ * the approved head and approval still hold, call its native direct merge
+ * endpoint, and map the response onto {@link MergePullRequestOutcome} — with
+ * no dispatch or worker changes.
  */
 
 import type { ProjectConfig } from '../config/schema.js';
@@ -25,12 +31,10 @@ import type { ProjectConfig } from '../config/schema.js';
  * - `merged` — the request is merged now, or was already merged (a retry
  *   after a prior success is idempotent).
  * - `not-ready` — a transient readiness condition blocks merging right now:
- *   unsatisfied/pending required checks, unresolved conflicts, or GitHub
- *   still converging on required-review state right after a submission
- *   (including "the provider's own auto-merge is now armed and waiting on
- *   those same conditions"). Expected to clear on its own; the request is
- *   left open for a later attempt or the provider's own automation to
- *   complete.
+ *   unsatisfied/pending required checks, unresolved conflicts, or the
+ *   provider still converging on required-review state right after a
+ *   submission. Expected to clear on its own; the merge dispatch retries it
+ *   on a bounded schedule.
  * - `not-eligible` — the approval this attempt was requested for no longer
  *   holds: the head moved (new commits pushed since the review), the PR was
  *   closed or converted back to a draft, or the approving review was

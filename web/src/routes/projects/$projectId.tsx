@@ -1200,10 +1200,11 @@ export function PipelineSettingsForm({
 							className="mt-0.5 h-4 w-4 accent-violet-600 disabled:opacity-50"
 						/>
 						<span>
-							<span className="block text-sm font-medium text-zinc-200">Auto merge</span>
+							<span className="block text-sm font-medium text-zinc-200">Merge automation</span>
 							<span className="block text-xs text-zinc-400 mt-1">
-								After SWARM responds to a reviewer, merge the pull request when GitHub reports it is
-								eligible. Required checks and repository rules still apply.
+								After a SWARM review approves a pull request, merge it directly using the
+								implementer credential, retrying briefly while checks settle. Repository rules still
+								apply; SWARM never uses the provider's native auto-merge.
 							</span>
 						</span>
 					</label>

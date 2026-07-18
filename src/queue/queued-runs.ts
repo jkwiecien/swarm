@@ -32,6 +32,7 @@ export const QueuedPhaseHintSchema = z.enum([
 	'respond-to-review',
 	'respond-to-ci',
 	'resolve-conflicts',
+	'merge-automation',
 	'unknown',
 ]);
 export type QueuedPhaseHint = z.infer<typeof QueuedPhaseHintSchema>;
@@ -91,7 +92,7 @@ export const QueuedRunSchema = z.object({
 	/** The canonical dispatch id — the handle Put back / cancel operate on. */
 	jobId: z.string(),
 	projectId: z.string(),
-	type: z.enum(['github', 'github-projects']),
+	type: z.enum(['github', 'github-projects', 'merge-automation']),
 	state: PendingJobStateSchema,
 	phaseHint: QueuedPhaseHintSchema,
 	/** Why this dispatch is waiting, when it recorded a reason. */
@@ -100,9 +101,9 @@ export const QueuedRunSchema = z.object({
 	runId: z.string().optional(),
 	/** Deferred-retry attempt counter. */
 	attempt: z.number().int().nonnegative().optional(),
-	/** `github` jobs only — `owner/repo`. */
+	/** `github` and `merge-automation` jobs only — `owner/repo`. */
 	repo: z.string().optional(),
-	/** `github` jobs only — the PR/issue number. */
+	/** `github` and `merge-automation` jobs only — the PR/issue number. */
 	prNumber: z.string().optional(),
 	/** `github-projects` jobs only — the opaque board item node id. */
 	workItemNodeId: z.string().optional(),
@@ -134,6 +135,7 @@ export type QueuedRun = z.infer<typeof QueuedRunSchema>;
  */
 export function deriveQueuedPhaseHint(job: SwarmJob): QueuedPhaseHint {
 	if (job.type === 'github-projects') return 'board';
+	if (job.type === 'merge-automation') return 'merge-automation';
 
 	const { event } = job;
 	switch (event.eventType) {
@@ -203,7 +205,9 @@ function toQueuedRun(dispatch: DispatchRow): QueuedRun {
 	return QueuedRunSchema.parse(
 		data.type === 'github'
 			? { ...shared, repo: data.event.repoFullName, prNumber: data.event.workItemId }
-			: { ...shared, workItemNodeId: data.event.itemNodeId, contentType: data.event.contentType },
+			: data.type === 'merge-automation'
+				? { ...shared, repo: data.repo, prNumber: data.prNumber }
+				: { ...shared, workItemNodeId: data.event.itemNodeId, contentType: data.event.contentType },
 	);
 }
 

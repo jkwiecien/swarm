@@ -32,7 +32,6 @@ vi.mock('@octokit/rest', () => ({
 }));
 
 import {
-	enablePullRequestAutoMerge,
 	getCheckSuiteStatus,
 	getGitHubUserForToken,
 	getPullRequestAuthorLogin,
@@ -176,31 +175,6 @@ describe('github client', () => {
 			await expect(
 				withGitHubToken('tok', () => getPullRequestAuthorLogin('jkwiecien', 'swarm', 9)),
 			).rejects.toThrow(/502/);
-		});
-	});
-
-	describe('enablePullRequestAutoMerge', () => {
-		it('enables GitHub auto-merge without waiting for asynchronous mergeability', async () => {
-			pullsGet.mockResolvedValue({
-				data: { state: 'open', draft: false, mergeable: null, node_id: 'PR_node_42' },
-			});
-			graphql.mockResolvedValue({});
-
-			await expect(
-				withGitHubToken('tok', () => enablePullRequestAutoMerge('jkwiecien', 'swarm', 42)),
-			).resolves.toEqual({ enabled: true, message: 'GitHub auto-merge enabled' });
-			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('enablePullRequestAutoMerge'), {
-				pullRequestId: 'PR_node_42',
-			});
-		});
-
-		it('does not request auto-merge for a draft pull request', async () => {
-			pullsGet.mockResolvedValue({ data: { state: 'open', draft: true, node_id: 'PR_node_42' } });
-
-			await expect(
-				withGitHubToken('tok', () => enablePullRequestAutoMerge('jkwiecien', 'swarm', 42)),
-			).resolves.toEqual({ enabled: false, message: 'pull request is still a draft' });
-			expect(graphql).not.toHaveBeenCalled();
 		});
 	});
 

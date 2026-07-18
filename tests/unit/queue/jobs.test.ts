@@ -48,6 +48,29 @@ describe('SwarmJobSchema', () => {
 		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
 	});
 
+	it('parses a merge-automation job (issue #292)', () => {
+		const job = {
+			type: 'merge-automation',
+			projectId: 'swarm',
+			reviewRunId: 'run-1',
+			repo: 'jkwiecien/swarm',
+			prNumber: '17',
+			approvedHeadSha: 'deadbeef',
+		};
+		expect(SwarmJobSchema.parse(roundTrip(job))).toEqual(job);
+	});
+
+	it('rejects a merge-automation job missing its approved head SHA', () => {
+		const job = {
+			type: 'merge-automation',
+			projectId: 'swarm',
+			reviewRunId: 'run-1',
+			repo: 'jkwiecien/swarm',
+			prNumber: '17',
+		};
+		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();
+	});
+
 	it('rejects an unknown job type', () => {
 		const job = { ...createMockGitHubWebhookJob(), type: 'gitlab' };
 		expect(() => SwarmJobSchema.parse(roundTrip(job))).toThrow();

@@ -133,11 +133,35 @@ export const GitHubProjectsWebhookJobSchema = jobBase.extend({
 	event: GitHubProjectsParsedEventSchema,
 });
 
+/**
+ * A durable merge-automation intent (issue #292): after the Review phase
+ * submits an eligible `approve`, the worker persists one of these as a
+ * dispatch (never a webhook — there is no `event`) and executes it through the
+ * normal dispatch lifecycle: the provider-neutral `ScmMergeProvider` merges
+ * the approved pull request directly under the project's implementer
+ * credential, retrying transient `not-ready` outcomes on the dispatch's own
+ * bounded schedule. Carries everything an attempt needs so no Review-run
+ * context has to survive in memory; the reviewed head SHA is re-verified
+ * against the PR's current state on every attempt.
+ */
+export const MergeAutomationJobSchema = jobBase.extend({
+	type: z.literal('merge-automation'),
+	/** The completed Review run whose approval this merge executes — outcomes persist onto its row. */
+	reviewRunId: z.string().min(1),
+	/** `owner/repo` — observability only; execution resolves the repo from project config. */
+	repo: z.string().min(1),
+	prNumber: z.string().min(1),
+	/** The reviewed head SHA the approval covers; re-checked fresh on every attempt. */
+	approvedHeadSha: z.string().min(1),
+});
+
 export const SwarmJobSchema = z.discriminatedUnion('type', [
 	GitHubWebhookJobSchema,
 	GitHubProjectsWebhookJobSchema,
+	MergeAutomationJobSchema,
 ]);
 
 export type GitHubWebhookJob = z.infer<typeof GitHubWebhookJobSchema>;
 export type GitHubProjectsWebhookJob = z.infer<typeof GitHubProjectsWebhookJobSchema>;
+export type MergeAutomationJob = z.infer<typeof MergeAutomationJobSchema>;
 export type SwarmJob = z.infer<typeof SwarmJobSchema>;

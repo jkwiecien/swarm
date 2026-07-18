@@ -163,50 +163,6 @@ export interface ConflictCandidatePullRequest {
 	authorLogin: string | null;
 }
 
-/** Result of requesting GitHub's pending-check-aware pull-request auto-merge. */
-export interface PullRequestAutoMergeResult {
-	enabled: boolean;
-	message: string;
-}
-
-/**
- * Ask GitHub to merge an open PR after all repository rules are satisfied.
- *
- * This deliberately does not inspect `mergeable`: GitHub computes that field
- * asynchronously and it is commonly `null` immediately after the implementer
- * pushes review fixes. GitHub auto-merge keeps waiting for checks/reviews (or
- * enters the repository's merge queue) instead of turning that normal pending
- * state into a lost one-shot merge attempt.
- */
-export async function enablePullRequestAutoMerge(
-	owner: string,
-	repo: string,
-	prNumber: number,
-): Promise<PullRequestAutoMergeResult> {
-	const client = getScopedClient();
-	const { data: pull } = await client.pulls.get({ owner, repo, pull_number: prNumber });
-	if (pull.state !== 'open' || pull.draft) {
-		return {
-			enabled: false,
-			message: pull.draft
-				? 'pull request is still a draft'
-				: pull.state !== 'open'
-					? `pull request is ${pull.state}`
-					: 'pull request cannot be auto-merged',
-		};
-	}
-
-	await client.graphql(
-		`mutation EnablePullRequestAutoMerge($pullRequestId: ID!) {
-			enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId }) {
-				pullRequest { id }
-			}
-		}`,
-		{ pullRequestId: pull.node_id },
-	);
-	return { enabled: true, message: 'GitHub auto-merge enabled' };
-}
-
 /** A PR's merge-relevant state — the initial lookup `mergePullRequest` needs before choosing a merge path. */
 export interface PullRequestMergeState {
 	merged: boolean;
@@ -274,14 +230,15 @@ export interface DirectMergeResult {
 }
 
 /**
- * Merge an open PR directly via GitHub's REST merge endpoint — the fallback
- * `GitHubSCMIntegration.mergePullRequest` uses once repository auto-merge is
- * confirmed unavailable (issue #253). Octokit throws a `RequestError` (with a
- * `.status`) on any non-2xx response — unmet required checks/reviews,
- * conflicts, a branch-protection/ruleset refusal, a merge-queue requirement,
- * ... — classifying that error into the provider-neutral outcome is the
- * adapter's job, not this primitive's; this only performs the API call and
- * leaves the merge-method choice to GitHub's own default.
+ * Merge an open PR directly via GitHub's REST merge endpoint — the primary
+ * (and only) merge strategy `GitHubSCMIntegration.mergePullRequest` uses
+ * (issue #292; GitHub's native auto-merge is deliberately never requested).
+ * Octokit throws a `RequestError` (with a `.status`) on any non-2xx response —
+ * unmet required checks/reviews, conflicts, a branch-protection/ruleset
+ * refusal, a merge-queue requirement, ... — classifying that error into the
+ * provider-neutral outcome is the adapter's job, not this primitive's; this
+ * only performs the API call and leaves the merge-method choice to GitHub's
+ * own default.
  */
 export async function mergePullRequestDirect(
 	owner: string,

@@ -15,6 +15,7 @@
  * reconciliation must never stop the worker from serving real work.
  */
 
+import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import {
 	createDispatch,
@@ -23,19 +24,27 @@ import {
 	listProjectsWithCapacityPending,
 	listWakeablePendingDispatches,
 } from '../db/repositories/dispatchesRepository.js';
-import { failRunFromStatus } from '../db/repositories/runsRepository.js';
+import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
+import {
+	failRunFromStatus,
+	getPendingReviewMergeFollowUps,
+} from '../db/repositories/runsRepository.js';
 import { requireEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
-import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
+import { type MergeAutomationJob, type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
 import { priorityFor } from '../queue/producer.js';
 import type { TriggerPhase } from '../triggers/types.js';
+import { mergeDispatchDedupKey } from '../worker/merge-automation.js';
 import { promoteNextCapacityDispatch, publishDispatchWakeUp } from './dispatcher.js';
 
 /** The Redis namespace the retired pending-continuation registry lived under. */
 const LEGACY_CONTINUATION_NS = 'swarm:pending-continuations:';
 const LEGACY_CONTINUATION_CLAIM_NS = 'swarm:pending-continuation-claims:';
+
+/** The retired standalone merge-follow-up queue (issue #278, folded into dispatches by #292). */
+const LEGACY_MERGE_FOLLOW_UP_QUEUE = 'swarm-merge-follow-ups';
 
 const DEAD_LEASE_REASON =
 	'Worker lease expired without the dispatch settling — reconciled as failed (dead worker or crashed phase)';
@@ -237,6 +246,83 @@ async function backfillOrphanedDeferredRuns(): Promise<number> {
 }
 
 /**
+ * One-time import of durable merge intent left behind by the retired
+ * standalone merge-follow-up queue (issue #278 → #292): Review runs whose last
+ * recorded merge outcome is still the transient `not-ready` get a
+ * merge-automation dispatch, eligible immediately. The dispatch dedup key
+ * (`merge:<runId>`) makes re-running this on every startup safe — a run whose
+ * dispatch already exists (active *or* settled/cancelled) is skipped, so a
+ * cancelled merge is never resurrected. The retired BullMQ queue itself is
+ * then drained best-effort; its delayed jobs carried no state Postgres doesn't
+ * already hold.
+ */
+async function backfillLegacyMergeFollowUps(): Promise<number> {
+	const pending = await getPendingReviewMergeFollowUps();
+	let imported = 0;
+	for (const run of pending) {
+		if (!run.prNumber || !run.reviewMergeApprovedHeadSha) continue;
+		const project = await findProjectByIdFromDb(run.projectId);
+		if (!project) {
+			logger.warn('dispatch-reconciler: pending merge follow-up references unknown project', {
+				runId: run.id,
+				projectId: run.projectId,
+			});
+			continue;
+		}
+		const job: MergeAutomationJob = {
+			type: 'merge-automation',
+			projectId: run.projectId,
+			reviewRunId: run.id,
+			repo: project.repo,
+			prNumber: run.prNumber,
+			approvedHeadSha: run.reviewMergeApprovedHeadSha,
+		};
+		try {
+			const { dispatch, created } = await createDispatch({
+				projectId: run.projectId,
+				jobPayload: job,
+				dedupKey: mergeDispatchDedupKey(run.id),
+				source: 'recovered',
+				waitReason: 'recovered',
+				runId: run.id,
+				taskId: run.taskId ?? undefined,
+				phase: 'merge-automation',
+				attempt: (run.reviewMergeAttempt ?? 0) + 1,
+			});
+			if (!created) continue;
+			await publishDispatchWakeUp(dispatch);
+			imported += 1;
+		} catch (err) {
+			logger.warn('dispatch-reconciler: legacy merge follow-up import refused', {
+				runId: run.id,
+				error: describeError(err),
+			});
+		}
+	}
+	// Drain regardless of what was imported: a stale delayed job whose run row
+	// has since moved past `not-ready` matches no import but must still never
+	// fire (nothing consumes this queue anymore — this is just Redis hygiene).
+	await drainLegacyMergeFollowUpQueue();
+	return imported;
+}
+
+/** Obliterate the retired merge-follow-up queue so its delayed jobs can't linger in Redis. */
+async function drainLegacyMergeFollowUpQueue(): Promise<void> {
+	const queue = new Queue(LEGACY_MERGE_FOLLOW_UP_QUEUE, {
+		connection: parseRedisUrl(requireEnv('REDIS_URL')),
+	});
+	try {
+		await queue.obliterate({ force: true });
+	} catch (err) {
+		logger.warn('dispatch-reconciler: failed to drain the retired merge-follow-up queue', {
+			error: describeError(err),
+		});
+	} finally {
+		await queue.close().catch(() => {});
+	}
+}
+
+/**
  * Startup reconciliation — run after migrations and the orphaned-run sweep,
  * before the worker serves jobs. Order matters: dead leases are settled first
  * so their runs can be re-imported cleanly if they were deferred; legacy
@@ -248,12 +334,14 @@ export async function reconcileDispatchesAtStartup(): Promise<void> {
 		const reclaimed = await reclaimDeadLeases();
 		const legacy = await backfillLegacyPendingContinuations();
 		const orphans = await backfillOrphanedDeferredRuns();
+		const merges = await backfillLegacyMergeFollowUps();
 		const republished = await republishWakeUps();
-		if (reclaimed > 0 || legacy > 0 || orphans > 0 || republished > 0) {
+		if (reclaimed > 0 || legacy > 0 || orphans > 0 || merges > 0 || republished > 0) {
 			logger.info('dispatch-reconciler: startup reconciliation complete', {
 				deadLeases: reclaimed,
 				legacyContinuationsImported: legacy,
 				orphanedDeferredRunsImported: orphans,
+				legacyMergeFollowUpsImported: merges,
 				wakeUpsRepublished: republished,
 			});
 		}

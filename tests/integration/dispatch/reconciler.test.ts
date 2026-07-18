@@ -12,6 +12,7 @@ import {
 	completeRun,
 	createRun,
 	getRunByIdFromDb,
+	updateReviewMergeOutcome,
 } from '../../../src/db/repositories/runsRepository.js';
 import { reconcileDispatchesAtStartup } from '../../../src/dispatch/reconciler.js';
 import { QUEUE_NAME, type SwarmJob } from '../../../src/queue/jobs.js';
@@ -135,6 +136,48 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE || !process.env.SWARM_TEST_
 				continuation: true,
 				taskId: '17',
 			});
+		});
+
+		it('imports legacy not-ready merge-follow-up intent as a durable merge dispatch, exactly once (issue #292)', async () => {
+			const runId = await createRun({
+				projectId: PROJECT_ID,
+				taskId: '17',
+				phase: 'review',
+				prNumber: '17',
+			});
+			await completeRun(runId, { status: 'completed', reviewVerdict: 'approve' });
+			await updateReviewMergeOutcome(runId, {
+				status: 'not-ready',
+				message: 'pending required checks',
+				attempt: 2,
+				approvedHeadSha: 'deadbeef',
+			});
+
+			await reconcileDispatchesAtStartup();
+
+			const dispatch = await getActiveDispatchByRunId(runId);
+			expect(dispatch).toMatchObject({
+				state: 'pending',
+				waitReason: 'recovered',
+				source: 'recovered',
+				dedupKey: `merge:${runId}`,
+				phase: 'merge-automation',
+				runId,
+				attempt: 3,
+			});
+			expect(dispatch?.jobPayload).toMatchObject({
+				type: 'merge-automation',
+				projectId: PROJECT_ID,
+				reviewRunId: runId,
+				prNumber: '17',
+				approvedHeadSha: 'deadbeef',
+			});
+			expect(await pendingJobIds()).toContain(`dispatch_${dispatch?.id}_w0`);
+
+			// A second pass is a no-op — the dedup key refuses a duplicate import.
+			await reconcileDispatchesAtStartup();
+			expect(await getActiveDispatchByRunId(runId)).toMatchObject({ id: dispatch?.id });
+			expect(await pendingJobIds()).toHaveLength(1);
 		});
 
 		it('is idempotent — a second startup pass changes nothing', async () => {

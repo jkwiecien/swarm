@@ -2,9 +2,8 @@
  * Follow-up Review scheduling — the reliable hand-off from a `fixed`
  * Respond-to-review response to exactly one Review run on the newly pushed
  * commit (issue #241). Injected into `runRespondToReviewPhase`
- * (`src/pipeline/respond-to-review.ts`) the same way `mergeAfterReviewIfEligible`
- * is injected into `runReviewPhase` (`src/pipeline/merge-after-review.ts`): a
- * typed operation with a real GitHub/queue-backed default, overridden in tests.
+ * (`src/pipeline/respond-to-review.ts`) as a typed operation with a real
+ * GitHub/queue-backed default, overridden in tests.
  *
  * The default builds a synthetic `check_suite`-shaped `GitHubParsedEvent` for
  * the new head SHA and enqueues it exactly like a real webhook

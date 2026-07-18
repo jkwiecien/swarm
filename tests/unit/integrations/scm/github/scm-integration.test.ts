@@ -20,7 +20,6 @@ vi.mock('@/config/provider.js', () => ({
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	// Pass-through so we can assert the token that would be scoped without a real Octokit.
 	withGitHubToken: vi.fn((_token: string, fn: () => Promise<unknown>) => fn()),
-	enablePullRequestAutoMerge: vi.fn(),
 	getGitHubUserForToken: vi.fn(),
 	getPullRequestMergeState: vi.fn(),
 	getPullRequestReviewDecision: vi.fn(),
@@ -30,7 +29,6 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 
 import { getPersonaToken, getPersonaTokenOrNull } from '@/config/provider.js';
 import {
-	enablePullRequestAutoMerge,
 	getGitHubUserForToken,
 	getPullRequestMergeState,
 	getPullRequestReviewDecision,
@@ -112,28 +110,11 @@ describe('GitHubSCMIntegration', () => {
 		});
 	});
 
-	describe('enablePullRequestAutoMerge', () => {
-		it('enables auto-merge under the implementer credentials', async () => {
-			vi.mocked(getPersonaToken).mockResolvedValue('tok-impl');
-			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
-				enabled: true,
-				message: 'auto-merge enabled',
-			});
-
-			await expect(scm.enablePullRequestAutoMerge(project, 42)).resolves.toEqual({
-				enabled: true,
-				message: 'auto-merge enabled',
-			});
-			expect(enablePullRequestAutoMerge).toHaveBeenCalledWith('jkwiecien', 'swarm', 42);
-		});
-	});
-
-	describe('mergePullRequest (issue #253, retried durably per issue #278)', () => {
+	describe('mergePullRequest (issue #253, direct PAT merge as the sole strategy per issue #292)', () => {
 		beforeEach(() => {
 			vi.mocked(getPersonaToken).mockResolvedValue('tok-impl');
 			vi.mocked(getPullRequestMergeState).mockReset();
 			vi.mocked(mergePullRequestDirect).mockReset();
-			vi.mocked(enablePullRequestAutoMerge).mockReset();
 			vi.mocked(getPullRequestReviewDecision).mockReset();
 			vi.mocked(getPullRequestReviews).mockReset();
 			// The default fixture models an unambiguously-approved PR, so every test
@@ -142,6 +123,16 @@ describe('GitHubSCMIntegration', () => {
 			vi.mocked(getPullRequestReviews).mockResolvedValue([
 				{ state: 'APPROVED', commitId: 'reviewed-head' },
 			]);
+		});
+
+		it('exposes no native auto-merge capability anywhere in the GitHub client (issue #292)', async () => {
+			// The `Auto merge is not allowed for this repository` failure can only
+			// recur if some code path asks GitHub to arm native auto-merge again —
+			// the capability must not exist to be called.
+			const actual = await vi.importActual<Record<string, unknown>>(
+				'@/integrations/scm/github/client.js',
+			);
+			expect(Object.keys(actual).filter((key) => /auto.?merge/i.test(key))).toEqual([]);
 		});
 
 		it('runs under the implementer credentials', async () => {
@@ -155,7 +146,7 @@ describe('GitHubSCMIntegration', () => {
 			expect(getPersonaToken).toHaveBeenCalledWith(project, 'implementer');
 		});
 
-		it('reports merged idempotently when the PR is already merged, without arming anything', async () => {
+		it('reports merged idempotently when the PR is already merged, without attempting anything', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: true,
 				state: 'closed',
@@ -167,7 +158,6 @@ describe('GitHubSCMIntegration', () => {
 				status: 'merged',
 				message: 'pull request already merged',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
@@ -184,11 +174,10 @@ describe('GitHubSCMIntegration', () => {
 				message: expect.stringContaining('pull request head changed since the reviewed commit'),
 			});
 			expect(getPullRequestReviewDecision).not.toHaveBeenCalled();
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
-		it('is not-eligible for a draft pull request, without arming anything', async () => {
+		it('is not-eligible for a draft pull request, without attempting anything', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: false,
 				state: 'open',
@@ -200,7 +189,6 @@ describe('GitHubSCMIntegration', () => {
 				status: 'not-eligible',
 				message: 'pull request was converted back to a draft after the review was approved',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
@@ -216,7 +204,6 @@ describe('GitHubSCMIntegration', () => {
 				status: 'not-eligible',
 				message: 'pull request is closed',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
@@ -233,7 +220,6 @@ describe('GitHubSCMIntegration', () => {
 				status: 'not-eligible',
 				message: 'the approving review is no longer in effect — changes have since been requested',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
@@ -248,14 +234,16 @@ describe('GitHubSCMIntegration', () => {
 				headSha: 'reviewed-head',
 			});
 			vi.mocked(getPullRequestReviewDecision).mockResolvedValue('REVIEW_REQUIRED');
-			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
-				enabled: true,
-				message: 'GitHub auto-merge enabled',
+			vi.mocked(mergePullRequestDirect).mockResolvedValue({
+				merged: true,
+				message: 'Pull Request successfully merged',
+				sha: 'deadbeef',
 			});
 
 			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
-				status: 'not-ready',
-				message: 'GitHub auto-merge enabled; waiting for required checks and reviews',
+				status: 'merged',
+				message: 'Pull Request successfully merged',
+				sha: 'deadbeef',
 			});
 		});
 
@@ -275,7 +263,6 @@ describe('GitHubSCMIntegration', () => {
 				status: 'not-eligible',
 				message: 'the approving review is no longer in effect — it has since been dismissed',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
@@ -287,14 +274,16 @@ describe('GitHubSCMIntegration', () => {
 				headSha: 'reviewed-head',
 			});
 			vi.mocked(getPullRequestReviewDecision).mockResolvedValue(null);
-			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
-				enabled: true,
-				message: 'GitHub auto-merge enabled',
+			vi.mocked(mergePullRequestDirect).mockResolvedValue({
+				merged: true,
+				message: 'Pull Request successfully merged',
+				sha: 'deadbeef',
 			});
 
 			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
-				status: 'not-ready',
-				message: 'GitHub auto-merge enabled; waiting for required checks and reviews',
+				status: 'merged',
+				message: 'Pull Request successfully merged',
+				sha: 'deadbeef',
 			});
 		});
 
@@ -311,7 +300,7 @@ describe('GitHubSCMIntegration', () => {
 				status: 'provider-error',
 				message: '502 Bad Gateway',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
+			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
 		it('is provider-error when the initial PR lookup fails', async () => {
@@ -321,38 +310,16 @@ describe('GitHubSCMIntegration', () => {
 				status: 'provider-error',
 				message: '502 Bad Gateway',
 			});
-			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
-		});
-
-		it('prefers GitHub auto-merge and never calls the direct endpoint when it succeeds', async () => {
-			vi.mocked(getPullRequestMergeState).mockResolvedValue({
-				merged: false,
-				state: 'open',
-				draft: false,
-				headSha: 'reviewed-head',
-			});
-			vi.mocked(enablePullRequestAutoMerge).mockResolvedValue({
-				enabled: true,
-				message: 'GitHub auto-merge enabled',
-			});
-
-			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
-				status: 'not-ready',
-				message: 'GitHub auto-merge enabled; waiting for required checks and reviews',
-			});
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
 
-		it('falls back to a direct merge once GitHub reports auto-merge unavailable', async () => {
+		it('merges an eligible PR through the direct endpoint, pinned to the reviewed head', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: false,
 				state: 'open',
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockResolvedValue({
 				merged: true,
 				message: 'Pull Request successfully merged',
@@ -372,22 +339,6 @@ describe('GitHubSCMIntegration', () => {
 			);
 		});
 
-		it('does not eagerly fall back to a direct merge for an unrelated auto-merge failure', async () => {
-			vi.mocked(getPullRequestMergeState).mockResolvedValue({
-				merged: false,
-				state: 'open',
-				draft: false,
-				headSha: 'reviewed-head',
-			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(new Error('502 Bad Gateway'));
-
-			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
-				status: 'provider-error',
-				message: '502 Bad Gateway',
-			});
-			expect(mergePullRequestDirect).not.toHaveBeenCalled();
-		});
-
 		it('is not-ready when the direct merge reports the PR is not currently mergeable', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: false,
@@ -395,9 +346,6 @@ describe('GitHubSCMIntegration', () => {
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockResolvedValue({
 				merged: false,
 				message: 'At least 1 approving review is required',
@@ -416,9 +364,6 @@ describe('GitHubSCMIntegration', () => {
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockRejectedValue(
 				Object.assign(new Error('Pull Request is not mergeable'), { status: 405 }),
 			);
@@ -436,9 +381,6 @@ describe('GitHubSCMIntegration', () => {
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockRejectedValue(
 				Object.assign(new Error('Head branch was modified. Review and try the merge again.'), {
 					status: 409,
@@ -451,16 +393,13 @@ describe('GitHubSCMIntegration', () => {
 			});
 		});
 
-		it('is policy-blocked when the direct merge endpoint responds 403 for a merge-queue restriction', async () => {
+		it('is unsupported when the repository requires the merge queue (403 variant)', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({
 				merged: false,
 				state: 'open',
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockRejectedValue(
 				Object.assign(
 					new Error('Changes must be made through a pull request using a merge queue'),
@@ -471,8 +410,27 @@ describe('GitHubSCMIntegration', () => {
 			);
 
 			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
-				status: 'policy-blocked',
+				status: 'unsupported',
 				message: 'Changes must be made through a pull request using a merge queue',
+			});
+		});
+
+		it('is unsupported when the repository requires the merge queue (405 variant)', async () => {
+			vi.mocked(getPullRequestMergeState).mockResolvedValue({
+				merged: false,
+				state: 'open',
+				draft: false,
+				headSha: 'reviewed-head',
+			});
+			vi.mocked(mergePullRequestDirect).mockRejectedValue(
+				Object.assign(new Error('This branch must be merged via the merge queue'), {
+					status: 405,
+				}),
+			);
+
+			await expect(scm.mergePullRequest(project, 42, 'reviewed-head')).resolves.toEqual({
+				status: 'unsupported',
+				message: 'This branch must be merged via the merge queue',
 			});
 		});
 
@@ -483,9 +441,6 @@ describe('GitHubSCMIntegration', () => {
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockRejectedValue(
 				Object.assign(new Error('Protected branch update failed'), { status: 403 }),
 			);
@@ -503,9 +458,6 @@ describe('GitHubSCMIntegration', () => {
 				draft: false,
 				headSha: 'reviewed-head',
 			});
-			vi.mocked(enablePullRequestAutoMerge).mockRejectedValue(
-				new Error('Auto-merge is not allowed for this repository'),
-			);
 			vi.mocked(mergePullRequestDirect).mockRejectedValue(
 				Object.assign(new Error('Internal Server Error'), { status: 500 }),
 			);

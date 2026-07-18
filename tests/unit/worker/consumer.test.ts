@@ -217,20 +217,26 @@ vi.mock('@/db/repositories/appSettingsRepository.js', () => ({
 // SCM integration (the PM provider has no PR → comment mapping); mock it at the
 // module boundary the same way the PM provider is mocked above.
 const commentOnPullRequest = vi.fn(async (_p: ProjectConfig, _n: number, _b: string) => 99);
-const mergePullRequest = vi.fn(async () => ({ status: 'merged' as const, message: 'merged' }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		commentOnPullRequest = commentOnPullRequest;
-		mergePullRequest = mergePullRequest;
 	},
 }));
 
-// The durable merge-follow-up module (issue #278) is mocked at its own boundary:
-// these tests only assert that a completed Review run's merge outcome is handed
-// off to it with the right identity, not its internal scheduling/persistence.
-const recordReviewMergeOutcome = vi.fn(async (_input: unknown) => {});
-vi.mock('@/worker/merge-follow-up.js', () => ({
-	recordReviewMergeOutcome: (input: unknown) => recordReviewMergeOutcome(input),
+// The durable merge-automation module (issue #292) is mocked at its own
+// boundary: these tests only assert that an eligible Review approval persists a
+// merge dispatch with the right identity (and that a merge-automation wake-up
+// is routed to the executor), not the executor's internal behavior.
+const requestMergeAutomation = vi.fn(async (_input: unknown) => {});
+const processMergeAutomationDispatch = vi.fn(async (_d: unknown, _j: unknown, _p: unknown) => ({
+	status: 'merge-automation-settled' as const,
+	result: 'merged' as const,
+	prNumber: '17',
+}));
+vi.mock('@/worker/merge-automation.js', () => ({
+	requestMergeAutomation: (input: unknown) => requestMergeAutomation(input),
+	processMergeAutomationDispatch: (dispatch: unknown, job: unknown, project: unknown) =>
+		processMergeAutomationDispatch(dispatch, job, project),
 }));
 
 type SlotAcquisition = { acquired: false } | { acquired: true; tracked: boolean };
@@ -409,8 +415,8 @@ describe('processJob', () => {
 		clearRunCancellation.mockClear();
 		registerRunController.mockClear();
 		unregisterRunController.mockClear();
-		mergePullRequest.mockClear();
-		mergePullRequest.mockResolvedValue({ status: 'merged', message: 'merged' });
+		requestMergeAutomation.mockClear();
+		processMergeAutomationDispatch.mockClear();
 	});
 
 	it('runs under the project limit and releases the slot on success', async () => {
@@ -882,15 +888,6 @@ describe('processJob', () => {
 			headSha: 'deadbeef',
 			taskId: '17',
 		});
-		expect(phaseCalls[0].args.mergePullRequest).toEqual(expect.any(Function));
-		await (
-			phaseCalls[0].args.mergePullRequest as (
-				project: ProjectConfig,
-				pr: number,
-				approvedHeadSha: string,
-			) => unknown
-		)(PROJECT, 17, 'deadbeef');
-		expect(mergePullRequest).toHaveBeenCalledWith(PROJECT, 17, 'deadbeef');
 		expect(outcome).toEqual({
 			status: 'phase-succeeded',
 			phase: 'review',
@@ -899,6 +896,46 @@ describe('processJob', () => {
 			signal: null,
 			timedOut: false,
 			durationMs: 1234,
+		});
+	});
+
+	describe('merge-automation wake-ups (issue #292)', () => {
+		const MERGE_JOB = {
+			type: 'merge-automation' as const,
+			projectId: PROJECT.id,
+			reviewRunId: 'run-1',
+			repo: 'jkwiecien/swarm',
+			prNumber: '17',
+			approvedHeadSha: 'deadbeef',
+		};
+
+		it('routes a claimed merge-automation dispatch to the executor, off the trigger/slot path', async () => {
+			const seen: TriggerContext[] = [];
+			const outcome = await processJob({ ...MERGE_JOB }, registryReturning(REVIEW_TRIGGER, seen));
+
+			expect(processMergeAutomationDispatch).toHaveBeenCalledTimes(1);
+			const [dispatchArg, jobArg, projectArg] = processMergeAutomationDispatch.mock.calls[0];
+			expect(jobArg).toMatchObject({ ...MERGE_JOB, dispatchId: 'dispatch-1' });
+			expect(projectArg).toEqual(PROJECT);
+			expect(dispatchArg).toMatchObject({ id: 'dispatch-1', state: 'leased' });
+			expect(outcome).toEqual({
+				status: 'merge-automation-settled',
+				result: 'merged',
+				prNumber: '17',
+			});
+			// It never resolves a trigger, runs an agent phase, or consumes a slot.
+			expect(seen).toHaveLength(0);
+			expect(phaseCalls).toHaveLength(0);
+			expect(acquireProjectSlot).not.toHaveBeenCalled();
+		});
+
+		it('drops the wake-up without executing when the dispatch claim is refused', async () => {
+			claimDispatchForJob.mockResolvedValue({ claimed: false, reason: 'terminal' });
+
+			const outcome = await processJob({ ...MERGE_JOB }, registryReturning(REVIEW_TRIGGER));
+
+			expect(processMergeAutomationDispatch).not.toHaveBeenCalled();
+			expect(outcome).toEqual({ status: 'dispatch-refused', reason: 'terminal' });
 		});
 	});
 
@@ -2164,34 +2201,45 @@ describe('processJob', () => {
 			);
 		});
 
-		describe('review merge-outcome hand-off (issue #278)', () => {
-			it('hands a completed Review run’s merge outcome to the durable follow-up module', async () => {
-				phaseImpl = async () => ({
-					agent: agentResult(),
-					verdict: 'approve',
-					mergeOutcome: { status: 'not-ready', message: 'pending required checks' },
-				});
+		describe('durable merge dispatch after an eligible approval (issue #292)', () => {
+			const autoMergeProject = createMockProjectConfig({
+				pipeline: { respondToReview: { autoMerge: true } },
+			});
+
+			it('persists a merge dispatch when the verdict is approve and autoMerge is on', async () => {
+				projectLookup = () => autoMergeProject;
+				phaseImpl = async () => ({ agent: agentResult(), verdict: 'approve' });
 
 				await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
-				expect(recordReviewMergeOutcome).toHaveBeenCalledExactlyOnceWith({
-					projectId: PROJECT.id,
-					runId: 'run-1',
+				expect(requestMergeAutomation).toHaveBeenCalledExactlyOnceWith({
+					project: autoMergeProject,
+					reviewRunId: 'run-1',
+					taskId: '17',
 					prNumber: '17',
 					approvedHeadSha: 'deadbeef',
-					outcome: { status: 'not-ready', message: 'pending required checks' },
 				});
 			});
 
-			it('does not hand off when the phase result carries no merge outcome', async () => {
+			it('does not persist a merge dispatch when autoMerge is off', async () => {
+				phaseImpl = async () => ({ agent: agentResult(), verdict: 'approve' });
+
+				await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+				expect(requestMergeAutomation).not.toHaveBeenCalled();
+			});
+
+			it('does not persist a merge dispatch for a non-approve verdict', async () => {
+				projectLookup = () => autoMergeProject;
 				phaseImpl = async () => ({ agent: agentResult(), verdict: 'request-changes' });
 
 				await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
-				expect(recordReviewMergeOutcome).not.toHaveBeenCalled();
+				expect(requestMergeAutomation).not.toHaveBeenCalled();
 			});
 
-			it('does not hand off for a non-Review phase even if it carried a mergeOutcome-shaped field', async () => {
+			it('does not persist a merge dispatch for a non-Review phase', async () => {
+				projectLookup = () => autoMergeProject;
 				const workItem = createMockWorkItem();
 				phaseImpl = async () => ({ agent: agentResult() });
 
@@ -2200,7 +2248,7 @@ describe('processJob', () => {
 					registryReturning({ phase: 'planning', taskId: '10', workItem }),
 				);
 
-				expect(recordReviewMergeOutcome).not.toHaveBeenCalled();
+				expect(requestMergeAutomation).not.toHaveBeenCalled();
 			});
 		});
 

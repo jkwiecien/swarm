@@ -336,23 +336,23 @@ export async function hasCompletedRunForTask(
 }
 
 export interface ReviewMergeOutcomeUpdate {
-	/** `MergePullRequestOutcome['status']` or `'retry-exhausted'` (`src/worker/merge-follow-up.ts`). */
+	/** `MergePullRequestOutcome['status']` or `'retry-exhausted'` (`src/worker/merge-automation.ts`). */
 	status: string;
 	message: string;
-	/** This write's follow-up attempt number (0 = the Review phase's own immediate attempt). */
+	/** The merge dispatch attempt this write reports (0 = the dispatch's first attempt). */
 	attempt: number;
 	/** The head SHA this outcome generation's approval covers. */
 	approvedHeadSha: string;
 }
 
 /**
- * Persist a Review run's provider-neutral merge-automation outcome (issue
- * #278) — called once right after the Review phase's own immediate attempt
- * (`attempt: 0`), and again by each durable merge-follow-up attempt.
+ * Persist a Review run's provider-neutral merge-automation outcome — written
+ * by each attempt of the run's durable merge dispatch
+ * (`processMergeAutomationDispatch`, issue #292).
  *
  * The write only lands while the row's `reviewMergeApprovedHeadSha` is either
  * unset or already equal to `input.approvedHeadSha` — i.e. it belongs to the
- * *current* outcome generation. This is the guard against a stale follow-up
+ * *current* outcome generation. This is the guard against a stale attempt
  * left over from a superseded review (the run row was retried and re-approved
  * a different head in the meantime): its write simply no-ops instead of
  * overwriting the newer generation's outcome. Returns whether the row was
@@ -384,10 +384,11 @@ export async function updateReviewMergeOutcome(
 }
 
 /**
- * Review runs whose merge automation is still durably pending a follow-up
- * attempt (`reviewMergeOutcome === 'not-ready'`) — read once at worker startup
- * to reschedule any whose delayed BullMQ job did not survive a restart
- * (`recoverPendingMergeFollowUps`, `src/worker/merge-follow-up.ts`).
+ * Review runs whose merge automation last reported the transient `not-ready`
+ * — read once at worker startup by the dispatch reconciler's legacy backfill
+ * (`backfillLegacyMergeFollowUps`, `src/dispatch/reconciler.ts`) to import
+ * pre-#292 merge-follow-up intent as durable merge dispatches. Rows whose
+ * dispatch already exists are skipped there via the dispatch dedup key.
  */
 export async function getPendingReviewMergeFollowUps(): Promise<RunRow[]> {
 	return getDb()

@@ -72,10 +72,11 @@ export const runs = pgTable(
 		reviewAutomationOutcome: text('review_automation_outcome'),
 		/**
 		 * Provider-neutral merge-automation outcome for this Review run's approval
-		 * (`src/scm/merge.ts`, issue #278) — one of
+		 * (`src/scm/merge.ts`; written by the durable merge dispatch,
+		 * `src/worker/merge-automation.ts`, issue #292) — one of
 		 * `MergePullRequestOutcome['status']` (`merged`/`not-ready`/`not-eligible`/
 		 * `policy-blocked`/`unsupported`/`provider-error`) or `retry-exhausted`
-		 * once the bounded durable-follow-up budget is spent while still
+		 * once the dispatch's bounded retry budget is spent while still
 		 * `not-ready`. Nullable: only a Review run whose verdict was `approve`
 		 * with merge automation enabled ever sets it. Cleared on a retry
 		 * alongside `reviewVerdict`.
@@ -84,17 +85,17 @@ export const runs = pgTable(
 		/** Human-readable detail for `reviewMergeOutcome` — always set alongside it. */
 		reviewMergeMessage: text('review_merge_message'),
 		/**
-		 * How many durable merge-follow-up attempts have run for the current
-		 * `reviewMergeOutcome` generation (0 = the Review phase's own immediate
-		 * attempt). Lets a worker restart resume follow-up numbering instead of
-		 * restarting the backoff schedule from scratch.
+		 * The merge dispatch attempt the current `reviewMergeOutcome` was written
+		 * by (0 = the dispatch's first attempt). Lets a worker restart resume
+		 * attempt numbering instead of restarting the backoff schedule from
+		 * scratch.
 		 */
 		reviewMergeAttempt: integer('review_merge_attempt'),
 		/**
-		 * The head SHA the current `reviewMergeOutcome` generation covers. A
-		 * follow-up attempt's write is only accepted while this still matches the
+		 * The head SHA the current `reviewMergeOutcome` generation covers. An
+		 * attempt's write is only accepted while this still matches the
 		 * generation it was scheduled for (`updateReviewMergeOutcome`), so a
-		 * stale follow-up left over from a superseded review (e.g. after a
+		 * stale attempt left over from a superseded review (e.g. after a
 		 * retried Review re-submits) can't clobber a newer outcome.
 		 */
 		reviewMergeApprovedHeadSha: text('review_merge_approved_head_sha'),

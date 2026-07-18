@@ -56,8 +56,29 @@ export type DispatchWaitReason =
 	| 'manual-retry'
 	| 'recovered';
 
-/** Terminal detail for a `completed` dispatch. */
-export type DispatchOutcome = 'phase-succeeded' | 'no-trigger' | 'skipped-duplicate' | 'superseded';
+/**
+ * What a dispatch runs: a pipeline phase, or the agent-less merge-automation
+ * executor (issue #292) — the one dispatch kind that never provisions a
+ * worktree or spawns an agent CLI.
+ */
+export type DispatchPhase = TriggerPhase | 'merge-automation';
+
+/**
+ * Terminal detail for a `completed` dispatch. The `merge-*` values (and
+ * `merged`) settle merge-automation dispatches (issue #292): every functional
+ * refusal the provider reports is a normal, visible completion — only an
+ * unexpected provider failure marks the dispatch `failed`.
+ */
+export type DispatchOutcome =
+	| 'phase-succeeded'
+	| 'no-trigger'
+	| 'skipped-duplicate'
+	| 'superseded'
+	| 'merged'
+	| 'merge-not-eligible'
+	| 'merge-policy-blocked'
+	| 'merge-unsupported'
+	| 'merge-retry-exhausted';
 
 export interface CreateDispatchInput {
 	projectId: string;
@@ -72,7 +93,7 @@ export interface CreateDispatchInput {
 	continuation?: boolean;
 	runId?: string;
 	taskId?: string;
-	phase?: TriggerPhase;
+	phase?: DispatchPhase;
 	attempt?: number;
 	/**
 	 * `leased` is used only when adopting a legacy in-flight job at dequeue;
