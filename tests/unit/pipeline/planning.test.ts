@@ -145,7 +145,8 @@ function makeDeps() {
 describe('runPlanningPhase', () => {
 	beforeEach(() => {
 		planExists = true;
-		planContents = '## Scope gate\n- Why this is one task: cohesive change\n- Affected areas / files: planning.ts\n- Explicitly out of scope: none\n\n# Plan\n\n1. Do the thing.';
+		planContents =
+			'## Scope gate\n- Why this is one task: cohesive change\n- Affected areas / files: planning.ts\n- Explicitly out of scope: none\n\n# Plan\n\n1. Do the thing.';
 		// No split by default — most tests exercise the single-task path.
 		splitExists = false;
 		splitContents = '';

@@ -1,7 +1,7 @@
+import { scheduleCoalescedDispatch } from '../../dispatch/dispatcher.js';
 import { isSwarmBot, resolvePersonaIdentities } from '../../integrations/scm/github/personas.js';
 import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integration.js';
 import { logger } from '../../lib/logger.js';
-import { scheduleCoalescedJob } from '../../queue/producer.js';
 import type { GitHubParsedEvent } from '../../router/adapters/github.js';
 import { buildConflictResolutionKey, claimConflictResolution } from '../resolve-conflicts-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
@@ -15,7 +15,7 @@ async function scheduleCandidate(
 	delay: number,
 ): Promise<void> {
 	const event: GitHubParsedEvent = { ...ctx.event, conflictPrNumber: prNumber };
-	await scheduleCoalescedJob(
+	await scheduleCoalescedDispatch(
 		{
 			type: 'github',
 			projectId: ctx.project.id,

@@ -1,26 +1,33 @@
 /**
- * The queued-runs read model — maps a snapshot of pending BullMQ jobs onto the
- * `runs.queued` API shape (issue #234). Pure and Redis-free: the producer
- * (`src/queue/producer.ts`) owns the one Redis-touching `listPendingJobs()`
- * snapshot; everything here just derives, filters, and orders from the
- * already-parsed job data, so it's unit-testable without a queue connection.
+ * The queued-runs read model — maps canonical *dispatch* records onto the
+ * `runs.queued` API shape (issues #234, #284). Pure and connection-free: the
+ * repository (`src/db/repositories/dispatchesRepository.ts`) owns the one
+ * DB-touching `listWaitingDispatches()` query; everything here just derives,
+ * maps, and orders from the already-loaded rows, so it's unit-testable on its
+ * own.
  *
- * A `runs` row exists only once the worker picks a job up (`tryCreateRun`,
- * `src/worker/consumer.ts`), so a job still sitting in Redis is otherwise
- * invisible on the dashboard. This module is what makes it visible.
+ * Before issue #284 this read an incomplete BullMQ snapshot, which could not
+ * see capacity-blocked work and disagreed with the `runs` table about retries.
+ * The dispatch table is the single source of truth for pending work, so every
+ * pending or retry-scheduled unit of work is visible here — with its state,
+ * wait reason, priority, and scheduled time — by construction.
  */
 
 import { z } from 'zod';
+import type { DispatchRow } from '../db/repositories/dispatchesRepository.js';
 import type { SwarmJob } from './jobs.js';
 
 /**
- * Best-effort phase the job will likely dispatch to, derived only from fields
- * already on the parsed event — never a GitHub lookup. `board` covers both
- * Planning and Implementation, which are only distinguished at authoritative
- * dispatch (a fresh GraphQL re-read of the card's Status).
+ * Best-effort phase the dispatch will likely run, derived from the resolved
+ * phase when the worker recorded one, else from fields already on the parsed
+ * event — never a GitHub lookup. `board` covers both Planning and
+ * Implementation, which are only distinguished at authoritative dispatch (a
+ * fresh GraphQL re-read of the card's Status).
  */
 export const QueuedPhaseHintSchema = z.enum([
 	'board',
+	'planning',
+	'implementation',
 	'review',
 	'respond-to-review',
 	'respond-to-ci',
@@ -29,26 +36,43 @@ export const QueuedPhaseHintSchema = z.enum([
 ]);
 export type QueuedPhaseHint = z.infer<typeof QueuedPhaseHintSchema>;
 
-/** Which BullMQ pending set a job was read from. */
-export const PendingJobStateSchema = z.enum(['waiting', 'prioritized', 'delayed']);
+/**
+ * The queue-facing view of a dispatch's state: `waiting`/`prioritized` for an
+ * eligible-now pending dispatch (by queue priority), `blocked` for one waiting
+ * on project capacity (woken by a freed slot, not a timer), and `delayed` for
+ * a scheduled retry.
+ */
+export const PendingJobStateSchema = z.enum(['waiting', 'prioritized', 'delayed', 'blocked']);
 export type PendingJobState = z.infer<typeof PendingJobStateSchema>;
+
+/** Why a waiting dispatch isn't running — mirrors `DispatchWaitReason`. */
+export const QueuedWaitReasonSchema = z.enum([
+	'project-capacity',
+	'rate-limit',
+	'agent-capacity',
+	'timeout',
+	'worker-shutdown',
+	'delivery',
+	'worktree-exists',
+	'stalled',
+	'recheck',
+	'manual-retry',
+	'recovered',
+]);
+export type QueuedWaitReason = z.infer<typeof QueuedWaitReasonSchema>;
 
 /** The raw GitHub lifecycle event a review-gate job's metadata was derived from. */
 export const ReviewGateSourceEventSchema = z.enum(['pull_request', 'check_suite']);
 export type ReviewGateSourceEvent = z.infer<typeof ReviewGateSourceEventSchema>;
 
 /**
- * Diagnostic metadata for a job whose best-effort {@link QueuedPhaseHint} is
- * `review` (issue #275): a raw `pull_request`/`check_suite` lifecycle event that
- * *enters* the `pr-review` trigger handler (`src/triggers/handlers/review.ts`)
- * as a gate input, not proof that a Review agent is already queued — the
- * handler's own PR+SHA dispatch dedup (`review-dispatch-dedup.ts`) folds every
- * such event for the same head SHA into at most one Review run. Two common
- * sources for duplicates at the same head SHA: the synthetic `check_suite`
- * `completed` follow-up event a fixed Respond-to-review push enqueues
- * (`src/pipeline/follow-up-review.ts`) and GitHub's own `pull_request`
- * `synchronize` webhook for that same push. The UI groups rows carrying the
- * same `(project, repo, PR, headSha)` using this field instead of rendering one
+ * Diagnostic metadata for a dispatch whose best-effort {@link QueuedPhaseHint}
+ * is `review` (issue #275): a raw `pull_request`/`check_suite` lifecycle event
+ * that *enters* the `pr-review` trigger handler as a gate input, not proof that
+ * a Review agent is already queued — the handler's own PR+SHA dispatch dedup
+ * (`review-dispatch-dedup.ts`) folds every such event for the same head SHA
+ * into at most one Review run. The UI groups rows carrying the same
+ * `(project, repo, PR, headSha)` using this field instead of rendering one
  * `Review queued` row per source event.
  */
 export const QueuedReviewGateSchema = z.object({
@@ -62,33 +86,20 @@ export const QueuedReviewGateSchema = z.object({
 });
 export type QueuedReviewGate = z.infer<typeof QueuedReviewGateSchema>;
 
-/**
- * A plain, Redis-free view of one BullMQ job, handed over by the producer's
- * `listPendingJobs()`. Kept separate from BullMQ's own `Job` type so this
- * module never needs to import `bullmq`.
- */
-export interface PendingJobSnapshot {
-	jobId: string;
-	type: SwarmJob['type'];
-	state: PendingJobState;
-	data: SwarmJob;
-	/** `Job.timestamp` — when the job was enqueued, epoch ms. */
-	enqueuedAt: number;
-	/** `Job.delay` — 0 for a runnable (`waiting`/`prioritized`) job. */
-	delayMs: number;
-	/** `Job.priority` — BullMQ ranks 0 (unset) as highest. */
-	priority: number;
-	/** Actual scheduled execution timestamp (epoch ms) from Redis, if delayed. */
-	runsAt?: number;
-}
-
 /** The `runs.queued` API/UI contract — Zod is the source of truth for this shape. */
 export const QueuedRunSchema = z.object({
+	/** The canonical dispatch id — the handle Put back / cancel operate on. */
 	jobId: z.string(),
 	projectId: z.string(),
 	type: z.enum(['github', 'github-projects']),
 	state: PendingJobStateSchema,
 	phaseHint: QueuedPhaseHintSchema,
+	/** Why this dispatch is waiting, when it recorded a reason. */
+	waitReason: QueuedWaitReasonSchema.optional(),
+	/** The `runs` row this dispatch retries, when one exists (deferred runs). */
+	runId: z.string().optional(),
+	/** Deferred-retry attempt counter. */
+	attempt: z.number().int().nonnegative().optional(),
 	/** `github` jobs only — `owner/repo`. */
 	repo: z.string().optional(),
 	/** `github` jobs only — the PR/issue number. */
@@ -101,11 +112,11 @@ export const QueuedRunSchema = z.object({
 	workItemTitle: z.string().optional(),
 	/** Resolved backing Issue/PR URL for a board job, when the PM provider can read it. */
 	workItemUrl: z.string().optional(),
-	/** Effective BullMQ priority; 0 is highest. */
+	/** Effective queue priority; 0 is highest. */
 	priority: z.number().int().nonnegative(),
-	/** ISO 8601 — `Job.timestamp`. */
+	/** ISO 8601 — when the dispatch was created. */
 	enqueuedAt: z.string(),
-	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
+	/** ISO 8601 — `delayed` dispatches only, scheduled run time. */
 	runsAt: z.string().optional(),
 	/**
 	 * Present only for a `review`-hinted `github` job carrying the PR number and
@@ -118,8 +129,8 @@ export type QueuedRun = z.infer<typeof QueuedRunSchema>;
 /**
  * Derive a best-effort phase hint purely from the job's already-parsed event —
  * no GitHub network call. Mirrors (but does not replace) the authoritative
- * trigger-handler rules in `src/triggers/handlers/*.ts`, which re-check state at
- * dispatch time.
+ * trigger-handler rules in `src/triggers/handlers/*.ts`, which re-check state
+ * at dispatch time.
  */
 export function deriveQueuedPhaseHint(job: SwarmJob): QueuedPhaseHint {
 	if (job.type === 'github-projects') return 'board';
@@ -159,19 +170,33 @@ export function deriveReviewGate(job: SwarmJob): QueuedReviewGate | undefined {
 	});
 }
 
-function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
-	const { data } = snapshot;
-	const runsAtTime = snapshot.runsAt ?? snapshot.enqueuedAt + snapshot.delayMs;
+/** The queue-facing state of a waiting dispatch (see {@link PendingJobStateSchema}). */
+export function deriveQueuedState(dispatch: DispatchRow): PendingJobState {
+	if (dispatch.state === 'retry-scheduled') return 'delayed';
+	if (dispatch.waitReason === 'project-capacity') return 'blocked';
+	if (dispatch.availableAt.getTime() > Date.now()) return 'delayed';
+	return dispatch.priority > 0 ? 'prioritized' : 'waiting';
+}
+
+function toQueuedRun(dispatch: DispatchRow): QueuedRun {
+	const data = dispatch.jobPayload;
+	const state = deriveQueuedState(dispatch);
 	const reviewGate = deriveReviewGate(data);
+	// A worker-resolved phase is authoritative; the event-derived hint covers
+	// dispatches never claimed yet.
+	const phaseHint = QueuedPhaseHintSchema.safeParse(dispatch.phase);
 	const shared = {
-		jobId: snapshot.jobId,
-		projectId: data.projectId,
+		jobId: dispatch.id,
+		projectId: dispatch.projectId,
 		type: data.type,
-		state: snapshot.state,
-		phaseHint: deriveQueuedPhaseHint(data),
-		priority: snapshot.priority,
-		enqueuedAt: new Date(snapshot.enqueuedAt).toISOString(),
-		...(snapshot.state === 'delayed' ? { runsAt: new Date(runsAtTime).toISOString() } : {}),
+		state,
+		phaseHint: phaseHint.success ? phaseHint.data : deriveQueuedPhaseHint(data),
+		waitReason: dispatch.waitReason ?? undefined,
+		runId: dispatch.runId ?? undefined,
+		attempt: dispatch.attempt,
+		priority: dispatch.priority,
+		enqueuedAt: dispatch.createdAt.toISOString(),
+		...(state === 'delayed' ? { runsAt: dispatch.availableAt.toISOString() } : {}),
 		...(reviewGate ? { reviewGate } : {}),
 	};
 
@@ -183,13 +208,14 @@ function toQueuedRun(snapshot: PendingJobSnapshot): QueuedRun {
 }
 
 /**
- * Order to mirror BullMQ's own dispatch intent: runnable (`waiting`/
- * `prioritized`) before `delayed`; priority ascending (BullMQ ranks 0/unset
- * highest); then FIFO within the same priority — enqueue time for runnable
- * jobs, scheduled run time for delayed ones.
+ * Order to mirror dispatch intent: runnable (`waiting`/`prioritized`) first,
+ * capacity-`blocked` next (eligible, waiting on a slot), `delayed` last;
+ * priority ascending (0 highest); then FIFO within the same priority — enqueue
+ * time for runnable jobs, scheduled run time for delayed ones.
  */
 export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
-	const stateRank = (state: PendingJobState): number => (state === 'delayed' ? 1 : 0);
+	const stateRank = (state: PendingJobState): number =>
+		state === 'delayed' ? 2 : state === 'blocked' ? 1 : 0;
 	const timeRank = (item: QueuedRun): number =>
 		Date.parse(item.state === 'delayed' ? (item.runsAt ?? item.enqueuedAt) : item.enqueuedAt);
 
@@ -202,12 +228,18 @@ export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
 }
 
 /**
- * The read model's entry point: filter out jobs already tracked as a `deferred`
- * run (`data.runId` set — the dedup invariant), map the rest to the API shape,
- * and order them to mirror dispatch.
+ * The read model's entry point: map waiting dispatch rows to the API shape and
+ * order them to mirror dispatch. Rows whose stored payload no longer parses are
+ * skipped (they can't run either — the worker fails them at claim time).
  */
-export function toQueuedRuns(snapshots: PendingJobSnapshot[]): QueuedRun[] {
-	return sortQueuedRuns(
-		snapshots.filter((snapshot) => snapshot.data.runId === undefined).map(toQueuedRun),
-	);
+export function toQueuedRuns(dispatches: DispatchRow[]): QueuedRun[] {
+	const mapped: QueuedRun[] = [];
+	for (const dispatch of dispatches) {
+		try {
+			mapped.push(toQueuedRun(dispatch));
+		} catch {
+			// Malformed payload — the claim path surfaces it; don't break the list.
+		}
+	}
+	return sortQueuedRuns(mapped);
 }

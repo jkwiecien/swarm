@@ -1,5 +1,5 @@
 import { afterAll, beforeAll } from 'vitest';
-import { closeTestDb, resolveTestDbUrl, runMigrations } from './helpers/db.js';
+import { closeTestDb, resolveTestDbUrl, resolveTestRedisUrl, runMigrations } from './helpers/db.js';
 
 /**
  * Integration-project setup (vitest.config.ts wires this in for the
@@ -36,6 +36,21 @@ if (!resolvedUrl) {
 	process.env.DATABASE_URL = resolvedUrl;
 	process.env.DATABASE_SSL = 'false';
 	process.env.SWARM_TEST_DB_AVAILABLE = '1';
+
+	// Redis is optional on top of Postgres: BullMQ-dependent suites gate on
+	// SWARM_TEST_REDIS_AVAILABLE the same way DB suites gate on the flag above.
+	const resolvedRedisUrl = await resolveTestRedisUrl();
+	if (resolvedRedisUrl) {
+		process.env.REDIS_URL = resolvedRedisUrl;
+		process.env.SWARM_TEST_REDIS_AVAILABLE = '1';
+	} else {
+		console.warn(
+			'[integration] No reachable test Redis found — skipping Redis/BullMQ integration tests.\n' +
+				'  Run `npm run test:db:up` to start the Docker Compose test services.',
+		);
+		delete process.env.REDIS_URL;
+		process.env.SWARM_TEST_REDIS_AVAILABLE = '';
+	}
 
 	beforeAll(async () => {
 		await runMigrations();

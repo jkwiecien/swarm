@@ -1,4 +1,4 @@
-# Ephemeral Postgres for the integration suite (ai/TESTING.md) — same
+# Ephemeral Postgres + Redis for the integration suite (ai/TESTING.md) — same
 # `test:db:up` pattern as Cascade's docker-compose.test.yml. tmpfs-backed so
 # every `up` starts from a blank database; migrations run in the suite's setup.
 name: swarm-test # Fixed name so worktree checkouts don't each mint a compose project
@@ -19,6 +19,19 @@ services:
       - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U swarm_test -d swarm_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  redis-test:
+    container_name: swarm-redis-test
+    image: redis:7-alpine
+    ports:
+      # 6379 is a system Redis and 6380 is SWARM's dev compose Redis — so the
+      # test instance sits on 6381 (same convention as the Postgres port above).
+      - "127.0.0.1:6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 5s
       retries: 10

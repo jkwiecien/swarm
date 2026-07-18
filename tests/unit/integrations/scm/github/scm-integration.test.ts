@@ -139,7 +139,9 @@ describe('GitHubSCMIntegration', () => {
 			// The default fixture models an unambiguously-approved PR, so every test
 			// that doesn't care about the review-decision recheck proceeds past it.
 			vi.mocked(getPullRequestReviewDecision).mockResolvedValue('APPROVED');
-			vi.mocked(getPullRequestReviews).mockResolvedValue([{ state: 'APPROVED', commitId: 'reviewed-head' }]);
+			vi.mocked(getPullRequestReviews).mockResolvedValue([
+				{ state: 'APPROVED', commitId: 'reviewed-head' },
+			]);
 		});
 
 		it('runs under the implementer credentials', async () => {
@@ -276,7 +278,6 @@ describe('GitHubSCMIntegration', () => {
 			expect(enablePullRequestAutoMerge).not.toHaveBeenCalled();
 			expect(mergePullRequestDirect).not.toHaveBeenCalled();
 		});
-
 
 		it('proceeds to attempt the merge when the repository has no review-decision opinion (null)', async () => {
 			vi.mocked(getPullRequestMergeState).mockResolvedValue({

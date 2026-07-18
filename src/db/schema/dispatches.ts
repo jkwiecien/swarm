@@ -1,0 +1,107 @@
+import { sql } from 'drizzle-orm';
+import {
+	boolean,
+	index,
+	integer,
+	jsonb,
+	pgTable,
+	text,
+	timestamp,
+	uniqueIndex,
+	uuid,
+} from 'drizzle-orm/pg-core';
+import type { SwarmJob } from '../../queue/jobs.js';
+import { projects } from './projects.js';
+import { runs } from './runs.js';
+
+/**
+ * The durable dispatch record — the single source of truth for every attempt to
+ * start or resume a pipeline phase (issue #284, ADR-002). BullMQ jobs are pure
+ * wake-ups pointing at one of these rows; the worker may act on a dispatch only
+ * after atomically claiming it, so every future delivery path (a redelivered
+ * wake-up, a delayed retry, a slot release, reconciliation) re-checks this row's
+ * state and terminal states can never be resurrected.
+ *
+ * States: `pending` → `leased` → `running` → terminal (`completed`/`failed`),
+ * with `retry-scheduled` for a deferred attempt awaiting its scheduled wake-up
+ * and `cancelled` for user/operator cancellation. All transitions are
+ * conditional updates in `dispatchesRepository.ts`.
+ */
+export const dispatches = pgTable(
+	'dispatches',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		projectId: text('project_id')
+			.notNull()
+			.references(() => projects.id, { onDelete: 'cascade' }),
+		/** Worktree task id, known only once the trigger resolved (null before). */
+		taskId: text('task_id'),
+		/** Resolved pipeline phase; null until the trigger registry resolves it. */
+		phase: text('phase'),
+		state: text('state').notNull().default('pending'),
+		/**
+		 * Why a non-terminal dispatch is waiting: `project-capacity`, `rate-limit`,
+		 * `agent-capacity`, `timeout`, `worker-shutdown`, `delivery`,
+		 * `worktree-exists`, `stalled`, `recheck`, `manual-retry`. Null while
+		 * leased/running and for terminal states.
+		 */
+		waitReason: text('wait_reason'),
+		/**
+		 * Terminal detail for `completed`: `phase-succeeded`, `no-trigger`,
+		 * `skipped-duplicate`, or `superseded` (a coalesced recheck replaced it).
+		 */
+		outcome: text('outcome'),
+		/**
+		 * Stable idempotency identity — webhook delivery ids (`delivery:<id>`) and
+		 * deterministic synthetic identities (follow-up review hashes). Unique for
+		 * all time, so a redelivery or a crash-retried enqueue can't mint a second
+		 * dispatch.
+		 */
+		dedupKey: text('dedup_key'),
+		/**
+		 * Coalescing identity for bounded rechecks (`check-suite:…`,
+		 * `resolve-conflicts:…`): scheduling a new recheck supersedes prior
+		 * non-terminal dispatches carrying the same key.
+		 */
+		coalesceKey: text('coalesce_key'),
+		/** SCM continuations jump ahead of new board work when the project opts in. */
+		continuation: boolean('continuation').notNull().default(false),
+		/** Effective queue priority (BullMQ ranks 0/unset highest). */
+		priority: integer('priority').notNull().default(0),
+		/** Deferred-retry attempt counter (mirrors the payload's rateLimitRetryAttempt). */
+		attempt: integer('attempt').notNull().default(0),
+		/**
+		 * Monotonic wake-up sequence. Bumped on every transition into a wakeable
+		 * state; the BullMQ wake-up job id is `dispatch_<id>_w<wakeSeq>`, so a
+		 * repair re-publish is a queue no-op while a completed stale wake-up can
+		 * never suppress a fresh one.
+		 */
+		wakeSeq: integer('wake_seq').notNull().default(0),
+		/** When this dispatch becomes eligible to run (retry time, or now). */
+		availableAt: timestamp('available_at').notNull().defaultNow(),
+		/** The full validated SwarmJob payload — the exact dispatch intent. */
+		jobPayload: jsonb('job_payload').$type<SwarmJob>().notNull(),
+		/** The runs row this dispatch's attempts execute against, once one exists. */
+		runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
+		leaseOwner: text('lease_owner'),
+		leaseExpiresAt: timestamp('lease_expires_at'),
+		lastError: text('last_error'),
+		/** Where this dispatch came from: `webhook`, `synthetic`, `recheck`, `manual`, `recovered`, `adopted`. */
+		source: text('source').notNull().default('webhook'),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at').notNull().defaultNow(),
+		completedAt: timestamp('completed_at'),
+	},
+	(table) => [
+		uniqueIndex('uq_dispatches_dedup_key').on(table.dedupKey),
+		// At most one non-terminal dispatch per run row — the durable guard that
+		// stops a double retry (manual + automatic, or backfill + legacy job) from
+		// ever producing two concurrent attempts of the same logical run.
+		uniqueIndex('uq_dispatches_active_run')
+			.on(table.runId)
+			.where(sql`state IN ('pending', 'leased', 'running', 'retry-scheduled')`),
+		index('idx_dispatches_state').on(table.state),
+		index('idx_dispatches_project_state').on(table.projectId, table.state),
+		index('idx_dispatches_coalesce_key').on(table.coalesceKey),
+	],
+);

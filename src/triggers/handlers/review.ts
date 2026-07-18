@@ -45,7 +45,7 @@
  * `MAX_ATTEMPTS`.
  *
  * **Deferred recheck.** A defer schedules a coalesced re-enqueue of this same
- * event ~30s out (`scheduleCoalescedJob`). This guards the case where the
+ * event ~30s out (`scheduleCoalescedDispatch`). This guards the case where the
  * Actions API lags webhook delivery — the suite reports complete over the
  * webhook, but a query moments later still shows it `in_progress`, and no
  * further webhook will arrive to wake us. The recheck re-queries fresh API
@@ -85,6 +85,7 @@
 
 import type { ProjectConfig } from '../../config/schema.js';
 import { reserveReviewVerdict } from '../../db/repositories/reviewVerdictsRepository.js';
+import { scheduleCoalescedDispatch } from '../../dispatch/dispatcher.js';
 import {
 	type CheckSuiteStatus,
 	type ConflictCandidatePullRequest,
@@ -94,7 +95,6 @@ import {
 import { isSwarmBot, resolvePersonaIdentities } from '../../integrations/scm/github/personas.js';
 import { GitHubSCMIntegration } from '../../integrations/scm/github/scm-integration.js';
 import { logger } from '../../lib/logger.js';
-import { scheduleCoalescedJob } from '../../queue/producer.js';
 import type { GitHubParsedEvent } from '../../router/adapters/github.js';
 import { buildConflictResolutionKey, claimConflictResolution } from '../resolve-conflicts-dedup.js';
 import { buildRespondToCiAttemptKey, claimRespondToCiAttempt } from '../respond-to-ci-attempts.js';
@@ -258,7 +258,7 @@ async function scheduleCheckSuiteRecheck(
 	}
 
 	const coalesceKey = `check-suite:${project.repo}:${prNumber}:${headSha}`;
-	await scheduleCoalescedJob(
+	await scheduleCoalescedDispatch(
 		{
 			type: 'github',
 			projectId: project.id,
@@ -606,7 +606,7 @@ async function scheduleMergeabilityRecheck(
 	// check-suite event can. Keep their rechecks separate so a later synchronize
 	// delivery cannot replace the follow-up Review's dispatch-capable recheck.
 	const coalesceKey = `review-mergeability:${ctx.project.repo}:${prNumber}:${headSha}:${ctx.event.eventType}`;
-	await scheduleCoalescedJob(
+	await scheduleCoalescedDispatch(
 		{
 			type: 'github',
 			projectId: ctx.project.id,

@@ -16,16 +16,16 @@
  * module only ever constructs the trigger *input*, never touches those
  * decisions itself.
  *
- * The BullMQ job id is a deterministic hash of (project, PR, new head SHA), not
- * a random id — `enqueueJob` treats a job whose id already exists as a no-op
- * (`src/queue/producer.ts`), so a queueing crash-and-retry (this call fails and
- * `runRespondToReviewPhase` reraises it as a `DeliveryDeferredError`, or a
- * worker restart mid-delivery) re-issues the identical id instead of a second
- * job.
+ * The dispatch dedup key is a deterministic hash of (project, PR, new head
+ * SHA), not a random id — the dispatch layer treats a dedup-key conflict as
+ * "already recorded" (issue #284), so a queueing crash-and-retry (this call
+ * fails and `runRespondToReviewPhase` reraises it as a `DeliveryDeferredError`,
+ * or a worker restart mid-delivery) re-issues the identical identity instead
+ * of a second dispatch.
  */
 
 import type { ProjectConfig } from '@/config/schema.js';
-import { enqueueJob } from '@/queue/producer.js';
+import { createAndPublishDispatch, deliveryDedupKey } from '@/dispatch/dispatcher.js';
 import type { GitHubParsedEvent } from '@/router/adapters/github.js';
 import { deliveryIdentity } from '@/scm/delivery.js';
 
@@ -43,10 +43,11 @@ export interface FollowUpReviewInput {
 export type ScheduleFollowUpReview = (input: FollowUpReviewInput) => Promise<void>;
 
 /**
- * Deterministic BullMQ job id for a follow-up Review dispatch — one per
- * (project, PR, new head SHA), so retrying this enqueue (a transient Redis
- * blip, a worker restart before the delivery checkpoint is written) can never
- * duplicate the job. Exported for tests that assert dedup across repeated calls.
+ * Deterministic dispatch identity for a follow-up Review — one per
+ * (project, PR, new head SHA), so retrying this enqueue (a transient blip, a
+ * worker restart before the delivery checkpoint is written) can never
+ * duplicate the dispatch. Exported for tests that assert dedup across repeated
+ * calls.
  */
 export function followUpReviewDeliveryId(
 	project: ProjectConfig,
@@ -80,10 +81,16 @@ export const scheduleFollowUpReviewDefault: ScheduleFollowUpReview = async ({
 		headSha,
 		prBranch,
 	};
-	await enqueueJob({
-		type: 'github',
+	const deliveryId = followUpReviewDeliveryId(project, prNumber, headSha);
+	await createAndPublishDispatch({
 		projectId: project.id,
-		deliveryId: followUpReviewDeliveryId(project, prNumber, headSha),
-		event,
+		jobPayload: {
+			type: 'github',
+			projectId: project.id,
+			deliveryId,
+			event,
+		},
+		dedupKey: deliveryDedupKey(deliveryId),
+		source: 'synthetic',
 	});
 };

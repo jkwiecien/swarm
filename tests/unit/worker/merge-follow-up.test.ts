@@ -179,7 +179,6 @@ describe('scheduleMergeFollowUp', () => {
 	});
 });
 
-
 describe('processMergeFollowUp', () => {
 	beforeEach(() => {
 		projectLookup = () => PROJECT;

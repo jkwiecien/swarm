@@ -6,7 +6,12 @@
  * matching the other `web/src/lib/*.test.ts` helpers.
  */
 
-import type { QueuedPhaseHint, QueuedReviewGateSourceEvent, QueuedRun } from '@/types/runs.js';
+import type {
+	QueuedPhaseHint,
+	QueuedReviewGateSourceEvent,
+	QueuedRun,
+	QueuedWaitReason,
+} from '@/types/runs.js';
 import { formatPhase } from './format.js';
 import { parseWorkItemRef, workItemLabel } from './work-item.js';
 
@@ -25,6 +30,8 @@ const PR_DRIVEN_PHASES = new Set([
  */
 const QUEUED_PHASE_LABELS: Record<QueuedPhaseHint, string> = {
 	board: 'Board (Planning/Impl)',
+	planning: 'Planning',
+	implementation: 'Implementation',
 	review: 'Review',
 	'respond-to-review': 'Respond to review',
 	'respond-to-ci': 'Respond to CI',
@@ -34,6 +41,29 @@ const QUEUED_PHASE_LABELS: Record<QueuedPhaseHint, string> = {
 
 export function queuedPhaseLabel(hint: QueuedPhaseHint): string {
 	return QUEUED_PHASE_LABELS[hint] ?? formatPhase(hint);
+}
+
+/**
+ * Human-readable label for a dispatch's wait reason (issue #284) — why a
+ * queued item isn't running yet. Any reason not listed falls back to the raw
+ * value so a newly-added server reason still renders.
+ */
+const QUEUED_WAIT_REASON_LABELS: Record<QueuedWaitReason, string> = {
+	'project-capacity': 'waiting for a free project slot',
+	'rate-limit': 'retrying after a rate limit',
+	'agent-capacity': 'retrying after provider capacity',
+	timeout: 'retrying after a timeout',
+	'worker-shutdown': 'retrying after a worker restart',
+	delivery: 'retrying result delivery',
+	'worktree-exists': 'retrying after a worktree collision',
+	stalled: 'retrying after a stalled response',
+	recheck: 'waiting for checks to settle',
+	'manual-retry': 'manual retry',
+	recovered: 'recovered after a restart',
+};
+
+export function queuedWaitReasonLabel(reason: QueuedWaitReason): string {
+	return QUEUED_WAIT_REASON_LABELS[reason] ?? reason;
 }
 
 /**

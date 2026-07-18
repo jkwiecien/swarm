@@ -64,34 +64,95 @@ vi.mock('@/pipeline/respond-to-review.js', () => ({
 	runRespondToReviewPhase: mockPhase('respond-to-review'),
 }));
 
-const enqueueJob = vi.fn(async (_job: unknown) => 'synthetic-job-1');
-const enqueuePendingDispatch = vi.fn(
-	async (_job: unknown, _pendingDispatchId: string) => 'pending-job-1',
-);
 vi.mock('@/queue/producer.js', () => ({
-	enqueueJob: (job: unknown) => enqueueJob(job),
-	enqueuePendingDispatch: (job: unknown, pendingDispatchId: string) =>
-		enqueuePendingDispatch(job, pendingDispatchId),
+	priorityFor: (job: { type: string }) => (job.type === 'github-projects' ? 10 : undefined),
 }));
 
-// Pending-continuation scheduling (issue #214): the registry's claim + the
-// dispatch-claim refresh are mocked at the boundary so these tests drive the
-// prioritized-continuation wiring without Redis. `buildReviewDispatchKey` keeps
-// its real shape so the refreshed key is asserted.
-const claimNextPendingContinuation = vi.fn(
-	async (_projectId: string, _prioritize: boolean) => null as unknown,
+// The durable dispatch layer (issue #284) is mocked at its two boundaries: the
+// dispatcher (claim/publish orchestration) and the repository (state
+// transitions). The default claim wraps the incoming job in a dispatch row
+// whose stored payload is the job itself, so `parseDispatchPayload` hands the
+// same job back — tests then assert the transitions the consumer performs.
+type MockDispatchRow = {
+	id: string;
+	wakeSeq: number;
+	projectId: string;
+	jobPayload: Record<string, unknown>;
+	availableAt: Date;
+	createdAt: Date;
+	state: string;
+	priority: number;
+	attempt: number;
+};
+function mockDispatchRow(job: Record<string, unknown>): MockDispatchRow {
+	return {
+		id: 'dispatch-1',
+		wakeSeq: 0,
+		projectId: String(job.projectId ?? ''),
+		jobPayload: job,
+		availableAt: new Date(),
+		createdAt: new Date(),
+		state: 'leased',
+		priority: 0,
+		attempt: 0,
+	};
+}
+const claimDispatchForJob = vi.fn(
+	async (job: Record<string, unknown>, _leaseMs: number) =>
+		({ claimed: true, dispatch: mockDispatchRow(job) }) as
+			| { claimed: true; dispatch: MockDispatchRow }
+			| { claimed: false; reason: string },
 );
-const acknowledgePendingContinuationClaim = vi.fn(
-	async (_projectId: string, _claim: unknown) => {},
+const createAndPublishDispatch = vi.fn(async (_input: unknown) => ({
+	dispatch: mockDispatchRow({}),
+	created: true,
+}));
+const promoteNextCapacityDispatch = vi.fn(async (_projectId: string, _prioritize?: boolean) => {});
+const publishDispatchWakeUp = vi.fn(async (_dispatch: unknown) => {});
+vi.mock('@/dispatch/dispatcher.js', () => ({
+	claimDispatchForJob: (job: Record<string, unknown>, leaseMs: number) =>
+		claimDispatchForJob(job, leaseMs),
+	createAndPublishDispatch: (input: unknown) => createAndPublishDispatch(input),
+	parseDispatchPayload: (dispatch: MockDispatchRow) => ({
+		...dispatch.jobPayload,
+		dispatchId: dispatch.id,
+	}),
+	promoteNextCapacityDispatch: (projectId: string, prioritize?: boolean) =>
+		promoteNextCapacityDispatch(projectId, prioritize),
+	publishDispatchWakeUp: (dispatch: unknown) => publishDispatchWakeUp(dispatch),
+}));
+
+const completeDispatch = vi.fn(async (_id: string, _outcome: string) => true);
+const failDispatch = vi.fn(async (_id: string, _error: string) => true);
+const cancelClaimedDispatch = vi.fn(async (_id: string, _reason: string) => true);
+const markDispatchRunning = vi.fn(
+	async (_id: string, _runId: string | undefined, _leaseUntil: Date, _t: string, _p: string) =>
+		true,
 );
-const releasePendingContinuationClaim = vi.fn(async (_projectId: string, _claim: unknown) => {});
-vi.mock('@/worker/pending-continuations.js', () => ({
-	claimNextPendingContinuation: (projectId: string, prioritize: boolean) =>
-		claimNextPendingContinuation(projectId, prioritize),
-	acknowledgePendingContinuationClaim: (projectId: string, claim: unknown) =>
-		acknowledgePendingContinuationClaim(projectId, claim),
-	releasePendingContinuationClaim: (projectId: string, claim: unknown) =>
-		releasePendingContinuationClaim(projectId, claim),
+const recordDispatchResolution = vi.fn(async (_id: string, _taskId: string, _phase: string) => {});
+const deferDispatchToPending = vi.fn(async (_id: string, _input: unknown) => mockDispatchRow({}));
+const scheduleDispatchRetry = vi.fn(
+	async (_id: string, input: { jobPayload: Record<string, unknown> }) => ({
+		...mockDispatchRow(input.jobPayload),
+		state: 'retry-scheduled',
+	}),
+);
+vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
+	completeDispatch: (id: string, outcome: string) => completeDispatch(id, outcome),
+	failDispatch: (id: string, error: string) => failDispatch(id, error),
+	cancelClaimedDispatch: (id: string, reason: string) => cancelClaimedDispatch(id, reason),
+	markDispatchRunning: (
+		id: string,
+		runId: string | undefined,
+		leaseUntil: Date,
+		t: string,
+		p: string,
+	) => markDispatchRunning(id, runId, leaseUntil, t, p),
+	recordDispatchResolution: (id: string, taskId: string, phase: string) =>
+		recordDispatchResolution(id, taskId, phase),
+	deferDispatchToPending: (id: string, input: unknown) => deferDispatchToPending(id, input),
+	scheduleDispatchRetry: (id: string, input: { jobPayload: Record<string, unknown> }) =>
+		scheduleDispatchRetry(id, input),
 }));
 
 const refreshConflictResolutionClaim = vi.fn(async (_key: string, _ttlSec: number) => {});
@@ -298,14 +359,22 @@ describe('processJob', () => {
 		phaseImpl = async () => ({ agent: agentResult() });
 		addComment.mockClear();
 		addComment.mockResolvedValue('comment-1');
-		enqueueJob.mockClear();
-		enqueueJob.mockResolvedValue('synthetic-job-1');
-		enqueuePendingDispatch.mockClear();
-		enqueuePendingDispatch.mockResolvedValue('pending-job-1');
-		claimNextPendingContinuation.mockClear();
-		claimNextPendingContinuation.mockResolvedValue(null);
-		acknowledgePendingContinuationClaim.mockClear();
-		releasePendingContinuationClaim.mockClear();
+		claimDispatchForJob.mockClear();
+		claimDispatchForJob.mockImplementation(async (job: Record<string, unknown>) => ({
+			claimed: true,
+			dispatch: mockDispatchRow(job),
+		}));
+		createAndPublishDispatch.mockClear();
+		createAndPublishDispatch.mockResolvedValue({ dispatch: mockDispatchRow({}), created: true });
+		promoteNextCapacityDispatch.mockClear();
+		publishDispatchWakeUp.mockClear();
+		completeDispatch.mockClear();
+		failDispatch.mockClear();
+		cancelClaimedDispatch.mockClear();
+		markDispatchRunning.mockClear();
+		recordDispatchResolution.mockClear();
+		deferDispatchToPending.mockClear();
+		scheduleDispatchRetry.mockClear();
 		refreshConflictResolutionClaim.mockClear();
 		refreshReviewDispatchClaim.mockClear();
 		releaseReviewDispatch.mockClear();
@@ -328,7 +397,6 @@ describe('processJob', () => {
 		acquireProjectSlot.mockClear();
 		acquireProjectSlot.mockResolvedValue({ acquired: true, tracked: true });
 		releaseProjectSlot.mockClear();
-		enqueuePendingDispatch.mockClear();
 		isRunCancellationRequested.mockClear();
 		isRunCancellationRequested.mockResolvedValue(false);
 		clearRunCancellation.mockClear();
@@ -521,24 +589,7 @@ describe('processJob', () => {
 			expect(createRun).toHaveBeenCalledOnce();
 		});
 
-		it('promotes the oldest pending continuation when a slot frees on success', async () => {
-			claimNextPendingContinuation.mockResolvedValue({
-				field: '20:review',
-				raw: 'raw',
-				token: 'token',
-				entry: {
-					taskId: '20',
-					phase: 'review',
-					enqueuedAt: 1,
-					job: createMockGitHubWebhookJob({
-						runId: 'run-20',
-						continuationDispatchClaimed: true,
-						pendingDispatchId: '11111111-1111-4111-8111-111111111111',
-					}),
-					continuation: true,
-				},
-			});
-
+		it('wakes the next capacity-blocked dispatch when a slot frees on success', async () => {
 			const outcome = await processJob(
 				createMockGitHubWebhookJob(),
 				registryReturning(REVIEW_TRIGGER),
@@ -546,50 +597,32 @@ describe('processJob', () => {
 
 			expect(outcome.status).toBe('phase-succeeded');
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(claimNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, true);
-			expect(enqueuePendingDispatch).toHaveBeenCalledWith(
-				expect.objectContaining({ runId: 'run-20' }),
-				'11111111-1111-4111-8111-111111111111',
-			);
-			expect(acknowledgePendingContinuationClaim).toHaveBeenCalledOnce();
+			expect(promoteNextCapacityDispatch).toHaveBeenCalledWith(PROJECT.id, true);
 		});
 
-		it('releases cleanly when nothing is pending to promote', async () => {
-			claimNextPendingContinuation.mockResolvedValue(null);
+		it('records the capacity wait durably on the dispatch when blocked by the limit', async () => {
+			acquireProjectSlot.mockResolvedValueOnce({ acquired: false });
 
 			const outcome = await processJob(
-				createMockGitHubWebhookJob(),
+				createMockGitHubWebhookJob({ runId: undefined }),
 				registryReturning(REVIEW_TRIGGER),
 			);
 
-			expect(outcome.status).toBe('phase-succeeded');
-			expect(enqueuePendingDispatch).not.toHaveBeenCalled();
-		});
-
-		it('still succeeds when promoting a pending continuation throws', async () => {
-			claimNextPendingContinuation.mockResolvedValue({
-				field: '20:review',
-				raw: 'raw',
-				token: 'token',
-				entry: {
-					taskId: '20',
-					phase: 'review',
-					enqueuedAt: 1,
-					job: createMockGitHubWebhookJob({
-						pendingDispatchId: '11111111-1111-4111-8111-111111111111',
-					}),
+			expect(outcome.status).toBe('phase-deferred');
+			expect(deferDispatchToPending).toHaveBeenCalledWith(
+				'dispatch-1',
+				expect.objectContaining({
+					waitReason: 'project-capacity',
 					continuation: true,
-				},
-			});
-			enqueuePendingDispatch.mockRejectedValue(new Error('queue down'));
-
-			const outcome = await processJob(
-				createMockGitHubWebhookJob(),
-				registryReturning(REVIEW_TRIGGER),
+					runId: 'run-1',
+					jobPayload: expect.objectContaining({
+						runId: 'run-1',
+						continuationDispatchClaimed: true,
+					}),
+				}),
 			);
-
-			expect(outcome.status).toBe('phase-succeeded');
-			expect(releasePendingContinuationClaim).toHaveBeenCalledOnce();
+			// A slot deferral is durable pending work, not a timer retry.
+			expect(scheduleDispatchRetry).not.toHaveBeenCalled();
 		});
 
 		it.each([
@@ -622,7 +655,7 @@ describe('processJob', () => {
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
 			expect(releaseProjectSlot).toHaveBeenCalledOnce();
-			expect(claimNextPendingContinuation).toHaveBeenCalledWith(PROJECT.id, false);
+			expect(promoteNextCapacityDispatch).toHaveBeenCalledWith(PROJECT.id, false);
 		});
 
 		it('finalizes the run row and releases the claim if a pending continuation re-resolves to no-trigger', async () => {
@@ -895,18 +928,23 @@ describe('processJob', () => {
 
 			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
-			expect(enqueueJob).toHaveBeenCalledTimes(2);
+			expect(createAndPublishDispatch).toHaveBeenCalledTimes(2);
 			for (const itemNodeId of ['PVTI_child-one', 'PVTI_child-two']) {
-				expect(enqueueJob).toHaveBeenCalledWith({
-					type: 'github-projects',
+				expect(createAndPublishDispatch).toHaveBeenCalledWith({
 					projectId: PROJECT.id,
-					event: {
-						eventType: 'projects_v2_item',
-						action: 'edited',
-						itemNodeId,
-						projectNodeId: PROJECT.githubProjects.projectId,
-						changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
-						changedFieldType: 'single_select',
+					priority: 10,
+					source: 'synthetic',
+					jobPayload: {
+						type: 'github-projects',
+						projectId: PROJECT.id,
+						event: {
+							eventType: 'projects_v2_item',
+							action: 'edited',
+							itemNodeId,
+							projectNodeId: PROJECT.githubProjects.projectId,
+							changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
+							changedFieldType: 'single_select',
+						},
 					},
 				});
 			}
@@ -919,16 +957,21 @@ describe('processJob', () => {
 
 			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
-			expect(enqueueJob).toHaveBeenCalledExactlyOnceWith({
-				type: 'github-projects',
+			expect(createAndPublishDispatch).toHaveBeenCalledExactlyOnceWith({
 				projectId: PROJECT.id,
-				event: {
-					eventType: 'projects_v2_item',
-					action: 'edited',
-					itemNodeId: workItem.id,
-					projectNodeId: PROJECT.githubProjects.projectId,
-					changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
-					changedFieldType: 'single_select',
+				priority: 10,
+				source: 'synthetic',
+				jobPayload: {
+					type: 'github-projects',
+					projectId: PROJECT.id,
+					event: {
+						eventType: 'projects_v2_item',
+						action: 'edited',
+						itemNodeId: workItem.id,
+						projectNodeId: PROJECT.githubProjects.projectId,
+						changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
+						changedFieldType: 'single_select',
+					},
 				},
 			});
 		});
@@ -943,7 +986,7 @@ describe('processJob', () => {
 
 			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
-			expect(enqueueJob).not.toHaveBeenCalled();
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
 		it("does not self-enqueue when the destination status doesn't start a phase", async () => {
@@ -957,13 +1000,13 @@ describe('processJob', () => {
 
 			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
-			expect(enqueueJob).not.toHaveBeenCalled();
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
 		it('does not self-enqueue for a non-PM (PR-driven) phase', async () => {
 			await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
 
-			expect(enqueueJob).not.toHaveBeenCalled();
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
 		it('still reports phase-succeeded when the self-enqueue itself fails', async () => {
@@ -973,7 +1016,7 @@ describe('processJob', () => {
 				workItem: createMockWorkItem(),
 			};
 			phaseImpl = async () => ({ agent: agentResult(), movedTo: 'todo' });
-			enqueueJob.mockRejectedValueOnce(new Error('redis unreachable'));
+			createAndPublishDispatch.mockRejectedValueOnce(new Error('redis unreachable'));
 
 			const outcome = await processJob(
 				createMockGitHubProjectsWebhookJob(),

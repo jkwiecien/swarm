@@ -59,7 +59,7 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 	getCheckSuiteStatus,
 	getPullRequestAuthorLogin,
 }));
-vi.mock('@/queue/producer.js', () => ({ scheduleCoalescedJob }));
+vi.mock('@/dispatch/dispatcher.js', () => ({ scheduleCoalescedDispatch: scheduleCoalescedJob }));
 vi.mock('@/integrations/scm/github/scm-integration.js', () => ({
 	GitHubSCMIntegration: class {
 		withPersonaCredentials = withPersonaCredentials;

@@ -5,7 +5,6 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	getRunByIdFromDb: vi.fn(),
 	getRunLogsFromDb: vi.fn(),
 	getRunOutputEvents: vi.fn(),
-	resetRunToRunning: vi.fn(),
 	markRunUserTerminated: vi.fn(),
 }));
 
@@ -13,17 +12,26 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
 }));
 
+vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
+	getActiveDispatchByRunId: vi.fn(),
+	getDispatchById: vi.fn(),
+	listWaitingDispatches: vi.fn(),
+	reopenDispatchForManualRetry: vi.fn(),
+}));
+
+vi.mock('@/dispatch/dispatcher.js', () => ({
+	cancelDispatchAndWake: vi.fn(),
+	cancelDispatchForRun: vi.fn(),
+	createAndPublishDispatch: vi.fn(),
+	publishDispatchWakeUp: vi.fn(),
+}));
+
 vi.mock('@/integrations/pm/registry.js', () => ({
 	getPMProvider: vi.fn(),
 }));
 
 vi.mock('@/queue/producer.js', () => ({
-	listPendingJobs: vi.fn(),
-	promoteRetryForRun: vi.fn(),
-	enqueueDelayedRetry: vi.fn(),
-	removePendingRetryForRun: vi.fn(),
-	removeQueuedJob: vi.fn(),
-	getQueuedJobData: vi.fn(),
+	priorityFor: (job: { type: string }) => (job.type === 'github-projects' ? 10 : undefined),
 }));
 
 vi.mock('@/queue/queued-runs.js', () => ({
@@ -47,11 +55,14 @@ vi.mock('@/queue/cancellation.js', () => ({
 	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
 }));
 
-vi.mock('@/worker/pending-continuations.js', () => ({
-	removePendingContinuationForRun: vi.fn(),
-}));
-
 import { runsRouter } from '@/api/routers/runs.js';
+import {
+	type DispatchRow,
+	getActiveDispatchByRunId,
+	getDispatchById,
+	listWaitingDispatches,
+	reopenDispatchForManualRetry,
+} from '@/db/repositories/dispatchesRepository.js';
 import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import {
 	getRunByIdFromDb,
@@ -59,25 +70,22 @@ import {
 	getRunOutputEvents,
 	listRunsFromDb,
 	markRunUserTerminated,
-	resetRunToRunning,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
+import {
+	cancelDispatchAndWake,
+	cancelDispatchForRun,
+	createAndPublishDispatch,
+	publishDispatchWakeUp,
+} from '@/dispatch/dispatcher.js';
 import { getPMProvider } from '@/integrations/pm/registry.js';
 import {
 	clearRunCancellation,
 	requestRunCancellation,
 	USER_TERMINATION_MESSAGE,
 } from '@/queue/cancellation.js';
-import {
-	enqueueDelayedRetry,
-	getQueuedJobData,
-	listPendingJobs,
-	promoteRetryForRun,
-	removePendingRetryForRun,
-	removeQueuedJob,
-} from '@/queue/producer.js';
+import type { SwarmJob } from '@/queue/jobs.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
-import { removePendingContinuationForRun } from '@/worker/pending-continuations.js';
 import {
 	createMockGitHubProjectsWebhookJob,
 	createMockProjectConfig,
@@ -128,6 +136,45 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 	};
 }
 
+const GITHUB_PAYLOAD: SwarmJob = {
+	type: 'github',
+	projectId: 'p1',
+	event: {
+		eventType: 'pull_request',
+		repoFullName: 'jkwiecien/swarm',
+		isCommentEvent: false,
+	},
+};
+
+function makeDispatch(overrides: Partial<DispatchRow> = {}): DispatchRow {
+	return {
+		id: 'dispatch-1',
+		projectId: 'p1',
+		taskId: '103',
+		phase: 'implementation',
+		state: 'retry-scheduled',
+		waitReason: 'rate-limit',
+		outcome: null,
+		dedupKey: null,
+		coalesceKey: null,
+		continuation: false,
+		priority: 0,
+		attempt: 1,
+		wakeSeq: 1,
+		availableAt: new Date('2026-07-10T00:30:00Z'),
+		jobPayload: GITHUB_PAYLOAD,
+		runId: 'run-1',
+		leaseOwner: null,
+		leaseExpiresAt: null,
+		lastError: null,
+		source: 'webhook',
+		createdAt: new Date('2026-07-10T00:00:00Z'),
+		updatedAt: new Date('2026-07-10T00:00:00Z'),
+		completedAt: null,
+		...overrides,
+	};
+}
+
 describe('runsRouter', () => {
 	const caller = runsRouter.createCaller({});
 
@@ -136,18 +183,21 @@ describe('runsRouter', () => {
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
 		vi.mocked(getRunOutputEvents).mockReset();
-		vi.mocked(promoteRetryForRun).mockReset();
-		vi.mocked(resetRunToRunning).mockReset();
-		vi.mocked(enqueueDelayedRetry).mockReset();
 		vi.mocked(markRunUserTerminated).mockReset();
-		vi.mocked(removePendingRetryForRun).mockReset();
-		vi.mocked(removePendingContinuationForRun).mockReset();
 		vi.mocked(requestRunCancellation).mockReset();
 		vi.mocked(clearRunCancellation).mockReset();
-		vi.mocked(listPendingJobs).mockReset();
 		vi.mocked(toQueuedRuns).mockReset();
 		vi.mocked(getProjectByIdFromDb).mockReset();
 		vi.mocked(getPMProvider).mockReset();
+		vi.mocked(getActiveDispatchByRunId).mockReset();
+		vi.mocked(getDispatchById).mockReset();
+		vi.mocked(listWaitingDispatches).mockReset();
+		vi.mocked(listWaitingDispatches).mockResolvedValue([]);
+		vi.mocked(reopenDispatchForManualRetry).mockReset();
+		vi.mocked(cancelDispatchAndWake).mockReset();
+		vi.mocked(cancelDispatchForRun).mockReset();
+		vi.mocked(createAndPublishDispatch).mockReset();
+		vi.mocked(publishDispatchWakeUp).mockReset();
 	});
 
 	describe('list', () => {
@@ -208,26 +258,20 @@ describe('runsRouter', () => {
 		});
 
 		it('rejects an invalid status enum value at the boundary', async () => {
-			await expect(
-				// biome-ignore lint/suspicious/noExplicitAny: exercising invalid input
-				caller.list({ status: 'bogus' as any }),
-			).rejects.toThrow();
+			await expect(caller.list({ status: 'exploded' as never })).rejects.toThrow();
 			expect(listRunsFromDb).not.toHaveBeenCalled();
 		});
 
 		it('rejects an invalid phase enum value at the boundary', async () => {
-			await expect(
-				// biome-ignore lint/suspicious/noExplicitAny: exercising invalid input
-				caller.list({ phase: 'bogus' as any }),
-			).rejects.toThrow();
+			await expect(caller.list({ phase: 'deploy' as never })).rejects.toThrow();
 			expect(listRunsFromDb).not.toHaveBeenCalled();
 		});
 	});
 
 	describe('queued', () => {
-		it('enriches board jobs with the same title and Issue/PR URL metadata as runs', async () => {
+		it('reads canonical waiting dispatches and enriches board jobs with backing metadata', async () => {
 			const queuedItem = {
-				jobId: 'job-board',
+				jobId: 'dispatch-board',
 				projectId: 'p1',
 				type: 'github-projects' as const,
 				state: 'prioritized' as const,
@@ -243,7 +287,6 @@ describe('runsRouter', () => {
 				statusId: '61e4505c', // Planning status
 			});
 			const getWorkItem = vi.fn().mockResolvedValue(workItem);
-			vi.mocked(listPendingJobs).mockResolvedValue([]);
 			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
 			vi.mocked(getPMProvider).mockReturnValue({
@@ -259,14 +302,23 @@ describe('runsRouter', () => {
 					workItemUrl: 'https://github.com/acme/widgets/issues/42',
 				},
 			]);
+			expect(listWaitingDispatches).toHaveBeenCalledWith(undefined);
 			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
 			expect(getPMProvider).toHaveBeenCalledWith('github-projects');
 			expect(getWorkItem).toHaveBeenCalledWith('PVTI_item');
 		});
 
+		it('scopes the dispatch query to the requested project', async () => {
+			vi.mocked(toQueuedRuns).mockReturnValue([]);
+
+			await caller.queued({ projectId: 'p1' });
+
+			expect(listWaitingDispatches).toHaveBeenCalledWith('p1');
+		});
+
 		it('returns the queued item when backing metadata cannot be resolved', async () => {
 			const queuedItem = {
-				jobId: 'job-board-missing',
+				jobId: 'dispatch-board-missing',
 				projectId: 'missing-project',
 				type: 'github-projects' as const,
 				state: 'prioritized' as const,
@@ -275,7 +327,6 @@ describe('runsRouter', () => {
 				priority: 10,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
 			};
-			vi.mocked(listPendingJobs).mockResolvedValue([]);
 			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
 
@@ -284,7 +335,7 @@ describe('runsRouter', () => {
 
 		it('passes reviewGate metadata through unchanged alongside normal github enrichment (issue #275)', async () => {
 			const queuedItem = {
-				jobId: 'job-review-gate',
+				jobId: 'dispatch-review-gate',
 				projectId: 'p1',
 				type: 'github' as const,
 				state: 'waiting' as const,
@@ -299,7 +350,6 @@ describe('runsRouter', () => {
 					headSha: 'sha-fix',
 				},
 			};
-			vi.mocked(listPendingJobs).mockResolvedValue([]);
 			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
 			// No project on file — enrichment can't resolve a backing work item, so
 			// the item (reviewGate included) is returned exactly as the read model built it.
@@ -373,7 +423,7 @@ describe('runsRouter', () => {
 	});
 
 	describe('retryNow', () => {
-		it('promotes the pending retry and reports the run as retrying for a deferred run', async () => {
+		it('re-opens the active dispatch for an immediate attempt on a deferred run', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({
 					id: 'run-1',
@@ -381,32 +431,25 @@ describe('runsRouter', () => {
 					agentSessionId: 'a1b2c3d4-0000-0000-0000-000000000000',
 				}),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+			const dispatch = makeDispatch();
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(dispatch);
+			const reopened = makeDispatch({ state: 'pending', waitReason: 'manual-retry', attempt: 0 });
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(reopened);
 
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(resetRunToRunning).toHaveBeenCalledWith(
-				'run-1',
-				undefined,
-				'deferred',
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
+			expect(reopenDispatchForManualRetry).toHaveBeenCalledWith(
+				'dispatch-1',
+				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
 			);
-			expect(promoteRetryForRun).toHaveBeenCalledWith(
-				'run-1',
-				undefined,
-				undefined,
-				undefined,
-				false,
-			);
+			expect(publishDispatchWakeUp).toHaveBeenCalledWith(reopened);
+			// The run row is NOT flipped here — it becomes `running` only when the
+			// worker actually claims the dispatch (issue #284's false-running guard).
+			expect(markRunUserTerminated).not.toHaveBeenCalled();
 		});
 
-		it('promotes the pending retry with cli and model overrides for a deferred run', async () => {
+		it('folds cli/model/reasoning overrides into the dispatch payload', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({
 					id: 'run-1',
@@ -414,41 +457,35 @@ describe('runsRouter', () => {
 					agentSessionId: 'a1b2c3d4-0000-0000-0000-000000000000',
 				}),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(makeDispatch());
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(makeDispatch());
 
-			const result = await caller.retryNow({
+			await caller.retryNow({
 				runId: 'run-1',
 				cli: 'antigravity',
 				model: 'gemini-3.5-flash',
 				reasoning: 'high',
 			});
 
-			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(promoteRetryForRun).toHaveBeenCalledWith(
-				'run-1',
-				'antigravity',
-				'gemini-3.5-flash',
-				'high',
-				true,
+			expect(reopenDispatchForManualRetry).toHaveBeenCalledWith(
+				'dispatch-1',
+				expect.objectContaining({
+					cliOverride: 'antigravity',
+					modelOverride: 'gemini-3.5-flash',
+					reasoningOverride: 'high',
+				}),
 			);
 		});
 
-		it('enqueues a fresh job with overrides for a failed run if jobPayload is present', async () => {
-			const mockPayload = {
-				type: 'github' as const,
-				projectId: 'p1',
-				event: {
-					eventType: 'pull_request' as const,
-					repoFullName: 'jkwiecien/swarm',
-					isCommentEvent: false,
-				},
-			};
+		it('creates a fresh dispatch with overrides for a failed run if jobPayload is present', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
+				makeRun({ id: 'run-1', status: 'failed', jobPayload: GITHUB_PAYLOAD }),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
+			vi.mocked(createAndPublishDispatch).mockResolvedValue({
+				dispatch: makeDispatch(),
+				created: true,
+			});
 
 			const result = await caller.retryNow({
 				runId: 'run-1',
@@ -458,65 +495,43 @@ describe('runsRouter', () => {
 			});
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(resetRunToRunning).toHaveBeenCalledWith(
-				'run-1',
+			expect(createAndPublishDispatch).toHaveBeenCalledWith(
 				expect.objectContaining({
-					cliOverride: 'antigravity',
-					modelOverride: 'gemini-3.5-flash',
-					reasoningOverride: 'high',
+					projectId: 'p1',
+					source: 'manual',
+					waitReason: 'manual-retry',
 					runId: 'run-1',
+					jobPayload: expect.objectContaining({
+						cliOverride: 'antigravity',
+						modelOverride: 'gemini-3.5-flash',
+						reasoningOverride: 'high',
+						runId: 'run-1',
+						rateLimitRetryAttempt: 0,
+					}),
 				}),
-				'failed',
-				'gemini-3.5-flash',
-				undefined,
-				'high',
-				'antigravity',
-				null,
-			);
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({
-					cliOverride: 'antigravity',
-					modelOverride: 'gemini-3.5-flash',
-					reasoningOverride: 'high',
-					runId: 'run-1',
-				}),
-				0,
-				{ unique: true },
 			);
 		});
 
 		it('assigns a new session for a failed retry instead of reusing its old one', async () => {
-			const mockPayload = {
-				type: 'github' as const,
-				projectId: 'p1',
+			const mockPayload: SwarmJob = {
+				...GITHUB_PAYLOAD,
 				agentSessionId: '11111111-1111-4111-8111-111111111111',
 				resumeSession: true,
-				event: {
-					eventType: 'pull_request' as const,
-					repoFullName: 'jkwiecien/swarm',
-					isCommentEvent: false,
-				},
 			};
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
+			vi.mocked(createAndPublishDispatch).mockResolvedValue({
+				dispatch: makeDispatch(),
+				created: true,
+			});
 
 			await caller.retryNow({ runId: 'run-1' });
 
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({
-					agentSessionId: expect.stringMatching(/^(?!11111111-1111-4111-8111-111111111111$).+$/),
-				}),
-				0,
-				{ unique: true },
-			);
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.not.objectContaining({ resumeSession: true }),
-				0,
-				{ unique: true },
-			);
+			const input = vi.mocked(createAndPublishDispatch).mock.calls[0][0];
+			expect(input.jobPayload.agentSessionId).not.toBe('11111111-1111-4111-8111-111111111111');
+			expect(input.jobPayload.resumeSession).toBeUndefined();
 		});
 
 		it('marks a failed PM retry for dispatch without inventing a branch checkpoint', async () => {
@@ -524,100 +539,29 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
+			vi.mocked(createAndPublishDispatch).mockResolvedValue({
+				dispatch: makeDispatch(),
+				created: true,
+			});
 
 			await caller.retryNow({ runId: 'run-1' });
 
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({
-					runId: 'run-1',
-					resumePmPhase: 'implementation',
-				}),
-				0,
-				{ unique: true },
-			);
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.not.objectContaining({ implementationBranchProvisioned: true }),
-				0,
-				{ unique: true },
-			);
-		});
-
-		it('clears a stale reasoning on the row when the dialog applies cli/model but omits reasoning (issue #180)', async () => {
-			// The retry dialog resets reasoning to "Default" (omitted) on any CLI/model
-			// change while still sending an explicit cli+model. The row must then CLEAR
-			// its old reasoning (→ null) so the displayed level matches the relaunch,
-			// rather than keeping a stale value that `resetRunToRunning` would leave as-is.
-			const mockPayload = {
-				type: 'github' as const,
-				projectId: 'p1',
-				event: {
-					eventType: 'pull_request' as const,
-					repoFullName: 'jkwiecien/swarm',
-					isCommentEvent: false,
-				},
-			};
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload, reasoning: 'high' }),
-			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
-
-			await caller.retryNow({ runId: 'run-1', cli: 'claude', model: 'opus-4.5' });
-
-			expect(resetRunToRunning).toHaveBeenCalledWith(
-				'run-1',
-				expect.objectContaining({ runId: 'run-1' }),
-				'failed',
-				'opus-4.5',
-				undefined,
-				null,
-				'claude',
-				null,
-			);
-		});
-
-		it('records the override cli as the row engine, clearing it on a plain retry (issue #169)', async () => {
-			const mockPayload = {
-				type: 'github' as const,
-				projectId: 'p1',
-				event: {
-					eventType: 'pull_request' as const,
-					repoFullName: 'jkwiecien/swarm',
-					isCommentEvent: false,
-				},
-			};
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
-
-			// Override retry: the chosen cli is persisted so the run-detail page shows it
-			// the instant the row flips to `running`, not only after the worker picks it up.
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
-			);
-			await caller.retryNow({ runId: 'run-1', cli: 'codex', model: 'gpt-5.6-terra' });
-			expect(vi.mocked(resetRunToRunning).mock.calls.at(-1)?.[6]).toBe('codex');
-
-			// Plain retry (no override): engine arg is undefined, so the reset clears the
-			// column and the worker resolves/repopulates the effective CLI on pickup.
-			vi.mocked(resetRunToRunning).mockClear();
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({ id: 'run-1', status: 'failed', jobPayload: mockPayload }),
-			);
-			await caller.retryNow({ runId: 'run-1' });
-			expect(vi.mocked(resetRunToRunning).mock.calls.at(-1)?.[6]).toBeUndefined();
+			const input = vi.mocked(createAndPublishDispatch).mock.calls[0][0];
+			expect(input.jobPayload).toMatchObject({ runId: 'run-1', resumePmPhase: 'implementation' });
+			expect(input.jobPayload.implementationBranchProvisioned).toBeUndefined();
 		});
 
 		it('rejects a failed run if jobPayload is missing', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'failed', jobPayload: null }),
 			);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
 			);
-			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
 		it('throws NOT_FOUND for an unknown run', async () => {
@@ -626,7 +570,7 @@ describe('runsRouter', () => {
 			await expect(caller.retryNow({ runId: 'missing' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'NOT_FOUND' }),
 			);
-			expect(promoteRetryForRun).not.toHaveBeenCalled();
+			expect(getActiveDispatchByRunId).not.toHaveBeenCalled();
 		});
 
 		it('rejects a non-deferred non-failed run with PRECONDITION_FAILED (retryable-state guard)', async () => {
@@ -635,122 +579,96 @@ describe('runsRouter', () => {
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
 			);
-			expect(promoteRetryForRun).not.toHaveBeenCalled();
+			expect(getActiveDispatchByRunId).not.toHaveBeenCalled();
 		});
 
 		it('retries even after the automatic budget was exhausted (bypasses the cap)', async () => {
 			// A run can defer at a high attempt and still be manually retryable — the
-			// router doesn't inspect the attempt count, it just promotes the pending
-			// job (which resets the counter). Guard: a deferred run always retries.
+			// reopen resets the counter. Guard: a deferred run always retries.
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(
+				makeDispatch({ attempt: 6, jobPayload: { ...GITHUB_PAYLOAD, rateLimitRetryAttempt: 6 } }),
+			);
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(makeDispatch());
 
 			await expect(caller.retryNow({ runId: 'run-1' })).resolves.toMatchObject({
 				status: 'retrying',
 			});
+			expect(reopenDispatchForManualRetry).toHaveBeenCalledWith(
+				'dispatch-1',
+				expect.objectContaining({ rateLimitRetryAttempt: 0 }),
+			);
 		});
 
-		it('reconstructs delivery resume from jobPayload when a deferred run has no pending retry to promote', async () => {
-			// The pending BullMQ retry can be lost (the fire-and-forget window on
-			// worker shutdown, or the completed job reaped from Redis), leaving a
-			// `deferred` row with no job to promote. Rather than a dead-end CONFLICT,
-			// retryNow falls back to reconstructing the job from the stored payload —
-			// the same path a terminally-`failed` run takes.
-			const mockPayload = {
-				type: 'github' as const,
-				projectId: 'p1',
-				resumeDelivery: true,
-				event: {
-					eventType: 'pull_request' as const,
-					repoFullName: 'jkwiecien/swarm',
-					isCommentEvent: false,
-				},
-			};
+		it('reconstructs from jobPayload when a deferred run has no active dispatch (legacy orphan)', async () => {
+			const mockPayload: SwarmJob = { ...GITHUB_PAYLOAD, resumeDelivery: true };
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'deferred', jobPayload: mockPayload }),
 			);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
+			vi.mocked(createAndPublishDispatch).mockResolvedValue({
+				dispatch: makeDispatch(),
+				created: true,
+			});
 
 			const result = await caller.retryNow({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'retrying' });
-			expect(resetRunToRunning).toHaveBeenCalledWith(
-				'run-1',
-				expect.objectContaining({ runId: 'run-1', rateLimitRetryAttempt: 0 }),
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				undefined,
-				null,
-			);
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({ runId: 'run-1', resumeDelivery: true }),
-				0,
-				{ unique: true },
+			expect(createAndPublishDispatch).toHaveBeenCalledWith(
+				expect.objectContaining({
+					runId: 'run-1',
+					jobPayload: expect.objectContaining({ resumeDelivery: true, rateLimitRetryAttempt: 0 }),
+				}),
 			);
 		});
 
-		it('invalidates a slot-blocked pending continuation before reconstructing Retry now', async () => {
-			const mockPayload = createMockGitHubProjectsWebhookJob({
-				pendingDispatchId: '11111111-1111-4111-8111-111111111111',
-			});
-			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({ id: 'run-1', status: 'deferred', jobPayload: mockPayload }),
-			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
-			vi.mocked(enqueueDelayedRetry).mockResolvedValue('job-1');
-
-			await caller.retryNow({ runId: 'run-1' });
-
-			expect(removePendingContinuationForRun).toHaveBeenCalledExactlyOnceWith('run-1');
-			expect(enqueueDelayedRetry).toHaveBeenCalledWith(
-				expect.objectContaining({ pendingDispatchId: '11111111-1111-4111-8111-111111111111' }),
-				0,
-				{ unique: true, jobId: 'pending_11111111-1111-4111-8111-111111111111' },
-			);
-		});
-
-		it('rejects a deferred run with no pending retry and no jobPayload', async () => {
+		it('rejects a deferred run with no active dispatch and no jobPayload', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
 				makeRun({ id: 'run-1', status: 'deferred', jobPayload: null }),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(false);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
 			);
-			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
-		it('rejects a deferred retry when another caller already claimed the row', async () => {
+		it('rejects with CONFLICT when the dispatch was claimed before the reopen landed', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ status: 'deferred' }));
-			vi.mocked(resetRunToRunning).mockResolvedValue(false);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(makeDispatch());
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(null);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'CONFLICT' }),
 			);
-			expect(promoteRetryForRun).not.toHaveBeenCalled();
+			expect(publishDispatchWakeUp).not.toHaveBeenCalled();
 		});
 
-		it('rejects a failed retry when another caller already claimed the row', async () => {
+		it('rejects with CONFLICT when a concurrent retry already created the run’s dispatch', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(
-				makeRun({
-					status: 'failed',
-					jobPayload: { type: 'github', projectId: 'p1', event: {} } as never,
-				}),
+				makeRun({ status: 'failed', jobPayload: GITHUB_PAYLOAD }),
 			);
-			vi.mocked(resetRunToRunning).mockResolvedValue(false);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(undefined);
+			vi.mocked(createAndPublishDispatch).mockRejectedValue(
+				new Error('duplicate key value violates unique constraint "uq_dispatches_active_run"'),
+			);
 
 			await expect(caller.retryNow({ runId: 'run-1' })).rejects.toThrowError(
 				expect.objectContaining({ code: 'CONFLICT' }),
 			);
-			expect(enqueueDelayedRetry).not.toHaveBeenCalled();
+		});
+
+		it('still reports retrying when the wake-up publish fails (reconciler repairs it)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(makeDispatch());
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(makeDispatch());
+			vi.mocked(publishDispatchWakeUp).mockRejectedValue(new Error('redis down'));
+
+			await expect(caller.retryNow({ runId: 'run-1' })).resolves.toEqual({
+				runId: 'run-1',
+				status: 'retrying',
+			});
 		});
 
 		it('clears a stale user-termination flag before re-running the row', async () => {
@@ -758,8 +676,8 @@ describe('runsRouter', () => {
 			// reuses the same run id, so the flag must be cleared or the worker would
 			// instantly terminate the fresh attempt (issue #166).
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
-			vi.mocked(resetRunToRunning).mockResolvedValue(true);
-			vi.mocked(promoteRetryForRun).mockResolvedValue(true);
+			vi.mocked(getActiveDispatchByRunId).mockResolvedValue(makeDispatch());
+			vi.mocked(reopenDispatchForManualRetry).mockResolvedValue(makeDispatch());
 
 			await caller.retryNow({ runId: 'run-1' });
 
@@ -803,28 +721,28 @@ describe('runsRouter', () => {
 			expect(result).toEqual({ runId: 'run-1', status: 'terminating' });
 			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
 			// The worker owns an in-flight run's terminal state — the mutation must not
-			// write the row itself.
+			// write the row itself, nor cancel the (running) dispatch out from under it.
 			expect(markRunUserTerminated).not.toHaveBeenCalled();
-			expect(removePendingRetryForRun).not.toHaveBeenCalled();
+			expect(cancelDispatchForRun).not.toHaveBeenCalled();
 		});
 
-		it('cancels the pending retry and fails the row for a deferred run', async () => {
+		it('cancels the canonical dispatch and fails the row for a deferred run', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
-			vi.mocked(removePendingRetryForRun).mockResolvedValue(1);
+			vi.mocked(cancelDispatchForRun).mockResolvedValue(true);
 			vi.mocked(markRunUserTerminated).mockResolvedValue(true);
 
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
 			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
-			expect(removePendingRetryForRun).toHaveBeenCalledWith('run-1');
+			expect(cancelDispatchForRun).toHaveBeenCalledWith('run-1', USER_TERMINATION_MESSAGE);
 			expect(markRunUserTerminated).toHaveBeenCalledWith(
 				'run-1',
 				USER_TERMINATION_MESSAGE,
 				'deferred',
 			);
-			// Keep the marker until an explicit retry clears it: the worker's
-			// completed handler may still be about to enqueue the delayed retry.
+			// Keep the marker until an explicit retry clears it: a wake-up that
+			// already claimed the dispatch honours it at run start.
 			expect(clearRunCancellation).not.toHaveBeenCalled();
 		});
 
@@ -835,7 +753,7 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'running' }));
-			vi.mocked(removePendingRetryForRun).mockResolvedValue(0);
+			vi.mocked(cancelDispatchForRun).mockResolvedValue(false);
 			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
 
 			const result = await caller.terminate({ runId: 'run-1' });
@@ -851,7 +769,7 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'completed' }));
-			vi.mocked(removePendingRetryForRun).mockResolvedValue(0);
+			vi.mocked(cancelDispatchForRun).mockResolvedValue(false);
 			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
 
 			const result = await caller.terminate({ runId: 'run-1' });
@@ -861,13 +779,14 @@ describe('runsRouter', () => {
 	});
 
 	describe('putBack', () => {
-		it('successfully removes a github-projects job and moves card to backlog', async () => {
+		it('cancels a waiting github-projects dispatch and moves its card to backlog', async () => {
 			const project = createMockProjectConfig({ id: 'p1' });
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 
 			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
-			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
-			vi.mocked(removeQueuedJob).mockResolvedValue(jobData);
+			const dispatch = makeDispatch({ state: 'pending', jobPayload: jobData, runId: null });
+			vi.mocked(getDispatchById).mockResolvedValue(dispatch);
+			vi.mocked(cancelDispatchAndWake).mockResolvedValue(dispatch);
 
 			const getWorkItem = vi.fn().mockResolvedValue({
 				id: jobData.event.itemNodeId,
@@ -880,18 +799,16 @@ describe('runsRouter', () => {
 				createProvider: () => ({ getWorkItem, moveWorkItem }),
 			} as never);
 
-			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
+			const result = await caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' });
 
 			expect(result).toEqual({ success: true });
-			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
-			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
-			expect(getProjectByIdFromDb).toHaveBeenCalledWith('p1');
-			expect(getPMProvider).toHaveBeenCalledWith(project.pm.type);
+			expect(getDispatchById).toHaveBeenCalledWith('dispatch-1');
+			expect(cancelDispatchAndWake).toHaveBeenCalledWith('dispatch-1', expect.any(String));
 			expect(getWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId);
 			expect(moveWorkItem).toHaveBeenCalledWith(jobData.event.itemNodeId, 'backlog');
 		});
 
-		it('successfully removes a github job and moves card to backlog by searching card url', async () => {
+		it('cancels a github dispatch and moves the card found by its url', async () => {
 			const project = createMockProjectConfig({ id: 'p1' });
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 
@@ -903,10 +820,16 @@ describe('runsRouter', () => {
 					reviewState: 'approved',
 					repoFullName: 'acme/widgets',
 					workItemId: '42',
+					isCommentEvent: false,
 				},
 			};
-			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
-			vi.mocked(removeQueuedJob).mockResolvedValue(jobData as never);
+			const dispatch = makeDispatch({
+				state: 'pending',
+				jobPayload: jobData as never,
+				runId: null,
+			});
+			vi.mocked(getDispatchById).mockResolvedValue(dispatch);
+			vi.mocked(cancelDispatchAndWake).mockResolvedValue(dispatch);
 
 			const listWorkItems = vi
 				.fn()
@@ -916,11 +839,9 @@ describe('runsRouter', () => {
 				createProvider: () => ({ listWorkItems, moveWorkItem }),
 			} as never);
 
-			const result = await caller.putBack({ jobId: 'job-1', projectId: 'p1' });
+			const result = await caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' });
 
 			expect(result).toEqual({ success: true });
-			expect(getQueuedJobData).toHaveBeenCalledWith('job-1');
-			expect(removeQueuedJob).toHaveBeenCalledWith('job-1');
 			expect(listWorkItems).toHaveBeenCalled();
 			expect(moveWorkItem).toHaveBeenCalledWith('card-1', 'backlog');
 		});
@@ -928,20 +849,28 @@ describe('runsRouter', () => {
 		it('throws NOT_FOUND when the project does not exist', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
 
-			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
 				/Project with ID "p1" not found/,
 			);
 		});
 
-		it('throws PRECONDITION_FAILED when the job state is active', async () => {
+		it('throws NOT_FOUND when the dispatch does not exist', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
-			vi.mocked(getQueuedJobData).mockRejectedValue(
-				new Error('Job "job-1" is active and cannot be put back.'),
-			);
+			vi.mocked(getDispatchById).mockResolvedValue(undefined);
 
-			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
-				/Job "job-1" is active and cannot be put back./,
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
+				/not found/,
 			);
+		});
+
+		it('throws PRECONDITION_FAILED when the dispatch is already claimed (running)', async () => {
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(getDispatchById).mockResolvedValue(makeDispatch({ state: 'running' }));
+
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
+				/is running and cannot be put back/,
+			);
+			expect(cancelDispatchAndWake).not.toHaveBeenCalled();
 		});
 
 		it('throws PRECONDITION_FAILED when the job is in an unsupported phase', async () => {
@@ -955,11 +884,14 @@ describe('runsRouter', () => {
 					merged: true,
 					repoFullName: 'acme/widgets',
 					workItemId: '42',
+					isCommentEvent: false,
 				},
 			};
-			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
+			vi.mocked(getDispatchById).mockResolvedValue(
+				makeDispatch({ state: 'pending', phase: null, jobPayload: jobData as never }),
+			);
 
-			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
 				/Job phase hint "resolve-conflicts" is not supported for Put back./,
 			);
 		});
@@ -974,9 +906,12 @@ describe('runsRouter', () => {
 					reviewState: 'approved',
 					repoFullName: 'acme/widgets',
 					workItemId: '42',
+					isCommentEvent: false,
 				},
 			};
-			vi.mocked(getQueuedJobData).mockResolvedValue(jobData as never);
+			vi.mocked(getDispatchById).mockResolvedValue(
+				makeDispatch({ state: 'pending', phase: null, jobPayload: jobData as never }),
+			);
 
 			const listWorkItems = vi
 				.fn()
@@ -985,9 +920,10 @@ describe('runsRouter', () => {
 				createProvider: () => ({ listWorkItems }),
 			} as never);
 
-			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
 				/Job has no linked board card./,
 			);
+			expect(cancelDispatchAndWake).not.toHaveBeenCalled();
 		});
 
 		it('throws PRECONDITION_FAILED when the github-projects job status does not start planning or implementation', async () => {
@@ -995,7 +931,9 @@ describe('runsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 
 			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
-			vi.mocked(getQueuedJobData).mockResolvedValue(jobData);
+			vi.mocked(getDispatchById).mockResolvedValue(
+				makeDispatch({ state: 'pending', jobPayload: jobData }),
+			);
 
 			const getWorkItem = vi.fn().mockResolvedValue({
 				id: jobData.event.itemNodeId,
@@ -1007,9 +945,35 @@ describe('runsRouter', () => {
 				createProvider: () => ({ getWorkItem }),
 			} as never);
 
-			await expect(caller.putBack({ jobId: 'job-1', projectId: 'p1' })).rejects.toThrow(
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
 				/Work item status does not start a Planning or Implementation phase./,
 			);
+		});
+
+		it('surfaces a claimed-in-the-meantime dispatch instead of moving the card', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+			const jobData = createMockGitHubProjectsWebhookJob({ projectId: 'p1' });
+			vi.mocked(getDispatchById).mockResolvedValue(
+				makeDispatch({ state: 'pending', jobPayload: jobData }),
+			);
+			vi.mocked(cancelDispatchAndWake).mockResolvedValue(null);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: jobData.event.itemNodeId,
+				statusId: '61e4505c',
+				title: 'Test Card',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
+			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem, moveWorkItem }),
+			} as never);
+
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).rejects.toThrow(
+				/picked up while putting it back/,
+			);
+			expect(moveWorkItem).not.toHaveBeenCalled();
 		});
 	});
 });

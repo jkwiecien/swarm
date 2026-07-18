@@ -8,6 +8,7 @@ export default defineConfig({
 		'./src/db/schema/appSettings.ts',
 		'./src/db/schema/cliQuotas.ts',
 		'./src/db/schema/reviewVerdicts.ts',
+		'./src/db/schema/dispatches.ts',
 	],
 	out: './src/db/migrations',
 	dialect: 'postgresql',

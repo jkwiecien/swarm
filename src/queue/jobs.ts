@@ -111,11 +111,14 @@ const jobBase = z.object({
 	 */
 	continuationDispatchClaimed: z.boolean().optional(),
 	/**
-	 * Stable queue handoff id for a concurrency-blocked continuation. The slot
-	 * releaser and a concurrent manual retry use this same id, so BullMQ accepts
-	 * at most one of them.
+	 * The durable dispatch record this job wakes up (issue #284, ADR-002). Every
+	 * queue job produced by the dispatch layer carries it; the worker acts only
+	 * after atomically claiming that record, so a cancelled/completed dispatch
+	 * can never be resurrected by a late delivery. Absent only on legacy jobs
+	 * enqueued before the dispatch layer existed (adopted at dequeue) and on the
+	 * router's degraded fallback when the dispatch table is unavailable.
 	 */
-	pendingDispatchId: z.string().uuid().optional(),
+	dispatchId: z.string().uuid().optional(),
 });
 
 /** An SCM webhook event (`pull_request`, `issue_comment`, …) bound for the worker. */

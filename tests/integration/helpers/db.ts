@@ -48,6 +48,21 @@ export async function resolveTestDbUrl(): Promise<string | null> {
 	return null;
 }
 
+const COMPOSE_DEFAULT_REDIS_URL = 'redis://127.0.0.1:6381';
+
+/**
+ * Resolve a reachable test-Redis URL, mirroring {@link resolveTestDbUrl}:
+ * `TEST_REDIS_URL` if set and reachable, else the docker-compose.test.yml
+ * default (`npm run test:db:up`), else `null` — Redis/BullMQ-dependent suites
+ * skip themselves on `null`.
+ */
+export async function resolveTestRedisUrl(): Promise<string | null> {
+	const envUrl = process.env.TEST_REDIS_URL;
+	if (envUrl && (await tryUrl(envUrl))) return envUrl;
+	if (await tryUrl(COMPOSE_DEFAULT_REDIS_URL)) return COMPOSE_DEFAULT_REDIS_URL;
+	return null;
+}
+
 /** Run Drizzle migrations against the test database (`getDb()` reads the DATABASE_URL set by setup). */
 export async function runMigrations(): Promise<void> {
 	await migrate(getDb(), {
@@ -65,6 +80,7 @@ export async function runMigrations(): Promise<void> {
 export async function truncateAll(): Promise<void> {
 	await getDb().execute(`
 		TRUNCATE TABLE
+			dispatches,
 			run_output_events,
 			run_logs,
 			runs,

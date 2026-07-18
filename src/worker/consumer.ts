@@ -19,6 +19,17 @@
 import type { AgentDefaults, ProjectConfig } from '../config/schema.js';
 import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
+import {
+	cancelClaimedDispatch,
+	completeDispatch,
+	type DispatchRow,
+	type DispatchWaitReason,
+	deferDispatchToPending,
+	failDispatch,
+	markDispatchRunning,
+	recordDispatchResolution,
+	scheduleDispatchRetry,
+} from '../db/repositories/dispatchesRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
 	appendRunOutputEvents,
@@ -32,6 +43,14 @@ import {
 	storeRunLogs,
 	updateRunJobPayload,
 } from '../db/repositories/runsRepository.js';
+import {
+	claimDispatchForJob,
+	createAndPublishDispatch,
+	parseDispatchPayload,
+	promoteNextCapacityDispatch,
+	publishDispatchWakeUp,
+} from '../dispatch/dispatcher.js';
+import { deriveCapacityPendingPayload, deriveRetryJobPayload } from '../dispatch/retry-payload.js';
 import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
@@ -69,7 +88,7 @@ import {
 	USER_TERMINATION_MESSAGE,
 } from '../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
-import { enqueueJob, enqueuePendingDispatch } from '../queue/producer.js';
+import { priorityFor } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
 import type { MergePullRequestOutcome } from '../scm/merge.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
@@ -90,12 +109,6 @@ import {
 } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import { recordReviewMergeOutcome } from './merge-follow-up.js';
-import {
-	acknowledgePendingContinuationClaim,
-	claimNextPendingContinuation,
-	type PendingContinuationClaim,
-	releasePendingContinuationClaim,
-} from './pending-continuations.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
@@ -106,6 +119,16 @@ import {
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
 	| { status: 'no-trigger' }
+	| {
+			/**
+			 * The wake-up's dispatch record refused the claim (cancelled, completed,
+			 * superseded, held elsewhere, or a duplicate attempt for a run that
+			 * already has one) — the delivery is dropped without touching anything
+			 * (issue #284): terminal dispatch states cannot be resurrected.
+			 */
+			status: 'dispatch-refused';
+			reason: string;
+	  }
 	| { status: 'skipped-in-flight'; phase: TriggerPhase; taskId: string }
 	| {
 			status: 'phase-succeeded';
@@ -169,10 +192,17 @@ export type JobOutcome =
 			 */
 			pendingContinuation?: boolean;
 			/**
-			 * A project-slot deferral. Unlike a provider failure, this is retained in
-			 * the pending-dispatch registry and awakened only by a released slot.
+			 * A project-slot deferral. Unlike a provider failure, its dispatch is
+			 * returned to `pending` (wait reason `project-capacity`) and awakened
+			 * only by a released slot, not a timer.
 			 */
 			pendingDispatch?: boolean;
+			/**
+			 * The classified failure kind behind a scheduled-retry deferral — maps
+			 * onto the dispatch record's wait reason so the Queue UI can explain
+			 * *why* the retry is waiting (issue #284).
+			 */
+			failureKind?: DeferrableFailure['kind'];
 	  };
 
 /**
@@ -258,6 +288,48 @@ export function resolveAgentTimeoutMs(raw = process.env.SWARM_AGENT_TIMEOUT_MS):
 
 /** The effective default agent timeout, resolved once at module load. */
 const AGENT_TIMEOUT_MS = resolveAgentTimeoutMs();
+
+/**
+ * Lease taken when a dispatch is claimed at dequeue (issue #284) — long enough
+ * to cover trigger resolution (authoritative board/check re-reads) and worktree
+ * provisioning; extended to the phase's own wall-clock timeout the moment the
+ * run starts (`markDispatchRunning`).
+ */
+const DISPATCH_CLAIM_LEASE_MS = 15 * 60 * 1000;
+/**
+ * Margin past the effective agent timeout before a `running` dispatch's lease
+ * is considered dead — the harness's SIGTERM→SIGKILL grace plus headroom for a
+ * slow finalize, mirroring the stale-run sweep's margin (`src/worker/index.ts`).
+ */
+const DISPATCH_LEASE_MARGIN_MS = 10 * 60 * 1000;
+
+/** Swallow-and-log dispatch completion — bookkeeping must never fail a settled run. */
+async function tryCompleteDispatch(
+	dispatchId: string,
+	outcome: Parameters<typeof completeDispatch>[1],
+): Promise<void> {
+	try {
+		await completeDispatch(dispatchId, outcome);
+	} catch (err) {
+		logger.error('Failed to complete dispatch record (lease sweep will repair)', {
+			dispatchId,
+			outcome,
+			error: describeError(err),
+		});
+	}
+}
+
+/** Swallow-and-log dispatch failure — see {@link tryCompleteDispatch}. */
+async function tryFailDispatch(dispatchId: string, error: string): Promise<void> {
+	try {
+		await failDispatch(dispatchId, error);
+	} catch (err) {
+		logger.error('Failed to fail dispatch record (lease sweep will repair)', {
+			dispatchId,
+			error: describeError(err),
+		});
+	}
+}
 
 type DeferrableFailure = AgentFailure | { kind: 'delivery' };
 
@@ -372,7 +444,91 @@ function deferAgentRunError(
 		pmPhaseStarted:
 			job.type === 'github-projects' &&
 			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
+		failureKind: failure.kind,
 	};
+}
+
+/** Map a classified deferrable failure onto the dispatch record's wait reason. */
+function waitReasonForDeferral(kind: DeferrableFailure['kind'] | undefined): DispatchWaitReason {
+	switch (kind) {
+		case 'capacity':
+			return 'agent-capacity';
+		case 'aborted':
+			return 'worker-shutdown';
+		case 'timeout':
+			return 'timeout';
+		case 'stalled':
+			return 'stalled';
+		case 'delivery':
+			return 'delivery';
+		case 'worktree-exists':
+			return 'worktree-exists';
+		default:
+			return 'rate-limit';
+	}
+}
+
+/**
+ * Persist the derived retry payload on the run row too (best-effort): a manual
+ * "Retry now" for a legacy row with no dispatch reconstructs from it, and the
+ * startup backfill uses it to rebuild lost dispatches.
+ */
+async function persistRetryPayloadOnRun(runId: string | undefined, job: SwarmJob): Promise<void> {
+	if (!runId) return;
+	try {
+		await updateRunJobPayload(runId, job);
+	} catch (err) {
+		logger.error('Failed to persist retry payload on run row (continuing)', {
+			runId,
+			error: describeError(err),
+		});
+	}
+}
+
+/**
+ * Settle a claimed dispatch as `retry-scheduled`: derive the next attempt's
+ * payload, persist it durably on the dispatch (the crash-safe retry intent —
+ * issue #284), then publish the delayed wake-up. A publish failure is logged,
+ * not thrown — the durable record already exists and the reconciler re-publishes
+ * it. A dispatch that is no longer claimed (a user cancellation settled it
+ * first) is left alone: the cancel wins.
+ */
+async function settleDispatchRetry(
+	dispatch: DispatchRow,
+	job: SwarmJob,
+	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
+): Promise<void> {
+	const next = deriveRetryJobPayload(job, {
+		phase: outcome.phase,
+		runId: outcome.runId,
+		resumable: outcome.resumable,
+		resumeDelivery: outcome.resumeDelivery,
+		pmPhaseStarted: outcome.pmPhaseStarted,
+		continuationDispatchClaimed: outcome.continuationDispatchClaimed,
+	});
+	await persistRetryPayloadOnRun(outcome.runId, next);
+	const updated = await scheduleDispatchRetry(dispatch.id, {
+		jobPayload: next,
+		availableAt: new Date(Date.now() + outcome.retryDelayMs),
+		waitReason: waitReasonForDeferral(outcome.failureKind),
+		attempt: next.rateLimitRetryAttempt ?? 0,
+		runId: outcome.runId,
+	});
+	if (!updated) {
+		logger.debug('Dispatch no longer claimed — skipping retry schedule (cancelled?)', {
+			dispatchId: dispatch.id,
+			taskId: outcome.taskId,
+		});
+		return;
+	}
+	try {
+		await publishDispatchWakeUp(updated);
+	} catch (err) {
+		logger.warn('Failed to publish retry wake-up (reconciler will repair)', {
+			dispatchId: dispatch.id,
+			error: describeError(err),
+		});
+	}
 }
 
 function deferForConcurrencyLimit(
@@ -408,13 +564,15 @@ function deferForConcurrencyLimit(
  * pre-run deferral path, split out so that function stays within the complexity
  * budget (the file already splits helpers this way).
  *
- * Every blocked phase is retained as pending work, not sent through the external
- * failure backoff. Its run row becomes visible immediately and its exact dispatch
- * intent is recorded by `reenqueueDeferred`; PM jobs carry `resumePmPhase` so a
- * stale board status cannot deduplicate the resumed phase. SCM continuations
- * retain their dispatch claim and optionally receive priority over board work.
+ * The claimed dispatch is returned to `pending` (wait reason
+ * `project-capacity`) with its exact dispatch intent persisted — PM jobs carry
+ * `resumePmPhase` so a stale board status cannot deduplicate the resumed
+ * phase — and is woken by a freed slot, not a timer (issue #284). Its run row
+ * becomes visible immediately. SCM continuations retain their dispatch dedup
+ * claim and optionally receive priority over board work.
  */
 async function handleConcurrencyDeferral(
+	dispatch: DispatchRow,
 	job: SwarmJob,
 	trigger: TriggerResult,
 	project: ProjectConfig,
@@ -428,8 +586,8 @@ async function handleConcurrencyDeferral(
 	const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
 	if (runId) deferred.runId = runId;
 
-	// Retain a concurrency-blocked SCM phase as a pending continuation,
-	// prioritized over new board work once a slot frees.
+	// Retain a concurrency-blocked SCM phase as a prioritized continuation once
+	// a slot frees.
 	if (isPrioritizedContinuationPhase(trigger.phase)) {
 		deferred.continuationDispatchClaimed = true;
 		deferred.pendingContinuation = project.pipeline?.prioritizeContinuations !== false;
@@ -452,48 +610,26 @@ async function handleConcurrencyDeferral(
 		}
 	}
 
+	// Persist the durable capacity wait *before* settling the visible run: the
+	// dispatch row is the retry intent, so a crash after this line loses nothing.
+	const pendingPayload = deriveCapacityPendingPayload(job, {
+		phase: trigger.phase,
+		runId: deferred.runId,
+		resumable: false,
+		continuationDispatchClaimed: deferred.continuationDispatchClaimed,
+	});
+	await persistRetryPayloadOnRun(deferred.runId, pendingPayload);
+	await deferDispatchToPending(dispatch.id, {
+		jobPayload: pendingPayload,
+		waitReason: 'project-capacity',
+		continuation: deferred.pendingContinuation === true,
+		runId: deferred.runId,
+	});
+
 	// This pre-try/catch path must settle the visible run now. A slot deferral has
 	// no scheduled timestamp: a release, not polling, wakes it.
 	await finalizeFailedRun(deferred.runId, deferred, undefined);
 	return deferred;
-}
-
-/**
- * After a project slot frees, dispatch the next durable pending phase. Best-effort
- * and fully swallowed: a registry/queue hiccup must never turn a settled run into
- * a failed job. A no-op when nothing is pending — the freed slot then goes to
- * whatever the queue serves next; no slot is ever reserved.
- */
-export async function promoteNextPendingContinuation(
-	projectId: string,
-	prioritizeContinuations = true,
-): Promise<void> {
-	let claim: PendingContinuationClaim | null = null;
-	try {
-		claim = await claimNextPendingContinuation(projectId, prioritizeContinuations);
-		if (!claim) return;
-		const pendingDispatchId = claim.entry.job.pendingDispatchId;
-		if (!pendingDispatchId) {
-			await releasePendingContinuationClaim(projectId, claim);
-			logger.warn('pending-continuation: missing deterministic handoff id', { projectId });
-			return;
-		}
-		const jobId = await enqueuePendingDispatch(claim.entry.job, pendingDispatchId);
-		await acknowledgePendingContinuationClaim(projectId, claim);
-		logger.debug('pending-continuation: slot freed — dispatched blocked phase', {
-			projectId,
-			jobId,
-			taskId: claim.entry.taskId,
-			phase: claim.entry.phase,
-			continuation: claim.entry.continuation,
-		});
-	} catch (err) {
-		if (claim) await releasePendingContinuationClaim(projectId, claim);
-		logger.warn('pending-continuation: promote after slot release failed', {
-			projectId,
-			error: describeError(err),
-		});
-	}
 }
 
 /**
@@ -1234,7 +1370,7 @@ async function selfEnqueueNextPhase(
 	if (!nextPhase) return;
 
 	try {
-		await enqueueJob({
+		const job: SwarmJob = {
 			type: 'github-projects',
 			projectId: project.id,
 			event: {
@@ -1245,6 +1381,12 @@ async function selfEnqueueNextPhase(
 				changedFieldNodeId: project.githubProjects.statusFieldId,
 				changedFieldType: 'single_select',
 			},
+		};
+		await createAndPublishDispatch({
+			projectId: project.id,
+			jobPayload: job,
+			priority: priorityFor(job) ?? 0,
+			source: 'synthetic',
 		});
 		logger.debug('pm-status: self-enqueued next phase after auto-advance', {
 			projectId: project.id,
@@ -1275,7 +1417,7 @@ async function selfEnqueueSplitChildPlanning(
 ): Promise<void> {
 	for (const itemNodeId of itemNodeIds) {
 		try {
-			await enqueueJob({
+			const job: SwarmJob = {
 				type: 'github-projects',
 				projectId: project.id,
 				event: {
@@ -1286,6 +1428,12 @@ async function selfEnqueueSplitChildPlanning(
 					changedFieldNodeId: project.githubProjects.statusFieldId,
 					changedFieldType: 'single_select',
 				},
+			};
+			await createAndPublishDispatch({
+				projectId: project.id,
+				jobPayload: job,
+				priority: priorityFor(job) ?? 0,
+				source: 'synthetic',
 			});
 			logger.debug('pm-status: self-enqueued Planning for split child', {
 				projectId: project.id,
@@ -1697,13 +1845,40 @@ export async function processJob(
 	registry: TriggerRegistry,
 	signal?: AbortSignal,
 ): Promise<JobOutcome> {
-	// The stable handoff id is only for queue admission. Once this attempt has
-	// started, later manual retries must get a new id if it defers again.
-	delete job.pendingDispatchId;
+	// Claim the durable dispatch behind this wake-up before acting on anything
+	// (issue #284): a cancelled/completed/superseded dispatch refuses the claim,
+	// so no delivery path — redelivery, delayed retry, slot release,
+	// reconciliation — can resurrect terminal work. Legacy dispatch-less jobs
+	// are adopted into the model here.
+	const claim = await claimDispatchForJob(job, DISPATCH_CLAIM_LEASE_MS);
+	if (!claim.claimed) {
+		logger.info('Dispatch wake-up refused — dropping delivery', {
+			projectId: job.projectId,
+			dispatchId: job.dispatchId,
+			reason: claim.reason,
+		});
+		return { status: 'dispatch-refused', reason: claim.reason };
+	}
+	const dispatch = claim.dispatch;
+	try {
+		// The dispatch row's stored payload is authoritative — a manual retry's
+		// overrides land there, not on the wake-up job.
+		job = parseDispatchPayload(dispatch);
+	} catch (err) {
+		const error = `Dispatch payload failed validation: ${describeError(err)}`;
+		await tryFailDispatch(dispatch.id, error);
+		logger.error('Dispatch payload failed validation — failing dispatch', {
+			dispatchId: dispatch.id,
+			error,
+		});
+		return { status: 'dispatch-refused', reason: 'invalid-payload' };
+	}
+
 	const project = await findProjectByIdFromDb(job.projectId);
 	if (!project) {
 		// The producer only enqueues for projects it resolved from Postgres, so a
 		// miss here means the project was deleted mid-flight — fail loudly.
+		await tryFailDispatch(dispatch.id, `Job references unknown project '${job.projectId}'`);
 		throw new Error(`Job references unknown project '${job.projectId}'`);
 	}
 
@@ -1732,7 +1907,19 @@ export async function processJob(
 				await releaseReviewDispatch(dispatchKey);
 			}
 		}
+		await tryCompleteDispatch(dispatch.id, 'no-trigger');
 		return { status: 'no-trigger' };
+	}
+
+	// Record the resolved task/phase on the dispatch so the Queue UI can name
+	// what a waiting dispatch will run, even before a run row exists.
+	try {
+		await recordDispatchResolution(dispatch.id, trigger.taskId, trigger.phase);
+	} catch (err) {
+		logger.debug('Failed to record dispatch resolution (continuing)', {
+			dispatchId: dispatch.id,
+			error: describeError(err),
+		});
 	}
 
 	// A duplicate webhook (or a delayed retry) that resolved to a phase whose
@@ -1744,16 +1931,17 @@ export async function processJob(
 			phase: trigger.phase,
 			taskId: trigger.taskId,
 		});
+		await tryCompleteDispatch(dispatch.id, 'skipped-duplicate');
 		return { status: 'skipped-in-flight', phase: trigger.phase, taskId: trigger.taskId };
 	}
 	inFlightTaskIds.add(trigger.taskId);
 	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
 	if (!slot.acquired) {
 		inFlightTaskIds.delete(trigger.taskId);
-		// Pre-run deferral (concurrency limit): may retain an SCM-driven phase as a
-		// pending continuation (issues #214/#219) or fall back to the generic backoff
-		// — either way it sits outside the try/catch below and finalizes its own row.
-		return handleConcurrencyDeferral(job, trigger, project);
+		// Pre-run deferral (concurrency limit): the dispatch returns to `pending`
+		// (wait reason `project-capacity`) and is woken by a freed slot — it sits
+		// outside the try/catch below and finalizes its own row.
+		return handleConcurrencyDeferral(dispatch, job, trigger, project);
 	}
 
 	let runId: string | undefined;
@@ -1779,6 +1967,20 @@ export async function processJob(
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
 		runId = await tryCreateRun(project, globalDefaults, trigger, job, implementationUnplanned);
+
+		// The dispatch is now `running` against its run row; renew the lease to
+		// cover this phase's own wall-clock timeout so a live run is never
+		// reclaimed, while a dead one is reclaimed soon after the timeout passes.
+		const effectiveTimeoutMs =
+			agentOverrideFor(project, globalDefaults, trigger.phase, job, implementationUnplanned)
+				.timeoutMs ?? AGENT_TIMEOUT_MS;
+		await markDispatchRunning(
+			dispatch.id,
+			runId,
+			new Date(Date.now() + effectiveTimeoutMs + DISPATCH_LEASE_MARGIN_MS),
+			trigger.taskId,
+			trigger.phase,
+		);
 
 		// Make this run cancellable by id and honour a cancellation that already
 		// landed (a deferred run terminated as its retry was dequeued).
@@ -1832,6 +2034,7 @@ export async function processJob(
 			},
 			result.agent,
 		);
+		await tryCompleteDispatch(dispatch.id, 'phase-succeeded');
 		if (trigger.phase === 'planning' || trigger.phase === 'implementation') {
 			await selfEnqueueNextPhase(project, trigger.workItem, result.movedTo);
 		}
@@ -1852,6 +2055,28 @@ export async function processJob(
 		const outcome = await handlePhaseFailure(err, job, trigger, project, runId);
 		preserveCancellationMarker = outcome.status === 'phase-deferred';
 		await finalizeFailedRun(runId, outcome, err);
+		// Settle the durable dispatch to match: a deferral persists its derived
+		// retry intent *before* any wake-up is queued (crash-safe — issue #284); a
+		// user termination cancels rather than fails, so nothing resurrects it.
+		// All swallowed on error: a bookkeeping failure must never rethrow into a
+		// BullMQ retry that would re-run a non-idempotent agent — a dispatch left
+		// `leased`/`running` is reclaimed by the reconciler's lease sweep instead.
+		try {
+			if (outcome.status === 'phase-deferred') {
+				await settleDispatchRetry(dispatch, job, outcome);
+			} else if (outcome.status === 'phase-failed') {
+				if (outcome.error === USER_TERMINATION_MESSAGE) {
+					await cancelClaimedDispatch(dispatch.id, USER_TERMINATION_MESSAGE);
+				} else {
+					await failDispatch(dispatch.id, outcome.error);
+				}
+			}
+		} catch (settleErr) {
+			logger.error('Failed to settle dispatch after phase failure (lease sweep will repair)', {
+				dispatchId: dispatch.id,
+				error: describeError(settleErr),
+			});
+		}
 		return outcome;
 	} finally {
 		// Detach the shutdown listener and drop this run from the cancellation
@@ -1871,11 +2096,11 @@ export async function processJob(
 		// re-enqueued and re-enters `processJob` fresh, past this release.
 		if (slot.tracked) {
 			await releaseProjectSlot(project.id);
-			// A slot just freed — promote the oldest pending continuation for this
-			// project (issues #214/#219) so SCM work blocked only by concurrency runs ahead
-			// of new board work, instead of waiting out its fallback backoff. No-op
-			// when nothing is pending or the policy is off; never reserves a slot.
-			await promoteNextPendingContinuation(
+			// A slot just freed — wake the next capacity-blocked dispatch for this
+			// project (issues #214/#219, #284) so SCM work blocked only by concurrency
+			// runs ahead of new board work. No-op when nothing is pending or the
+			// policy is off; never reserves a slot.
+			await promoteNextCapacityDispatch(
 				project.id,
 				project.pipeline?.prioritizeContinuations !== false,
 			);

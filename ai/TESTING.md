@@ -7,7 +7,7 @@ Same tooling as Cascade — copy its config rather than picking a different stac
 **Vitest**, not Jest. Split into unit and integration projects, same as Cascade:
 
 - **Unit tests** (`tests/unit/**/*.test.ts`) — mock every external call (GitHub API, GitHub Projects GraphQL, filesystem/git worktree operations, LLM CLI subprocess calls). No real network, no real Postgres/Redis. Use `vi.mock()` at the top of the file, before imports, wrapping every method of the client being mocked — see Cascade's `tests/unit/pm/linear/adapter.test.ts` for the exact shape to copy.
-- **Integration tests** (`tests/integration/**/*.test.ts`) — run against a real, ephemeral Postgres (`npm run test:db:up` starts it from `docker-compose.test.yml`, same pattern as Cascade; a real Redis joins that compose file when the first Redis-dependent test lands). Run serially, not in parallel, to avoid state collisions. Suites gate on `describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)` — set by `tests/integration/setup.ts` — so a machine without the test database skips rather than fails.
+- **Integration tests** (`tests/integration/**/*.test.ts`) — run against a real, ephemeral Postgres **and Redis** (`npm run test:db:up` starts both from `docker-compose.test.yml`, same pattern as Cascade). Run serially, not in parallel, to avoid state collisions. Suites gate on `describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)` — set by `tests/integration/setup.ts` — so a machine without the test database skips rather than fails; Redis/BullMQ-dependent suites (the dispatch layer, issue #284) additionally gate on `SWARM_TEST_REDIS_AVAILABLE` the same way.
 
 ## Test data
 
