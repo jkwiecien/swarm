@@ -8,7 +8,7 @@ System prompt and working conventions for AI agents in this repository — the *
 
 **SWARM** is a Local-First, Federated Multi-Agent Framework that automates software engineering workflows: a stateless cloud orchestrator (webhooks, PM-board routing, gRPC control plane) paired with a local daemon (`swarm-cli`) that runs `claude` / `antigravity` CLIs inside isolated Git worktrees on the developer's own machine. Source code never crosses the network — the cloud only ever sees issue metadata, comments, and logs.
 
-**Read `README.md` in full before writing code.** It's the short orientation (architecture at a glance, pipeline phases, security model, status). `PROJECT.md` at the repo root is the full baseline ADD/spec document — read it before implementing anything under `swarm-cloud/` or `swarm-cli/`.
+**Read `README.md` in full before writing code.** It is the short orientation and quick-start guide; detailed operations, configuration, pipeline, and status references are linked from it under `docs/`. `PROJECT.md` at the repo root is the full baseline ADD/spec document — read it before implementing anything under `swarm-cloud/` or `swarm-cli/`.
 
 **Keep `README.md` current.** If a change makes anything in `README.md` inaccurate — an architecture shift, a renamed component, a pipeline phase that changed, a status/roadmap item that moved — update `README.md` in the same change. Do not let it drift from the code; a stale README is worse than no README.
 
@@ -133,7 +133,7 @@ Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-
 
 ## 7. Configuration
 
-Every configuration option — general/host settings (environment variables) and per-project config (`swarm.config.json`) — is catalogued in **[`README.md` § Configuration](../README.md#configuration)**. That section is the canonical human-facing reference: exact keys, defaults, required-ness, and the file each lives in.
+Every configuration option — general/host settings (environment variables), per-project config (`swarm.config.json`), and global settings — is catalogued in **[`docs/configuration.md`](../docs/configuration.md)**. That document is the canonical human-facing reference: exact keys, defaults, required-ness, and the place each lives.
 
 - **When the user asks you to change a setting** (rather than doing it in the dashboard UI), use that catalogue: find the option there, then edit the right place — `.env` for a general setting, `swarm.config.json` for project config (and remind them to run `swarm config apply` / `npm run db:seed` to load it into Postgres, since the running services read config from the DB, not the file). Don't hunt through source to rediscover an option the catalogue already lists.
-- **Keep the catalogue current** — same rule as `README.md`/the `ai/*.md` docs (§1, §2): whenever a change adds, removes, renames, or re-defaults a config option (an env var, a `ProjectConfig` field, a provider-schema field), update the matching row in `README.md`'s Configuration section **in the same change**. The Zod schema in `src/config/schema.ts` stays the source of truth for validation; the README section is its human-readable mirror and must not drift from it.
+- **Keep the catalogue current** — same rule as `README.md`/the `ai/*.md` docs (§1, §2): whenever a change adds, removes, renames, or re-defaults a config option (an env var, a `ProjectConfig` field, a provider-schema field), update the matching row in `docs/configuration.md` **in the same change**. The Zod schemas in `src/config/schema.ts` and `src/config/app-settings.ts` stay the source of truth for validation; the configuration document is their human-readable mirror and must not drift from them.

@@ -1,0 +1,167 @@
+# Configuration
+
+SWARM's configuration splits into three layers:
+
+- **General settings** — process/host-level knobs, set as **environment variables** (usually in `.env`, sourced from `.env.docker.example`). No schema; read directly where needed. These configure the router, worker, dashboard, database, Redis, credential encryption, and logging.
+- **Project config** — the **per-project** shape (`swarm.config.json`, one entry per project), validated by a Zod schema (`src/config/schema.ts` — the single source of truth) and loaded into Postgres via `swarm config apply` / `npm run db:seed`. This is where a project's repo, worktree layout, board mapping, credential references, and per-phase agent/pipeline behaviour live.
+- **Global settings** — **app-wide** knobs that apply across every project, validated by a Zod schema (`src/config/app-settings.ts` — the single source of truth) and stored **DB-first** in the single-row `app_settings` table. Unlike project config these are *not* file-sourced; they're edited through the dashboard API (the `settings` tRPC router), and when nothing is stored the coded defaults apply. Today the global settings are `agents.defaults` (the global per-CLI default model) and `appearance.theme` (the dashboard's theme choice).
+
+> **This document is the canonical, human-editable catalogue of every configuration option.** It is meant to be kept in lock-step with the code (see [`ai/RULES.md` §7](../ai/RULES.md)): when an option is added, removed, renamed, or its default changes, update the matching row here in the same change. When you'd rather not click through the dashboard UI, point an agent at this document and ask it to change a setting — everything editable is listed here with the exact key, default, and file it lives in.
+
+### General settings (environment variables)
+
+Grouped by concern. "Required" means startup throws if it's unset; everything else has a default or a safe fallback. Docker-side ports (`POSTGRES_PORT`, `REDIS_PORT`, `ROUTER_PORT`, …) are the **host-published** ports; inside the Compose network the services use their own fixed container ports.
+
+**Database (Postgres)** — `src/db/client.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | _(unset)_ | Full Postgres connection string. If set, used verbatim and the `SWARM_POSTGRES_*` fallbacks are ignored. If neither this nor `SWARM_POSTGRES_HOST` is set, startup throws. |
+| `SWARM_POSTGRES_HOST` | _(unset)_ | Host used to assemble a connection string when `DATABASE_URL` is absent. |
+| `SWARM_POSTGRES_PORT` | `5432` | Port for the assembled connection string (container-internal; the host port is `POSTGRES_PORT`). |
+| `SWARM_POSTGRES_USER` | `swarm` | DB user for the assembled connection string. |
+| `SWARM_POSTGRES_PASSWORD` | `` (empty) | DB password for the assembled connection string. |
+| `SWARM_POSTGRES_DB` | `swarm` | Database name for the assembled connection string. |
+| `DATABASE_SSL` | SSL on | The literal `false` disables TLS; any other value keeps TLS on with `rejectUnauthorized: true`. |
+| `DATABASE_CA_CERT` | _(unset)_ | Path to a CA cert file for the DB TLS connection; startup throws if the path doesn't exist. |
+
+**Queue & worker (Redis / BullMQ)**
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `REDIS_URL` | **required** | Redis connection URL for the BullMQ queue and all Redis-backed dedup (`src/lib/redis.ts`). Parsed for host, port (default `6379`), and password. |
+| `SWARM_WORKER_CONCURRENCY` | `1` | Worker-global maximum number of jobs running at once (`src/worker/index.ts`). Must be a positive integer or startup throws. Each project's `maxConcurrentJobs` additionally caps that project's in-flight jobs, so its effective limit is the smaller of the two values. |
+| `SWARM_MAX_JOB_AGE_MS` | `86400000` (24h) | Maximum age of a BullMQ job when the worker begins processing it (`src/worker/job-freshness.ts`). Older webhook or retry jobs are acknowledged as stale without starting an agent, preventing an offline worker from replaying board work completed manually. Must be a positive integer or startup throws. |
+| `SWARM_WORKER_LOCK_DURATION_MS` | `900000` (15m) | BullMQ job-lock duration (`src/worker/runtime-options.ts`). Locks are renewed at least every 30s (or half the duration for a shorter override), while the longer expiry tolerates a sleeping laptop, event-loop starvation, or a transient Redis interruption without falsely reclaiming a still-running agent as stalled. Must be a positive integer or startup throws. |
+| `SWARM_WORKTREE_SWEEP_INTERVAL_MS` | `3600000` (1h) | How often the worker runs the background worktree retention sweep (`src/worker/index.ts`). Must be a positive integer or startup throws. |
+| `SWARM_AGENT_TIMEOUT_MS` | `1800000` (30m) | Default wall-clock timeout applied to **every** phase/agent run when the project sets no per-phase `agents.<phase>.timeoutMs` (`src/worker/consumer.ts`). The harness kills a run that exceeds it (SIGTERM, then SIGKILL after a 5s grace) so a hung agent can't hold a worker slot indefinitely. A genuinely-interrupted timeout is then **deferred and resumed** (the agent continues its prior CLI session in the preserved worktree — see the [pipeline guide](./pipeline.md#pipeline-phases)), bounded by the same retry cap as a rate-limit; only a run that trapped SIGTERM and still exited 0 is finalized `failed`. A per-phase `timeoutMs` in `swarm.config.json` overrides it. Must be a positive integer or startup throws. |
+| `SWARM_STALE_RUN_SWEEP_INTERVAL_MS` | `300000` (5m) | How often the worker sweeps for stale `running` run-history rows while it keeps serving jobs — a phase whose process died without finalizing (`src/worker/index.ts`). A row still `running` past `max(configured timeout) + 10m` grace is reconciled to `failed`. Must be a positive integer or startup throws. |
+| `SWARM_ANTIGRAVITY_CONVERSATIONS_DIR` | `~/.gemini/antigravity-cli/conversations` | Where the harness looks for Antigravity's per-conversation `.db` files to capture the id of the session an `agy` run created, so a deferred run can be resumed with `agy --conversation <id>` (`src/harness/antigravity-session.ts`). `claude` and `codex` report their session id directly, so this applies only to Antigravity; override for a non-default `agy` install or in tests. |
+
+**Credential encryption at rest** — `src/db/crypto.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CREDENTIAL_MASTER_KEY` | _(unset → plaintext)_ | 64-char (32-byte) hex AES-256-GCM key for encrypting `project_credentials`. If unset, secrets are stored **plaintext** (dev only). Validated for length and hex format. |
+
+**Dashboard API** — `src/dashboard.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DASHBOARD_TOKEN` | **required** | Shared-secret bearer token required on every `/trpc/*` request (`/health` is exempt). Startup throws if unset. |
+| `DASHBOARD_PORT` | `3101` | Port the dashboard listens on (bound to `127.0.0.1` only). |
+
+**Router** — `src/router/index.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `3000` | Webhook-receiver port **inside the router container**; the host-published port is `ROUTER_PORT`. |
+
+**Logging** — `src/lib/logger.ts`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SWARM_LOG_LEVEL` | `info` | Minimum level emitted: `debug` \| `info` \| `warn` \| `error`. |
+| `SWARM_LOG_FORMAT` | auto | `json` or `pretty`. Auto-selects `pretty` on a TTY, `json` when piped. |
+| `SWARM_LOG_FILE` | `logs/worker.log` (worker) | The worker tees its log lines (always JSON) to this file, in addition to stdout, so an unattended run leaves a greppable record. Set to override the path; relative paths resolve against the repo root (`logs/` is git-ignored). Other processes don't write a log file unless wired to. |
+| `NO_COLOR` | _(unset)_ | Any value disables ANSI colour in `pretty` mode. |
+
+**Host / Docker Compose ports** — `docker-compose.yml`, `.env.docker.example`
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTGRES_PORT` | `5433` | Host port the Compose Postgres is published on. |
+| `REDIS_PORT` | `6380` | Host port the Compose Redis is published on. |
+| `ROUTER_PORT` | `3100` | Host port the Compose router is published on; also where `swarm status` probes `/health`. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | _(unset)_ | Token for the opt-in `cloudflared` Compose service (see `docs/cloudflare-tunnel.md`). |
+| `COMPOSE_PROFILES` | _(unset)_ | Compose profiles to activate, e.g. `tunnel` to bring up `cloudflared`. |
+
+**Credential secret values** (referenced by project config, not config themselves): the env vars a project's `credentials` block *points at* — by default `SCM_TOKEN_IMPLEMENTER`, `SCM_TOKEN_REVIEWER`, `SCM_WEBHOOK_SECRET` for a newly created project. These are opaque reference *names*, not ambient environment variables the running services read at request time: `swarm config apply` reads them from the environment once, at apply time, and stores the resolved values (encrypted) in Postgres — the router/worker resolve credentials from the DB thereafter. An unset reference is warned-and-skipped, not fatal. The default only changes what a *new* project is created with; a project already storing GitHub-named references (`GITHUB_TOKEN_IMPLEMENTER` and friends) keeps resolving them unchanged — there is no migration and no dual-read fallback to reconcile.
+
+**Web frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`web/.env`)
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_DASHBOARD_TOKEN` | _(unset)_ | Must equal the backend `DASHBOARD_TOKEN`; sent as the `Authorization: Bearer` header. |
+| `VITE_API_URL` | `` (same-origin) | Base URL for the dashboard API. |
+
+### Project config (`swarm.config.json`)
+
+The file is `{ "projects": [ … ] }` — a non-empty array of project objects. Source of truth: `src/config/schema.ts` (+ `src/integrations/pm/github-projects/config-schema.ts`). Edit the file, then run `swarm config apply` (or `npm run db:seed`) to load it into Postgres — the running router/worker resolve config from the DB, not the file.
+
+**Top-level project fields** — `ProjectConfigSchema`
+| Field | Required / Default | Purpose |
+| --- | --- | --- |
+| `id` | **required** | Stable internal project id; one Postgres row per project. |
+| `name` | **required** | Human-facing name; also `{project-name}` in worktree paths. |
+| `repo` | **required** | GitHub repo as `owner/repo`. |
+| `repoRoot` | **required** | Absolute path to the main repo checkout on the dev machine. |
+| `worktreeRoot` | `.swarm-workspaces` | Directory under `repoRoot` for per-task git worktrees. |
+| `baseBranch` | `main` | Branch worktrees are cut from and PRs target. |
+| `branchPrefix` | `issue-` | Prefix for task branch names (`issue-<n>-<slug>`). |
+| `maxConcurrentJobs` | `1` | Maximum jobs this project may run concurrently (positive integer). The worker retains an over-limit phase as durable pending work and dispatches it when a slot frees; this does not consume the external-failure retry budget. Its effective limit is `min(SWARM_WORKER_CONCURRENCY, maxConcurrentJobs)`. |
+| `pm` | `{ type: "github-projects" }` | PM provider discriminator (only `github-projects` exists today). |
+| `githubProjects` | **required** | GitHub Projects board mapping (below). |
+| `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |
+| `agents` | optional | Per-phase agent CLI/model overrides (below). |
+| `pipeline` | optional | Per-phase autonomous board-move and PR-merge control (below). |
+| `worktreeRetention` | optional | Retention sweep tuning — `{ maxWorktrees }`, default `10`; how many of the project's most-recently-active `task-<id>` worktrees to keep (`src/config/schema.ts`'s `WorktreeRetentionConfigSchema`). |
+
+**`credentials`** — all three are *references* (keys into the secret store / env-var names), never raw tokens; each required:
+| Field | Purpose |
+| --- | --- |
+| `implementer` | Reference to the implementer-persona GitHub token. |
+| `reviewer` | Reference to the reviewer-persona GitHub token. |
+| `webhookSecret` | Reference to the GitHub webhook HMAC secret. |
+
+**`githubProjects`** — `githubProjectsConfigSchema`
+| Field | Required / Default | Purpose |
+| --- | --- | --- |
+| `projectId` | **required** | Projects v2 board node id (e.g. `PVT_…`). |
+| `statusFieldId` | **required** | Node id of the single-select "Status" field. |
+| `statusOptions` | **required** | Map of SWARM pipeline status keys (`backlog`, `planning`, `todo`, `inProgress`, `inReview`, `done`) → the Status field's single-select option ids. |
+| `phaseLabels` | optional | Map of SWARM phase keys (`phase-0`…) → repo label names. |
+
+**`agents`** — per-phase overrides and per-CLI defaults. Every key is optional.
+- **`defaults`** — optional map of `cli` -> default `model` override for the whole project. This is the tier above the **global** `agents.defaults` (see [Global settings](#global-settings-app_settings)). Defaults store a **model only**, never a reasoning level (a per-CLI default reasoning can be invalid for another model — see the `reasoning` field below).
+- **Phases** — `planning`, `implementation`, `implementationUnplanned`, `review`, `respondToReview`, `respondToCi`, `resolveConflicts`. Each is an object. `implementationUnplanned` applies only when an Implementation run has no prior *completed* Planning run-history row for the same item — a failed or deferred attempt does not count; it falls back to `implementation` when unset, preserving current behavior, and is a dispatch-time config variant rather than a pipeline phase:
+  | Field | Purpose |
+  | --- | --- |
+  | `cli` | `claude`, `antigravity`, or `codex`. Omit to keep the phase's coded-default CLI. |
+  | `model` | Logical model id; must be valid for the chosen `cli` per `src/harness/models.ts` (Claude: `fable`/`opus`/`sonnet`/`haiku`, defaults to `sonnet`; Antigravity logical ids: `gemini-3.5-flash`/`gemini-3.1-pro`/`claude-sonnet-4.6`/`claude-opus-4.6`/`gpt-oss-120b`, defaults to `gemini-3.5-flash` — reasoning is chosen separately via `reasoning`, not baked into the model string; Codex: `gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`/`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`, defaults to `gpt-5.6-terra`). A pre-#180 config that stored an antigravity combined string (`"Gemini 3.5 Flash (High)"`) is migrated losslessly to the logical id plus its `reasoning` level on load. Omit to fall back to the project's `defaults[cli]`, then the global `defaults[cli]`, then the coded default. |
+  | `reasoning` | Normalized reasoning level — one of `low`/`medium`/`high`/`xhigh`/`max` — mapped per CLI at launch: Claude `--effort <level>`, Codex `-c model_reasoning_effort="<level>"`, Antigravity folded into the combined `agy` model variant (no flag). Must be a level the chosen `(cli, model)` supports per the hand-maintained catalog in `src/harness/models.ts` (`reasoningChoices`), which encodes each model's cap — e.g. Codex `gpt-5.4-mini` tops out at `high`, GPT-5.5/5.4 at `xhigh`, the GPT-5.6 family at `max`; Claude Fable/Opus/Sonnet expose the full range (default `high`). A model with **no** reasoning control has an empty list and rejects any level: **Claude Haiku** (no `--effort` support — budget-based thinking only) and Antigravity single-variant models (e.g. `claude-sonnet-4.6` "Thinking", `gpt-oss-120b`). The dashboard shows the selector disabled ("N/A" for a no-reasoning model, "Fixed" for a single fixed variant). **Omit to keep the CLI/model's own default reasoning** (nothing is passed for Claude/Codex; Antigravity uses the model's default variant). Reasoning has **no per-CLI defaults tier** — a level valid for one model can be invalid for another, so it is resolved against the effective model (per-phase/per-run override → the model's own default), never as a free-standing per-CLI value. |
+  | `timeoutMs` | Per-phase wall-clock run timeout in **milliseconds**, from 5 to 45 minutes inclusive. The dashboard displays and edits it in whole minutes, defaulting each phase to 30 minutes. Omit it in file config to fall back to `SWARM_AGENT_TIMEOUT_MS`. A run that exceeds it is killed and finalized as `failed` with `timedOut: true`. |
+  | `prompt` | Optional project-owned custom prompt for this phase, appended to SWARM's built-in phase instructions as a clearly delimited "Project instructions" section (after the static instructions, before the task context). It **supplements** — never overrides or weakens — the phase guard, identity/auth guidance, hand-off contract, or phase scope. Trimmed on load; a whitespace-only value is treated as unset (adds nothing, so the effective prompt is exactly the default). Bounded to 10,000 characters (checked against the trimmed value). Edited per phase in the dashboard's **Agent Configuration → phase details** screen. Omit for the default behavior. |
+
+**`pipeline`** — controls board movement/splitting for Planning and Implementation, whether SCM-event-driven phases run, and opt-in merging after a successful review response or approved review. Every field is optional. Review, Respond-to-review, and Respond-to-CI default to enabled when their setting or the whole `pipeline` block is omitted. Respond-to-review cannot be enabled unless Review is enabled:
+| Field | Default | Purpose |
+| --- | --- | --- |
+| `pipeline.planning.autoAdvance` | `false` | If true, Planning moves the item to "ToDo" after posting the plan; otherwise a human moves it after reviewing. Always forced off for a spawned `swarm:split-child` item. |
+| `pipeline.planning.autoSplit` | `true` | If true, Planning may decompose a task it judges too large into smaller sibling items (the original becomes the first task; siblings are created in "Planning", labelled `swarm:split-child`, and never auto-advance). Set false to always plan an item as a single task. |
+| `pipeline.planning.maxConcerns` | `1` | Single-task budget the deterministic post-plan scope guard enforces (only when `autoSplit` is on): the largest number of independent concerns an unsplit task may declare in `proposed_scope.json` before Planning fails and asks for a split or a narrower plan. Raise it to loosen the guard. |
+| `pipeline.implementation.autoAdvance` | `true` | If true, Implementation moves the item to "In review" once the PR is opened. (Its pickup move to "In progress" is unconditional either way.) |
+| `pipeline.review.enabled` | `true` | If false, Review events are skipped without dispatching the Review phase. |
+| `pipeline.review.checks` | `required` | How a head SHA with zero registered checks is treated. `required` defers (re-checking, same as today) since a real CI setup can't yet distinguish "no checks registered" from "the Actions API hasn't caught up". `if-present` — for projects with no CI at all — dispatches Review immediately on zero checks; checks that are present still wait for completion and route a failure to Respond-to-CI unchanged. |
+| `pipeline.respondToReview.enabled` | `true` | If false, submitted reviews are skipped without dispatching Respond-to-review. Requires Review to be enabled. |
+| `pipeline.respondToReview.skipOnMinors` | `true` | If true, only a reviewer-persona `changes_requested` verdict starts Respond-to-review; approvals and comment-only reviews are skipped. Set false to respond to every reviewer-persona verdict. |
+| `pipeline.respondToReview.autoMerge` | `false` | If true, once the Review phase submits an `approve` — the only outcome that clears the review gate (issue #235) — SWARM persists a durable **merge dispatch** (ADR-002, issue #292) and executes it through the provider-neutral merge capability (`src/scm/merge.ts`): the provider's **direct** PR merge endpoint, under the project's implementer PAT, pinned to the reviewed head SHA so a concurrent push is rejected rather than merged. GitHub's native auto-merge is explicitly not part of this path — SWARM never requests it (it is unavailable on many private repositories and has no portable equivalent in Bitbucket/GitLab). `request-changes`, and Respond-to-review's own `fixed`/`pushed-back`/`no-findings` outcomes, never request a merge — addressing feedback isn't the same as a fresh approval. Every attempt's outcome and message are persisted on the Review run (`runs.review_merge_outcome`/`review_merge_message`) and shown on its dashboard detail page; the pending dispatch itself is visible (and cancellable) on the normal queue surfaces. A `not-ready` outcome — including GitHub still converging on the review it just submitted — is retried on the dispatch's fixed, bounded exponential backoff (coded constants, not configurable: roughly 15s up to a 5-minute ceiling, six retries), never by re-running the Review agent; each retry re-reads the PR's current state and approval decision from the provider, and the intent survives worker/Redis restarts. A changed head, a closed/draft PR, or an overridden approval reports the distinct terminal outcome `not-eligible` instead of merging stale content. A repository that requires a merge queue reports `unsupported`. `policy-blocked`, `provider-error`, and retry-budget exhaustion (`retry-exhausted`) are all logged with their reason, persisted, and visible on the run, but never fail it — the PR is simply left open for a manual merge. |
+| `pipeline.respondToCi.enabled` | `true` | If false, failed-check events are skipped without dispatching Respond-to-CI. |
+| `pipeline.prioritizeContinuations` | `true` | When Review, Respond-to-review, Respond-to-CI, or Resolve-conflicts is blocked only by `maxConcurrentJobs`, it is selected ahead of new Planning/Implementation work when a slot frees. Set `false` for FIFO across all pending work. |
+
+### Global settings (`app_settings`)
+
+App-wide settings that apply across **every** project, as opposed to the per-project `swarm.config.json`. Source of truth: `src/config/app-settings.ts` (`AppSettingsSchema`). Stored **DB-first** as one jsonb blob in the single-row `app_settings` table (id `global`) and edited through the dashboard API (the `settings` tRPC router — `get`/`update`), **not** a config file — so there is nothing to `swarm config apply`. When no row exists the coded defaults apply, so no seeding is required for correct default behaviour. The blob is extensible: future global settings (host URL, worker concurrency, …) are added as sibling keys without a migration.
+
+**`agents.defaults`** — the **global** per-CLI default model: a map of `cli` (`claude` / `antigravity` / `codex`) → default `model`, each validated for that CLI per `src/harness/models.ts` (same rules as the project-level `agents.defaults`).
+
+**`appearance.theme`** — the dashboard's theme choice (issue #250): `dark` (default), `light`, or `system` (follows the OS/browser `prefers-color-scheme` and updates live when it changes). Unlike `agents.defaults`, this key always materializes — `AppSettingsSchema` defaults it to `dark` even when parsing `{}` — so every `settings.get` response carries an effective theme rather than requiring callers to fall back manually. Applied dashboard-wide by `web/src/components/theme/theme-provider.tsx`, which sets a `data-theme` attribute the whole palette (`web/src/index.css`) responds to.
+
+Before the four-tier chain runs, Implementation selects `agents.implementationUnplanned` for work items with no prior *completed* Planning run-history row (a failed or deferred attempt does not count), otherwise `agents.implementation`; an unset unplanned variant falls back to `implementation`. The worker then resolves the model for the selected config through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
+
+1. the phase's own `model` (project `agents.<phase>.model`);
+2. the **project** default — project `agents.defaults[cli]`;
+3. the **global** default — `agents.defaults[cli]` from these settings;
+4. the coded default — `DEFAULT_MODEL_PER_CLI[cli]` (`src/harness/models.ts`: Claude `sonnet`, Antigravity `gemini-3.5-flash`, Codex `gpt-5.6-terra`).
+
+Reasoning (issue #180) is **not** part of this model chain: it is resolved separately from the per-phase/per-run reasoning override and otherwise inherits the effective model's own default (see the per-phase `reasoning` field above). The run row records the requested reasoning (or `Default` when omitted) alongside the model, and the manual "Retry now" dialog can override it — an override incompatible with a changed CLI/model is dropped rather than launched.
+
+### Editable via the dashboard UI
+
+Today the web dashboard exposes a **subset** of settings:
+
+- **Projects** — create a project (`id`, `name`, `repo`, `repoRoot`) and delete one, plus per-project **General Settings** (`repo`, `repoRoot`, `worktreeRoot`, `baseBranch`, `branchPrefix`), **Agent Configuration** (a per-phase summary table where each row opens a phase-details screen for that phase's `cli`/`model`/`reasoning`/timeout, its enable toggle, an optional custom `prompt`, and Planning/Implementation's auto-advance toggle — plus the project-level `agents.defaults`), and a **Pipeline** tab for the Respond-to-review merge-automation/minor-review controls and the Review check policy (`pipeline.review.checks`, a **Require CI checks** / **Review when no checks exist** choice defaulting to **Require CI checks**).
+- **Settings** — a top-level, app-wide **Settings** screen (sidebar → *Settings*) for [global settings](#global-settings-app_settings), with two tabs: **Agent Defaults** — the global per-CLI default model for Claude / Antigravity / Codex (writes `agents.defaults` via the `settings` tRPC router); leaving a CLI on its default option clears the global default so the coded default applies. **Appearance** — a Dark / Light / System default radio group (writes `appearance.theme`); selecting an option repaints the dashboard immediately and persists without a separate Save action.
+
+The board mapping (`githubProjects`), credentials, pipeline controls other than Planning/Implementation auto-advance, Respond-to-review merge-automation/minor-review handling, and the Review check policy — plus all general/env settings — are **not** yet editable in the UI; change those in `swarm.config.json` / `.env` and re-apply. Credentials management and further global-settings sections are on the phase-6 backlog (see the [status snapshot](./status.md)).
