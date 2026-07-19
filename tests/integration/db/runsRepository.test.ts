@@ -10,6 +10,7 @@ import {
 import { deleteProjectFromDb } from '../../../src/db/repositories/projectsRepository.js';
 import {
 	appendRunOutputEvents,
+	cancelDeferredRunInDb,
 	completeRun,
 	createRun,
 	failOrphanedRunningRuns,
@@ -148,6 +149,45 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.status).toBe('failed');
 			expect(row?.error).toBe('boom');
 			expect(row?.exitCode).toBe(1);
+		});
+
+		it('persists a recorded cancellation origin on a failed run (issue #308)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '2c', phase: 'review' });
+			const cancellation = {
+				source: 'dashboard' as const,
+				requestedAt: '2026-07-10T12:00:00.000Z',
+			};
+
+			await completeRun(id, {
+				status: 'failed',
+				error: 'Run cancelled after a cancellation request.',
+				cancellation,
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.cancellation).toEqual(cancellation);
+		});
+
+		it('persists a null cancellation for a marker-only cancellation with no recorded origin', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '2d', phase: 'review' });
+
+			await completeRun(id, {
+				status: 'failed',
+				error: 'Run cancelled after a cancellation request.',
+				cancellation: null,
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.cancellation).toBeNull();
+		});
+
+		it('leaves cancellation null when omitted (a non-cancellation failure)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '2e', phase: 'review' });
+
+			await completeRun(id, { status: 'failed', error: 'boom' });
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.cancellation).toBeNull();
 		});
 
 		it('round-trips reported token usage', async () => {
@@ -337,6 +377,20 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.reviewMergeApprovedHeadSha).toBeNull();
 		});
 
+		it('clears a prior cancellation origin so a retried run never shows a stale one (issue #308)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '9f', phase: 'review' });
+			await completeRun(id, {
+				status: 'failed',
+				error: 'Run cancelled after a cancellation request.',
+				cancellation: { source: 'dashboard', requestedAt: '2026-07-10T12:00:00.000Z' },
+			});
+
+			await resetRunToRunning(id);
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.cancellation).toBeNull();
+		});
+
 		it('records the effective engine for the fresh attempt when one is passed', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '9b', phase: 'review' });
 			await completeRun(id, { status: 'failed', engine: 'claude', error: 'boom' });
@@ -379,6 +433,50 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			const row = await getRunByIdFromDb(id);
 			expect(row?.startedAt.getTime()).toBeGreaterThan(backdated.getTime());
+		});
+	});
+
+	describe('cancelDeferredRunInDb', () => {
+		it('fails the row and persists the recorded cancellation origin (issue #308)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20a', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'deferred',
+				error: 'rate limited',
+				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
+			});
+			const cancellation = {
+				source: 'dashboard' as const,
+				requestedAt: '2026-07-10T12:31:00.000Z',
+			};
+
+			const result = await cancelDeferredRunInDb(
+				id,
+				'Run cancelled after a cancellation request.',
+				cancellation,
+			);
+
+			expect(result.success).toBe(true);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.status).toBe('failed');
+			expect(row?.error).toBe('Run cancelled after a cancellation request.');
+			expect(row?.nextRetryAt).toBeNull();
+			expect(row?.cancellation).toEqual(cancellation);
+		});
+
+		it('returns false without changing a row that is no longer deferred', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20b', phase: 'implementation' });
+
+			const result = await cancelDeferredRunInDb(
+				id,
+				'Run cancelled after a cancellation request.',
+				{
+					source: 'dashboard',
+					requestedAt: '2026-07-10T12:31:00.000Z',
+				},
+			);
+
+			expect(result).toEqual({ success: false, dispatch: null });
+			expect((await getRunByIdFromDb(id))?.status).toBe('running');
 		});
 	});
 

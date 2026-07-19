@@ -2,34 +2,70 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock ioredis so nothing touches Redis — capture the set/publish/subscribe calls
 // the cancellation module makes. Mirrors the project-concurrency test's shape.
-const sadd = vi.fn<(key: string, member: string) => Promise<number>>();
-const srem = vi.fn<(key: string, member: string) => Promise<number>>();
-const sismember = vi.fn<(key: string, member: string) => Promise<number>>();
-const publish = vi.fn<(channel: string, message: string) => Promise<number>>();
-const subscribe = vi.fn<(channel: string) => Promise<number>>();
-const quit = vi.fn<() => Promise<'OK'>>();
-const disconnect = vi.fn<() => void>();
-const on = vi.fn();
-
-// A subscriber connection is created via `.duplicate()`; give it its own handlers
-// so the message callback can be driven independently of the main client.
-const subOn = vi.fn();
-const subscriberClient = { on: subOn, subscribe, quit, disconnect };
-const redisClient = {
+const {
 	sadd,
 	srem,
 	sismember,
+	hset,
+	hget,
+	hdel,
 	publish,
-	on,
+	subscribe,
 	quit,
-	disconnect,
-	duplicate: () => subscriberClient,
-};
-const RedisMock = vi.fn<(options: Record<string, unknown>) => typeof redisClient>(
-	() => redisClient,
-);
+	subOn,
+	evalScript,
+	RedisMock,
+} = vi.hoisted(() => {
+	const sadd = vi.fn();
+	const srem = vi.fn();
+	const sismember = vi.fn();
+	const hset = vi.fn();
+	const hget = vi.fn();
+	const hdel = vi.fn();
+	const publish = vi.fn();
+	const subscribe = vi.fn();
+	const quit = vi.fn();
+	const disconnect = vi.fn();
+	const on = vi.fn();
+	const subOn = vi.fn();
+	const evalScript = vi.fn();
+
+	const subscriberClient = { on: subOn, subscribe, quit, disconnect };
+	const redisClient = {
+		sadd,
+		srem,
+		sismember,
+		hset,
+		hget,
+		hdel,
+		publish,
+		on,
+		quit,
+		disconnect,
+		duplicate: () => subscriberClient,
+		eval: evalScript,
+	};
+	const RedisMock = vi.fn(() => redisClient);
+
+	return {
+		sadd,
+		srem,
+		sismember,
+		hset,
+		hget,
+		hdel,
+		publish,
+		subscribe,
+		quit,
+		subOn,
+		evalScript,
+		RedisMock,
+	};
+});
 
 vi.mock('ioredis', () => ({ Redis: RedisMock }));
+
+const ORIGIN = { source: 'dashboard' as const, requestedAt: '2026-07-19T00:00:00.000Z' };
 
 describe('run cancellation', () => {
 	beforeEach(() => {
@@ -39,18 +75,29 @@ describe('run cancellation', () => {
 		sadd.mockResolvedValue(1);
 		srem.mockResolvedValue(1);
 		sismember.mockResolvedValue(0);
+		hset.mockResolvedValue(1);
+		hget.mockResolvedValue(null);
+		hdel.mockResolvedValue(1);
 		publish.mockResolvedValue(1);
 		subscribe.mockResolvedValue(1);
 		quit.mockResolvedValue('OK');
+		evalScript.mockResolvedValue(1);
 	});
 
 	describe('requestRunCancellation', () => {
-		it('records the run id in the durable set and publishes a notification', async () => {
+		it('records the run id and its origin in one script before publishing a notification', async () => {
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
-			await requestRunCancellation('run-1');
+			await requestRunCancellation('run-1', ORIGIN);
 
-			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(evalScript).toHaveBeenCalledWith(
+				expect.stringContaining("redis.call('SADD', KEYS[1], ARGV[1])"),
+				2,
+				'swarm:run-cancellations',
+				'swarm:run-cancellation-origins',
+				'run-1',
+				JSON.stringify(ORIGIN),
+			);
 			expect(publish).toHaveBeenCalledWith('swarm:run-cancel', 'run-1');
 		});
 
@@ -58,8 +105,18 @@ describe('run cancellation', () => {
 			publish.mockRejectedValueOnce(new Error('down'));
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
-			await expect(requestRunCancellation('run-1')).resolves.toBeUndefined();
-			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			await expect(requestRunCancellation('run-1', ORIGIN)).resolves.toBeUndefined();
+			expect(evalScript).toHaveBeenCalled();
+		});
+
+		it('throws without publishing when the script rejects an invalid destination key', async () => {
+			evalScript.mockRejectedValueOnce(new Error('cancellation origin key must be a hash'));
+			const { requestRunCancellation } = await import('@/queue/cancellation.js');
+
+			await expect(requestRunCancellation('run-1', ORIGIN)).rejects.toThrow(
+				'cancellation origin key must be a hash',
+			);
+			expect(publish).not.toHaveBeenCalled();
 		});
 	});
 
@@ -88,18 +145,62 @@ describe('run cancellation', () => {
 	});
 
 	describe('clearRunCancellation', () => {
-		it('removes the run id from the set', async () => {
+		it('removes the run id and its recorded origin in one script', async () => {
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await clearRunCancellation('run-1');
-			expect(srem).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(evalScript).toHaveBeenCalledWith(
+				expect.stringContaining("redis.call('SREM', KEYS[1], ARGV[1])"),
+				2,
+				'swarm:run-cancellations',
+				'swarm:run-cancellation-origins',
+				'run-1',
+			);
 		});
 
 		it('swallows a clear failure', async () => {
-			srem.mockRejectedValueOnce(new Error('down'));
+			evalScript.mockRejectedValueOnce(new Error('down'));
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(clearRunCancellation('run-1')).resolves.toBeUndefined();
+		});
+	});
+
+	describe('getRunCancellationOrigin', () => {
+		it('returns the recorded origin when one was stored', async () => {
+			hget.mockResolvedValue(JSON.stringify(ORIGIN));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toEqual(ORIGIN);
+			expect(hget).toHaveBeenCalledWith('swarm:run-cancellation-origins', 'run-1');
+		});
+
+		it('returns null for a marker-only cancellation (no origin ever recorded)', async () => {
+			hget.mockResolvedValue(null);
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('returns null and never throws on malformed JSON', async () => {
+			hget.mockResolvedValue('{not json');
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('returns null for a record that fails schema validation', async () => {
+			hget.mockResolvedValue(JSON.stringify({ source: 'not-a-real-source' }));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('fails safe to null on a Redis read error', async () => {
+			hget.mockRejectedValue(new Error('down'));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
 		});
 	});
 

@@ -18,7 +18,7 @@ import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { Modal, ModalFooter } from '@/components/ui/modal.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
-import { normalizeRunError } from '@/lib/run-cancellation.js';
+import { describeCancellationOrigin, normalizeRunError } from '@/lib/run-cancellation.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import {
 	canRetryRun,
@@ -722,11 +722,20 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 					<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
 					<div>
 						<h3 className="text-xs font-semibold text-red-200">
-							{run.timedOut ? 'Run Timed Out' : 'Run Failure Error'}
+							{run.cancellation
+								? 'Run Cancelled'
+								: run.timedOut
+									? 'Run Timed Out'
+									: 'Run Failure Error'}
 						</h3>
 						<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
 							{normalizeRunError(run.error)}
 						</p>
+						{run.cancellation && (
+							<p className="text-xs text-red-400/60 mt-1 font-mono">
+								{describeCancellationOrigin(run.cancellation)}
+							</p>
+						)}
 						{canRetryRun(run.status) && <RetryNowButton run={run} />}
 					</div>
 				</div>

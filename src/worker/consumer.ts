@@ -85,7 +85,9 @@ import {
 import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
 import type { WorkItem } from '../pm/types.js';
 import {
+	type CancellationOrigin,
 	clearRunCancellation,
+	getRunCancellationOrigin,
 	isRunCancellationRequested,
 	RUN_CANCELLED_MESSAGE,
 } from '../queue/cancellation.js';
@@ -1334,6 +1336,12 @@ async function finalizeFailedRun(
 	} else if (outcome.status === 'phase-failed') {
 		let recoveryVal: any = null;
 		let sessionToRetain: string | null = null;
+		// The recorded cancellation origin (issue #308), when this failure is a
+		// cancellation: the object when the supported dashboard/API `terminate`
+		// action recorded one, `null` for a marker-only (external/unknown)
+		// cancellation, `undefined` when this failure isn't a cancellation at all
+		// (leaves the column untouched — see `CompleteRunInput.cancellation`).
+		let cancellationOrigin: CancellationOrigin | null | undefined;
 
 		if (err instanceof BlockedRecoveryError) {
 			recoveryVal = {
@@ -1343,6 +1351,7 @@ async function finalizeFailedRun(
 		} else {
 			const isCancelled = runId ? await isRunCancellationRequested(runId) : false;
 			if (isCancelled && runId) {
+				cancellationOrigin = await getRunCancellationOrigin(runId);
 				const run = await getRunByIdFromDb(runId);
 				const activeSessionId = agent?.sessionId ?? run?.agentSessionId;
 				if (activeSessionId) {
@@ -1362,6 +1371,7 @@ async function finalizeFailedRun(
 				error: outcome.error,
 				agentSessionId: sessionToRetain,
 				recovery: recoveryVal,
+				cancellation: cancellationOrigin,
 				...agentColumns(agent),
 			},
 			agent,

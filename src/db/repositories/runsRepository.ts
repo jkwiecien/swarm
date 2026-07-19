@@ -33,6 +33,7 @@ import {
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { ReviewAutomationOutcome, ReviewVerdict } from '../../pipeline/review.js';
+import type { CancellationOrigin } from '../../queue/cancellation.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
@@ -153,6 +154,14 @@ export interface CompleteRunInput {
 	 * `reviewVerdict`; omitted for every other phase.
 	 */
 	reviewAutomationOutcome?: ReviewAutomationOutcome;
+	/**
+	 * This run's recorded cancellation origin (issue #308) — set only on a
+	 * `failed` run whose cancellation was requested through the supported
+	 * dashboard/API `terminate` action. Pass explicit `null` for a cancelled run
+	 * whose marker carried no origin (marker-only/external); omit entirely for
+	 * every non-cancellation finalize, which leaves the column untouched.
+	 */
+	cancellation?: CancellationOrigin | null;
 }
 
 /**
@@ -180,6 +189,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			reviewOrdinal: input.reviewOrdinal,
 			reviewAutomationOutcome: input.reviewAutomationOutcome,
 			recovery: input.recovery,
+			cancellation: input.cancellation,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
@@ -247,6 +257,10 @@ export async function resetRunToRunning(
 			reviewMergeMessage: null,
 			reviewMergeAttempt: null,
 			reviewMergeApprovedHeadSha: null,
+			// A retried attempt hasn't (yet) been cancelled — clear a prior attempt's
+			// recorded origin so a genuine failure this time never shows a stale
+			// "cancelled via dashboard" origin left over from before the retry.
+			cancellation: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -313,11 +327,15 @@ export async function failRunFromStatus(
 
 /**
  * Atomic transaction to cancel a deferred run and its active dispatch consistently,
- * preserving session info and payload for future recovery retry.
+ * preserving session info and payload for future recovery retry. `cancellation`
+ * (issue #308) is persisted on the row alongside the neutral `reason` — the
+ * `terminate` mutation's already-recorded origin, so the row and the durable
+ * Redis origin agree without a second read.
  */
 export async function cancelDeferredRunInDb(
 	runId: string,
 	reason: string,
+	cancellation: CancellationOrigin,
 ): Promise<{ success: boolean; dispatch: { id: string; wakeSeq: number } | null }> {
 	const db = getDb();
 	return await db.transaction(async (tx) => {
@@ -378,6 +396,7 @@ export async function cancelDeferredRunInDb(
 				nextRetryAt: null,
 				agentSessionId: run.agentSessionId,
 				recovery: recoveryVal,
+				cancellation,
 				completedAt: new Date(),
 			})
 			.where(eq(runs.id, runId));

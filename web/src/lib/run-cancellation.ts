@@ -5,7 +5,13 @@
  * message for new rows (`RUN_CANCELLED_MESSAGE` in `src/queue/cancellation.ts`);
  * this module normalises the one exact string historical rows persisted before
  * that change, so old rows read the same way without a DB rewrite.
+ *
+ * Origin display (issue #308) is separate, additive structured data
+ * (`describeCancellationOrigin`): it's shown only when a cancellation origin
+ * was actually recorded, never inferred from the marker's mere existence.
  */
+
+import type { CancellationOrigin } from '@/types/runs.js';
 
 /** The exact terminal message legacy cancelled runs persisted (pre-#305). */
 const LEGACY_USER_TERMINATION_MESSAGE = 'Run terminated by user from the dashboard.';
@@ -20,4 +26,17 @@ export const RUN_CANCELLED_MESSAGE = 'Run cancelled after a cancellation request
  */
 export function normalizeRunError(error: string): string {
 	return error === LEGACY_USER_TERMINATION_MESSAGE ? RUN_CANCELLED_MESSAGE : error;
+}
+
+/**
+ * Describe a run's recorded cancellation origin, or `null` when there is none
+ * to show — a marker-only (external/unknown) cancellation and every legacy row
+ * have no origin, and this must never guess one from their absence.
+ */
+export function describeCancellationOrigin(
+	origin: CancellationOrigin | null | undefined,
+): string | null {
+	if (!origin) return null;
+	const base = origin.source === 'dashboard' ? 'Cancelled via dashboard' : 'Cancelled via API';
+	return origin.actor ? `${base} by ${origin.actor}` : base;
 }
