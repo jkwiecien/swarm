@@ -15,7 +15,15 @@ import type { CliQuotaSnapshot } from '@/harness/quota.js';
 import { discoverCliQuotas } from '@/harness/quota-discovery.js';
 
 describe('quotaRouter', () => {
-	const caller = quotaRouter.createCaller({});
+	const AUTHED_USER = {
+		id: '00000000-0000-4000-8000-000000000000',
+		identifier: 'tester@example.com',
+		displayName: 'Tester',
+		instanceAdmin: true,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+	const caller = quotaRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
 		vi.mocked(getAllCliQuotas).mockReset();

@@ -1,5 +1,6 @@
 import { rootRoute } from './__root.js';
 import { indexRoute } from './index.js';
+import { loginRoute } from './login.js';
 import { projectDetailRoute } from './projects/$projectId.js';
 import { projectsIndexRoute } from './projects/index.js';
 import { quotaRoute } from './quota.js';
@@ -9,6 +10,7 @@ import { settingsRoute } from './settings/index.js';
 
 export const routeTree = rootRoute.addChildren([
 	indexRoute,
+	loginRoute,
 	projectsIndexRoute,
 	projectDetailRoute,
 	runsIndexRoute,

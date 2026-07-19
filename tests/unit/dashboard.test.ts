@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	findProjectByRepoFromDb: vi.fn(),
@@ -11,164 +11,240 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
 }));
 
-import { createDashboardApp } from '@/dashboard.js';
+vi.mock('@/identity/auth.js', () => ({
+	verifyCredentials: vi.fn(),
+	createSession: vi.fn(),
+	resolveSession: vi.fn(),
+	revokeSession: vi.fn(),
+}));
+
+import { createDashboardApp, SESSION_COOKIE_NAME } from '@/dashboard.js';
 import { listAllProjectsFromDb } from '@/db/repositories/projectsRepository.js';
+import {
+	createSession,
+	resolveSession,
+	revokeSession,
+	verifyCredentials,
+} from '@/identity/auth.js';
+import type { SwarmUser } from '@/identity/schema.js';
+
+const user: SwarmUser = {
+	id: '11111111-1111-4111-8111-111111111111',
+	identifier: 'ada@example.com',
+	displayName: 'Ada',
+	instanceAdmin: false,
+	createdAt: new Date('2020-01-01T00:00:00Z'),
+	updatedAt: new Date('2020-01-01T00:00:00Z'),
+};
+
+const RAW_TOKEN = 'raw-session-token';
 
 describe('swarm-dashboard API', () => {
 	beforeEach(() => {
 		vi.mocked(listAllProjectsFromDb).mockReset();
+		vi.mocked(verifyCredentials).mockReset();
+		vi.mocked(createSession).mockReset();
+		vi.mocked(resolveSession).mockReset();
+		vi.mocked(revokeSession).mockReset().mockResolvedValue(undefined);
 	});
 
-	afterEach(() => {
-		vi.unstubAllEnvs();
-	});
+	describe('public routes', () => {
+		it('serves /health without authentication', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('/health');
 
-	it('serves /health check correctly without authentication', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
-		const res = await app.request('/health');
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({
+				status: 'ok',
+				service: 'swarm-dashboard',
+				timestamp: expect.any(String),
+			});
+		});
 
-		expect(res.status).toBe(200);
-		const data = await res.json();
-		expect(data).toEqual({
-			status: 'ok',
-			service: 'swarm-dashboard',
-			timestamp: expect.any(String),
+		it('serves the ping query without a session (it stays public)', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('/trpc/ping.ping');
+
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({
+				result: { data: { message: 'pong', timestamp: expect.any(String) } },
+			});
 		});
 	});
 
-	it('serves tRPC ping query correctly over HTTP with valid authentication', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
-		// GET is the standard tRPC HTTP protocol shape for query procedures
-		const res = await app.request('/trpc/ping.ping', {
-			headers: {
-				Authorization: 'Bearer test-token',
-			},
+	describe('authed procedures', () => {
+		it('returns 401 for an authed procedure with no session cookie', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('/trpc/projects.list');
+
+			expect(res.status).toBe(401);
+			expect(listAllProjectsFromDb).not.toHaveBeenCalled();
 		});
 
-		expect(res.status).toBe(200);
-		const data = await res.json();
-		expect(data).toEqual({
-			result: {
-				data: {
-					message: 'pong',
-					timestamp: expect.any(String),
-				},
-			},
-		});
-	});
+		it('serves an authed procedure when the session cookie resolves to a user', async () => {
+			vi.mocked(resolveSession).mockResolvedValue(user);
+			vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
 
-	it('returns 401 for tRPC request with no Authorization header', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
-		const res = await app.request('/trpc/ping.ping');
+			const app = createDashboardApp();
+			const res = await app.request('/trpc/projects.list', {
+				headers: { Cookie: `${SESSION_COOKIE_NAME}=${RAW_TOKEN}` },
+			});
 
-		expect(res.status).toBe(401);
-		const data = await res.json();
-		expect(data).toEqual({
-			error: 'Unauthorized',
-			reason: 'Missing authorization header',
-		});
-	});
-
-	it('returns 401 for tRPC request with incorrect token', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
-		const res = await app.request('/trpc/ping.ping', {
-			headers: {
-				Authorization: 'Bearer wrong-token',
-			},
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ result: { data: [] } });
+			expect(resolveSession).toHaveBeenCalledWith(RAW_TOKEN);
+			expect(listAllProjectsFromDb).toHaveBeenCalledTimes(1);
 		});
 
-		expect(res.status).toBe(401);
-		const data = await res.json();
-		expect(data).toEqual({
-			error: 'Unauthorized',
-			reason: 'Invalid token',
+		it('returns 401 when the session cookie no longer resolves to a user', async () => {
+			vi.mocked(resolveSession).mockResolvedValue(undefined);
+
+			const app = createDashboardApp();
+			const res = await app.request('/trpc/projects.list', {
+				headers: { Cookie: `${SESSION_COOKIE_NAME}=stale` },
+			});
+
+			expect(res.status).toBe(401);
+			expect(listAllProjectsFromDb).not.toHaveBeenCalled();
 		});
 	});
 
-	it('returns 400 for tRPC request with a malformed Authorization header', async () => {
-		const app = createDashboardApp({ token: 'test-token' });
-		const res = await app.request('/trpc/ping.ping', {
-			headers: {
-				Authorization: 'Basic test-token',
-			},
+	describe('POST /auth/login', () => {
+		it('sets an HTTP-only session cookie and returns the user (never the token)', async () => {
+			vi.mocked(verifyCredentials).mockResolvedValue(user);
+			vi.mocked(createSession).mockResolvedValue({
+				token: RAW_TOKEN,
+				expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+			});
+
+			const app = createDashboardApp();
+			const res = await app.request('http://example.com/auth/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ identifier: 'ada@example.com', password: 'hunter2' }),
+			});
+
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			// Dates serialize to ISO strings over JSON, so match the identity fields.
+			expect(body.user).toMatchObject({
+				id: user.id,
+				identifier: user.identifier,
+				displayName: user.displayName,
+				instanceAdmin: user.instanceAdmin,
+			});
+			expect(JSON.stringify(body)).not.toContain(RAW_TOKEN);
+
+			const setCookie = res.headers.get('set-cookie') ?? '';
+			expect(setCookie).toContain(`${SESSION_COOKIE_NAME}=${RAW_TOKEN}`);
+			expect(setCookie).toMatch(/HttpOnly/i);
+			expect(setCookie).toMatch(/SameSite=Strict/i);
 		});
 
-		expect(res.status).toBe(400);
-		const data = await res.json();
-		expect(data).toEqual({
-			error: 'Bad Request',
-			reason: 'Invalid authorization header format',
+		it('marks the cookie Secure off localhost but not on localhost', async () => {
+			vi.mocked(verifyCredentials).mockResolvedValue(user);
+			vi.mocked(createSession).mockResolvedValue({
+				token: RAW_TOKEN,
+				expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+			});
+
+			const app = createDashboardApp();
+			const body = JSON.stringify({ identifier: 'ada@example.com', password: 'hunter2' });
+			const headers = { 'Content-Type': 'application/json' };
+
+			const remote = await app.request('http://example.com/auth/login', {
+				method: 'POST',
+				headers,
+				body,
+			});
+			expect(remote.headers.get('set-cookie') ?? '').toMatch(/Secure/i);
+
+			const local = await app.request('http://localhost/auth/login', {
+				method: 'POST',
+				headers,
+				body,
+			});
+			expect(local.headers.get('set-cookie') ?? '').not.toMatch(/Secure/i);
+		});
+
+		it('returns 401 with no cookie for invalid credentials', async () => {
+			vi.mocked(verifyCredentials).mockResolvedValue(undefined);
+
+			const app = createDashboardApp();
+			const res = await app.request('http://example.com/auth/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ identifier: 'ada@example.com', password: 'wrong' }),
+			});
+
+			expect(res.status).toBe(401);
+			expect(res.headers.get('set-cookie')).toBeNull();
+			expect(createSession).not.toHaveBeenCalled();
+		});
+
+		it('returns 400 for a malformed body', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('http://example.com/auth/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ identifier: 'ada@example.com' }),
+			});
+
+			expect(res.status).toBe(400);
+			expect(verifyCredentials).not.toHaveBeenCalled();
 		});
 	});
 
-	it('returns 404 for unknown routes when authenticated and no static assets exist', async () => {
-		const app = createDashboardApp({ token: 'test-token', staticRoot: './non-existent-dist' });
-		const res = await app.request('/nope', {
-			headers: {
-				Authorization: 'Bearer test-token',
-			},
+	describe('POST /auth/logout', () => {
+		it('revokes the session and clears the cookie', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('http://example.com/auth/logout', {
+				method: 'POST',
+				headers: { Cookie: `${SESSION_COOKIE_NAME}=${RAW_TOKEN}` },
+			});
+
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ ok: true });
+			expect(revokeSession).toHaveBeenCalledWith(RAW_TOKEN);
+
+			const setCookie = res.headers.get('set-cookie') ?? '';
+			expect(setCookie).toContain(`${SESSION_COOKIE_NAME}=`);
+			expect(setCookie).toMatch(/Max-Age=0|Expires=Thu, 01 Jan 1970/i);
 		});
 
-		expect(res.status).toBe(404);
+		it('is a no-op (still 200) with no session cookie', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('http://example.com/auth/logout', { method: 'POST' });
+
+			expect(res.status).toBe(200);
+			expect(revokeSession).not.toHaveBeenCalled();
+		});
 	});
 
-	it('serves static assets without authentication', async () => {
-		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
-		const res = await app.request('/assets/app.js');
+	describe('static assets', () => {
+		it('serves static assets without authentication', async () => {
+			const app = createDashboardApp({ staticRoot: 'tests/fixtures/web-dist' });
+			const res = await app.request('/assets/app.js');
 
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('javascript');
-		const text = await res.text();
-		expect(text).toContain('Hello from web-dist app.js fixture!');
-	});
-
-	it('falls back to index.html for client-side routing paths without authentication', async () => {
-		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
-		const res = await app.request('/projects');
-
-		expect(res.status).toBe(200);
-		expect(res.headers.get('Content-Type')).toContain('html');
-		const text = await res.text();
-		expect(text).toContain('Hello from web-dist fixture!');
-	});
-
-	it('still requires authorization for tRPC requests even when staticRoot exists', async () => {
-		const app = createDashboardApp({ token: 'test-token', staticRoot: 'tests/fixtures/web-dist' });
-		const res = await app.request('/trpc/ping.ping');
-
-		expect(res.status).toBe(401);
-	});
-
-	it('returns 404 for unregistered non-API paths without authentication when staticRoot does not exist', async () => {
-		const app = createDashboardApp({ token: 'test-token', staticRoot: './non-existent-dist' });
-		const res = await app.request('/nope');
-
-		expect(res.status).toBe(404);
-	});
-
-	it('throws synchronously when initialized without a token', () => {
-		vi.stubEnv('DASHBOARD_TOKEN', '');
-		expect(() => createDashboardApp()).toThrow(/DASHBOARD_TOKEN is not configured/);
-		expect(() => createDashboardApp({ token: '' })).toThrow(/DASHBOARD_TOKEN is not configured/);
-	});
-
-	it('serves tRPC projects.list query correctly over HTTP with valid authentication', async () => {
-		vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
-
-		const app = createDashboardApp({ token: 'test-token' });
-		const res = await app.request('/trpc/projects.list', {
-			headers: {
-				Authorization: 'Bearer test-token',
-			},
+			expect(res.status).toBe(200);
+			expect(res.headers.get('Content-Type')).toContain('javascript');
+			expect(await res.text()).toContain('Hello from web-dist app.js fixture!');
 		});
 
-		expect(res.status).toBe(200);
-		const data = await res.json();
-		expect(data).toEqual({
-			result: {
-				data: [],
-			},
+		it('falls back to index.html for client-side routes without authentication', async () => {
+			const app = createDashboardApp({ staticRoot: 'tests/fixtures/web-dist' });
+			const res = await app.request('/login');
+
+			expect(res.status).toBe(200);
+			expect(res.headers.get('Content-Type')).toContain('html');
+			expect(await res.text()).toContain('Hello from web-dist fixture!');
 		});
-		expect(listAllProjectsFromDb).toHaveBeenCalledTimes(1);
+
+		it('returns 404 for unknown routes when no static assets exist', async () => {
+			const app = createDashboardApp({ staticRoot: './non-existent-dist' });
+			const res = await app.request('/nope');
+
+			expect(res.status).toBe(404);
+		});
 	});
 });

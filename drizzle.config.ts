@@ -10,6 +10,7 @@ export default defineConfig({
 		'./src/db/schema/reviewVerdicts.ts',
 		'./src/db/schema/dispatches.ts',
 		'./src/db/schema/users.ts',
+		'./src/db/schema/userSessions.ts',
 	],
 	out: './src/db/migrations',
 	dialect: 'postgresql',
