@@ -44,8 +44,13 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 **Dashboard API** — `src/dashboard.ts`
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DASHBOARD_TOKEN` | **required** | Shared-secret bearer token required on every `/trpc/*` request (`/health` is exempt). Startup throws if unset. |
+| `SWARM_SESSION_TTL_HOURS` | `168` (7 days) | Lifetime of a dashboard login session. After this, the session cookie is rejected and the user must sign in again. A non-positive or non-numeric value falls back to the default. |
 | `DASHBOARD_PORT` | `3101` | Port the dashboard listens on (bound to `127.0.0.1` only). |
+| `CORS_ORIGIN` | `http://localhost:5173` | Comma-separated allow-list of browser origins permitted to make **credentialed** cross-origin requests (the session cookie rides every request). Only needed for the separate-origin setup — SPA and API on different origins; the default already covers the documented Vite dev workflow. A same-origin deploy never pre-flights, so this is inert there. Never `*` (illegal alongside credentials). |
+
+The dashboard uses **per-user session auth** (issue #281 task 2), not a shared secret: a user set up with `swarm users add` + `swarm users set-password` signs in at `/login`, and the server issues an opaque session delivered as an HTTP-only, `SameSite=Strict` cookie (`Secure` off localhost). Every `/trpc/*` request except `ping` is authorized by that cookie; `/health` stays public. No API token is configured — `DASHBOARD_TOKEN` and its browser copy `VITE_DASHBOARD_TOKEN` have been **retired**. Only a hash of the session token is stored (`user_sessions`), never the raw token.
+
+For the recommended **same-origin** deploy (the dashboard serves the built SPA and its API from one process), no CORS config is needed. The separate-origin setup — running the SPA on the Vite dev server against the API on `DASHBOARD_PORT`, or `VITE_API_URL` pointing at a different host — is credentialed and therefore pre-flighted by the browser; the API allows it via `CORS_ORIGIN` (default `http://localhost:5173`, which matches `web/vite.config.ts`). `SameSite=Strict` still delivers the cookie for the localhost dev case (ports don't change the *site*); a genuine cross-*site* production origin would additionally need different cookie attributes and is out of scope for SWARM's local-first model.
 
 **Router** — `src/router/index.ts`
 | Variable | Default | Purpose |
@@ -74,8 +79,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 **Web frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`web/.env`)
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `VITE_DASHBOARD_TOKEN` | _(unset)_ | Must equal the backend `DASHBOARD_TOKEN`; sent as the `Authorization: Bearer` header. |
-| `VITE_API_URL` | `` (same-origin) | Base URL for the dashboard API. |
+| `VITE_API_URL` | `` (same-origin) | Base URL for the dashboard API. The SPA sends the session cookie with every request (`credentials: 'include'`); there is no build-time API token (`VITE_DASHBOARD_TOKEN` was retired with session auth). When set to a different origin, the API must allow that origin via `CORS_ORIGIN` (above). |
 
 ### Project config (`swarm.config.json`)
 

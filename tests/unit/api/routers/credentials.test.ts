@@ -20,7 +20,15 @@ import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import { createMockProjectConfig } from '../../../helpers/factories.js';
 
 describe('credentialsRouter', () => {
-	const caller = credentialsRouter.createCaller({});
+	const AUTHED_USER = {
+		id: '00000000-0000-4000-8000-000000000000',
+		identifier: 'tester@example.com',
+		displayName: 'Tester',
+		instanceAdmin: true,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+	const caller = credentialsRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
 		vi.mocked(getProjectByIdFromDb).mockReset();

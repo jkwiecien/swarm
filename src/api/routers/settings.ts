@@ -2,7 +2,7 @@ import { AppSettingsSchema } from '../../config/app-settings.js';
 import { getAppSettings, updateAppSettings } from '../../db/repositories/appSettingsRepository.js';
 import { upsertCliQuota } from '../../db/repositories/cliQuotasRepository.js';
 import { discoverCliQuotas } from '../../harness/quota-discovery.js';
-import { publicProcedure, router } from '../trpc.js';
+import { authedProcedure, router } from '../trpc.js';
 
 /**
  * Global (app-wide) settings API — the read/write surface the dashboard's
@@ -13,11 +13,11 @@ import { publicProcedure, router } from '../trpc.js';
  * upsert. Shaped after `projectsRouter` (`./projects.ts`).
  */
 export const settingsRouter = router({
-	get: publicProcedure.query(async () => {
+	get: authedProcedure.query(async () => {
 		return await getAppSettings();
 	}),
 
-	update: publicProcedure.input(AppSettingsSchema).mutation(async ({ input }) => {
+	update: authedProcedure.input(AppSettingsSchema).mutation(async ({ input }) => {
 		const result = await updateAppSettings(input);
 		try {
 			const snapshots = await discoverCliQuotas();

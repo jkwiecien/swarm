@@ -181,7 +181,15 @@ function makeDispatch(overrides: Partial<DispatchRow> = {}): DispatchRow {
 }
 
 describe('runsRouter', () => {
-	const caller = runsRouter.createCaller({});
+	const AUTHED_USER = {
+		id: '00000000-0000-4000-8000-000000000000',
+		identifier: 'tester@example.com',
+		displayName: 'Tester',
+		instanceAdmin: true,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+	const caller = runsRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
 		vi.mocked(listRunsFromDb).mockReset();

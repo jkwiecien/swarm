@@ -43,11 +43,13 @@ Run the following from the repository root:
 
 ```bash
 npm install
-cp .env.docker.example .env       # set passwords and DASHBOARD_TOKEN
+cp .env.docker.example .env       # set passwords
 cd web && npm install && cd ..
 docker compose up -d --build      # Postgres, Redis, and router
 npm run db:migrate
 npm run db:seed                   # loads swarm.config.json into Postgres
+swarm users add you@example.com --admin    # create your dashboard user, then
+swarm users set-password you@example.com   # set its login password (prompts, no echo)
 ```
 
 Start these processes in separate terminals:
@@ -62,9 +64,10 @@ Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
 `npm run start:dashboard` and open <http://localhost:3101> instead.
 
 The worker is intentionally host-run: it needs local Git worktrees, agent CLI
-authentication, and the developer's PATH. The dashboard and API require
-`DASHBOARD_TOKEN`; `/health` is unauthenticated, while API requests use a
-Bearer token. See [`docs/operations.md`](./docs/operations.md) for health
+authentication, and the developer's PATH. The dashboard uses per-user session
+auth: sign in at `/login` with a user created via `swarm users` (above);
+`/health` is unauthenticated, while every API request carries an HTTP-only
+session cookie. See [`docs/operations.md`](./docs/operations.md) for health
 checks, ports, webhook setup, and troubleshooting.
 
 ## Common commands

@@ -1,16 +1,28 @@
-import { useQuery } from '@tanstack/react-query';
-import { Link, useRouterState } from '@tanstack/react-router';
-import { FolderGit2, Gauge, Play, Plus, Settings } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
+import { FolderGit2, Gauge, LogOut, Play, Plus, Settings } from 'lucide-react';
 import { useState } from 'react';
 import { ProjectCreateDialog } from '@/components/projects/project-create-dialog.js';
+import { logout } from '@/lib/auth.js';
 import { trpc } from '@/lib/trpc.js';
+import { useCurrentUser } from '@/lib/use-current-user.js';
 import { version } from '../../../../package.json';
 
 export function Sidebar() {
 	const currentPath = useRouterState({ select: (s) => s.location.pathname });
+	const navigate = useNavigate();
+	const queryClient = useQueryClient();
 	const pingQuery = useQuery(trpc.ping.ping.queryOptions());
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
+	const currentUser = useCurrentUser();
 	const [createOpen, setCreateOpen] = useState(false);
+
+	const handleLogout = async () => {
+		await logout();
+		// Drop all cached (now-unauthenticated) query state and return to login.
+		queryClient.clear();
+		navigate({ to: '/login' });
+	};
 
 	return (
 		<div className="flex w-full md:w-64 flex-col justify-between border-r border-zinc-800 bg-panel">
@@ -113,6 +125,25 @@ export function Sidebar() {
 				</nav>
 			</div>
 			<div>
+				{currentUser.data && (
+					<div className="flex items-center justify-between gap-2 border-t border-zinc-850 px-4 py-3">
+						<span
+							className="min-w-0 truncate text-xs text-zinc-400"
+							title={currentUser.data.identifier}
+						>
+							{currentUser.data.displayName}
+						</span>
+						<button
+							type="button"
+							onClick={handleLogout}
+							className="flex items-center gap-1 rounded px-1.5 py-1 text-xs text-zinc-500 hover:bg-zinc-800/40 hover:text-zinc-200 transition-colors shrink-0"
+							title="Sign out"
+						>
+							<LogOut className="h-3.5 w-3.5" />
+							Sign out
+						</button>
+					</div>
+				)}
 				<div className="flex items-center gap-2 border-t border-zinc-850 p-4">
 					<span
 						className={

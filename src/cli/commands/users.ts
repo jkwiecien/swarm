@@ -5,15 +5,17 @@
  * `swarm config apply` being the front-door onto `applyConfig`.
  *
  * A thin file/CLI shell over `usersRepository.ts` (`node:util` `parseArgs` +
- * `_shared/output.ts`, like `commands/config.ts`). No secrets are handled here —
- * session auth (passwords/tokens) is #281 task 2 — so nothing is logged that
- * shouldn't be. The DB pool is closed in a `finally` (`closeDb()`).
+ * `_shared/output.ts`, like `commands/config.ts`). The one secret it handles is
+ * the login password (`set-password`, #281 task 2): it is read without echoing,
+ * hashed via `identity/auth.ts`, and never printed or logged — only the scrypt
+ * hash reaches the DB. The DB pool is closed in a `finally` (`closeDb()`).
  *
  * Subcommands:
  *   swarm users add <identifier> [--name <displayName>] [--admin]
  *   swarm users list
  *   swarm users grant-admin <identifier>
  *   swarm users revoke-admin <identifier>
+ *   swarm users set-password <identifier>
  */
 
 import { parseArgs } from 'node:util';
@@ -23,16 +25,19 @@ import {
 	findUserByIdentifier,
 	listUsers,
 	setInstanceAdmin,
+	setPasswordHash,
 } from '../../db/repositories/usersRepository.js';
+import { hashPassword } from '../../identity/auth.js';
 import * as out from '../_shared/output.js';
 
-const USAGE = `swarm users — manage SWARM users and the installation admin
+const USAGE = `swarm users — manage SWARM users, credentials, and the installation admin
 
 Usage:
   swarm users add <identifier> [--name <displayName>] [--admin]
   swarm users list
   swarm users grant-admin <identifier>
   swarm users revoke-admin <identifier>
+  swarm users set-password <identifier>
 
   add            Create a user with the given login handle (username/email).
                  --name sets the display name (defaults to the identifier);
@@ -40,10 +45,72 @@ Usage:
   list           List all users, one per line.
   grant-admin    Make an existing user an installation admin.
   revoke-admin   Remove a user's installation-admin role.
+  set-password   Set a user's dashboard login password. Prompts (no echo) on a
+                 TTY, otherwise reads the password from stdin. Never logs it.
 
 Requires DATABASE_URL in the environment — run via a wrapper that loads .env, or
-export it yourself first. These rows are not yet used by the running auth path
-(the dashboard stays behind DASHBOARD_TOKEN); they sit ready for session auth.`;
+export it yourself first.`;
+
+const SUBCOMMANDS = ['add', 'list', 'grant-admin', 'revoke-admin', 'set-password'];
+
+// Control characters handled while reading a hidden line, by char code.
+const ENTER = ['\n'.charCodeAt(0), '\r'.charCodeAt(0)];
+const CTRL_D = 4;
+const CTRL_C = 3;
+const BACKSPACE = [127, 8];
+
+/** Classify a raw-mode keystroke while reading a hidden line. */
+function classifyKey(ch: string): 'submit' | 'abort' | 'erase' | 'append' {
+	const code = ch.charCodeAt(0);
+	if (ENTER.includes(code) || code === CTRL_D) return 'submit';
+	if (code === CTRL_C) return 'abort';
+	if (BACKSPACE.includes(code)) return 'erase';
+	return 'append';
+}
+
+/**
+ * Read a line from a TTY without echoing it, so a typed password never appears on
+ * screen or in the terminal scrollback. Handles Enter (submit), Backspace, and
+ * Ctrl-C/Ctrl-D. Dependency-free (raw mode over `process.stdin`).
+ */
+function promptHidden(prompt: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const stdin = process.stdin;
+		process.stdout.write(prompt);
+		stdin.resume();
+		stdin.setRawMode?.(true);
+		stdin.setEncoding('utf8');
+		let input = '';
+		const finish = (aborted: boolean) => {
+			stdin.setRawMode?.(false);
+			stdin.pause();
+			stdin.removeListener('data', onData);
+			process.stdout.write('\n');
+			if (aborted) reject(new Error('aborted'));
+			else resolve(input);
+		};
+		const onData = (chunk: string) => {
+			for (const ch of chunk) {
+				const action = classifyKey(ch);
+				if (action === 'append') input += ch;
+				else if (action === 'erase') input = input.slice(0, -1);
+				else return finish(action === 'abort');
+			}
+		};
+		stdin.on('data', onData);
+	});
+}
+
+/** Read all of stdin (a piped/redirected password), stripping one trailing newline. */
+async function readStdin(): Promise<string> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) {
+		chunks.push(Buffer.from(chunk));
+	}
+	return Buffer.concat(chunks)
+		.toString('utf8')
+		.replace(/\r?\n$/, '');
+}
 
 /**
  * A duplicate `identifier` surfaces the pg `23505` unique violation, which
@@ -136,6 +203,49 @@ async function setAdminFlag(argv: string[], value: boolean): Promise<number> {
 	return 0;
 }
 
+/**
+ * Set a user's dashboard login password. The plaintext is read without echo (or
+ * from a stdin pipe for scripting), hashed, and stored — it is never echoed,
+ * logged, or included in output. On a TTY the password is asked for twice and
+ * must match; a piped password is taken as-is.
+ */
+async function setPassword(argv: string[]): Promise<number> {
+	const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+	const identifier = positionals[0];
+	if (!identifier) {
+		out.error('users set-password: an <identifier> is required');
+		out.info(USAGE);
+		return 1;
+	}
+
+	const existing = await findUserByIdentifier(identifier);
+	if (!existing) {
+		out.error(`no user with identifier '${identifier}'`);
+		return 1;
+	}
+
+	let password: string;
+	if (process.stdin.isTTY) {
+		password = await promptHidden('Password: ');
+		const confirm = await promptHidden('Confirm password: ');
+		if (password !== confirm) {
+			out.error('passwords do not match');
+			return 1;
+		}
+	} else {
+		password = await readStdin();
+	}
+
+	if (password.length === 0) {
+		out.error('password must not be empty');
+		return 1;
+	}
+
+	await setPasswordHash(existing.id, await hashPassword(password));
+	out.info(`set password for '${identifier}'`);
+	return 0;
+}
+
 export async function run(argv: string[]): Promise<number> {
 	const [subcommand, ...rest] = argv;
 
@@ -145,7 +255,7 @@ export async function run(argv: string[]): Promise<number> {
 		return subcommand ? 0 : 1;
 	}
 
-	if (!['add', 'list', 'grant-admin', 'revoke-admin'].includes(subcommand)) {
+	if (!SUBCOMMANDS.includes(subcommand)) {
 		out.error(`unknown users subcommand '${subcommand}'`);
 		out.info(USAGE);
 		return 1;
@@ -159,8 +269,10 @@ export async function run(argv: string[]): Promise<number> {
 				return await listAllUsers();
 			case 'grant-admin':
 				return await setAdminFlag(rest, true);
-			default:
+			case 'revoke-admin':
 				return await setAdminFlag(rest, false);
+			default:
+				return await setPassword(rest);
 		}
 	} finally {
 		await closeDb();

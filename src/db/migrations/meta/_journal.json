@@ -176,6 +176,13 @@
       "when": 1784466386495,
       "tag": "0024_zippy_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784474155439,
+      "tag": "0025_solid_justin_hammer",
+      "breakpoints": true
     }
   ]
 }

@@ -21,7 +21,7 @@ Deterministic delivery uses durable operation identities and a step-progress sid
 
 ## Security model
 
-- **Minimal localhost-bound auth guard** (MVP): The dashboard binds to `127.0.0.1` rather than `0.0.0.0` and requires a shared-secret token (`DASHBOARD_TOKEN`) for every request except `/health`. This local-first security replaces Cascade's full session/bcrypt/multi-org login system, and is only revisited if SWARM ever needs remote access or multi-user support.
+- **Per-user session auth, localhost-bound** (issue #281 task 2): The dashboard binds to `127.0.0.1` rather than `0.0.0.0`, and every request except `/health` and the `ping` probe is authorized by a per-user session — a password login mints an opaque token delivered as an HTTP-only, `SameSite=Strict` cookie (`Secure` off localhost); only its hash is stored, and logout revokes it. This replaced the earlier shared-secret `DASHBOARD_TOKEN` bearer guard. Every authenticated user still sees everything for now; project-scoped authorization is a later #281 task.
 - **Dual-persona GitHub credentials** (MVP): separate implementer/reviewer tokens, borrowed from Cascade's loop-prevention model — a persona never reacts to its own output. Stored in Postgres, not a cloud secret manager (see `PROJECT.md` §6.1).
 - **Zero-knowledge codebase, still**: everything above is local — router, worker, Postgres, Redis. Nothing leaves the machine except webhook payloads and PR/comment metadata.
 - *(Future, once `PROJECT.md` §2.2's cloud engine exists)*: board/SCM API keys move into Google Cloud Secret Manager; the daemon authenticates to the cloud via a bearer token + device hardware ID (`PROJECT.md` §6.2).
