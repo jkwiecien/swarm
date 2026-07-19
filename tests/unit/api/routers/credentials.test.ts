@@ -35,7 +35,7 @@ describe('credentialsRouter', () => {
 		it('masks a configured value to **** + last 4 chars', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
-				GITHUB_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
+				SCM_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
 			});
 
 			const result = await caller.list({ projectId: 'p1' });
@@ -46,7 +46,7 @@ describe('credentialsRouter', () => {
 			const entry = result.find((r) => r.role === 'implementer');
 			expect(entry).toEqual({
 				role: 'implementer',
-				envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+				envVarKey: 'SCM_TOKEN_IMPLEMENTER',
 				isConfigured: true,
 				maskedValue: '****1234',
 			});
@@ -55,12 +55,36 @@ describe('credentialsRouter', () => {
 		it('masks a short value (<= 12 chars) as just ****', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
-				GITHUB_TOKEN_IMPLEMENTER: 'short',
+				SCM_TOKEN_IMPLEMENTER: 'short',
 			});
 
 			const result = await caller.list({ projectId: 'p1' });
 			const entry = result.find((r) => r.role === 'implementer');
 			expect(entry?.maskedValue).toBe('****');
+		});
+
+		it('resolves a project still storing a legacy GitHub-named reference, unmigrated', async () => {
+			const legacyProject = createMockProjectConfig({
+				id: 'p1',
+				credentials: {
+					implementer: 'GITHUB_TOKEN_IMPLEMENTER',
+					reviewer: 'GITHUB_TOKEN_REVIEWER',
+					webhookSecret: 'GITHUB_WEBHOOK_SECRET',
+				},
+			});
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(legacyProject);
+			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
+				GITHUB_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
+			});
+
+			const result = await caller.list({ projectId: 'p1' });
+			const entry = result.find((r) => r.role === 'implementer');
+			expect(entry).toEqual({
+				role: 'implementer',
+				envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+				isConfigured: true,
+				maskedValue: '****1234',
+			});
 		});
 
 		it('reports an unconfigured slot as isConfigured: false, maskedValue: "not set"', async () => {
@@ -71,7 +95,7 @@ describe('credentialsRouter', () => {
 			const entry = result.find((r) => r.role === 'implementer');
 			expect(entry).toEqual({
 				role: 'implementer',
-				envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+				envVarKey: 'SCM_TOKEN_IMPLEMENTER',
 				isConfigured: false,
 				maskedValue: 'not set',
 			});
@@ -105,11 +129,11 @@ describe('credentialsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(writeProjectCredential).mockResolvedValue(undefined);
 
-			await caller.set({ projectId: 'p1', envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', value: 'secret' });
+			await caller.set({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER', value: 'secret' });
 
 			expect(writeProjectCredential).toHaveBeenCalledWith(
 				'p1',
-				'GITHUB_TOKEN_IMPLEMENTER',
+				'SCM_TOKEN_IMPLEMENTER',
 				'secret',
 				null,
 			);
@@ -121,14 +145,14 @@ describe('credentialsRouter', () => {
 
 			await caller.set({
 				projectId: 'p1',
-				envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+				envVarKey: 'SCM_TOKEN_IMPLEMENTER',
 				value: 'secret',
 				name: 'Implementer token',
 			});
 
 			expect(writeProjectCredential).toHaveBeenCalledWith(
 				'p1',
-				'GITHUB_TOKEN_IMPLEMENTER',
+				'SCM_TOKEN_IMPLEMENTER',
 				'secret',
 				'Implementer token',
 			);
@@ -144,7 +168,7 @@ describe('credentialsRouter', () => {
 
 		it('rejects an empty value before touching the repository', async () => {
 			await expect(
-				caller.set({ projectId: 'p1', envVarKey: 'GITHUB_TOKEN_IMPLEMENTER', value: '' }),
+				caller.set({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER', value: '' }),
 			).rejects.toThrow();
 			expect(writeProjectCredential).not.toHaveBeenCalled();
 		});
@@ -155,7 +179,7 @@ describe('credentialsRouter', () => {
 			await expect(
 				caller.set({
 					projectId: 'missing',
-					envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
+					envVarKey: 'SCM_TOKEN_IMPLEMENTER',
 					value: 'secret',
 				}),
 			).rejects.toThrowError(
@@ -175,16 +199,16 @@ describe('credentialsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(deleteProjectCredential).mockResolvedValue(undefined);
 
-			await caller.delete({ projectId: 'p1', envVarKey: 'GITHUB_TOKEN_IMPLEMENTER' });
+			await caller.delete({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER' });
 
-			expect(deleteProjectCredential).toHaveBeenCalledWith('p1', 'GITHUB_TOKEN_IMPLEMENTER');
+			expect(deleteProjectCredential).toHaveBeenCalledWith('p1', 'SCM_TOKEN_IMPLEMENTER');
 		});
 
 		it('throws NOT_FOUND for an unknown project without deleting', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
 
 			await expect(
-				caller.delete({ projectId: 'missing', envVarKey: 'GITHUB_TOKEN_IMPLEMENTER' }),
+				caller.delete({ projectId: 'missing', envVarKey: 'SCM_TOKEN_IMPLEMENTER' }),
 			).rejects.toThrowError(
 				expect.objectContaining({
 					code: 'NOT_FOUND',

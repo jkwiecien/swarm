@@ -16,7 +16,7 @@ describe('ProjectConfigSchema', () => {
 	it('accepts a fully-specified project', () => {
 		const project = createMockProjectConfig();
 		expect(project.repo).toBe('jkwiecien/swarm');
-		expect(project.credentials.implementer).toBe('GITHUB_TOKEN_IMPLEMENTER');
+		expect(project.credentials.implementer).toBe('SCM_TOKEN_IMPLEMENTER');
 		expect(project.githubProjects.statusFieldId).toBe('PVTSSF_lAHOAC3TF84BcNwDzhW4MKo');
 	});
 

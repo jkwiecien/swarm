@@ -20,9 +20,9 @@ export const DEFAULT_GITHUB_PROJECTS_CONFIG: GitHubProjectsIntegrationConfig = {
 };
 
 const DEFAULT_CREDENTIAL_REFERENCES = {
-	implementer: 'GITHUB_TOKEN_IMPLEMENTER',
-	reviewer: 'GITHUB_TOKEN_REVIEWER',
-	webhookSecret: 'GITHUB_WEBHOOK_SECRET',
+	implementer: 'SCM_TOKEN_IMPLEMENTER',
+	reviewer: 'SCM_TOKEN_REVIEWER',
+	webhookSecret: 'SCM_WEBHOOK_SECRET',
 };
 
 const ProjectWriteInputSchema = ProjectConfigSchema.omit({ credentials: true });
