@@ -13,10 +13,7 @@ const {
 	subscribe,
 	quit,
 	subOn,
-	exec,
-	setExecResult,
-	multiChain,
-	multi,
+	evalScript,
 	RedisMock,
 } = vi.hoisted(() => {
 	const sadd = vi.fn();
@@ -31,37 +28,7 @@ const {
 	const disconnect = vi.fn();
 	const on = vi.fn();
 	const subOn = vi.fn();
-
-	let execResult: [Error | null, unknown][] | null = [
-		[null, 1],
-		[null, 1],
-	];
-	const setExecResult = (r: [Error | null, unknown][] | null) => {
-		execResult = r;
-	};
-	const exec = vi.fn(() => Promise.resolve(execResult));
-
-	const multiChain = {
-		sadd: vi.fn((...args: unknown[]) => {
-			sadd(...args);
-			return multiChain;
-		}),
-		hset: vi.fn((...args: unknown[]) => {
-			hset(...args);
-			return multiChain;
-		}),
-		srem: vi.fn((...args: unknown[]) => {
-			srem(...args);
-			return multiChain;
-		}),
-		hdel: vi.fn((...args: unknown[]) => {
-			hdel(...args);
-			return multiChain;
-		}),
-		exec,
-	};
-
-	const multi = vi.fn(() => multiChain);
+	const evalScript = vi.fn();
 
 	const subscriberClient = { on: subOn, subscribe, quit, disconnect };
 	const redisClient = {
@@ -76,7 +43,7 @@ const {
 		quit,
 		disconnect,
 		duplicate: () => subscriberClient,
-		multi,
+		eval: evalScript,
 	};
 	const RedisMock = vi.fn(() => redisClient);
 
@@ -91,10 +58,7 @@ const {
 		subscribe,
 		quit,
 		subOn,
-		exec,
-		setExecResult,
-		multiChain,
-		multi,
+		evalScript,
 		RedisMock,
 	};
 });
@@ -117,27 +81,19 @@ describe('run cancellation', () => {
 		publish.mockResolvedValue(1);
 		subscribe.mockResolvedValue(1);
 		quit.mockResolvedValue('OK');
-		setExecResult([
-			[null, 1],
-			[null, 1],
-		]);
-		exec.mockClear();
-		multi.mockClear();
-		multiChain.sadd.mockClear();
-		multiChain.hset.mockClear();
-		multiChain.srem.mockClear();
-		multiChain.hdel.mockClear();
+		evalScript.mockResolvedValue(1);
 	});
 
 	describe('requestRunCancellation', () => {
-		it('records the run id in the durable set, its origin, and publishes a notification', async () => {
+		it('records the run id and its origin in one script before publishing a notification', async () => {
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
 			await requestRunCancellation('run-1', ORIGIN);
 
-			expect(multi).toHaveBeenCalled();
-			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
-			expect(hset).toHaveBeenCalledWith(
+			expect(evalScript).toHaveBeenCalledWith(
+				expect.stringContaining("redis.call('SADD', KEYS[1], ARGV[1])"),
+				2,
+				'swarm:run-cancellations',
 				'swarm:run-cancellation-origins',
 				'run-1',
 				JSON.stringify(ORIGIN),
@@ -150,27 +106,16 @@ describe('run cancellation', () => {
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(requestRunCancellation('run-1', ORIGIN)).resolves.toBeUndefined();
-			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(evalScript).toHaveBeenCalled();
 		});
 
-		it('throws when the transaction execution fails (exec resolves null)', async () => {
-			setExecResult(null);
+		it('throws without publishing when the script rejects an invalid destination key', async () => {
+			evalScript.mockRejectedValueOnce(new Error('cancellation origin key must be a hash'));
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(requestRunCancellation('run-1', ORIGIN)).rejects.toThrow(
-				'run-cancellation: transaction failed to execute',
+				'cancellation origin key must be a hash',
 			);
-		});
-
-		it('throws when recording the origin fails (transaction rolls back)', async () => {
-			setExecResult([
-				[null, 1],
-				[new Error('hset failed'), null],
-			]);
-			const { requestRunCancellation } = await import('@/queue/cancellation.js');
-
-			await expect(requestRunCancellation('run-1', ORIGIN)).rejects.toThrow('hset failed');
-			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
 			expect(publish).not.toHaveBeenCalled();
 		});
 	});
@@ -200,20 +145,21 @@ describe('run cancellation', () => {
 	});
 
 	describe('clearRunCancellation', () => {
-		it('removes the run id from the set and its recorded origin', async () => {
+		it('removes the run id and its recorded origin in one script', async () => {
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await clearRunCancellation('run-1');
-			expect(multi).toHaveBeenCalled();
-			expect(srem).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
-			expect(hdel).toHaveBeenCalledWith('swarm:run-cancellation-origins', 'run-1');
+			expect(evalScript).toHaveBeenCalledWith(
+				expect.stringContaining("redis.call('SREM', KEYS[1], ARGV[1])"),
+				2,
+				'swarm:run-cancellations',
+				'swarm:run-cancellation-origins',
+				'run-1',
+			);
 		});
 
 		it('swallows a clear failure', async () => {
-			setExecResult([
-				[new Error('down'), null],
-				[null, 1],
-			]);
+			evalScript.mockRejectedValueOnce(new Error('down'));
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(clearRunCancellation('run-1')).resolves.toBeUndefined();

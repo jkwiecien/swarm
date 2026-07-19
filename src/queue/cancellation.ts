@@ -46,6 +46,41 @@ const CANCELLATION_ORIGIN_KEY = 'swarm:run-cancellation-origins';
 /** Pub/sub channel carrying a just-requested run id for prompt worker abort. */
 const CANCELLATION_CHANNEL = 'swarm:run-cancel';
 
+// Redis EXEC reports individual command errors after preceding commands have
+// already run. Validate both key types inside one script before changing either
+// record, so a wrong-type companion key cannot leave a marker-only request.
+const RECORD_CANCELLATION_SCRIPT = `
+local setType = redis.call('TYPE', KEYS[1])['ok']
+if setType ~= 'none' and setType ~= 'set' then
+  return redis.error_reply('run-cancellation: cancellation marker key must be a set')
+end
+
+local originType = redis.call('TYPE', KEYS[2])['ok']
+if originType ~= 'none' and originType ~= 'hash' then
+  return redis.error_reply('run-cancellation: cancellation origin key must be a hash')
+end
+
+redis.call('SADD', KEYS[1], ARGV[1])
+redis.call('HSET', KEYS[2], ARGV[1], ARGV[2])
+return 1
+`;
+
+const CLEAR_CANCELLATION_SCRIPT = `
+local setType = redis.call('TYPE', KEYS[1])['ok']
+if setType ~= 'none' and setType ~= 'set' then
+  return redis.error_reply('run-cancellation: cancellation marker key must be a set')
+end
+
+local originType = redis.call('TYPE', KEYS[2])['ok']
+if originType ~= 'none' and originType ~= 'hash' then
+  return redis.error_reply('run-cancellation: cancellation origin key must be a hash')
+end
+
+redis.call('SREM', KEYS[1], ARGV[1])
+redis.call('HDEL', KEYS[2], ARGV[1])
+return 1
+`;
+
 /**
  * A cancellation's recorded origin (issue #308) — additive, structured data
  * alongside the neutral {@link RUN_CANCELLED_MESSAGE}. At minimum distinguishes
@@ -96,26 +131,22 @@ function getRedis(): Redis {
  * didn't land.
  *
  * `origin` is recorded atomically as a companion structure ({@link getRunCancellationOrigin})
- * alongside the durable set entry. If either write fails, the entire transaction
- * rolls back and throws, failing the termination request.
+ * alongside the durable set entry. The script validates both destination key
+ * types before writing, so either both records are changed or the request fails.
  */
 export async function requestRunCancellation(
 	runId: string,
 	origin: CancellationOrigin,
 ): Promise<void> {
 	const redis = getRedis();
-	const results = await redis
-		.multi()
-		.sadd(CANCELLATION_SET_KEY, runId)
-		.hset(CANCELLATION_ORIGIN_KEY, runId, JSON.stringify(origin))
-		.exec();
-
-	if (!results) {
-		throw new Error('run-cancellation: transaction failed to execute');
-	}
-	for (const [err] of results) {
-		if (err) throw err;
-	}
+	await redis.eval(
+		RECORD_CANCELLATION_SCRIPT,
+		2,
+		CANCELLATION_SET_KEY,
+		CANCELLATION_ORIGIN_KEY,
+		runId,
+		JSON.stringify(origin),
+	);
 
 	try {
 		await redis.publish(CANCELLATION_CHANNEL, runId);
@@ -180,18 +211,13 @@ export async function isRunCancellationRequested(runId: string): Promise<boolean
 export async function clearRunCancellation(runId: string): Promise<void> {
 	try {
 		const redis = getRedis();
-		const results = await redis
-			.multi()
-			.srem(CANCELLATION_SET_KEY, runId)
-			.hdel(CANCELLATION_ORIGIN_KEY, runId)
-			.exec();
-
-		if (!results) {
-			throw new Error('run-cancellation: transaction failed to execute');
-		}
-		for (const [err] of results) {
-			if (err) throw err;
-		}
+		await redis.eval(
+			CLEAR_CANCELLATION_SCRIPT,
+			2,
+			CANCELLATION_SET_KEY,
+			CANCELLATION_ORIGIN_KEY,
+			runId,
+		);
 	} catch (err) {
 		logger.warn('run-cancellation: failed to clear cancellation state', {
 			runId,
