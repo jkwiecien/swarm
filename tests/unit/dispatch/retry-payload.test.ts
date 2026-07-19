@@ -20,6 +20,24 @@ describe('deriveRetryJobPayload', () => {
 		expect(next.runId).toBe('run-1');
 	});
 
+	it('spends the dependency-recheck budget, not the rate-limit one, for a dependency deferral', () => {
+		const next = deriveRetryJobPayload(
+			createMockGitHubProjectsWebhookJob({ dependencyRecheckAttempt: 2, rateLimitRetryAttempt: 1 }),
+			{
+				phase: 'implementation',
+				runId: 'run-1',
+				resumable: false,
+				pmPhaseStarted: true,
+				dependencyRecheck: true,
+			},
+		);
+
+		expect(next.dependencyRecheckAttempt).toBe(3);
+		// The rate-limit budget is untouched, so a days-long wait never exhausts it.
+		expect(next.rateLimitRetryAttempt).toBe(1);
+		expect(next).toMatchObject({ resumePmPhase: 'implementation', runId: 'run-1' });
+	});
+
 	it('keeps PM resume for an interrupted Implementation', () => {
 		const next = deriveRetryJobPayload(createMockGitHubProjectsWebhookJob(), {
 			phase: 'implementation',

@@ -6,6 +6,7 @@ import type {
 	PMProvider,
 	UpdateWorkItemPatch,
 	WorkItem,
+	WorkItemBlocker,
 } from '@/pm/types.js';
 import { createMockWorkItem } from '../../helpers/factories.js';
 
@@ -87,6 +88,33 @@ class InMemoryPMProvider implements PMProvider {
 			...item,
 			...(patch.title !== undefined ? { title: patch.title } : {}),
 			...(patch.description !== undefined ? { description: patch.description } : {}),
+		});
+	}
+
+	readonly supportsDependencies = true;
+
+	private readonly blockedBy = new Map<string, Set<string>>();
+
+	async addBlockedBy(id: string, blockerId: string): Promise<void> {
+		await this.getWorkItem(id);
+		await this.getWorkItem(blockerId);
+		const set = this.blockedBy.get(id) ?? new Set<string>();
+		set.add(blockerId); // idempotent — a Set collapses duplicates
+		this.blockedBy.set(id, set);
+	}
+
+	async listBlockers(id: string): Promise<WorkItemBlocker[]> {
+		const blockerIds = this.blockedBy.get(id) ?? new Set<string>();
+		return [...blockerIds].map((blockerId) => {
+			const item = this.items.get(blockerId);
+			return {
+				id: blockerId,
+				reference: item?.url ?? blockerId,
+				url: item?.url ?? '',
+				title: item?.title ?? '',
+				open: item?.statusId !== this.statusOptions.done,
+				source: 'dependency' as const,
+			};
 		});
 	}
 }

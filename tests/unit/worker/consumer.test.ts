@@ -3,6 +3,7 @@ import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { DependencyBlockedError } from '@/pipeline/dependency-guard.js';
 import type { PMProvider } from '@/pm/types.js';
 import type { CancellationOrigin } from '@/queue/cancellation.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
@@ -1481,6 +1482,77 @@ describe('processJob', () => {
 
 		expect(outcome.status).toBe('phase-deferred');
 		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('defers a dependency-blocked Implementation as a token-free re-check without commenting', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new DependencyBlockedError(workItem, [
+				{
+					reference: '#319',
+					url: 'https://github.com/o/r/issues/319',
+					title: 'Session auth',
+					open: true,
+					source: 'dependency',
+				},
+			]);
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob(),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		// Deferred (not failed), on its own dependency-recheck cadence, and — while it
+		// waits — no "failed" comment is posted on the item.
+		expect(outcome).toMatchObject({ status: 'phase-deferred', dependencyRecheck: true });
+		if (outcome.status !== 'phase-deferred') throw new Error('expected phase-deferred');
+		expect(outcome.reason).toContain('#319');
+		expect(addComment).not.toHaveBeenCalled();
+	});
+
+	it('does not consume the rate-limit budget while waiting on a dependency', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new DependencyBlockedError(workItem, [
+				{ reference: '#7', url: 'u', title: 't', open: true, source: 'dependency' },
+			]);
+		};
+
+		// A run that had already exhausted the rate-limit budget still defers on a
+		// dependency block — the two budgets are separate.
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-deferred');
+	});
+
+	it('fails a still-blocked dependency once the re-check budget is exhausted, posting the reason', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		phaseImpl = async () => {
+			throw new DependencyBlockedError(workItem, [
+				{
+					reference: '#319',
+					url: 'https://github.com/o/r/issues/319',
+					title: 'Session auth',
+					open: true,
+					source: 'dependency',
+				},
+			]);
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob({ dependencyRecheckAttempt: 1_000_000 }),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome.status).toBe('phase-failed');
+		expect(addComment).toHaveBeenCalledOnce();
+		const [, body] = addComment.mock.calls[0];
+		expect(body).toContain('#319');
+		expect(body).toMatch(/must be done first/i);
 	});
 
 	it('defers a capacity failure briefly without posting a failure comment', async () => {

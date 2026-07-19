@@ -128,6 +128,9 @@ function makeDeps() {
 		updateWorkItem: vi.fn<(id: string, patch: UpdateWorkItemPatch) => Promise<void>>(
 			async () => {},
 		),
+		supportsDependencies: true,
+		listBlockers: vi.fn(async () => []),
+		addBlockedBy: vi.fn<(id: string, blockerId: string) => Promise<void>>(async () => {}),
 	};
 	return {
 		project: createMockProjectConfig(),
@@ -258,10 +261,34 @@ describe('runPlanningPhase', () => {
 		const commentTargets = deps.pm.addComment.mock.calls.map((c) => c[0]);
 		expect(commentTargets).toContain('PVTI_Second slice');
 		expect(commentTargets).toContain('PVTI_Third slice');
-		const siblingComment = deps.pm.addComment.mock.calls.find(
+		const secondComment = deps.pm.addComment.mock.calls.find(
 			(c) => c[0] === 'PVTI_Second slice',
 		)?.[1];
-		expect(siblingComment).toMatch(/Split from a larger task/);
+		// Phase 2 of 3, blocked by phase 1 (the re-scoped original) and no one else.
+		expect(secondComment).toMatch(/Phase 2 of 3 — split from a larger task/);
+		expect(secondComment).toMatch(/Blocked by/);
+		expect(secondComment).toContain('Phase 1: First slice');
+		expect(secondComment).not.toContain('Phase 2: Second slice');
+
+		const thirdComment = deps.pm.addComment.mock.calls.find(
+			(c) => c[0] === 'PVTI_Third slice',
+		)?.[1];
+		// Phase 3 of 3, cumulatively blocked by BOTH earlier phases.
+		expect(thirdComment).toMatch(/Phase 3 of 3 — split from a larger task/);
+		expect(thirdComment).toContain('Phase 1: First slice');
+		expect(thirdComment).toContain('Phase 2: Second slice');
+
+		// Guard 2 (issue #330): cumulative native blocked-by — phase N blocked by
+		// every predecessor. Phase 2 ← [phase 1]; phase 3 ← [phase 1, phase 2].
+		const blockedByPairs = deps.pm.addBlockedBy.mock.calls.map(([id, blockerId]) => [
+			id,
+			blockerId,
+		]);
+		expect(blockedByPairs).toEqual([
+			['PVTI_Second slice', 'PVTI_item18'],
+			['PVTI_Third slice', 'PVTI_item18'],
+			['PVTI_Third slice', 'PVTI_Second slice'],
+		]);
 
 		// The first task still auto-advances (autoAdvance on, not a split-child).
 		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');

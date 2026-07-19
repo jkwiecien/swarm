@@ -21,12 +21,14 @@
 
 import type { ProjectConfig } from '../../../config/schema.js';
 import { logger } from '../../../lib/logger.js';
+import { dedupeBlockers, findDependencyReferences } from '../../../pm/dependencies.js';
 import type {
 	CreateWorkItemInput,
 	PMProvider,
 	PMType,
 	UpdateWorkItemPatch,
 	WorkItem,
+	WorkItemBlocker,
 	WorkItemLabel,
 } from '../../../pm/types.js';
 import { getScopedClient } from '../../scm/github/client.js';
@@ -214,6 +216,12 @@ function toResolvedItem(item: ItemNode): ResolvedItem {
 
 export class GitHubProjectsPMProvider implements PMProvider {
 	readonly type: PMType = 'github-projects';
+
+	// GitHub Issues models cross-issue dependencies natively (the issue-dependencies
+	// REST API — docs/github-projects-v2-api.md), so this provider supports the
+	// blocked-by capability. A future Bitbucket/GitLab provider sets this to `false`
+	// if it can't, and callers fall back to the human-readable comment guard.
+	readonly supportsDependencies = true;
 
 	private readonly scm = new GitHubSCMIntegration();
 
@@ -417,6 +425,157 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		});
 		logger.debug('pm: updated work item', { itemId: id });
 	}
+
+	async listBlockers(id: string): Promise<WorkItemBlocker[]> {
+		const { workItem, owner, repo, contentNumber } = await this.resolveItem(id);
+		// A draft item (no backing Issue) can carry no dependencies — nothing to gate on.
+		if (!owner || !repo || contentNumber == null) return [];
+		return this.run(async () => {
+			// Two sources: the native "blocked by" relationships, plus prerequisites the
+			// item names in prose (its own description + comments). Deduped by URL so a
+			// dependency that is both linked and mentioned appears once.
+			const [native, mentioned] = await Promise.all([
+				this.fetchNativeBlockers(owner, repo, contentNumber),
+				this.fetchMentionedBlockers(owner, repo, contentNumber, workItem.description),
+			]);
+			return dedupeBlockers([...native, ...mentioned]);
+		});
+	}
+
+	async addBlockedBy(id: string, blockerId: string): Promise<void> {
+		const [target, blocker] = await Promise.all([
+			this.resolveItem(id),
+			this.resolveItem(blockerId),
+		]);
+		if (!target.owner || !target.repo || target.contentNumber == null) {
+			throw new Error(`Cannot add dependency to item '${id}': it has no backing Issue`);
+		}
+		if (!blocker.owner || !blocker.repo || blocker.contentNumber == null) {
+			throw new Error(`Cannot block item '${id}': blocker '${blockerId}' has no backing Issue`);
+		}
+		await this.run(async () => {
+			const client = getScopedClient();
+			// The dependencies API keys the blocker by its numeric database id, not its
+			// number, so resolve the blocking issue once to read `id`.
+			const { data: blockerIssue } = await client.issues.get({
+				owner: blocker.owner as string,
+				repo: blocker.repo as string,
+				issue_number: blocker.contentNumber as number,
+			});
+			try {
+				await client.request(
+					'POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
+					{
+						owner: target.owner as string,
+						repo: target.repo as string,
+						issue_number: target.contentNumber as number,
+						issue_id: blockerIssue.id,
+					},
+				);
+				logger.debug('pm: linked blocked-by dependency', {
+					itemId: id,
+					blockerId,
+					blockerIssue: blocker.contentNumber,
+				});
+			} catch (err) {
+				// Idempotent: an already-recorded dependency comes back 422 — treat as success.
+				if (isHttpStatus(err, 422)) return;
+				throw err;
+			}
+		});
+	}
+
+	/**
+	 * The item's native "blocked by" prerequisites, via the GitHub issue-dependencies
+	 * REST API. A repo/plan without the feature answers 404/410 — treated as "no
+	 * dependencies" (best-effort) rather than failing the caller's gate.
+	 */
+	private async fetchNativeBlockers(
+		owner: string,
+		repo: string,
+		issueNumber: number,
+	): Promise<WorkItemBlocker[]> {
+		try {
+			const { data } = await getScopedClient().request(
+				'GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
+				{ owner, repo, issue_number: issueNumber, per_page: 100 },
+			);
+			const issues = (data ?? []) as DependencyIssue[];
+			return issues
+				.filter((i): i is DependencyIssue & { number: number } => typeof i.number === 'number')
+				.map((i) => toBlocker(i, 'dependency'));
+		} catch (err) {
+			if (isHttpStatus(err, 404) || isHttpStatus(err, 410)) {
+				logger.debug('pm: issue-dependencies API unavailable; treating as no native blockers', {
+					owner,
+					repo,
+					issueNumber,
+				});
+				return [];
+			}
+			throw err;
+		}
+	}
+
+	/**
+	 * Prerequisites the item *names in prose* — its own description and comments —
+	 * that aren't native relationships. Provider-neutral reference extraction
+	 * (`findDependencyReferences`); this adapter resolves each referenced issue's
+	 * live open/closed state. A reference that doesn't resolve is skipped (a typo'd
+	 * or cross-repo number is not a gate).
+	 */
+	private async fetchMentionedBlockers(
+		owner: string,
+		repo: string,
+		issueNumber: number,
+		description: string,
+	): Promise<WorkItemBlocker[]> {
+		const client = getScopedClient();
+		const { data: comments } = await client.issues.listComments({
+			owner,
+			repo,
+			issue_number: issueNumber,
+			per_page: 100,
+		});
+		const prose = [description, ...comments.map((c) => c.body ?? '')].join('\n');
+		const refs = findDependencyReferences(prose).filter((n) => n !== String(issueNumber));
+		const resolved = await Promise.all(
+			refs.map(async (ref): Promise<WorkItemBlocker | undefined> => {
+				try {
+					const { data: issue } = await client.issues.get({
+						owner,
+						repo,
+						issue_number: Number(ref),
+					});
+					return toBlocker(issue, 'mention');
+				} catch (err) {
+					if (isHttpStatus(err, 404)) return undefined;
+					throw err;
+				}
+			}),
+		);
+		return resolved.filter((b): b is WorkItemBlocker => b !== undefined);
+	}
+}
+
+/** The subset of a GitHub Issue the dependency endpoints return that we map from. */
+interface DependencyIssue {
+	id?: number;
+	number?: number;
+	title?: string | null;
+	html_url?: string;
+	state?: string;
+}
+
+/** Map a GitHub issue (native dependency or resolved mention) to a provider-neutral blocker. */
+function toBlocker(issue: DependencyIssue, source: WorkItemBlocker['source']): WorkItemBlocker {
+	return {
+		reference: issue.number != null ? `#${issue.number}` : (issue.html_url ?? '?'),
+		url: issue.html_url ?? '',
+		title: issue.title ?? '',
+		open: issue.state !== 'closed',
+		source,
+	};
 }
 
 /**
