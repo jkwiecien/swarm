@@ -21,6 +21,10 @@ export default defineConfig({
 				target: DASHBOARD_URL,
 				changeOrigin: true,
 			},
+			'/auth': {
+				target: DASHBOARD_URL,
+				changeOrigin: true,
+			},
 		},
 	},
 	build: {
