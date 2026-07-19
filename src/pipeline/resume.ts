@@ -92,7 +92,7 @@ export async function executeRecoveryGate(
 	}
 
 	const leased = await isWorktreeLeased(projectId, taskId);
-	if (leased) {
+	if (leased && !recoveryMode) {
 		throw new BlockedRecoveryError(
 			'live-leased',
 			`Worktree for task '${taskId}' is leased by a live run.`,

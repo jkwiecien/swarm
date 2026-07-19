@@ -117,7 +117,7 @@ export async function hasResumableDeferredRun(projectId: string, taskId: string)
 			and(
 				eq(runs.projectId, projectId),
 				eq(runs.taskId, taskId),
-				eq(runs.status, 'deferred'),
+				inArray(runs.status, ['deferred', 'failed']),
 				isNotNull(runs.agentSessionId),
 			),
 		)

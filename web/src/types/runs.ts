@@ -209,4 +209,12 @@ export interface RunRow {
 	 * `hasResumableDeferredRun` guard). Mirrors the `agent_session_id` column.
 	 */
 	agentSessionId: string | null;
+	/**
+	 * Preservation/recovery state for failed or resumed runs.
+	 */
+	recovery?: {
+		state: 'preserved' | 'recovered' | 'blocked';
+		blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
+		agentSessionId?: string | null;
+	} | null;
 }
