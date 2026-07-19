@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { verifyGitHubSignature, verifyHmac } from '@/webhook/signature-verification.js';
 
-const SECRET = 'top-secret';
+const SECRET = 'test-webhook-secret';
 const BODY = '{"action":"opened","number":1}';
 
 /** Compute the `sha256=<hex>` signature GitHub would send for a body/secret. */

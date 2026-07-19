@@ -18,16 +18,16 @@ describe('scmRouter', () => {
 		it('returns the resolved login when the token is valid', async () => {
 			vi.mocked(getGitHubUserForToken).mockResolvedValue('octocat');
 
-			const result = await caller.verifyGithubToken({ token: 'ghp_valid' });
+			const result = await caller.verifyGithubToken({ token: 'test-token-valid' });
 
 			expect(result).toEqual({ valid: true, login: 'octocat' });
-			expect(getGitHubUserForToken).toHaveBeenCalledWith('ghp_valid');
+			expect(getGitHubUserForToken).toHaveBeenCalledWith('test-token-valid');
 		});
 
 		it('returns a not-valid result when the token does not resolve', async () => {
 			vi.mocked(getGitHubUserForToken).mockResolvedValue(null);
 
-			const result = await caller.verifyGithubToken({ token: 'ghp_bad' });
+			const result = await caller.verifyGithubToken({ token: 'test-token-invalid' });
 
 			expect(result).toEqual({ valid: false });
 		});

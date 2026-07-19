@@ -35,13 +35,13 @@ describe('credentialsRouter', () => {
 		it('masks a long configured value to the same fixed marker, with no secret characters in the response', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
-				SCM_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
+				SCM_TOKEN_IMPLEMENTER: 'test-token-implementer',
 			});
 
 			const result = await caller.list({ projectId: 'p1' });
 			const raw = JSON.stringify(result);
 
-			expect(raw).not.toContain('ghp_abcdefghijklmnop1234');
+			expect(raw).not.toContain('test-token-implementer');
 			expect(raw).not.toContain('1234');
 
 			const entry = result.find((r) => r.role === 'implementer');
@@ -75,7 +75,7 @@ describe('credentialsRouter', () => {
 			});
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(legacyProject);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
-				GITHUB_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
+				GITHUB_TOKEN_IMPLEMENTER: 'test-token-implementer',
 			});
 
 			const result = await caller.list({ projectId: 'p1' });
