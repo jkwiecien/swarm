@@ -73,9 +73,9 @@ export async function runMigrations(): Promise<void> {
 /**
  * Truncate all application tables. Call in `beforeEach` to isolate tests —
  * CASCADE handles the FKs (project_credentials + runs from projects, run_logs
- * from runs); every table is listed for explicitness. `app_settings` is a
- * standalone singleton table (no FKs), listed here so a settings write in one
- * test doesn't leak into the next.
+ * from runs); every table is listed for explicitness. `app_settings` (a
+ * standalone singleton) and `users` (no FKs) are listed here too so a write in
+ * one test doesn't leak into the next.
  */
 export async function truncateAll(): Promise<void> {
 	await getDb().execute(`
@@ -87,7 +87,8 @@ export async function truncateAll(): Promise<void> {
 			review_verdicts,
 			project_credentials,
 			projects,
-			app_settings
+			app_settings,
+			users
 		CASCADE
 	`);
 }

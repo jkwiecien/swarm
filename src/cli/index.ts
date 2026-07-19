@@ -18,6 +18,7 @@ import * as queue from './commands/queue.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
+import * as users from './commands/users.js';
 import * as worktrees from './commands/worktrees.js';
 
 type Command = { run: (argv: string[]) => Promise<number> };
@@ -30,6 +31,7 @@ const COMMANDS: Record<string, Command> = {
 	status,
 	logs,
 	queue,
+	users,
 	worktrees,
 };
 
@@ -45,6 +47,7 @@ Commands:
   status           Show stack container states and probe the router's health
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
   queue clear      Remove all pending queue jobs (not active runs)
+  users            Manage SWARM users and the installation admin
   worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;

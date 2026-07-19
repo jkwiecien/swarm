@@ -162,6 +162,13 @@
       "when": 1784443121968,
       "tag": "0022_special_rhodey",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784458488011,
+      "tag": "0023_abnormal_hellion",
+      "breakpoints": true
     }
   ]
 }
