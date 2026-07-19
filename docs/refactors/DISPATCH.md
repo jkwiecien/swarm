@@ -49,7 +49,7 @@ job cannot resurrect cancelled, completed, failed, or superseded work.
 This is an orchestration-durability refactor, not a change to pipeline policy.
 The following existing options and branches keep their prior semantics:
 
-- Planning and Implementation `autoAdvance` behaviour;
+- Planning `autoAdvance` behaviour and Implementation's Review-enabled status report;
 - regular versus `implementationUnplanned` agent configuration, selected from
   whether Planning has already run for the work item;
 - review checks policy (`required` and `if-present`);
@@ -77,4 +77,3 @@ This change does not implement multi-user authentication, federated-worker
 routing, project memberships, worker enrollment, or worker-owner sharing
 consent. Those are separate future work described by ADR-001 and issues
 #130, #132, #281, and #282.
-
