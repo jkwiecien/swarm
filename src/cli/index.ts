@@ -14,6 +14,7 @@ import * as out from './_shared/output.js';
 import * as config from './commands/config.js';
 import * as init from './commands/init.js';
 import * as logs from './commands/logs.js';
+import * as members from './commands/members.js';
 import * as queue from './commands/queue.js';
 import * as start from './commands/start.js';
 import * as status from './commands/status.js';
@@ -32,6 +33,7 @@ const COMMANDS: Record<string, Command> = {
 	logs,
 	queue,
 	users,
+	members,
 	worktrees,
 };
 
@@ -48,6 +50,7 @@ Commands:
   logs [svc] [-f]  Tail stack logs (optional service, -f/--follow to stream)
   queue clear      Remove all pending queue jobs (not active runs)
   users            Manage SWARM users and the installation admin
+  members          Manage project membership (who belongs to a project)
   worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;
