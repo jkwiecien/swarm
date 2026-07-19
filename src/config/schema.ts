@@ -232,14 +232,11 @@ export const ReviewChecksPolicySchema = z.enum(['required', 'if-present']);
 export type ReviewChecksPolicy = z.infer<typeof ReviewChecksPolicySchema>;
 
 /**
- * Per-phase pipeline controls. Planning and Implementation configure whether
- * they move the board item on completion by themselves or leave that to a
- * human. The SCM-event-driven Review, Respond-to-review, and Respond-to-CI
- * phases can each be disabled. `autoAdvance` governs only the
- * *end-of-phase* move (Planning → "ToDo", Implementation → "In review") —
- * Implementation's separate pickup report (→ "In progress" as soon as it
- * starts) is unconditional either way, since it's a status report, not a
- * transition a human would want to gate.
+ * Per-phase pipeline controls. Planning can optionally move the board item to
+ * "ToDo" after posting its plan. The SCM-event-driven Review,
+ * Respond-to-review, and Respond-to-CI phases can each be disabled.
+ * Implementation always reports pickup by moving to "In progress", then moves
+ * to "In review" after delivery exactly when Review is enabled.
  */
 export const PipelineConfigSchema = z
 	.object({
@@ -268,14 +265,6 @@ export const PipelineConfigSchema = z
 				maxConcerns: z.number().int().positive().optional(),
 			})
 			.optional(),
-		/**
-		 * Whether Implementation moves the item to "In review" once it opens the
-		 * PR. Unset (or the whole `pipeline.implementation` block omitted)
-		 * defaults to `true`: unlike Planning's plan — a judgment call worth a
-		 * human look before committing to code — the opened PR *is* the request
-		 * for that look, so there's nothing to gate on first.
-		 */
-		implementation: z.object({ autoAdvance: z.boolean().optional() }).optional(),
 		review: z
 			.object({
 				enabled: z.boolean().optional(),

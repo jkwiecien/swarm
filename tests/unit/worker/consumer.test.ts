@@ -1296,9 +1296,9 @@ describe('processJob', () => {
 		expect(phaseCalls[0].args.model).toBe('sonnet');
 	});
 
-	it("threads the project's per-phase autoAdvance setting into planning and implementation calls", async () => {
+	it("threads the project's Planning autoAdvance setting into the phase call", async () => {
 		const projectWithPipeline = createMockProjectConfig({
-			pipeline: { planning: { autoAdvance: true }, implementation: { autoAdvance: false } },
+			pipeline: { planning: { autoAdvance: true } },
 		});
 		projectLookup = () => projectWithPipeline;
 
@@ -1311,20 +1311,9 @@ describe('processJob', () => {
 			}),
 		);
 		expect(phaseCalls[0].args.autoAdvance).toBe(true);
-
-		phaseCalls.length = 0;
-		await processJob(
-			createMockGitHubProjectsWebhookJob(),
-			registryReturning({
-				phase: 'implementation',
-				taskId: '10',
-				workItem: createMockWorkItem({ statusId: '3121a97d' }),
-			}),
-		);
-		expect(phaseCalls[0].args.autoAdvance).toBe(false);
 	});
 
-	it('passes undefined autoAdvance when the project has no pipeline override, leaving each phase on its coded default', async () => {
+	it('passes undefined Planning autoAdvance when the project has no override', async () => {
 		const trigger: TriggerResult = {
 			phase: 'planning',
 			taskId: '10',
