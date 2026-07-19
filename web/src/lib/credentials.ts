@@ -100,13 +100,14 @@ export function isVerifiableRole(role: CredentialRole): boolean {
 }
 
 /**
- * Render the collapsed masked preview for a configured credential. The server
- * already masks to `****<last4>` (or `****` for short values); this reshapes it
- * to the design-system dot form (`•••• <last4>`) without ever seeing plaintext.
+ * Render the collapsed preview for a configured credential. Every configured
+ * credential collapses to this same fixed marker — the input is intentionally
+ * ignored (not parsed for a trailing suffix) so a legacy or stale server
+ * response carrying a last-4 fragment (e.g. `****abcd`) still can't disclose
+ * any part of the secret to the DOM.
  */
-export function maskedPreview(maskedValue: string): string {
-	const last4 = maskedValue.replace(/^\*+/, '');
-	return last4 ? `•••• ${last4}` : '••••';
+export function maskedPreview(_maskedValue: string): string {
+	return '••••';
 }
 
 /**

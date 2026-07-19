@@ -20,12 +20,14 @@ describe('isVerifiableRole', () => {
 });
 
 describe('maskedPreview', () => {
-	it('reshapes the server ****last4 mask into dot form', () => {
-		expect(maskedPreview('****abcd')).toBe('•••• abcd');
+	it('renders the fixed dot marker for a configured value', () => {
+		expect(maskedPreview('****')).toBe('••••');
 	});
 
-	it('shows bare dots when the server withheld the last-4 (short value)', () => {
-		expect(maskedPreview('****')).toBe('••••');
+	it('ignores a legacy mask carrying a last-4 suffix and never discloses it', () => {
+		const result = maskedPreview('****abcd');
+		expect(result).toBe('••••');
+		expect(result).not.toContain('abcd');
 	});
 });
 
