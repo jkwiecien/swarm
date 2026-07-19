@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeRunError, RUN_CANCELLED_MESSAGE } from './run-cancellation.js';
+import {
+	describeCancellationOrigin,
+	normalizeRunError,
+	RUN_CANCELLED_MESSAGE,
+} from './run-cancellation.js';
 
 describe('normalizeRunError', () => {
 	it('rewrites the exact legacy user-termination string to the neutral wording', () => {
@@ -17,5 +21,34 @@ describe('normalizeRunError', () => {
 	it('does not rewrite a message that only partially matches the legacy string', () => {
 		const message = 'Run terminated by user from the dashboard, then retried.';
 		expect(normalizeRunError(message)).toBe(message);
+	});
+});
+
+describe('describeCancellationOrigin', () => {
+	it('formats a recorded dashboard origin with no actor', () => {
+		expect(
+			describeCancellationOrigin({ source: 'dashboard', requestedAt: '2026-07-19T00:00:00.000Z' }),
+		).toBe('Cancelled via dashboard');
+	});
+
+	it('appends the actor only when one was recorded', () => {
+		expect(
+			describeCancellationOrigin({
+				source: 'dashboard',
+				requestedAt: '2026-07-19T00:00:00.000Z',
+				actor: 'jkwiecien',
+			}),
+		).toBe('Cancelled via dashboard by jkwiecien');
+	});
+
+	it('formats a recorded api origin', () => {
+		expect(
+			describeCancellationOrigin({ source: 'api', requestedAt: '2026-07-19T00:00:00.000Z' }),
+		).toBe('Cancelled via API');
+	});
+
+	it('returns null for no origin (marker-only cancellation or legacy row)', () => {
+		expect(describeCancellationOrigin(null)).toBeNull();
+		expect(describeCancellationOrigin(undefined)).toBeNull();
 	});
 });

@@ -169,6 +169,13 @@
       "when": 1784458488011,
       "tag": "0023_abnormal_hellion",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784466386495,
+      "tag": "0024_zippy_firebrand",
+      "breakpoints": true
     }
   ]
 }

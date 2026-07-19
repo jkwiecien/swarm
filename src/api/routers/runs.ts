@@ -28,6 +28,7 @@ import { getPMProvider } from '../../integrations/pm/registry.js';
 import { describeError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import {
+	type CancellationOrigin,
 	clearRunCancellation,
 	RUN_CANCELLED_MESSAGE,
 	requestRunCancellation,
@@ -478,13 +479,21 @@ export const runsRouter = router({
 			}
 
 			// Durably record the intent and notify the worker before doing anything
-			// else, so a pickup that races the branches below still sees it.
-			await requestRunCancellation(run.id);
+			// else, so a pickup that races the branches below still sees it. This is
+			// the one supported termination action, so its origin is always
+			// recorded (issue #308) — `source: 'dashboard'`. `actor` stays absent:
+			// tRPC has no auth context today (`src/api/trpc.ts`), so no identity is
+			// available at this boundary to record.
+			const origin: CancellationOrigin = {
+				source: 'dashboard',
+				requestedAt: new Date().toISOString(),
+			};
+			await requestRunCancellation(run.id, origin);
 
 			if (run.status === 'deferred') {
 				// Cancel the canonical dispatch and fail the row atomically while still deferred (issue #284).
 				// Preserves session info and payload for future recovery retry (issue #306).
-				const res = await cancelDeferredRunInDb(run.id, RUN_CANCELLED_MESSAGE);
+				const res = await cancelDeferredRunInDb(run.id, RUN_CANCELLED_MESSAGE, origin);
 				if (res.success) {
 					if (res.dispatch) {
 						await removePendingJobById(wakeJobId(res.dispatch)).catch(() => false);

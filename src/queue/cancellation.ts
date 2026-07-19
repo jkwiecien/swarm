@@ -27,14 +27,42 @@
  */
 
 import { Redis } from 'ioredis';
+import { z } from 'zod';
 import { requireEnv } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 
 /** The durable set of run ids a user asked to terminate. */
 const CANCELLATION_SET_KEY = 'swarm:run-cancellations';
+/**
+ * Companion hash of `runId -> CancellationOrigin` JSON, recorded only by the
+ * supported dashboard/API `terminate` path (issue #308). A run id present in
+ * {@link CANCELLATION_SET_KEY} with no matching field here is a marker-only
+ * cancellation (an operator/process wrote the set entry directly) and must be
+ * treated as unknown/external — this hash is never used to *decide* whether a
+ * run is cancelled, only to describe one that already is.
+ */
+const CANCELLATION_ORIGIN_KEY = 'swarm:run-cancellation-origins';
 /** Pub/sub channel carrying a just-requested run id for prompt worker abort. */
 const CANCELLATION_CHANNEL = 'swarm:run-cancel';
+
+/**
+ * A cancellation's recorded origin (issue #308) — additive, structured data
+ * alongside the neutral {@link RUN_CANCELLED_MESSAGE}. At minimum distinguishes
+ * the supported dashboard/API termination action from an unknown/external
+ * marker; never inferred from the mere existence of the durable set entry.
+ * `actor` is only ever set when real caller identity was available at the API
+ * boundary (there is no per-user auth today — see `terminate` in
+ * `src/api/routers/runs.ts`), so it stays absent rather than guessed.
+ */
+export const CancellationOriginSchema = z.object({
+	source: z.enum(['dashboard', 'api']),
+	actor: z.string().optional(),
+	/** ISO 8601 timestamp of the request. */
+	requestedAt: z.string(),
+	requestId: z.string().optional(),
+});
+export type CancellationOrigin = z.infer<typeof CancellationOriginSchema>;
 
 /**
  * The `error`/message a cancelled run records — its terminal reason. Neutral by
@@ -66,10 +94,26 @@ function getRedis(): Redis {
  * entry when it next examines the run). Throws if the durable write fails — the
  * caller (the `terminate` mutation) surfaces that so the user knows the request
  * didn't land.
+ *
+ * `origin` is recorded as a companion structure ({@link getRunCancellationOrigin})
+ * alongside the durable set entry — best-effort: a failure to record it only
+ * costs the displayed origin (the cancellation itself, and its neutral wording,
+ * are unaffected), so it's logged rather than thrown.
  */
-export async function requestRunCancellation(runId: string): Promise<void> {
+export async function requestRunCancellation(
+	runId: string,
+	origin: CancellationOrigin,
+): Promise<void> {
 	const redis = getRedis();
 	await redis.sadd(CANCELLATION_SET_KEY, runId);
+	try {
+		await redis.hset(CANCELLATION_ORIGIN_KEY, runId, JSON.stringify(origin));
+	} catch (err) {
+		logger.warn('run-cancellation: failed to record cancellation origin', {
+			runId,
+			error: String(err),
+		});
+	}
 	try {
 		await redis.publish(CANCELLATION_CHANNEL, runId);
 	} catch (err) {
@@ -80,6 +124,28 @@ export async function requestRunCancellation(runId: string): Promise<void> {
 			runId,
 			error: String(err),
 		});
+	}
+}
+
+/**
+ * The recorded origin for `runId`'s cancellation, when one was durably stored
+ * by {@link requestRunCancellation}. `null` for a marker-only cancellation (the
+ * durable set entry exists but no origin was ever recorded — an operator/process
+ * wrote it directly), for a run never cancelled, and on a malformed/unreadable
+ * record — fails safe rather than displaying a guessed origin.
+ */
+export async function getRunCancellationOrigin(runId: string): Promise<CancellationOrigin | null> {
+	try {
+		const raw = await getRedis().hget(CANCELLATION_ORIGIN_KEY, runId);
+		if (!raw) return null;
+		const parsed = CancellationOriginSchema.safeParse(JSON.parse(raw));
+		return parsed.success ? parsed.data : null;
+	} catch (err) {
+		logger.warn('run-cancellation: failed to read cancellation origin — treating as unknown', {
+			runId,
+			error: String(err),
+		});
+		return null;
 	}
 }
 
@@ -102,14 +168,16 @@ export async function isRunCancellationRequested(runId: string): Promise<boolean
 }
 
 /**
- * Clear `runId`'s cancellation entry once it has been acted on (the worker after
- * terminating the run, `retryNow` before re-running it), so a later re-run of the
- * same row isn't terminated by a stale request. Best-effort: a failed clear only
- * risks a redundant no-op abort of an already-terminal run, so log and continue.
+ * Clear `runId`'s cancellation entry (and any recorded origin) once it has been
+ * acted on (the worker after terminating the run, `retryNow` before re-running
+ * it), so a later re-run of the same row isn't terminated by a stale request and
+ * doesn't inherit a stale origin. Best-effort: a failed clear only risks a
+ * redundant no-op abort of an already-terminal run, so log and continue.
  */
 export async function clearRunCancellation(runId: string): Promise<void> {
 	try {
 		await getRedis().srem(CANCELLATION_SET_KEY, runId);
+		await getRedis().hdel(CANCELLATION_ORIGIN_KEY, runId);
 	} catch (err) {
 		logger.warn('run-cancellation: failed to clear cancellation state', {
 			runId,

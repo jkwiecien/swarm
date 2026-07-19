@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const sadd = vi.fn<(key: string, member: string) => Promise<number>>();
 const srem = vi.fn<(key: string, member: string) => Promise<number>>();
 const sismember = vi.fn<(key: string, member: string) => Promise<number>>();
+const hset = vi.fn<(key: string, field: string, value: string) => Promise<number>>();
+const hget = vi.fn<(key: string, field: string) => Promise<string | null>>();
+const hdel = vi.fn<(key: string, field: string) => Promise<number>>();
 const publish = vi.fn<(channel: string, message: string) => Promise<number>>();
 const subscribe = vi.fn<(channel: string) => Promise<number>>();
 const quit = vi.fn<() => Promise<'OK'>>();
@@ -19,6 +22,9 @@ const redisClient = {
 	sadd,
 	srem,
 	sismember,
+	hset,
+	hget,
+	hdel,
 	publish,
 	on,
 	quit,
@@ -31,6 +37,8 @@ const RedisMock = vi.fn<(options: Record<string, unknown>) => typeof redisClient
 
 vi.mock('ioredis', () => ({ Redis: RedisMock }));
 
+const ORIGIN = { source: 'dashboard' as const, requestedAt: '2026-07-19T00:00:00.000Z' };
+
 describe('run cancellation', () => {
 	beforeEach(() => {
 		vi.resetModules();
@@ -39,18 +47,26 @@ describe('run cancellation', () => {
 		sadd.mockResolvedValue(1);
 		srem.mockResolvedValue(1);
 		sismember.mockResolvedValue(0);
+		hset.mockResolvedValue(1);
+		hget.mockResolvedValue(null);
+		hdel.mockResolvedValue(1);
 		publish.mockResolvedValue(1);
 		subscribe.mockResolvedValue(1);
 		quit.mockResolvedValue('OK');
 	});
 
 	describe('requestRunCancellation', () => {
-		it('records the run id in the durable set and publishes a notification', async () => {
+		it('records the run id in the durable set, its origin, and publishes a notification', async () => {
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
-			await requestRunCancellation('run-1');
+			await requestRunCancellation('run-1', ORIGIN);
 
 			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(hset).toHaveBeenCalledWith(
+				'swarm:run-cancellation-origins',
+				'run-1',
+				JSON.stringify(ORIGIN),
+			);
 			expect(publish).toHaveBeenCalledWith('swarm:run-cancel', 'run-1');
 		});
 
@@ -58,8 +74,17 @@ describe('run cancellation', () => {
 			publish.mockRejectedValueOnce(new Error('down'));
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
-			await expect(requestRunCancellation('run-1')).resolves.toBeUndefined();
+			await expect(requestRunCancellation('run-1', ORIGIN)).resolves.toBeUndefined();
 			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+		});
+
+		it('still resolves when recording the origin fails (durable set entry already landed)', async () => {
+			hset.mockRejectedValueOnce(new Error('down'));
+			const { requestRunCancellation } = await import('@/queue/cancellation.js');
+
+			await expect(requestRunCancellation('run-1', ORIGIN)).resolves.toBeUndefined();
+			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(publish).toHaveBeenCalledWith('swarm:run-cancel', 'run-1');
 		});
 	});
 
@@ -88,11 +113,12 @@ describe('run cancellation', () => {
 	});
 
 	describe('clearRunCancellation', () => {
-		it('removes the run id from the set', async () => {
+		it('removes the run id from the set and its recorded origin', async () => {
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await clearRunCancellation('run-1');
 			expect(srem).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
+			expect(hdel).toHaveBeenCalledWith('swarm:run-cancellation-origins', 'run-1');
 		});
 
 		it('swallows a clear failure', async () => {
@@ -100,6 +126,44 @@ describe('run cancellation', () => {
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(clearRunCancellation('run-1')).resolves.toBeUndefined();
+		});
+	});
+
+	describe('getRunCancellationOrigin', () => {
+		it('returns the recorded origin when one was stored', async () => {
+			hget.mockResolvedValue(JSON.stringify(ORIGIN));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toEqual(ORIGIN);
+			expect(hget).toHaveBeenCalledWith('swarm:run-cancellation-origins', 'run-1');
+		});
+
+		it('returns null for a marker-only cancellation (no origin ever recorded)', async () => {
+			hget.mockResolvedValue(null);
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('returns null and never throws on malformed JSON', async () => {
+			hget.mockResolvedValue('{not json');
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('returns null for a record that fails schema validation', async () => {
+			hget.mockResolvedValue(JSON.stringify({ source: 'not-a-real-source' }));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
+		});
+
+		it('fails safe to null on a Redis read error', async () => {
+			hget.mockRejectedValue(new Error('down'));
+			const { getRunCancellationOrigin } = await import('@/queue/cancellation.js');
+
+			expect(await getRunCancellationOrigin('run-1')).toBeNull();
 		});
 	});
 

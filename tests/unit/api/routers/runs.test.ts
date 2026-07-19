@@ -134,6 +134,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		jobPayload: null,
 		agentSessionId: null,
 		recovery: null,
+		cancellation: null,
 		outputBytes: 0,
 		outputTruncated: false,
 		...overrides,
@@ -723,7 +724,13 @@ describe('runsRouter', () => {
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'terminating' });
-			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
+			// The one supported termination action always records its origin (issue
+			// #308) — `source: 'dashboard'`, no `actor` (tRPC has no auth context).
+			expect(requestRunCancellation).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ source: 'dashboard', requestedAt: expect.any(String) }),
+			);
+			expect(vi.mocked(requestRunCancellation).mock.calls[0][1]).not.toHaveProperty('actor');
 			// The worker owns an in-flight run's terminal state — the mutation must not
 			// write the row itself, nor cancel the (running) dispatch out from under it.
 			expect(markRunUserTerminated).not.toHaveBeenCalled();
@@ -740,8 +747,10 @@ describe('runsRouter', () => {
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
-			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
-			expect(cancelDeferredRunInDb).toHaveBeenCalledWith('run-1', RUN_CANCELLED_MESSAGE);
+			const origin = expect.objectContaining({ source: 'dashboard' });
+			expect(requestRunCancellation).toHaveBeenCalledWith('run-1', origin);
+			// The same origin just recorded in Redis is persisted on the row too.
+			expect(cancelDeferredRunInDb).toHaveBeenCalledWith('run-1', RUN_CANCELLED_MESSAGE, origin);
 			// Keep the marker until an explicit retry clears it: a wake-up that
 			// already claimed the dispatch honours it at run start.
 			expect(clearRunCancellation).not.toHaveBeenCalled();
@@ -759,7 +768,10 @@ describe('runsRouter', () => {
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'terminating' });
-			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
+			expect(requestRunCancellation).toHaveBeenCalledWith(
+				'run-1',
+				expect.objectContaining({ source: 'dashboard' }),
+			);
 			expect(clearRunCancellation).not.toHaveBeenCalled();
 		});
 

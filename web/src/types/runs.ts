@@ -23,6 +23,22 @@ export const runPhaseFilterSchema = z.enum([
 export type RunPhaseFilter = z.infer<typeof runPhaseFilterSchema>;
 
 /**
+ * Mirrors `CancellationOriginSchema` (`src/queue/cancellation.ts`, issue #308) —
+ * the web package doesn't import server modules, so this re-declares the shape
+ * here the same way `runStatusFilterSchema` mirrors the router's status enum.
+ * A cancellation's recorded origin: at minimum distinguishes the supported
+ * dashboard/API termination action from an unknown/external marker (which has
+ * no record at all — see `RunRow.cancellation`).
+ */
+export const cancellationOriginSchema = z.object({
+	source: z.enum(['dashboard', 'api']),
+	actor: z.string().optional(),
+	requestedAt: z.string(),
+	requestId: z.string().optional(),
+});
+export type CancellationOrigin = z.infer<typeof cancellationOriginSchema>;
+
+/**
  * Mirrors the server `runs.queued` contract (`QueuedRunSchema`,
  * `src/queue/queued-runs.ts`) for a job enqueued in BullMQ but not yet picked up
  * by the worker (issue #234). The web package doesn't import server modules, so
@@ -217,4 +233,10 @@ export interface RunRow {
 		blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
 		agentSessionId?: string | null;
 	} | null;
+	/**
+	 * Recorded cancellation origin (issue #308); null for a marker-only
+	 * (external/unknown) cancellation, a run never cancelled, and every
+	 * pre-existing row. Mirrors the `cancellation` column.
+	 */
+	cancellation?: CancellationOrigin | null;
 }

@@ -4,6 +4,7 @@ import type { AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
 import type { PMProvider } from '@/pm/types.js';
+import type { CancellationOrigin } from '@/queue/cancellation.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
 import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 import {
@@ -255,9 +256,13 @@ vi.mock('@/worker/project-concurrency.js', () => ({
 // so these tests drive the "was this cancelled?" answer without Redis.
 const isRunCancellationRequested = vi.fn<(runId: string) => Promise<boolean>>(async () => false);
 const clearRunCancellation = vi.fn(async (_runId: string) => {});
+const getRunCancellationOrigin = vi.fn<(runId: string) => Promise<CancellationOrigin | null>>(
+	async () => null,
+);
 vi.mock('@/queue/cancellation.js', () => ({
 	isRunCancellationRequested: (runId: string) => isRunCancellationRequested(runId),
 	clearRunCancellation: (runId: string) => clearRunCancellation(runId),
+	getRunCancellationOrigin: (runId: string) => getRunCancellationOrigin(runId),
 	RUN_CANCELLED_MESSAGE: 'Run cancelled after a cancellation request.',
 }));
 
@@ -413,6 +418,8 @@ describe('processJob', () => {
 		isRunCancellationRequested.mockClear();
 		isRunCancellationRequested.mockResolvedValue(false);
 		clearRunCancellation.mockClear();
+		getRunCancellationOrigin.mockClear();
+		getRunCancellationOrigin.mockResolvedValue(null);
 		registerRunController.mockClear();
 		unregisterRunController.mockClear();
 		requestMergeAutomation.mockClear();
@@ -1831,12 +1838,15 @@ describe('processJob', () => {
 		});
 		// An intentional stop isn't a stall — no board/PR "failed" comment is posted.
 		expect(commentOnPullRequest).not.toHaveBeenCalled();
-		// The failed row records the neutral cancellation reason.
+		// The failed row records the neutral cancellation reason, and — since the
+		// marker carried no origin — persists a `null` cancellation rather than
+		// inferring one (issue #308).
 		expect(completeRun).toHaveBeenCalledWith(
 			'run-1',
 			expect.objectContaining({
 				status: 'failed',
 				error: 'Run cancelled after a cancellation request.',
+				cancellation: null,
 			}),
 		);
 		// The dispatch is cancelled (not failed), so nothing resurrects it.
@@ -1845,6 +1855,31 @@ describe('processJob', () => {
 			'Run cancelled after a cancellation request.',
 		);
 		expect(failDispatch).not.toHaveBeenCalled();
+	});
+
+	it('persists a recorded cancellation origin on the failed run (issue #308)', async () => {
+		isRunCancellationRequested.mockResolvedValue(true);
+		const origin: CancellationOrigin = {
+			source: 'dashboard',
+			requestedAt: '2026-07-19T00:00:00.000Z',
+		};
+		getRunCancellationOrigin.mockResolvedValue(origin);
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				error: 'Run cancelled after a cancellation request.',
+				cancellation: origin,
+			}),
+		);
 	});
 
 	it('aborts before running the agent when cancellation was requested at pickup', async () => {

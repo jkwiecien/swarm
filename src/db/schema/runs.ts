@@ -10,6 +10,7 @@ import {
 	uuid,
 } from 'drizzle-orm/pg-core';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { CancellationOrigin } from '../../queue/cancellation.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import { projects } from './projects.js';
 
@@ -133,6 +134,17 @@ export const runs = pgTable(
 			blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
 			agentSessionId?: string | null;
 		}>(),
+		/**
+		 * This run's recorded cancellation origin (issue #308), mirroring
+		 * `CancellationOrigin` (`src/queue/cancellation.ts`). Nullable: only a
+		 * `failed` run whose cancellation was requested through the supported
+		 * dashboard/API `terminate` action has one — a marker-only (external/
+		 * unknown) cancellation, a run never cancelled, and every pre-existing row
+		 * leave it null. Cleared on a retry alongside the other terminal-outcome
+		 * columns ({@link resetRunToRunning}) so a re-run never inherits a stale
+		 * origin from a prior cancelled attempt.
+		 */
+		cancellation: jsonb('cancellation').$type<CancellationOrigin>(),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),
