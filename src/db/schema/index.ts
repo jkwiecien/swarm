@@ -2,6 +2,7 @@ export { appSettings } from './appSettings.js';
 export { cliQuotas } from './cliQuotas.js';
 export { dispatches } from './dispatches.js';
 export { projectCredentials } from './projectCredentials.js';
+export { projectMembers } from './projectMembers.js';
 export { projects } from './projects.js';
 export { reviewVerdicts } from './reviewVerdicts.js';
 export { runLogs, runOutputEvents, runs } from './runs.js';
