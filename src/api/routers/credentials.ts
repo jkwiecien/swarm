@@ -18,10 +18,13 @@ import { publicProcedure, router } from '../trpc.js';
  * Cascade's `verifyProjectOwnership`.
  */
 
-/** Never returns plaintext — only a last-4-chars preview, or a fixed sentinel. */
+/**
+ * Never returns plaintext or any substring of it — a configured credential
+ * always collapses to the same fixed opaque marker regardless of its length,
+ * so the response discloses only configured/not-configured state.
+ */
 function maskCredential(value: string | undefined): string {
-	if (value === undefined) return 'not set';
-	return value.length <= 12 ? '****' : `****${value.slice(-4)}`;
+	return value === undefined ? 'not set' : '****';
 }
 
 export const credentialsRouter = router({

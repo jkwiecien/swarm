@@ -108,7 +108,7 @@ Each entry is the Tailwind "recipe" to reuse — treat these as the contract, no
 
 **Meta pill/badge** (e.g. version tag) — `px-2 py-0.5 text-[10px] uppercase font-mono font-bold tracking-wider bg-zinc-850 text-zinc-400 rounded border border-zinc-800`.
 
-**Masked-secret field + verify** (credentials screen) — collapsed state shows a read-only preview box (`px-3 py-2 border border-zinc-800/85 bg-zinc-900/40 rounded text-sm font-mono text-zinc-400`) rendering `•••• <last 4 chars>`, with an "Edit" secondary button that swaps it for a real `Input`. A paired "Verify" button toggles between the default secondary-button look and a success look (`bg-emerald-500/10 border-emerald-500/20 text-emerald-400`) plus an inline `✓ Verified as @<login>` label in `text-emerald-400`.
+**Masked-secret field + verify** (credentials screen) — collapsed state shows a read-only preview box (`px-3 py-2 border border-zinc-800/85 bg-zinc-900/40 rounded text-sm font-mono text-zinc-400`) rendering a fixed opaque marker, `••••`, identical for every configured credential regardless of its length — it discloses only that the credential is configured, never a last-4 (or any other) fragment of the secret — with an "Edit" secondary button that swaps it for a real `Input`. A paired "Verify" button toggles between the default secondary-button look and a success look (`bg-emerald-500/10 border-emerald-500/20 text-emerald-400`) plus an inline `✓ Verified as @<login>` label in `text-emerald-400`.
 
 **Icons** — `lucide-react`, `w-4 h-4` standard size (`w-3.5`/`w-3` for compact contexts like inline badges, `w-5` for banner icons); empty-state icons are larger and fainter: `w-12 h-12 stroke-1 text-zinc-700`.
 

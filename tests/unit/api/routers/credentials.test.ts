@@ -32,7 +32,7 @@ describe('credentialsRouter', () => {
 	describe('list', () => {
 		const project = createMockProjectConfig({ id: 'p1' });
 
-		it('masks a configured value to **** + last 4 chars', async () => {
+		it('masks a long configured value to the same fixed marker, with no secret characters in the response', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
 				SCM_TOKEN_IMPLEMENTER: 'ghp_abcdefghijklmnop1234',
@@ -42,17 +42,18 @@ describe('credentialsRouter', () => {
 			const raw = JSON.stringify(result);
 
 			expect(raw).not.toContain('ghp_abcdefghijklmnop1234');
+			expect(raw).not.toContain('1234');
 
 			const entry = result.find((r) => r.role === 'implementer');
 			expect(entry).toEqual({
 				role: 'implementer',
 				envVarKey: 'SCM_TOKEN_IMPLEMENTER',
 				isConfigured: true,
-				maskedValue: '****1234',
+				maskedValue: '****',
 			});
 		});
 
-		it('masks a short value (<= 12 chars) as just ****', async () => {
+		it('masks a short configured value to the identical fixed marker as a long one', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
 			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({
 				SCM_TOKEN_IMPLEMENTER: 'short',
@@ -83,7 +84,7 @@ describe('credentialsRouter', () => {
 				role: 'implementer',
 				envVarKey: 'GITHUB_TOKEN_IMPLEMENTER',
 				isConfigured: true,
-				maskedValue: '****1234',
+				maskedValue: '****',
 			});
 		});
 
