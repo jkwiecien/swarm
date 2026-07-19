@@ -608,7 +608,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(result).toEqual({ data: [], total: 0 });
 		});
 
-		it('keeps actionable deferred attempts visible alongside their queued dispatches', async () => {
+		it('hides deferred attempts with waiting dispatches and keeps settled attempts visible', async () => {
 			const rateLimitedRunId = await createRun({
 				projectId: PROJECT_ID,
 				taskId: 'rate-limited',
@@ -678,17 +678,19 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			const all = await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 });
 			const ids = all.data.map((r) => r.id);
-			expect(ids).toEqual(expect.arrayContaining([rateLimitedRunId, capacityRunId, settledRunId]));
-			expect(all.total).toBe(3);
+			expect(ids).toEqual([settledRunId]);
+			expect(ids).not.toContain(rateLimitedRunId);
+			expect(ids).not.toContain(capacityRunId);
+			expect(all.total).toBe(1);
 
 			const deferred = await listRunsFromDb({
 				projectId: PROJECT_ID,
 				status: 'deferred',
-				limit: 2,
+				limit: 50,
 				offset: 0,
 			});
-			expect(deferred.data).toHaveLength(2);
-			expect(deferred.total).toBe(3);
+			expect(deferred.data.map((run) => run.id)).toEqual([settledRunId]);
+			expect(deferred.total).toBe(1);
 
 			const queued = await listWaitingDispatches(PROJECT_ID);
 			expect(queued.map((dispatch) => dispatch.runId)).toEqual(

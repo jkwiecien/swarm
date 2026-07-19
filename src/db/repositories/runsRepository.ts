@@ -14,13 +14,29 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { and, asc, count, desc, eq, gt, isNotNull, isNull, or, type SQL, sql } from 'drizzle-orm';
+import {
+	and,
+	asc,
+	count,
+	desc,
+	eq,
+	gt,
+	inArray,
+	isNotNull,
+	isNull,
+	ne,
+	notExists,
+	or,
+	type SQL,
+	sql,
+} from 'drizzle-orm';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
 import type { ReviewAutomationOutcome, ReviewVerdict } from '../../pipeline/review.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
+import { dispatches } from '../schema/dispatches.js';
 import { runLogs, runOutputEvents, runs } from '../schema/runs.js';
 
 export const MAX_RUN_OUTPUT_BYTES = 5_000_000;
@@ -560,22 +576,27 @@ export interface ListRunsFilter {
  * it runs as a separate query against the same conditions. Sort order is fixed
  * (`startedAt desc`) — sortable columns and date-range filters are out of scope.
  *
- * Queue and Runs are complementary read models (issue #313): Queue is
- * dispatch-centric and lists every durable waiting dispatch, while Runs is
- * run-centric and lists persisted attempts by their normal lifecycle. A
- * deferred attempt therefore remains visible and operator-addressable here
- * while its automatic retry is also visible in Queue.
+ * Queue and Runs are complementary read models (issues #279/#316): Queue is
+ * the canonical list for waiting dispatches, so Runs hides only a deferred
+ * attempt linked to a pending/retry-scheduled dispatch. Deferred attempts with
+ * no waiting dispatch remain visible as history and for operator recovery.
  */
 export async function listRunsFromDb(
 	filter: ListRunsFilter,
 ): Promise<{ data: RunRow[]; total: number }> {
 	const db = getDb();
-	const conditions: SQL[] = [];
+	const hasWaitingDispatch = db
+		.select({ id: dispatches.id })
+		.from(dispatches)
+		.where(
+			and(eq(dispatches.runId, runs.id), inArray(dispatches.state, ['pending', 'retry-scheduled'])),
+		);
+	const conditions: SQL[] = [or(ne(runs.status, 'deferred'), notExists(hasWaitingDispatch)) as SQL];
 	if (filter.projectId) conditions.push(eq(runs.projectId, filter.projectId));
 	if (filter.status) conditions.push(eq(runs.status, filter.status));
 	if (filter.phase) conditions.push(eq(runs.phase, filter.phase));
 
-	const where = conditions.length > 0 ? and(...conditions) : undefined;
+	const where = and(...conditions);
 
 	const data = await db
 		.select()

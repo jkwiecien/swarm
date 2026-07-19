@@ -153,10 +153,9 @@ The dashboard deliberately exposes two complementary read models (issue #313):
   BullMQ snapshot. `swarm queue clear` cancels those canonical records first. A fresh
   dispatch with no `runId` is Queue-only because no persisted attempt exists yet.
 - **Runs is run-centric.** The Runs list (`runs.list` / `listRunsFromDb`) reads persisted
-  attempts by their normal lifecycle, including actionable `deferred` attempts whose
-  automatic retry dispatch is waiting. Showing such an attempt in both views is
-  intentional: Queue explains its scheduling, while Runs exposes history, logs, the
-  deferred reason, and Retry-now overrides.
+  attempts by their normal lifecycle, but hides a `deferred` attempt linked to a pending
+  or retry-scheduled dispatch to avoid displaying a duplicate row (issues #279/#316).
+  Deferred attempts with no waiting dispatch remain visible in Runs as history and for operator recovery.
 
 ### Failure handling & rate-limit retries (issue #91)
 
