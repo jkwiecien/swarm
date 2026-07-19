@@ -88,9 +88,9 @@ describe('projectsRouter', () => {
 		};
 
 		const defaultCredentials = {
-			implementer: 'GITHUB_TOKEN_IMPLEMENTER',
-			reviewer: 'GITHUB_TOKEN_REVIEWER',
-			webhookSecret: 'GITHUB_WEBHOOK_SECRET',
+			implementer: 'SCM_TOKEN_IMPLEMENTER',
+			reviewer: 'SCM_TOKEN_REVIEWER',
+			webhookSecret: 'SCM_WEBHOOK_SECRET',
 		};
 
 		it('happy path: calls createProjectInDb with the input plus credentials and returns the merged object', async () => {

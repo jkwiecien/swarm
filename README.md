@@ -213,7 +213,7 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | `CLOUDFLARE_TUNNEL_TOKEN` | _(unset)_ | Token for the opt-in `cloudflared` Compose service (see `docs/cloudflare-tunnel.md`). |
 | `COMPOSE_PROFILES` | _(unset)_ | Compose profiles to activate, e.g. `tunnel` to bring up `cloudflared`. |
 
-**Credential secret values** (referenced by project config, not config themselves): the env vars a project's `credentials` block *points at* — by default `GITHUB_TOKEN_IMPLEMENTER`, `GITHUB_TOKEN_REVIEWER`, `GITHUB_WEBHOOK_SECRET`. `swarm config apply` reads these from the environment and stores them (encrypted) in Postgres. An unset reference is warned-and-skipped, not fatal.
+**Credential secret values** (referenced by project config, not config themselves): the env vars a project's `credentials` block *points at* — by default `SCM_TOKEN_IMPLEMENTER`, `SCM_TOKEN_REVIEWER`, `SCM_WEBHOOK_SECRET` for a newly created project. These are opaque reference *names*, not ambient environment variables the running services read at request time: `swarm config apply` reads them from the environment once, at apply time, and stores the resolved values (encrypted) in Postgres — the router/worker resolve credentials from the DB thereafter. An unset reference is warned-and-skipped, not fatal. The default only changes what a *new* project is created with; a project already storing GitHub-named references (`GITHUB_TOKEN_IMPLEMENTER` and friends) keeps resolving them unchanged — there is no migration and no dual-read fallback to reconcile.
 
 **Web frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`web/.env`)
 | Variable | Default | Purpose |

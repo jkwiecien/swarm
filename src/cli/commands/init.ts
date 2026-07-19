@@ -54,9 +54,9 @@ const CONFIG_TEMPLATE = {
 			},
 			// References (env-var keys), never the secrets themselves — see CredentialsSchema.
 			credentials: {
-				implementer: 'GITHUB_TOKEN_IMPLEMENTER',
-				reviewer: 'GITHUB_TOKEN_REVIEWER',
-				webhookSecret: 'GITHUB_WEBHOOK_SECRET',
+				implementer: 'SCM_TOKEN_IMPLEMENTER',
+				reviewer: 'SCM_TOKEN_REVIEWER',
+				webhookSecret: 'SCM_WEBHOOK_SECRET',
 			},
 		},
 	],
