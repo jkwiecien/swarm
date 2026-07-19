@@ -17,23 +17,22 @@ export type PipelineTogglePhase = (typeof PIPELINE_TOGGLE_PHASES)[number];
  */
 export type PipelineEnabledForm = Record<PipelineTogglePhase, boolean>;
 
-/** The two mandatory phases that can automatically advance the board. */
-export const AUTO_ADVANCE_PHASES = ['planning', 'implementation'] as const;
+/** The mandatory phase whose completion move is configurable. */
+export const AUTO_ADVANCE_PHASES = ['planning'] as const;
 
 export type PipelineAutoAdvancePhase = (typeof AUTO_ADVANCE_PHASES)[number];
 
 export type PipelineAutoAdvanceForm = Record<PipelineAutoAdvancePhase, boolean>;
 
 /**
- * Project the two per-phase auto-advance overrides onto the dashboard form,
- * retaining the pipeline's coded defaults when no override is stored.
+ * Project Planning's auto-advance override onto the dashboard form, retaining
+ * the coded default when no override is stored.
  */
 export function toPipelineAutoAdvanceForm(
 	pipeline: PipelineConfig | undefined,
 ): PipelineAutoAdvanceForm {
 	return {
 		planning: pipeline?.planning?.autoAdvance ?? false,
-		implementation: pipeline?.implementation?.autoAdvance ?? true,
 	};
 }
 
@@ -78,7 +77,7 @@ export function isRespondToReviewLocked(form: PipelineEnabledForm): boolean {
 /**
  * Build the `pipeline` payload for `projects.update` from the form, preserving
  * every existing pipeline field the Agent Configuration screen doesn't edit
- * (`planning`/`implementation` autoAdvance/autoSplit, Respond-to-review's
+ * (Planning's autoAdvance/autoSplit, Respond-to-review's
  * autoMerge/skipOnMinors). `projects.update` shallow-merges, so an omitted field
  * here would be dropped — hence the spreads. Respond-to-review is forced off when
  * Review is off to satisfy the server-side refinement.
@@ -99,8 +98,8 @@ export function buildPipelineEnabledUpdate(
 }
 
 /**
- * Merge the dashboard's Planning and Implementation auto-advance values into a
- * complete pipeline payload. The other fields must survive because
+ * Merge the dashboard's Planning auto-advance value into a complete pipeline
+ * payload. The other fields must survive because
  * `projects.update` replaces the top-level pipeline object rather than merging
  * its nested values.
  */
@@ -111,7 +110,6 @@ export function buildPipelineAutoAdvanceUpdate(
 	return {
 		...existing,
 		planning: { ...existing?.planning, autoAdvance: form.planning },
-		implementation: { ...existing?.implementation, autoAdvance: form.implementation },
 	};
 }
 
@@ -124,7 +122,7 @@ export function isPipelineEnabledDirty(
 	return PIPELINE_TOGGLE_PHASES.some((phase) => form[phase] !== stored[phase]);
 }
 
-/** Whether either auto-advance selection differs from its effective stored value. */
+/** Whether Planning's auto-advance selection differs from its effective stored value. */
 export function isPipelineAutoAdvanceDirty(
 	form: PipelineAutoAdvanceForm,
 	pipeline: PipelineConfig | undefined,
@@ -149,11 +147,8 @@ export function isAutoAdvancePhase(phase: string): phase is PipelineAutoAdvanceP
 
 /**
  * Return the stored auto-advance setting that controls a displayed phase.
- * Implementation (unplanned) is a dispatch-time variant of Implementation, so
- * it intentionally shares Implementation's single persisted setting.
  */
 export function autoAdvanceConfigPhase(phase: string): PipelineAutoAdvancePhase | undefined {
-	if (phase === 'implementationUnplanned') return 'implementation';
 	return isAutoAdvancePhase(phase) ? phase : undefined;
 }
 
@@ -196,8 +191,9 @@ export function buildReviewChecksPolicyUpdate(
 /** Summary string describing the auto-advance behavior for the phase and its setting. */
 export function autoAdvanceSummary(phase: string, enabled: boolean | undefined): string {
 	if (enabled === undefined) return 'N/A';
-	if (phase === 'planning') {
-		return enabled ? 'On — moves to ToDo after posting the plan' : 'Off — stays in Planning';
-	}
-	return enabled ? 'On — moves to In review after opening the PR' : 'Off — stays in progress';
+	return phase === 'planning'
+		? enabled
+			? 'On — moves to ToDo after posting the plan'
+			: 'Off — stays in Planning'
+		: 'N/A';
 }

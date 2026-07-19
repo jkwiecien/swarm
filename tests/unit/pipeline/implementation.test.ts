@@ -83,7 +83,7 @@ describe('runImplementationPhase', () => {
 		blockedReasonFileContents = '';
 	});
 
-	it('provisions the task-branch worktree, runs Claude Code, links the PR, and moves the item to inReview by default (autoAdvance on)', async () => {
+	it('moves the item to inReview after successful delivery when Review is enabled', async () => {
 		const deps = makeDeps();
 		const result = await runImplementationPhase(deps);
 
@@ -146,12 +146,16 @@ describe('runImplementationPhase', () => {
 		expect(agyPrompt).not.toContain('worktree whose root is your current working directory');
 	});
 
-	it('still reports the pickup move but skips the final move when autoAdvance is off', async () => {
+	it('keeps the item in progress after successful delivery when Review is disabled', async () => {
 		const deps = makeDeps();
-		const result = await runImplementationPhase({ ...deps, autoAdvance: false });
+		deps.project = createMockProjectConfig({
+			pipeline: { review: { enabled: false }, respondToReview: { enabled: false } },
+		});
+		const result = await runImplementationPhase(deps);
 
 		expect(deps.pm.moveWorkItem).toHaveBeenCalledTimes(1);
 		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item19', 'inProgress');
+		expect(deps.pm.addComment.mock.calls[0][1]).toContain('Automated Review is disabled');
 		expect(result).toMatchObject({ movedTo: undefined });
 	});
 
@@ -493,8 +497,9 @@ describe('implementationCommentBody', () => {
 		expect(body).toMatch(/has moved to/);
 	});
 
-	it('says to move it yourself when autoAdvance is off', () => {
+	it('reports that the item remains in progress when Review is disabled', () => {
 		const body = implementationCommentBody('https://github.com/jkwiecien/swarm/pull/99', false);
-		expect(body).toMatch(/Move this item.*yourself/);
+		expect(body).toContain('Automated Review is disabled');
+		expect(body).toContain('remains **In progress**');
 	});
 });

@@ -19,17 +19,16 @@ import {
 } from './pipeline-enabled.js';
 
 describe('auto-advance form mapping', () => {
-	it('uses the coded Planning-off and Implementation-on defaults', () => {
-		expect(toPipelineAutoAdvanceForm(undefined)).toEqual({ planning: false, implementation: true });
+	it('uses the coded Planning-off default', () => {
+		expect(toPipelineAutoAdvanceForm(undefined)).toEqual({ planning: false });
 	});
 
 	it('reads explicit values and reports only changed values as dirty', () => {
 		const pipeline: PipelineConfig = {
 			planning: { autoAdvance: true },
-			implementation: { autoAdvance: false },
 		};
 		const form = toPipelineAutoAdvanceForm(pipeline);
-		expect(form).toEqual({ planning: true, implementation: false });
+		expect(form).toEqual({ planning: true });
 		expect(isPipelineAutoAdvanceDirty(form, pipeline)).toBe(false);
 		expect(isPipelineAutoAdvanceDirty({ ...form, planning: false }, pipeline)).toBe(true);
 	});
@@ -37,24 +36,19 @@ describe('auto-advance form mapping', () => {
 	it('updates only auto-advance while preserving unrelated pipeline settings', () => {
 		const existing: PipelineConfig = {
 			planning: { autoAdvance: true, autoSplit: false },
-			implementation: { autoAdvance: false },
 			review: { enabled: false },
 			respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
 			respondToCi: { enabled: false },
 		};
-		expect(
-			buildPipelineAutoAdvanceUpdate({ planning: false, implementation: true }, existing),
-		).toEqual({
+		expect(buildPipelineAutoAdvanceUpdate({ planning: false }, existing)).toEqual({
 			...existing,
 			planning: { autoAdvance: false, autoSplit: false },
-			implementation: { autoAdvance: true },
 		});
 	});
 
 	it('combines auto-advance and enabled edits without dropping other settings', () => {
 		const existing: PipelineConfig = {
 			planning: { autoSplit: false },
-			implementation: {},
 			review: {},
 			respondToReview: { autoMerge: true, skipOnMinors: false },
 			respondToCi: {},
@@ -64,11 +58,8 @@ describe('auto-advance form mapping', () => {
 			existing,
 		);
 
-		expect(
-			buildPipelineAutoAdvanceUpdate({ planning: true, implementation: false }, enabled),
-		).toEqual({
+		expect(buildPipelineAutoAdvanceUpdate({ planning: true }, enabled)).toEqual({
 			planning: { autoAdvance: true, autoSplit: false },
-			implementation: { autoAdvance: false },
 			review: { enabled: false },
 			respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
 			respondToCi: { enabled: false },
@@ -171,7 +162,6 @@ describe('buildPipelineEnabledUpdate', () => {
 	it('preserves existing pipeline fields the screen does not edit', () => {
 		const existing: PipelineConfig = {
 			planning: { autoAdvance: true, autoSplit: false },
-			implementation: { autoAdvance: false },
 			respondToReview: { autoMerge: true, skipOnMinors: false },
 		};
 		const result = buildPipelineEnabledUpdate(
@@ -179,7 +169,6 @@ describe('buildPipelineEnabledUpdate', () => {
 			existing,
 		);
 		expect(result.planning).toEqual({ autoAdvance: true, autoSplit: false });
-		expect(result.implementation).toEqual({ autoAdvance: false });
 		expect(result.respondToReview?.autoMerge).toBe(true);
 		expect(result.respondToReview?.skipOnMinors).toBe(false);
 		expect(result.respondToReview?.enabled).toBe(true);
@@ -224,17 +213,17 @@ describe('isPipelineEnabledDirty', () => {
 
 describe('setAutoAdvanceEnabled', () => {
 	it('sets the auto-advance value for a phase without mutating the input', () => {
-		const form = { planning: false, implementation: true };
+		const form = { planning: false };
 		const result = setAutoAdvanceEnabled(form, 'planning', true);
-		expect(result).toEqual({ planning: true, implementation: true });
-		expect(form).toEqual({ planning: false, implementation: true });
+		expect(result).toEqual({ planning: true });
+		expect(form).toEqual({ planning: false });
 	});
 });
 
 describe('isAutoAdvancePhase', () => {
-	it('correctly identifies planning and implementation as auto-advance phases', () => {
+	it('identifies only Planning as an auto-advance phase', () => {
 		expect(isAutoAdvancePhase('planning')).toBe(true);
-		expect(isAutoAdvancePhase('implementation')).toBe(true);
+		expect(isAutoAdvancePhase('implementation')).toBe(false);
 	});
 
 	it('rejects other phases', () => {
@@ -246,13 +235,10 @@ describe('isAutoAdvancePhase', () => {
 });
 
 describe('autoAdvanceConfigPhase', () => {
-	it('maps Implementation (unplanned) to Implementation’s shared setting', () => {
-		expect(autoAdvanceConfigPhase('implementationUnplanned')).toBe('implementation');
-	});
-
 	it('returns the stored phase for supported phases and nothing for others', () => {
 		expect(autoAdvanceConfigPhase('planning')).toBe('planning');
-		expect(autoAdvanceConfigPhase('implementation')).toBe('implementation');
+		expect(autoAdvanceConfigPhase('implementation')).toBeUndefined();
+		expect(autoAdvanceConfigPhase('implementationUnplanned')).toBeUndefined();
 		expect(autoAdvanceConfigPhase('review')).toBeUndefined();
 	});
 });
@@ -295,7 +281,6 @@ describe('buildReviewChecksPolicyUpdate', () => {
 	it('preserves unrelated pipeline fields and the existing review.enabled flag', () => {
 		const existing: PipelineConfig = {
 			planning: { autoAdvance: true },
-			implementation: { autoAdvance: false },
 			review: { enabled: false },
 			respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
 			respondToCi: { enabled: true },
@@ -318,10 +303,8 @@ describe('autoAdvanceSummary', () => {
 		expect(autoAdvanceSummary('planning', false)).toBe('Off — stays in Planning');
 	});
 
-	it('returns implementation summary for true/false', () => {
-		expect(autoAdvanceSummary('implementation', true)).toBe(
-			'On — moves to In review after opening the PR',
-		);
-		expect(autoAdvanceSummary('implementation', false)).toBe('Off — stays in progress');
+	it('returns N/A for Implementation', () => {
+		expect(autoAdvanceSummary('implementation', true)).toBe('N/A');
+		expect(autoAdvanceSummary('implementation', false)).toBe('N/A');
 	});
 });

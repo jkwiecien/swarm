@@ -1,0 +1,101 @@
+import { useQueryClient } from '@tanstack/react-query';
+import { createRoute, useNavigate } from '@tanstack/react-router';
+import type React from 'react';
+import { useState } from 'react';
+import { login } from '@/lib/auth.js';
+import { trpc } from '@/lib/trpc.js';
+import { rootRoute } from './__root.js';
+
+/**
+ * The dashboard login screen (#281 task 2). Posts credentials to `/auth/login`
+ * (which sets the HTTP-only session cookie); on success it refetches `auth.me`
+ * and navigates into the app. No token is stored in JS — the session lives only
+ * in the cookie.
+ */
+export function LoginScreen() {
+	const navigate = useNavigate();
+	const queryClient = useQueryClient();
+	const [identifier, setIdentifier] = useState('');
+	const [password, setPassword] = useState('');
+	const [error, setError] = useState('');
+	const [submitting, setSubmitting] = useState(false);
+
+	const handleSubmit = async (e: React.FormEvent) => {
+		e.preventDefault();
+		setError('');
+		setSubmitting(true);
+		const result = await login(identifier, password);
+		setSubmitting(false);
+		if (!result.ok) {
+			setError(result.error ?? 'Login failed.');
+			return;
+		}
+		// The session cookie is set; drop any cached (unauthenticated) session
+		// state and enter the app. The index route forwards to /runs.
+		await queryClient.invalidateQueries({ queryKey: trpc.auth.me.queryOptions().queryKey });
+		navigate({ to: '/' });
+	};
+
+	return (
+		<div className="flex min-h-screen items-center justify-center bg-canvas p-4">
+			<div className="w-full max-w-sm">
+				<div className="mb-6 text-center">
+					<h1 className="text-lg font-semibold text-zinc-100">Sign in to SWARM</h1>
+					<p className="mt-1 text-xs text-zinc-500">Enter your credentials to continue.</p>
+				</div>
+				<form onSubmit={handleSubmit} className="space-y-4">
+					<div>
+						<label
+							htmlFor="login-identifier"
+							className="block text-xs font-medium text-zinc-400 mb-1"
+						>
+							Username or email
+						</label>
+						<input
+							type="text"
+							id="login-identifier"
+							value={identifier}
+							onChange={(e) => setIdentifier(e.target.value)}
+							autoComplete="username"
+							className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500"
+						/>
+					</div>
+					<div>
+						<label
+							htmlFor="login-password"
+							className="block text-xs font-medium text-zinc-400 mb-1"
+						>
+							Password
+						</label>
+						<input
+							type="password"
+							id="login-password"
+							value={password}
+							onChange={(e) => setPassword(e.target.value)}
+							autoComplete="current-password"
+							className="block w-full px-3 py-2 text-sm bg-zinc-900 border border-zinc-700 rounded text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-1 focus:ring-violet-500 focus:border-violet-500"
+						/>
+					</div>
+					{error && (
+						<p role="alert" className="text-xs text-red-400">
+							{error}
+						</p>
+					)}
+					<button
+						type="submit"
+						disabled={submitting}
+						className="w-full px-3 py-2 text-sm font-medium rounded bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+					>
+						{submitting ? 'Signing in…' : 'Sign in'}
+					</button>
+				</form>
+			</div>
+		</div>
+	);
+}
+
+export const loginRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: '/login',
+	component: LoginScreen,
+});

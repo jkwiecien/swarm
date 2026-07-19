@@ -17,9 +17,13 @@ import { boolean, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
  * `false`: the first admin is designated explicitly via the operator CLI
  * (`swarm users add --admin` / `grant-admin`), never implicitly.
  *
- * These rows sit ready for the session-auth follow-up (#281 task 2); nothing in
- * the live auth path reads them yet — the dashboard stays behind
- * `DASHBOARD_TOKEN`.
+ * `password_hash` is the credential material backing cookie session auth (#281
+ * task 2): a `scrypt` salt+hash (`src/identity/auth.ts`), **never** a plaintext
+ * password. It is nullable — a user created by `swarm users add` has no password
+ * until an operator sets one with `swarm users set-password`, and a user with no
+ * hash can never log in. It is deliberately **not** part of the `SwarmUser`
+ * domain read model (`src/identity/schema.ts`), so it never leaves the DB layer:
+ * `rowToSwarmUser` drops it and only the auth path reads it.
  */
 export const users = pgTable('users', {
 	id: uuid('id').primaryKey().defaultRandom(),
@@ -29,6 +33,8 @@ export const users = pgTable('users', {
 	displayName: text('display_name').notNull(),
 	/** Installation-admin flag — designated explicitly, never auto-granted. */
 	instanceAdmin: boolean('instance_admin').notNull().default(false),
+	/** `scrypt` salt+hash of the login password (never plaintext); null until set. */
+	passwordHash: text('password_hash'),
 	createdAt: timestamp('created_at').notNull().defaultNow(),
 	updatedAt: timestamp('updated_at')
 		.notNull()

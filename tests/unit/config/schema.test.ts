@@ -173,18 +173,17 @@ describe('ProjectConfigSchema', () => {
 		).toThrow();
 	});
 
-	it('omits pipeline entirely by default (planning/implementation keep their coded defaults)', () => {
+	it('omits pipeline entirely by default', () => {
 		const project = createMockProjectConfig();
 		expect(project.pipeline).toBeUndefined();
 	});
 
-	it('accepts a per-phase autoAdvance override', () => {
+	it('accepts a Planning autoAdvance override', () => {
 		const project = createMockProjectConfig({
-			pipeline: { planning: { autoAdvance: true }, implementation: { autoAdvance: false } },
+			pipeline: { planning: { autoAdvance: true } },
 		});
 		expect(project.pipeline).toEqual({
 			planning: { autoAdvance: true },
-			implementation: { autoAdvance: false },
 		});
 	});
 
@@ -348,11 +347,12 @@ describe('PipelineConfigSchema', () => {
 		expect(PipelineConfigSchema.safeParse({}).success).toBe(true);
 	});
 
-	it('allows planning and implementation to be set independently', () => {
+	it('allows Planning autoAdvance to be set', () => {
 		expect(PipelineConfigSchema.safeParse({ planning: { autoAdvance: true } }).success).toBe(true);
-		expect(PipelineConfigSchema.safeParse({ implementation: { autoAdvance: false } }).success).toBe(
-			true,
-		);
+	});
+
+	it('removes the legacy Implementation autoAdvance setting', () => {
+		expect(PipelineConfigSchema.parse({ implementation: { autoAdvance: false } })).toEqual({});
 	});
 
 	it('rejects a non-boolean autoAdvance', () => {

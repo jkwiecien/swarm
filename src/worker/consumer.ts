@@ -757,10 +757,10 @@ function resolveReasoning(
  * provision anything. `signal` (the worker's shutdown signal) is threaded
  * through so a graceful shutdown kills any in-flight agent CLI.
  *
- * `movedTo` (planning/implementation only) surfaces the canonical status the
- * phase's own `autoAdvance` moved the item to, if any — `processJob` uses it to
- * self-enqueue the next phase (see {@link selfEnqueueNextPhase}) rather than
- * waiting on a webhook GitHub will never deliver for a SWARM persona's own move.
+ * `movedTo` (planning/implementation only) surfaces the canonical completion
+ * status the phase moved the item to, if any — `processJob` uses it to
+ * self-enqueue a next PM-driven phase (see {@link selfEnqueueNextPhase}) rather
+ * than waiting on a webhook GitHub will never deliver for a SWARM persona's move.
  */
 function runPhase(
 	trigger: TriggerResult,
@@ -840,7 +840,6 @@ function runPhase(
 				model: overrides.model,
 				reasoning: overrides.reasoning,
 				customPrompt: overrides.customPrompt,
-				autoAdvance: project.pipeline?.implementation?.autoAdvance,
 				resumeExistingBranch: job.implementationBranchProvisioned === true,
 				onBranchProvisioned: markImplementationBranchProvisioned,
 				...session,

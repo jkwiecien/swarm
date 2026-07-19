@@ -16,7 +16,15 @@ import type { AppSettings } from '@/config/app-settings.js';
 import { getAppSettings, updateAppSettings } from '@/db/repositories/appSettingsRepository.js';
 
 describe('settingsRouter', () => {
-	const caller = settingsRouter.createCaller({});
+	const AUTHED_USER = {
+		id: '00000000-0000-4000-8000-000000000000',
+		identifier: 'tester@example.com',
+		displayName: 'Tester',
+		instanceAdmin: true,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+	const caller = settingsRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
 		vi.mocked(getAppSettings).mockReset();

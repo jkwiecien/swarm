@@ -91,3 +91,41 @@ export async function setInstanceAdmin(id: string, value: boolean): Promise<Swar
 		.returning();
 	return row ? rowToSwarmUser(row) : undefined;
 }
+
+/**
+ * The credential material for a login attempt — the user plus their stored
+ * password hash. Kept separate from `SwarmUser` on purpose: the hash is a secret
+ * that must never leak into the domain read model or any response, so only the
+ * auth path (`src/identity/auth.ts`) reads it via this function.
+ */
+export interface UserCredential {
+	user: SwarmUser;
+	passwordHash: string | null;
+}
+
+/**
+ * Resolve a user and their password hash by login handle, for credential
+ * verification. Returns `undefined` when no user owns that identifier; the hash
+ * is `null` when the user exists but has no password set (they can't log in).
+ */
+export async function findUserCredentialByIdentifier(
+	identifier: string,
+): Promise<UserCredential | undefined> {
+	const rows = await getDb().select().from(users).where(eq(users.identifier, identifier)).limit(1);
+	const row = rows[0];
+	return row ? { user: rowToSwarmUser(row), passwordHash: row.passwordHash } : undefined;
+}
+
+/**
+ * Store (or replace) a user's password hash. Returns `true` when a row was
+ * updated, `false` when no user has that id. The caller passes an already-hashed
+ * value — this layer never sees a plaintext password.
+ */
+export async function setPasswordHash(id: string, passwordHash: string): Promise<boolean> {
+	const updated = await getDb()
+		.update(users)
+		.set({ passwordHash })
+		.where(eq(users.id, id))
+		.returning({ id: users.id });
+	return updated.length > 0;
+}

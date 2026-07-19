@@ -7,15 +7,15 @@ import {
 	writeProjectCredential,
 } from '../../db/repositories/credentialsRepository.js';
 import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
-import { publicProcedure, router } from '../trpc.js';
+import { authedProcedure, router } from '../trpc.js';
 
 /**
  * Project-scoped credentials API — mirrors Cascade's `projectsRouter.credentials`
  * (`cascade/src/api/routers/projects.ts`). `list` never returns plaintext, only a
- * masked preview; SWARM has no org/ownership layer to check (single-user,
- * `DASHBOARD_TOKEN` bearer auth guards the whole `/trpc` surface), so each
- * procedure does a plain `getProjectByIdFromDb` existence check instead of
- * Cascade's `verifyProjectOwnership`.
+ * masked preview; SWARM has no project-scoped authorization layer yet — every
+ * authenticated user sees every project (that lands in #281 task 4) — so each
+ * `authedProcedure` does a plain `getProjectByIdFromDb` existence check instead
+ * of Cascade's `verifyProjectOwnership`.
  */
 
 /**
@@ -28,7 +28,7 @@ function maskCredential(value: string | undefined): string {
 }
 
 export const credentialsRouter = router({
-	list: publicProcedure
+	list: authedProcedure
 		.input(z.object({ projectId: z.string().min(1) }))
 		.query(async ({ input }) => {
 			const project = await getProjectByIdFromDb(input.projectId);
@@ -49,7 +49,7 @@ export const credentialsRouter = router({
 			}));
 		}),
 
-	set: publicProcedure
+	set: authedProcedure
 		.input(
 			z.object({
 				projectId: z.string().min(1),
@@ -77,7 +77,7 @@ export const credentialsRouter = router({
 			);
 		}),
 
-	delete: publicProcedure
+	delete: authedProcedure
 		.input(z.object({ projectId: z.string().min(1), envVarKey: z.string().min(1) }))
 		.mutation(async ({ input }) => {
 			const project = await getProjectByIdFromDb(input.projectId);

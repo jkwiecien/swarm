@@ -1,6 +1,6 @@
 import { getAllCliQuotas, upsertCliQuota } from '../../db/repositories/cliQuotasRepository.js';
 import { discoverCliQuotas } from '../../harness/quota-discovery.js';
-import { publicProcedure, router } from '../trpc.js';
+import { authedProcedure, router } from '../trpc.js';
 
 /**
  * tRPC router for CLI quotas and capabilities (issue #164).
@@ -12,7 +12,7 @@ export const quotaRouter = router({
 	/**
 	 * Get the currently persisted host-local capability and quota snapshots for all CLIs.
 	 */
-	getQuotas: publicProcedure.query(async () => {
+	getQuotas: authedProcedure.query(async () => {
 		return await getAllCliQuotas();
 	}),
 
@@ -20,7 +20,7 @@ export const quotaRouter = router({
 	 * Run full capability discovery and live quota queries, persist the results,
 	 * and return the fresh snapshots.
 	 */
-	refreshQuotas: publicProcedure.mutation(async () => {
+	refreshQuotas: authedProcedure.mutation(async () => {
 		const snapshots = await discoverCliQuotas(false); // cheap = false for manual refresh
 		for (const snapshot of snapshots) {
 			await upsertCliQuota(snapshot.cli, snapshot.status, snapshot);
