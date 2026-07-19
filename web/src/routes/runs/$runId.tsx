@@ -18,6 +18,7 @@ import { LogViewer } from '@/components/runs/log-viewer.js';
 import { RunStatusBadge } from '@/components/runs/run-status-badge.js';
 import { Modal, ModalFooter } from '@/components/ui/modal.js';
 import { formatDuration, formatPhase, formatTimeUntil, formatTokenCount } from '@/lib/format.js';
+import { normalizeRunError } from '@/lib/run-cancellation.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
 import {
 	canRetryRun,
@@ -626,7 +627,7 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 						</h3>
 						{run.error && (
 							<p className="text-xs text-amber-200/70 mt-1 font-mono whitespace-pre-wrap">
-								{run.error}
+								{normalizeRunError(run.error)}
 							</p>
 						)}
 						<p className="text-xs text-amber-200/70 mt-2 font-mono">
@@ -651,7 +652,7 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 							{run.timedOut ? 'Run Timed Out' : 'Run Failure Error'}
 						</h3>
 						<p className="text-xs text-red-400/80 mt-1 font-mono whitespace-pre-wrap">
-							{run.error}
+							{normalizeRunError(run.error)}
 						</p>
 						{canRetryRun(run.status) && <RetryNowButton run={run} />}
 					</div>

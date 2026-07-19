@@ -141,4 +141,14 @@ describe('run cancellation', () => {
 			expect(quit).toHaveBeenCalled();
 		});
 	});
+
+	describe('RUN_CANCELLED_MESSAGE', () => {
+		it('is neutral — it never asserts who or where a cancellation came from', async () => {
+			const { RUN_CANCELLED_MESSAGE } = await import('@/queue/cancellation.js');
+
+			expect(RUN_CANCELLED_MESSAGE).toBe('Run cancelled after a cancellation request.');
+			expect(RUN_CANCELLED_MESSAGE.toLowerCase()).not.toContain('user');
+			expect(RUN_CANCELLED_MESSAGE.toLowerCase()).not.toContain('dashboard');
+		});
+	});
 });
