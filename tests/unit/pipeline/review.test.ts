@@ -10,6 +10,7 @@ vi.mock('node:fs', () => ({
 
 import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import { buildReviewPrompt, REVIEW_VERDICT_FILENAME, runReviewPhase } from '@/pipeline/review.js';
+import { ReviewHandoffSchema } from '@/scm/delivery.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 
@@ -291,6 +292,11 @@ describe('buildReviewPrompt', () => {
 		expect(prompt).toContain(REVIEW_VERDICT_FILENAME);
 		expect(prompt).toContain('Confirm README.md remains accurate for the changes in this PR.');
 		expect(prompt).toContain('report the missing README update as a review finding');
+		expect(prompt).toContain('For every notable issue, provide an actionable proposed fix plan.');
+		expect(prompt).toContain('findings [{title,body,fixPlan}]');
+		expect(prompt).toContain(
+			"The final review body must also include each finding's evidence, impact, and proposed fix plan",
+		);
 	});
 
 	it('pins the review to the head SHA and forbids modifying the repository', () => {
@@ -313,5 +319,27 @@ describe('buildReviewPrompt', () => {
 		const prompt = buildReviewPrompt(context);
 		expect(prompt).toContain('GH_TOKEN');
 		expect(prompt).toContain('gh auth switch');
+	});
+
+	it('requires a proposed fix plan on every structured finding', () => {
+		const withoutPlan = ReviewHandoffSchema.safeParse({
+			verdict: 'request-changes',
+			body: 'A notable issue exists.',
+			findings: [{ title: 'Issue', body: 'Evidence and impact.' }],
+		});
+		const withPlan = ReviewHandoffSchema.safeParse({
+			verdict: 'request-changes',
+			body: 'A notable issue exists. Proposed fix plan: update the handler and add a regression test.',
+			findings: [
+				{
+					title: 'Issue',
+					body: 'Evidence and impact.',
+					fixPlan: 'Update the handler and add a regression test.',
+				},
+			],
+		});
+
+		expect(withoutPlan.success).toBe(false);
+		expect(withPlan.success).toBe(true);
 	});
 });
