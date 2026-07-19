@@ -1,0 +1,23 @@
+/**
+ * Neutral wording for cancelled runs (issue #305): the dashboard must not assert
+ * an unverified actor/origin for a run that stopped only because a durable
+ * cancellation marker was found. The backend already records the neutral
+ * message for new rows (`RUN_CANCELLED_MESSAGE` in `src/queue/cancellation.ts`);
+ * this module normalises the one exact string historical rows persisted before
+ * that change, so old rows read the same way without a DB rewrite.
+ */
+
+/** The exact terminal message legacy cancelled runs persisted (pre-#305). */
+const LEGACY_USER_TERMINATION_MESSAGE = 'Run terminated by user from the dashboard.';
+
+/** The neutral wording the backend records now (mirrors `RUN_CANCELLED_MESSAGE`). */
+export const RUN_CANCELLED_MESSAGE = 'Run cancelled after a cancellation request.';
+
+/**
+ * Render a run's error without asserting an unverified actor: rewrite the exact
+ * legacy cancellation string to the neutral wording; pass everything else
+ * through unchanged so genuine errors are never altered.
+ */
+export function normalizeRunError(error: string): string {
+	return error === LEGACY_USER_TERMINATION_MESSAGE ? RUN_CANCELLED_MESSAGE : error;
+}

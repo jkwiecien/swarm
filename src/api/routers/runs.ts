@@ -30,8 +30,8 @@ import { describeError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import {
 	clearRunCancellation,
+	RUN_CANCELLED_MESSAGE,
 	requestRunCancellation,
-	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../../queue/jobs.js';
 import { priorityFor } from '../../queue/producer.js';
@@ -462,8 +462,8 @@ export const runsRouter = router({
 				// dispatch refuses every future claim — a late retry wake-up, a slot
 				// release, or reconciliation — so nothing can resurrect this run.
 				// Then atomically fail the row while it's still deferred.
-				await cancelDispatchForRun(run.id, USER_TERMINATION_MESSAGE);
-				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
+				await cancelDispatchForRun(run.id, RUN_CANCELLED_MESSAGE);
+				if (await markRunUserTerminated(run.id, RUN_CANCELLED_MESSAGE, 'deferred')) {
 					// Keep the durable marker until an explicit retry clears it. The
 					// completed handler can still be between persisting `deferred` and
 					// enqueueing its retry; it uses this marker to remove a late retry.
