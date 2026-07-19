@@ -6,4 +6,5 @@ export { projectMembers } from './projectMembers.js';
 export { projects } from './projects.js';
 export { reviewVerdicts } from './reviewVerdicts.js';
 export { runLogs, runOutputEvents, runs } from './runs.js';
+export { userSessions } from './userSessions.js';
 export { users } from './users.js';

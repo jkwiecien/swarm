@@ -8,7 +8,15 @@ import { scmRouter } from '@/api/routers/scm.js';
 import { getGitHubUserForToken } from '@/integrations/scm/github/client.js';
 
 describe('scmRouter', () => {
-	const caller = scmRouter.createCaller({});
+	const AUTHED_USER = {
+		id: '00000000-0000-4000-8000-000000000000',
+		identifier: 'tester@example.com',
+		displayName: 'Tester',
+		instanceAdmin: true,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+	const caller = scmRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
 		vi.mocked(getGitHubUserForToken).mockReset();

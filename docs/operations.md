@@ -9,12 +9,14 @@ root [README](../README.md); this is the detailed operational reference.
 Postgres, Redis, and the router run in Docker Compose; the **worker runs on the host**:
 
 ```bash
-cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports / DASHBOARD_TOKEN if needed
+cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
 docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 npm run db:seed               # load swarm.config.json into Postgres (projects + credentials)
+swarm users add you@example.com --admin   # create the first user, then:
+swarm users set-password you@example.com   # set their dashboard login password (prompts, no echo)
 cd web && npm install && cd .. # install web dashboard dependencies
-npm run dev:dashboard         # start the dashboard API on the host (default port 3101) — requires DASHBOARD_TOKEN in .env
+npm run dev:dashboard         # start the dashboard API on the host (default port 3101)
 npm run dev:web               # start the Vite dev server (default port 5173)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker); SWARM_WORKER_CONCURRENCY in .env sets how many jobs run at once (default 1)
 ```
@@ -44,15 +46,20 @@ The dashboard can be run in two modes:
   ```
   Open `http://localhost:3101` in your browser. The dashboard API will serve the compiled files as a fallback for any non-API/non-health routes.
 
-The dashboard API requires `DASHBOARD_TOKEN` to be set in your `.env` file and throws on startup if it is missing. Because it binds to `127.0.0.1` and uses Hono's `bearerAuth` middleware, every dashboard API request (except `/health`) must include the token in the `Authorization` header. Future frontends read the token from local configuration rather than displaying a login screen.
+The dashboard uses **per-user session auth** (issue #281 task 2). It binds to `127.0.0.1` and every dashboard API request except `/health` and the `ping` liveness probe is authorized by a session cookie, not a shared secret. A user signs in at `/login` (username/email + password); the server verifies the password, mints an opaque session, and returns it as an HTTP-only, `SameSite=Strict` cookie (`Secure` off localhost). Log out to revoke it. Set a user up first with `swarm users add` + `swarm users set-password` (below). There is no `DASHBOARD_TOKEN` anymore.
 
-You can verify the dashboard API is running and authenticated using `curl`:
+You can verify the dashboard API is running using `curl`:
 ```bash
 # /health check requires no authentication
 curl http://localhost:3101/health
 
-# Authenticated tRPC request
-curl -H "Authorization: Bearer $DASHBOARD_TOKEN" http://localhost:3101/trpc/ping.ping
+# Log in — the session cookie lands in cookies.txt; the raw token is never in the body
+curl -c cookies.txt -H 'Content-Type: application/json' \
+  -d '{"identifier":"you@example.com","password":"…"}' \
+  http://localhost:3101/auth/login
+
+# Authenticated tRPC request, reusing the session cookie
+curl -b cookies.txt http://localhost:3101/trpc/auth.me
 ```
 
 The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps above:
@@ -64,8 +71,8 @@ The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps a
 - `swarm logs [service] [-f]` — tails the logs.
 - `swarm queue clear` (a.k.a. `npm run queue:clear`) — cancels every waiting dispatch (pending, capacity-blocked, and retry-scheduled — the canonical durable queue, issue #284) and drains their queued wake-ups plus any legacy jobs from Redis. Cancelled dispatches can never be resurrected by a retry, slot release, or reconciliation. It deliberately does not cancel an active run; stop the worker first when clearing work before restarting it. Requires both `DATABASE_URL` and `REDIS_URL`.
 - `swarm worktrees prune [--project <id>] [--dry-run]` (a.k.a. `npm run worktrees:prune`) — reclaims stale `task-<id>` worktrees under `.swarm-workspaces/` that are no longer in use and have no uncommitted changes.
-- `swarm users <add|list|grant-admin|revoke-admin>` — manages SWARM users (the multi-user foundation, issue #281): `add <identifier> [--name <displayName>] [--admin]` creates a user by login handle (username/email) and optionally makes them the installation admin; `list` lists them; `grant-admin`/`revoke-admin <identifier>` toggle the installation-admin role. Requires `DATABASE_URL`. These rows are not yet used by the running auth path — the dashboard still authenticates with `DASHBOARD_TOKEN`; they sit ready for session auth.
-- `swarm members <add|list|set-role|remove>` — manages project membership (the multi-user foundation, issue #281): `add <project-id> <user-identifier> [--role <role>]` adds a user (by login handle) to a project with a per-project role (`projectAdmin | member | contributor`, default `member`); `list <project-id>` lists a project's members; `set-role <project-id> <user-identifier> --role <role>` changes an existing member's role; `remove <project-id> <user-identifier>` removes them. Roles rank `projectAdmin` (administer) > `member` (write) > `contributor` (read). Requires `DATABASE_URL`. Like `users`, membership is not yet enforced by any router — it is the read model authorization will build on.
+- `swarm users <add|list|grant-admin|revoke-admin|set-password>` — manages SWARM users and their dashboard credentials (the multi-user foundation, issue #281): `add <identifier> [--name <displayName>] [--admin]` creates a user by login handle (username/email) and optionally makes them the installation admin; `list` lists them; `grant-admin`/`revoke-admin <identifier>` toggle the installation-admin role; `set-password <identifier>` sets the user's dashboard login password (prompts without echo on a TTY, or reads it from stdin for scripting — never logged). Requires `DATABASE_URL`. A user needs a password set before they can sign in to the dashboard.
+- `swarm members <add|list|set-role|remove>` — manages project membership (the multi-user foundation, issue #281): `add <project-id> <user-identifier> [--role <role>]` adds a user (by login handle) to a project with a per-project role (`projectAdmin | member | contributor`, default `member`); `list <project-id>` lists a project's members; `set-role <project-id> <user-identifier> --role <role>` changes an existing member's role; `remove <project-id> <user-identifier>` removes them. Roles rank `projectAdmin` (administer) > `member` (write) > `contributor` (read). Requires `DATABASE_URL`. Membership is not yet enforced by any router — it is the read model authorization will build on.
 
 It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.
 

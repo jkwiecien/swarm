@@ -42,7 +42,7 @@ import {
 	toQueuedRuns,
 } from '../../queue/queued-runs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
-import { publicProcedure, router } from '../trpc.js';
+import { authedProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
 const queuedWorkItemCache = new Map<
@@ -251,7 +251,7 @@ function alreadyRetrying(): TRPCError {
 
 export const runsRouter = router({
 	// Paginated, filtered list; returns { data, total } straight from the repo.
-	list: publicProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
+	list: authedProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
 		return await listRunsFromDb(input);
 	}),
 
@@ -259,7 +259,7 @@ export const runsRouter = router({
 	// retry-scheduled) — the durable queue read model (issues #234, #284), never
 	// a BullMQ snapshot, so nothing pending can be invisible here. No pagination:
 	// the pending set is small and bounded by worker throughput.
-	queued: publicProcedure
+	queued: authedProcedure
 		.input(z.object({ projectId: z.string().min(1).optional() }).optional())
 		.query(async ({ input }) => {
 			const items = toQueuedRuns(await listWaitingDispatches(input?.projectId));
@@ -267,7 +267,7 @@ export const runsRouter = router({
 		}),
 
 	// Single run by id; NOT_FOUND when unknown (the only not-found path).
-	getById: publicProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
+	getById: authedProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
 		const run = await getRunByIdFromDb(input.id);
 		if (!run) {
 			throw new TRPCError({
@@ -280,13 +280,13 @@ export const runsRouter = router({
 
 	// Captured stdout/stderr for a run; null when the run stored no logs (a run
 	// that succeeded, or failed before its output was captured) — not an error.
-	getLogs: publicProcedure
+	getLogs: authedProcedure
 		.input(z.object({ runId: z.string().min(1) }))
 		.query(async ({ input }) => {
 			return (await getRunLogsFromDb(input.runId)) ?? null;
 		}),
 
-	getOutput: publicProcedure
+	getOutput: authedProcedure
 		.input(z.object({ runId: z.string().min(1), after: z.number().int().nonnegative().default(0) }))
 		.query(async ({ input }) => await getRunOutputEvents(input.runId, input.after)),
 
@@ -315,7 +315,7 @@ export const runsRouter = router({
 	// Only limit: reconstruction needs a stored `jobPayload`. A run recorded
 	// without one (older rows, or a create path that didn't persist it) can't be
 	// rebuilt and is rejected with a clear message.
-	retryNow: publicProcedure
+	retryNow: authedProcedure
 		.input(
 			z.object({
 				runId: z.string().min(1),
@@ -460,7 +460,7 @@ export const runsRouter = router({
 	// settle-during-terminate can't terminate a different run or double-act.
 	// Keyed on the immutable run id, so a later retry of the same task is never
 	// caught by this request.
-	terminate: publicProcedure
+	terminate: authedProcedure
 		.input(z.object({ runId: z.string().min(1) }))
 		.mutation(async ({ input }) => {
 			const run = await getRunByIdFromDb(input.runId);
@@ -516,7 +516,7 @@ export const runsRouter = router({
 	// Put back action for queued work items (issues #251, #284).
 	// Cancels a waiting dispatch (the canonical record — nothing can resurrect
 	// it afterwards) and moves its linked card back to backlog.
-	putBack: publicProcedure
+	putBack: authedProcedure
 		.input(
 			z.object({
 				/** The dispatch id shown by `runs.queued` as `jobId`. */

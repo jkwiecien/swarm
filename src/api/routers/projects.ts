@@ -10,7 +10,7 @@ import {
 	upsertProjectToDb,
 } from '../../db/repositories/projectsRepository.js';
 import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
-import { publicProcedure, router } from '../trpc.js';
+import { authedProcedure, router } from '../trpc.js';
 import { credentialsRouter } from './credentials.js';
 
 export const DEFAULT_GITHUB_PROJECTS_CONFIG: GitHubProjectsIntegrationConfig = {
@@ -50,11 +50,11 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export const projectsRouter = router({
-	list: publicProcedure.query(async () => {
+	list: authedProcedure.query(async () => {
 		return await listAllProjectsFromDb();
 	}),
 
-	getById: publicProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
+	getById: authedProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
 		const project = await getProjectByIdFromDb(input.id);
 		if (!project) {
 			throw new TRPCError({
@@ -65,7 +65,7 @@ export const projectsRouter = router({
 		return project;
 	}),
 
-	create: publicProcedure.input(ProjectCreateInputSchema).mutation(async ({ input }) => {
+	create: authedProcedure.input(ProjectCreateInputSchema).mutation(async ({ input }) => {
 		const config = {
 			...input,
 			githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
@@ -85,7 +85,7 @@ export const projectsRouter = router({
 		}
 	}),
 
-	update: publicProcedure
+	update: authedProcedure
 		.input(ProjectWriteInputSchema.partial().extend({ id: z.string().min(1) }))
 		.mutation(async ({ input }) => {
 			const existing = await getProjectByIdFromDb(input.id);
@@ -114,7 +114,7 @@ export const projectsRouter = router({
 			}
 		}),
 
-	delete: publicProcedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ input }) => {
+	delete: authedProcedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ input }) => {
 		const existing = await getProjectByIdFromDb(input.id);
 		if (!existing) {
 			throw new TRPCError({

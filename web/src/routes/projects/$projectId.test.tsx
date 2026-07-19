@@ -167,8 +167,7 @@ describe('PhaseConfigRow', () => {
 		expect(switches[0].getAttribute('aria-label')).toBe('Review enabled');
 	});
 
-	it('renders Implementation (unplanned) auto-advance as an alias of Implementation', () => {
-		const handleAutoAdvanceChange = vi.fn();
+	it('renders Implementation (unplanned) without an auto-advance setting', () => {
 		render(
 			<table>
 				<tbody>
@@ -177,8 +176,6 @@ describe('PhaseConfigRow', () => {
 						config={mockConfig}
 						isPending={false}
 						enabled={undefined}
-						autoAdvance={true}
-						handleAutoAdvanceChange={handleAutoAdvanceChange}
 						onSelect={() => {}}
 					/>
 				</tbody>
@@ -188,12 +185,8 @@ describe('PhaseConfigRow', () => {
 		expect(screen.getByText('Implementation (unplanned)')).toBeDefined();
 		expect(screen.getByText('implementationUnplanned')).toBeDefined();
 		expect(screen.getByText('Always on')).toBeDefined();
-		const autoAdvanceSwitch = screen.getByLabelText(
-			'Implementation (unplanned) auto-advance',
-		) as HTMLButtonElement;
-		expect(autoAdvanceSwitch.getAttribute('aria-checked')).toBe('true');
-		fireEvent.click(autoAdvanceSwitch);
-		expect(handleAutoAdvanceChange).toHaveBeenCalledWith('implementation', false);
+		expect(screen.getByText('N/A')).toBeDefined();
+		expect(screen.queryByLabelText(/Implementation.*auto-advance/)).toBeNull();
 	});
 
 	it('calls onSelect when clicking the row itself, but not when clicking the toggle', () => {
@@ -290,16 +283,13 @@ describe('PhaseSettingsDetail', () => {
 		expect(screen.getByText('Always on')).toBeDefined();
 	});
 
-	it('renders the shared auto-advance switch and explanatory note for Implementation (unplanned)', () => {
-		const handleAutoAdvanceChange = vi.fn();
+	it('renders Implementation (unplanned) without an auto-advance setting', () => {
 		render(
 			<PhaseSettingsDetail
 				phase="implementationUnplanned"
 				config={mockConfig}
 				isPending={false}
 				enabled={undefined}
-				autoAdvance={true}
-				handleAutoAdvanceChange={handleAutoAdvanceChange}
 				handleCliChange={() => {}}
 				handleModelChange={() => {}}
 				handleReasoningChange={() => {}}
@@ -313,13 +303,12 @@ describe('PhaseSettingsDetail', () => {
 			screen.getByRole('heading', { level: 2, name: 'Implementation (unplanned)' }),
 		).toBeDefined();
 
-		// The phase is always on and mirrors Implementation's auto-advance setting.
+		// The phase is always on and has no configurable completion transition.
 		const switches = screen.getAllByRole('switch') as HTMLButtonElement[];
-		expect(switches).toHaveLength(2);
+		expect(switches).toHaveLength(1);
 		expect(switches[0].disabled).toBe(true);
 		expect(switches[0].getAttribute('aria-checked')).toBe('true');
-		fireEvent.click(screen.getByLabelText('Implementation (unplanned) auto-advance'));
-		expect(handleAutoAdvanceChange).toHaveBeenCalledWith('implementation', false);
+		expect(screen.queryByText('Auto-advance')).toBeNull();
 		expect(screen.getByText('Always on')).toBeDefined();
 
 		expect(
