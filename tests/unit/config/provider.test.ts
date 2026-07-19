@@ -57,14 +57,14 @@ describe('config provider', () => {
 
 	describe('getPersonaTokenOrNull', () => {
 		it("resolves the persona's credential reference to its secret", async () => {
-			vi.mocked(resolveProjectCredential).mockResolvedValue('ghp_impl');
+			vi.mocked(resolveProjectCredential).mockResolvedValue('test-token-implementer');
 			const token = await getPersonaTokenOrNull(project, 'implementer');
-			expect(token).toBe('ghp_impl');
+			expect(token).toBe('test-token-implementer');
 			expect(resolveProjectCredential).toHaveBeenCalledWith('proj-1', 'IMPL_TOKEN_KEY');
 		});
 
 		it('uses the reviewer reference for the reviewer persona', async () => {
-			vi.mocked(resolveProjectCredential).mockResolvedValue('ghp_rev');
+			vi.mocked(resolveProjectCredential).mockResolvedValue('test-token-reviewer');
 			await getPersonaTokenOrNull(project, 'reviewer');
 			expect(resolveProjectCredential).toHaveBeenCalledWith('proj-1', 'REV_TOKEN_KEY');
 		});
@@ -77,8 +77,8 @@ describe('config provider', () => {
 
 	describe('getPersonaToken', () => {
 		it('returns the token when configured', async () => {
-			vi.mocked(resolveProjectCredential).mockResolvedValue('ghp_impl');
-			expect(await getPersonaToken(project, 'implementer')).toBe('ghp_impl');
+			vi.mocked(resolveProjectCredential).mockResolvedValue('test-token-implementer');
+			expect(await getPersonaToken(project, 'implementer')).toBe('test-token-implementer');
 		});
 
 		it('throws when the persona token is not configured', async () => {

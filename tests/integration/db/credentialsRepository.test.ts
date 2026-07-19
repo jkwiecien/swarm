@@ -112,12 +112,16 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('credentialsRepository (in
 			vi.stubEnv('CREDENTIAL_MASTER_KEY', MASTER_KEY_HEX);
 			const project = await seedProject({ id: 'swarm-2', repo: 'jkwiecien/swarm-2' });
 
-			await writeProjectCredential('swarm-2', project.credentials.implementer, 'ghp_impl');
-			await writeProjectCredential('swarm-2', project.credentials.reviewer, 'ghp_rev');
+			await writeProjectCredential(
+				'swarm-2',
+				project.credentials.implementer,
+				'test-token-implementer',
+			);
+			await writeProjectCredential('swarm-2', project.credentials.reviewer, 'test-token-reviewer');
 			await writeProjectCredential('swarm-2', project.credentials.webhookSecret, 'hmac-secret');
 
-			expect(await getPersonaTokenOrNull(project, 'implementer')).toBe('ghp_impl');
-			expect(await getPersonaTokenOrNull(project, 'reviewer')).toBe('ghp_rev');
+			expect(await getPersonaTokenOrNull(project, 'implementer')).toBe('test-token-implementer');
+			expect(await getPersonaTokenOrNull(project, 'reviewer')).toBe('test-token-reviewer');
 			expect(await getWebhookSecretOrNull(project)).toBe('hmac-secret');
 		});
 

@@ -33,14 +33,14 @@ describe('crypto', () => {
 		});
 
 		it('treats plaintext as unencrypted', () => {
-			expect(isEncryptedValue('ghp_abc123')).toBe(false);
+			expect(isEncryptedValue('test-credential-abc123')).toBe(false);
 			expect(isEncryptedValue('')).toBe(false);
 		});
 	});
 
 	describe('round-trip encrypt/decrypt', () => {
 		it('encrypts then decrypts back to the original', () => {
-			const plaintext = 'ghp_abc123def456';
+			const plaintext = 'test-credential-abc123def456';
 			const encrypted = encryptCredential(plaintext, 'swarm');
 			expect(encrypted).toMatch(/^enc:v1:/);
 			expect(encrypted).not.toContain(plaintext);
@@ -86,11 +86,11 @@ describe('crypto', () => {
 		});
 
 		it('encryptCredential returns the plaintext unchanged', () => {
-			expect(encryptCredential('ghp_abc', 'swarm')).toBe('ghp_abc');
+			expect(encryptCredential('test-credential-abc', 'swarm')).toBe('test-credential-abc');
 		});
 
 		it('decryptCredential returns plaintext values as-is', () => {
-			expect(decryptCredential('ghp_abc', 'swarm')).toBe('ghp_abc');
+			expect(decryptCredential('test-credential-abc', 'swarm')).toBe('test-credential-abc');
 		});
 
 		it('throws when asked to decrypt an encrypted value with no key', () => {
