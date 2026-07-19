@@ -11,6 +11,11 @@
  * except `ping` runs as `authedProcedure` — the tRPC context resolves the caller
  * from that cookie. The raw token is never returned in a body or logged; only its
  * hash is stored (`src/identity/auth.ts`).
+ *
+ * A credentialed CORS layer (`src/lib/cors.ts`) fronts every route so the
+ * documented separate-origin dev workflow (SPA on Vite, API on `DASHBOARD_PORT`)
+ * can send the session cookie; a same-origin deploy never pre-flights, so it is
+ * inert there. See `CORS_ORIGIN` in `docs/configuration.md`.
  */
 import { existsSync } from 'node:fs';
 import { serve } from '@hono/node-server';
@@ -29,6 +34,7 @@ import {
 	revokeSession,
 	verifyCredentials,
 } from './identity/auth.js';
+import { buildCorsMiddleware } from './lib/cors.js';
 import { configureLogger, logger } from './lib/logger.js';
 
 /** Name of the HTTP-only cookie carrying the opaque session token. */
@@ -71,8 +77,18 @@ function sessionCookieOptions(c: Context): CookieOptions {
 	};
 }
 
-export function createDashboardApp(options: { staticRoot?: string } = {}): Hono {
+export function createDashboardApp(
+	options: { staticRoot?: string; corsOrigin?: string } = {},
+): Hono {
 	const app = new Hono();
+
+	// Credentialed CORS for the documented separate-origin dev setup; inert for a
+	// same-origin deploy (which never pre-flights). Must run before every route so
+	// pre-flight OPTIONS on /auth/* and /trpc/* are answered (`src/lib/cors.ts`).
+	app.use(
+		'*',
+		buildCorsMiddleware({ corsOriginEnv: options.corsOrigin ?? process.env.CORS_ORIGIN }),
+	);
 
 	app.get('/health', (c) =>
 		c.json({

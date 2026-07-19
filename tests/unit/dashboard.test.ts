@@ -41,6 +41,8 @@ const RAW_TOKEN = 'raw-session-token';
 
 describe('swarm-dashboard API', () => {
 	beforeEach(() => {
+		// Keep the default-CORS assertions deterministic regardless of the ambient env.
+		delete process.env.CORS_ORIGIN;
 		vi.mocked(listAllProjectsFromDb).mockReset();
 		vi.mocked(verifyCredentials).mockReset();
 		vi.mocked(createSession).mockReset();
@@ -218,6 +220,65 @@ describe('swarm-dashboard API', () => {
 
 			expect(res.status).toBe(200);
 			expect(revokeSession).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('CORS (credentialed, for the separate-origin dev setup)', () => {
+		it('answers a pre-flight from the Vite dev origin with credentialed CORS headers', async () => {
+			// Reproduces the reviewer's case: SPA on http://localhost:5173, API on
+			// DASHBOARD_PORT. The credentialed POST /auth/login is pre-flighted.
+			const app = createDashboardApp();
+			const res = await app.request('http://127.0.0.1:3101/auth/login', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: 'http://localhost:5173',
+					'Access-Control-Request-Method': 'POST',
+					'Access-Control-Request-Headers': 'content-type',
+				},
+			});
+
+			expect(res.status).toBeLessThan(300);
+			expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+			expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+			// Never the wildcard — illegal alongside credentials.
+			expect(res.headers.get('access-control-allow-origin')).not.toBe('*');
+		});
+
+		it('reflects the configured CORS_ORIGIN allow-list and rejects others', async () => {
+			const app = createDashboardApp({ corsOrigin: 'https://dash.example.com' });
+
+			const allowed = await app.request('http://api.example.com/auth/login', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: 'https://dash.example.com',
+					'Access-Control-Request-Method': 'POST',
+				},
+			});
+			expect(allowed.headers.get('access-control-allow-origin')).toBe('https://dash.example.com');
+			expect(allowed.headers.get('access-control-allow-credentials')).toBe('true');
+
+			const other = await app.request('http://api.example.com/auth/login', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: 'https://evil.example.com',
+					'Access-Control-Request-Method': 'POST',
+				},
+			});
+			expect(other.headers.get('access-control-allow-origin')).not.toBe('https://evil.example.com');
+		});
+
+		it('exposes credentialed CORS on /trpc as well', async () => {
+			const app = createDashboardApp();
+			const res = await app.request('http://127.0.0.1:3101/trpc/projects.list', {
+				method: 'OPTIONS',
+				headers: {
+					Origin: 'http://localhost:5173',
+					'Access-Control-Request-Method': 'POST',
+				},
+			});
+
+			expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+			expect(res.headers.get('access-control-allow-credentials')).toBe('true');
 		});
 	});
 
