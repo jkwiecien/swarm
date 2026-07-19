@@ -2,6 +2,10 @@ import { eq, inArray } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getDb } from '../../../src/db/client.js';
+import {
+	cancelWaitingDispatch,
+	createDispatch,
+} from '../../../src/db/repositories/dispatchesRepository.js';
 import { deleteProjectFromDb } from '../../../src/db/repositories/projectsRepository.js';
 import {
 	appendRunOutputEvents,
@@ -24,6 +28,8 @@ import {
 	updateReviewMergeOutcome,
 } from '../../../src/db/repositories/runsRepository.js';
 import { runLogs, runs } from '../../../src/db/schema/runs.js';
+import type { SwarmJob } from '../../../src/queue/jobs.js';
+import { createMockGitHubWebhookJob } from '../../helpers/factories.js';
 import { truncateAll } from '../helpers/db.js';
 import { seedProject } from '../helpers/seed.js';
 
@@ -599,6 +605,62 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 		it('returns an empty page and zero total when nothing matches', async () => {
 			const result = await listRunsFromDb({ projectId: 'nobody', limit: 10, offset: 0 });
 			expect(result).toEqual({ data: [], total: 0 });
+		});
+
+		// issue #279: a queued run must appear only in Queue, not twice (once in
+		// Queue and again in the runs list as `deferred`).
+		it('hides a deferred run that is still waiting in the queue, keeps orphaned ones', async () => {
+			// A deferred run whose retry intent is still queued — a waiting dispatch
+			// links it, so the Queue read model already shows it.
+			const queuedRunId = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'queued',
+				phase: 'implementation',
+			});
+			await completeRun(queuedRunId, { status: 'deferred' });
+			const { dispatch } = await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: {
+					...createMockGitHubWebhookJob(),
+					projectId: PROJECT_ID,
+					runId: queuedRunId,
+				} as SwarmJob,
+				source: 'synthetic',
+				waitReason: 'rate-limit',
+				runId: queuedRunId,
+				state: 'retry-scheduled',
+			});
+
+			// A deferred run with no active dispatch — a dead-end orphan; stays visible.
+			const orphanRunId = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'orphan',
+				phase: 'review',
+			});
+			await completeRun(orphanRunId, { status: 'deferred' });
+
+			const all = await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 });
+			const ids = all.data.map((r) => r.id);
+			expect(ids).toContain(orphanRunId);
+			expect(ids).not.toContain(queuedRunId);
+			expect(all.total).toBe(1);
+
+			// An explicit `deferred` filter is consistent — still no duplicate.
+			const deferred = await listRunsFromDb({
+				projectId: PROJECT_ID,
+				status: 'deferred',
+				limit: 50,
+				offset: 0,
+			});
+			expect(deferred.data.map((r) => r.id)).toEqual([orphanRunId]);
+			expect(deferred.total).toBe(1);
+
+			// Once the dispatch leaves the waiting set, the run reappears per its
+			// normal lifecycle (acceptance criterion 3).
+			await cancelWaitingDispatch(dispatch.id, 'test');
+			const after = await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 });
+			expect(after.data.map((r) => r.id)).toContain(queuedRunId);
+			expect(after.total).toBe(2);
 		});
 	});
 

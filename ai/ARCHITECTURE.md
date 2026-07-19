@@ -147,6 +147,12 @@ settles the dispatch itself (`completed` with a `merge-*` outcome, `failed` on
 a provider error, or `retry-scheduled` while transiently `not-ready`). The Queue API/UI (`runs.queued`) reads waiting dispatches from
 Postgres — state, wait reason, priority, scheduled time — never a BullMQ
 snapshot, and `swarm queue clear` cancels the canonical records first.
+Complementarily, the Runs list (`runs.list` / `listRunsFromDb`) hides a
+`deferred` run while it is still represented in Queue — i.e. it has a waiting
+(`pending`/`retry-scheduled`) dispatch — so a queued unit of work shows up only
+once, in Queue, rather than also as a duplicate `deferred` Run (issue #279).
+Once that dispatch leaves the waiting set the run reappears per its normal
+lifecycle, and a `deferred` run with no waiting dispatch stays visible.
 
 ### Failure handling & rate-limit retries (issue #91)
 
