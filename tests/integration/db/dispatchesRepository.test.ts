@@ -20,7 +20,12 @@ import {
 	selectNextCapacityDispatch,
 	supersedeDispatchesByCoalesceKey,
 } from '../../../src/db/repositories/dispatchesRepository.js';
-import { completeRun, createRun } from '../../../src/db/repositories/runsRepository.js';
+import {
+	completeRun,
+	createRun,
+	getRunByIdFromDb,
+	listRunsFromDb,
+} from '../../../src/db/repositories/runsRepository.js';
 import { describeError } from '../../../src/lib/errors.js';
 import type { SwarmJob } from '../../../src/queue/jobs.js';
 import { createMockGitHubWebhookJob } from '../../helpers/factories.js';
@@ -360,6 +365,51 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 	});
 
 	describe('canonical queue read + clear', () => {
+		it('reopens a concurrently visible deferred run with overrides without duplicating its dispatch', async () => {
+			const runId = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'manual-retry',
+				phase: 'resolve-conflicts',
+			});
+			await completeRun(runId, { status: 'deferred', error: 'rate limited' });
+			const originalJob = job({ runId });
+			const { dispatch } = await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: originalJob,
+				source: 'synthetic',
+				state: 'retry-scheduled',
+				waitReason: 'rate-limit',
+				runId,
+			});
+			expect(await getRunByIdFromDb(runId)).toBeDefined();
+
+			const overriddenJob = {
+				...originalJob,
+				cliOverride: 'codex' as const,
+				modelOverride: 'gpt-5.2-codex',
+				reasoningOverride: 'high' as const,
+			};
+			const reopened = await reopenDispatchForManualRetry(dispatch.id, overriddenJob);
+
+			expect(reopened).toMatchObject({
+				id: dispatch.id,
+				state: 'pending',
+				waitReason: 'manual-retry',
+				attempt: 0,
+				jobPayload: expect.objectContaining({
+					cliOverride: 'codex',
+					modelOverride: 'gpt-5.2-codex',
+					reasoningOverride: 'high',
+				}),
+			});
+			const activeForRun = (await listWaitingDispatches(PROJECT_ID)).filter(
+				(candidate) => candidate.runId === runId,
+			);
+			expect(activeForRun).toHaveLength(1);
+			expect(activeForRun[0].id).toBe(dispatch.id);
+			expect((await getActiveDispatchByRunId(runId))?.id).toBe(dispatch.id);
+		});
+
 		it('lists every waiting dispatch and cancels them all atomically', async () => {
 			await createDispatch({ projectId: PROJECT_ID, jobPayload: job(), source: 'webhook' });
 			const capacity = await createDispatch({

@@ -55,7 +55,15 @@ export const ImplementationHandoffSchema = CommitSchema.extend({
 export const ReviewHandoffSchema = z.object({
 	verdict: z.enum(['approve', 'request-changes', 'comment']),
 	body: z.string().min(1),
-	findings: z.array(z.object({ title: z.string(), body: z.string() })).default([]),
+	findings: z
+		.array(
+			z.object({
+				title: z.string().min(1),
+				body: z.string().min(1),
+				fixPlan: z.string().min(1),
+			}),
+		)
+		.default([]),
 });
 
 export const ReviewResponseHandoffSchema = z.object({

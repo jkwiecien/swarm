@@ -38,18 +38,22 @@ describe('resolveProjectCredential', () => {
 	});
 
 	it('returns the plaintext value when encryption is disabled', async () => {
-		stubDb([{ value: 'ghp_plaintext' }]);
-		expect(await resolveProjectCredential('proj-1', 'IMPL_TOKEN_KEY')).toBe('ghp_plaintext');
+		stubDb([{ value: 'test-credential-plaintext' }]);
+		expect(await resolveProjectCredential('proj-1', 'IMPL_TOKEN_KEY')).toBe(
+			'test-credential-plaintext',
+		);
 	});
 
 	it('decrypts a stored value using the projectId as AAD', async () => {
 		const { randomBytes } = await import('node:crypto');
 		vi.stubEnv('CREDENTIAL_MASTER_KEY', randomBytes(32).toString('hex'));
 		const { encryptCredential } = await import('@/db/crypto.js');
-		const ciphertext = encryptCredential('ghp_secret', 'proj-1');
+		const ciphertext = encryptCredential('test-credential-secret', 'proj-1');
 
 		stubDb([{ value: ciphertext }]);
-		expect(await resolveProjectCredential('proj-1', 'IMPL_TOKEN_KEY')).toBe('ghp_secret');
+		expect(await resolveProjectCredential('proj-1', 'IMPL_TOKEN_KEY')).toBe(
+			'test-credential-secret',
+		);
 	});
 });
 
@@ -91,12 +95,12 @@ describe('resolveAllProjectCredentials', () => {
 		stubDbQueue([
 			[{ id: 'proj-1' }],
 			[
-				{ envVarKey: 'IMPL', value: encryptCredential('ghp_impl', 'proj-1') },
+				{ envVarKey: 'IMPL', value: encryptCredential('test-token-implementer', 'proj-1') },
 				{ envVarKey: 'LEGACY', value: 'plaintext' },
 			],
 		]);
 		expect(await resolveAllProjectCredentials('proj-1')).toEqual({
-			IMPL: 'ghp_impl',
+			IMPL: 'test-token-implementer',
 			LEGACY: 'plaintext',
 		});
 	});
@@ -128,10 +132,10 @@ describe('writeProjectCredential', () => {
 		};
 		vi.mocked(getDb).mockReturnValue(builder as unknown as ReturnType<typeof getDb>);
 
-		await writeProjectCredential('proj-1', 'IMPL', 'ghp_secret');
+		await writeProjectCredential('proj-1', 'IMPL', 'test-credential-secret');
 
 		expect(inserted && isEncryptedValue(inserted.value)).toBe(true);
-		expect(inserted && decryptCredential(inserted.value, 'proj-1')).toBe('ghp_secret');
+		expect(inserted && decryptCredential(inserted.value, 'proj-1')).toBe('test-credential-secret');
 		// The conflict branch must update to the same ciphertext, not re-encrypt.
 		expect(conflictSet?.value).toBe(inserted?.value);
 	});

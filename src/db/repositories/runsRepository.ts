@@ -25,7 +25,7 @@ import {
 	isNotNull,
 	isNull,
 	ne,
-	notInArray,
+	notExists,
 	or,
 	type SQL,
 	sql,
@@ -38,7 +38,6 @@ import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
 import { dispatches } from '../schema/dispatches.js';
 import { runLogs, runOutputEvents, runs } from '../schema/runs.js';
-import { WAITING_DISPATCH_STATES } from './dispatchesRepository.js';
 
 export const MAX_RUN_OUTPUT_BYTES = 5_000_000;
 export const RUN_OUTPUT_PAGE_SIZE = 200;
@@ -659,37 +658,27 @@ export interface ListRunsFilter {
  * it runs as a separate query against the same conditions. Sort order is fixed
  * (`startedAt desc`) — sortable columns and date-range filters are out of scope.
  *
- * A `deferred` run whose retry intent is still waiting in the queue is shown by
- * the Queue read model (`listWaitingDispatches` → `runs.queued`) already, so
- * exposing it here too would duplicate the same unit of work across both lists
- * (issue #279). We therefore hide a `deferred` run that has a waiting
- * (`pending`/`retry-scheduled`) dispatch — the exact set the Queue displays —
- * so a queued run appears only in Queue. Once that dispatch leaves the waiting
- * set (it ran, was cancelled, or otherwise settled) the run reappears here per
- * its normal lifecycle, and a `deferred` run with no waiting dispatch (a
- * dead-end orphan) stays visible so nothing silently disappears.
+ * Queue and Runs are complementary read models (issues #279/#316): Queue is
+ * the canonical list for waiting dispatches, so Runs hides only a deferred
+ * attempt linked to a pending/retry-scheduled dispatch. Deferred attempts with
+ * no waiting dispatch remain visible as history and for operator recovery.
  */
 export async function listRunsFromDb(
 	filter: ListRunsFilter,
 ): Promise<{ data: RunRow[]; total: number }> {
 	const db = getDb();
-	const conditions: SQL[] = [];
+	const hasWaitingDispatch = db
+		.select({ id: dispatches.id })
+		.from(dispatches)
+		.where(
+			and(eq(dispatches.runId, runs.id), inArray(dispatches.state, ['pending', 'retry-scheduled'])),
+		);
+	const conditions: SQL[] = [or(ne(runs.status, 'deferred'), notExists(hasWaitingDispatch)) as SQL];
 	if (filter.projectId) conditions.push(eq(runs.projectId, filter.projectId));
 	if (filter.status) conditions.push(eq(runs.status, filter.status));
 	if (filter.phase) conditions.push(eq(runs.phase, filter.phase));
 
-	// `NOT IN` treats a NULL element as unknown and drops every row, so restrict
-	// the subquery to dispatches that actually link a run.
-	const queuedRunIds = db
-		.select({ runId: dispatches.runId })
-		.from(dispatches)
-		.where(
-			and(inArray(dispatches.state, [...WAITING_DISPATCH_STATES]), isNotNull(dispatches.runId)),
-		);
-	const notQueuedDeferred = or(ne(runs.status, 'deferred'), notInArray(runs.id, queuedRunIds));
-	if (notQueuedDeferred) conditions.push(notQueuedDeferred);
-
-	const where = conditions.length > 0 ? and(...conditions) : undefined;
+	const where = and(...conditions);
 
 	const data = await db
 		.select()

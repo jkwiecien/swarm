@@ -91,9 +91,13 @@ retry, a cancel and a slot release) resolve to exactly one winner.
   future delivery path re-checks the state at claim time and refuses terminal dispatches.
   The Redis run-cancellation marker remains for aborting an agent that is already
   executing.
-- **Read model.** The Queue API/UI (`runs.queued`) reads canonical `pending` +
-  `retry-scheduled` dispatches — phase, priority, wait reason, scheduled time, linked run
-  — never a BullMQ snapshot. `runs` rows are attempt/audit records.
+- **Read models.** Queue (`runs.queued`) is dispatch-centric and reads every canonical
+  `pending` + `retry-scheduled` dispatch — phase, priority, wait reason, scheduled time,
+  linked run — never a BullMQ snapshot. Runs (`runs.list`) is run-centric and reads
+  persisted attempt/audit rows by their normal lifecycle, but hides a `deferred` attempt
+  linked to a pending or retry-scheduled dispatch to avoid displaying a duplicate row
+  (issues #279/#316). A dispatch without a `runId` remains Queue-only because it has not
+  created an attempt yet.
 - **PM board status** stays an external workflow signal: phases keep reporting card moves,
   but nothing infers dispatch existence from the board.
 
