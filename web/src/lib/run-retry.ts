@@ -32,8 +32,14 @@ export type RetryActionKind = 'resume' | 'retry';
  * scratch, so it's a plain "retry". Mirroring the server's own guard keeps the
  * green Resume button from ever promising a resume the retry path won't perform.
  */
-export function retryActionKind(status: string, agentSessionId: string | null): RetryActionKind {
-	return status === 'deferred' && agentSessionId !== null ? 'resume' : 'retry';
+export function retryActionKind(
+	status: string,
+	agentSessionId: string | null,
+	recovery?: { state: 'preserved' | 'recovered' | 'blocked' } | null,
+): RetryActionKind {
+	if (status === 'deferred' && agentSessionId !== null) return 'resume';
+	if (status === 'failed' && recovery?.state === 'preserved') return 'resume';
+	return 'retry';
 }
 
 /**

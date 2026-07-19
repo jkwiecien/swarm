@@ -235,6 +235,10 @@ export interface RunPlanningPhaseOptions {
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
 	resumeSessionId?: string;
+	/** The database run id. */
+	runId?: string;
+	/** Mode for recovering a cancelled preserved worktree. */
+	recoveryMode?: 'resume' | 'fresh';
 	/**
 	 * Whether to move the item to "ToDo" once the plan is posted. Defaults to
 	 * `false` — a human reviews the plan and moves the item themselves. Always
@@ -582,10 +586,21 @@ async function acquirePlanningWorktree(
 	taskId: string,
 	baseBranch: string,
 	resumeSessionId: string | undefined,
+	recoveryMode?: 'resume' | 'fresh',
+	projectId?: string,
 ): Promise<{ handle: WorktreeHandle; resumed: boolean }> {
-	return acquireResumableWorktree(worktrees, taskId, baseBranch, true, resumeSessionId, () =>
-		worktrees.provision(taskId, { detach: true }),
+	const res = await acquireResumableWorktree(
+		worktrees,
+		taskId,
+		baseBranch,
+		true,
+		resumeSessionId,
+		() => worktrees.provision(taskId, { detach: true }),
+		false,
+		recoveryMode,
+		projectId,
 	);
+	return { handle: res.handle, resumed: res.resumed };
 }
 
 /**
@@ -652,6 +667,8 @@ export async function runPlanningPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		runId,
+		recoveryMode,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		autoSplit = DEFAULT_AUTO_SPLIT,
 		maxConcerns = DEFAULT_MAX_CONCERNS,
@@ -720,6 +737,8 @@ export async function runPlanningPhase(
 		taskId,
 		project.baseBranch,
 		resumeSessionId,
+		recoveryMode,
+		project.id,
 	);
 	let preserveForResume = false;
 	try {
@@ -795,6 +814,6 @@ export async function runPlanningPhase(
 
 		return { plan, commentId, agent, movedTo, split: splitResult };
 	} finally {
-		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'planning phase');
+		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'planning phase', runId);
 	}
 }

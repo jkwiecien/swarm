@@ -21,6 +21,7 @@
 import type { AgentCliResult } from '@/harness/agent-cli.js';
 import type { AgentRunError } from '@/harness/agent-failure.js';
 import { logger } from '@/lib/logger.js';
+import { isRunCancellationRequested } from '@/queue/cancellation.js';
 import { hasDeliveryProgress } from '@/scm/delivery.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 
@@ -34,6 +35,8 @@ export interface PhaseSessionOptions {
 	sessionId?: string;
 	/** Existing session/thread id to *resume* (any CLI). Set on a retry, not a fresh run. */
 	resumeSessionId?: string;
+	/** The database run id. */
+	runId?: string;
 }
 
 /**
@@ -51,6 +54,121 @@ export function shouldPreserveForResume(error: AgentRunError): boolean {
 	return error.agent?.sessionId !== undefined;
 }
 
+import { existsSync } from 'node:fs';
+import {
+	claimWorktreeLease,
+	isWorktreeLeased,
+	releaseWorktreeLease,
+} from '@/worktree/worktree-lease.js';
+
+export class BlockedRecoveryError extends Error {
+	constructor(
+		readonly reason: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation',
+		message: string,
+	) {
+		super(message);
+		this.name = 'BlockedRecoveryError';
+	}
+}
+
+export async function executeRecoveryGate(
+	worktrees: GitWorktreeManager,
+	taskId: string,
+	recoveryMode: 'resume' | 'fresh' | undefined,
+	expectedSessionId: string | undefined,
+	projectId: string,
+): Promise<{ reuseHandle: WorktreeHandle | null }> {
+	const path = worktrees.worktreePath(taskId);
+	const exists = existsSync(path);
+
+	if (!exists) {
+		if (recoveryMode === 'resume') {
+			throw new BlockedRecoveryError(
+				'missing-validation',
+				`Cannot resume task '${taskId}' — worktree checkout does not exist.`,
+			);
+		}
+		return { reuseHandle: null };
+	}
+
+	const leased = await isWorktreeLeased(projectId, taskId);
+	if (leased && !recoveryMode) {
+		throw new BlockedRecoveryError(
+			'live-leased',
+			`Worktree for task '${taskId}' is leased by a live run.`,
+		);
+	}
+
+	await claimWorktreeLease(projectId, taskId);
+
+	if (recoveryMode === 'resume') {
+		if (!expectedSessionId) {
+			await releaseWorktreeLease(projectId, taskId);
+			throw new BlockedRecoveryError(
+				'missing-validation',
+				`Cannot resume task '${taskId}' — missing expected session ID.`,
+			);
+		}
+
+		let branch = '';
+		let detached = false;
+		try {
+			const symbolicRef = await (
+				worktrees as unknown as { git: (args: string[], cwd?: string) => Promise<string> }
+			).git(['symbolic-ref', '--short', '-q', 'HEAD'], path);
+			branch = symbolicRef.trim();
+			if (!branch) {
+				detached = true;
+				const headSha = await (
+					worktrees as unknown as { git: (args: string[], cwd?: string) => Promise<string> }
+				).git(['rev-parse', 'HEAD'], path);
+				branch = headSha.trim();
+			}
+		} catch {
+			detached = true;
+			branch = 'HEAD';
+		}
+
+		return {
+			reuseHandle: {
+				taskId,
+				path,
+				branch,
+				detached,
+			},
+		};
+	}
+
+	if (recoveryMode === 'fresh') {
+		const clean = await worktrees.isClean(taskId);
+		if (!clean) {
+			await releaseWorktreeLease(projectId, taskId);
+			throw new BlockedRecoveryError(
+				'dirty',
+				`Worktree for task '${taskId}' has uncommitted changes.`,
+			);
+		}
+
+		const unpushed = await worktrees.hasUnpushedWork(taskId);
+		if (unpushed) {
+			await releaseWorktreeLease(projectId, taskId);
+			throw new BlockedRecoveryError(
+				'unpushed',
+				`Worktree for task '${taskId}' has unpushed commits.`,
+			);
+		}
+
+		logger.info(
+			'recovery: worktree is clean and has no unpushed work — removing it for fresh retry',
+			{ taskId, path },
+		);
+		await worktrees.cleanup(taskId);
+		return { reuseHandle: null };
+	}
+
+	return { reuseHandle: null };
+}
+
 /**
  * Acquire a phase's worktree, reusing a preserved checkout for either an agent
  * session retry or a delivery retry. Delivery reuse additionally requires its
@@ -66,7 +184,22 @@ export async function acquireResumableWorktree(
 	resumeSessionId: string | undefined,
 	provisionFresh: () => Promise<WorktreeHandle>,
 	resumeDelivery = false,
+	recoveryMode?: 'resume' | 'fresh',
+	projectId?: string,
 ): Promise<{ handle: WorktreeHandle; resumed: boolean; deliveryResumed: boolean }> {
+	if (recoveryMode) {
+		const { reuseHandle } = await executeRecoveryGate(
+			worktrees,
+			taskId,
+			recoveryMode,
+			resumeSessionId,
+			projectId ?? (worktrees as unknown as { project: { id: string } }).project.id,
+		);
+		if (reuseHandle) {
+			return { handle: reuseHandle, resumed: true, deliveryResumed: false };
+		}
+	}
+
 	const reused = resumeDelivery
 		? await worktrees.reuse(taskId, reuseBranch, reuseDetached, hasDeliveryProgress)
 		: resumeSessionId
@@ -96,20 +229,17 @@ export function sessionRunArgs(
 	};
 }
 
-/**
- * A phase's `finally` cleanup, preserving the worktree instead of removing it
- * when a resume retry needs it. Swallow-and-log like every phase's own cleanup:
- * a cleanup failure must not mask the run's real outcome.
- */
 export async function cleanupUnlessPreserved(
 	worktrees: GitWorktreeManager,
 	taskId: string,
 	preserveForResume: boolean,
 	phaseName: string,
+	runId?: string,
 ): Promise<void> {
 	try {
-		if (preserveForResume) {
-			logger.debug(`${phaseName}: preserving worktree for agent session resume`, { taskId });
+		const isCancelled = runId ? await isRunCancellationRequested(runId) : false;
+		if (preserveForResume || isCancelled) {
+			logger.debug(`${phaseName}: preserving worktree for agent session resume`, { taskId, runId });
 			return;
 		}
 		await worktrees.cleanup(taskId);

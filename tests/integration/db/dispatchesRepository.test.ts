@@ -23,7 +23,7 @@ import {
 import {
 	completeRun,
 	createRun,
-	listRunsFromDb,
+	getRunByIdFromDb,
 } from '../../../src/db/repositories/runsRepository.js';
 import { describeError } from '../../../src/lib/errors.js';
 import type { SwarmJob } from '../../../src/queue/jobs.js';
@@ -380,11 +380,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 				waitReason: 'rate-limit',
 				runId,
 			});
-			expect(
-				(await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 })).data.map(
-					(run) => run.id,
-				),
-			).toContain(runId);
+			expect(await getRunByIdFromDb(runId)).toBeDefined();
 
 			const overriddenJob = {
 				...originalJob,

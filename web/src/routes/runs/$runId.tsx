@@ -194,7 +194,7 @@ function RetryNowButton({ run }: { run: RunRow }) {
 
 	// A resumable deferred run continues its captured CLI session (green
 	// "Resume"); everything else relaunches from scratch (violet "Retry now").
-	const kind = retryActionKind(run.status, run.agentSessionId);
+	const kind = retryActionKind(run.status, run.agentSessionId, run.recovery);
 	const isResume = kind === 'resume';
 	const palette = retrySplitPalette(isResume);
 
@@ -433,6 +433,79 @@ function TerminateRunButton({ run }: { run: RunRow }) {
 	);
 }
 
+interface RecoveryCalloutProps {
+	run: RunRow;
+}
+
+export function RecoveryCallout({ run }: RecoveryCalloutProps) {
+	if (!run.recovery) return null;
+
+	const { state, blockedReason } = run.recovery;
+
+	if (state === 'preserved') {
+		return (
+			<div className="p-4 bg-emerald-950/20 border border-emerald-900/30 rounded flex items-start gap-3">
+				<CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0 mt-0.5" />
+				<div>
+					<h3 className="text-xs font-semibold text-emerald-200">Worktree preserved</h3>
+					<p className="text-xs text-emerald-400/80 mt-1">
+						The workspace files and agent session have been preserved. You can resume this run to
+						continue where it left off, or retry it with overrides to start a fresh session.
+					</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (state === 'blocked') {
+		let reasonText = '';
+		switch (blockedReason) {
+			case 'dirty':
+				reasonText = 'the worktree has uncommitted changes.';
+				break;
+			case 'unpushed':
+				reasonText = 'the worktree has unpushed commits.';
+				break;
+			case 'live-leased':
+				reasonText = 'the worktree is leased by another active run.';
+				break;
+			case 'missing-validation':
+				reasonText = 'the worktree directory does not exist or the expected session ID is missing.';
+				break;
+			default:
+				reasonText = 'validation failed.';
+		}
+
+		return (
+			<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
+				<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
+				<div>
+					<h3 className="text-xs font-semibold text-red-200">Recovery Blocked</h3>
+					<p className="text-xs text-red-400/80 mt-1">
+						Cannot resume or safely retry this run because {reasonText}
+					</p>
+				</div>
+			</div>
+		);
+	}
+
+	if (state === 'recovered') {
+		return (
+			<div className="p-4 bg-blue-950/20 border border-blue-900/30 rounded flex items-start gap-3">
+				<Info className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
+				<div>
+					<h3 className="text-xs font-semibold text-blue-200">Successfully Recovered</h3>
+					<p className="text-xs text-blue-400/80 mt-1">
+						This run was successfully recovered and resumed from a previous preserved state.
+					</p>
+				</div>
+			</div>
+		);
+	}
+
+	return null;
+}
+
 interface ReviewCapCalloutProps {
 	run: RunRow;
 	project?: { name: string; repo: string } | null;
@@ -659,6 +732,7 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 				</div>
 			)}
 
+			<RecoveryCallout run={run} />
 			<ReviewCapCallout run={run} project={project} />
 			<ReviewMergeCallout run={run} project={project} />
 		</div>

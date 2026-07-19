@@ -6,6 +6,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	getRunLogsFromDb: vi.fn(),
 	getRunOutputEvents: vi.fn(),
 	markRunUserTerminated: vi.fn(),
+	cancelDeferredRunInDb: vi.fn(),
 }));
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
@@ -32,6 +33,7 @@ vi.mock('@/integrations/pm/registry.js', () => ({
 
 vi.mock('@/queue/producer.js', () => ({
 	priorityFor: (job: { type: string }) => (job.type === 'github-projects' ? 10 : undefined),
+	removePendingJobById: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('@/queue/queued-runs.js', () => ({
@@ -65,6 +67,7 @@ import {
 } from '@/db/repositories/dispatchesRepository.js';
 import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
 import {
+	cancelDeferredRunInDb,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	getRunOutputEvents,
@@ -130,6 +133,7 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		delegations: null,
 		jobPayload: null,
 		agentSessionId: null,
+		recovery: null,
 		outputBytes: 0,
 		outputTruncated: false,
 		...overrides,
@@ -183,7 +187,7 @@ describe('runsRouter', () => {
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
 		vi.mocked(getRunOutputEvents).mockReset();
-		vi.mocked(markRunUserTerminated).mockReset();
+		vi.mocked(cancelDeferredRunInDb).mockReset();
 		vi.mocked(requestRunCancellation).mockReset();
 		vi.mocked(clearRunCancellation).mockReset();
 		vi.mocked(toQueuedRuns).mockReset();
@@ -728,19 +732,16 @@ describe('runsRouter', () => {
 
 		it('cancels the canonical dispatch and fails the row for a deferred run', async () => {
 			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', status: 'deferred' }));
-			vi.mocked(cancelDispatchForRun).mockResolvedValue(true);
-			vi.mocked(markRunUserTerminated).mockResolvedValue(true);
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: true,
+				dispatch: { id: 'disp-1', wakeSeq: 2 },
+			});
 
 			const result = await caller.terminate({ runId: 'run-1' });
 
 			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
 			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
-			expect(cancelDispatchForRun).toHaveBeenCalledWith('run-1', RUN_CANCELLED_MESSAGE);
-			expect(markRunUserTerminated).toHaveBeenCalledWith(
-				'run-1',
-				RUN_CANCELLED_MESSAGE,
-				'deferred',
-			);
+			expect(cancelDeferredRunInDb).toHaveBeenCalledWith('run-1', RUN_CANCELLED_MESSAGE);
 			// Keep the marker until an explicit retry clears it: a wake-up that
 			// already claimed the dispatch honours it at run start.
 			expect(clearRunCancellation).not.toHaveBeenCalled();
@@ -753,8 +754,7 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'running' }));
-			vi.mocked(cancelDispatchForRun).mockResolvedValue(false);
-			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({ success: false, dispatch: null });
 
 			const result = await caller.terminate({ runId: 'run-1' });
 
@@ -769,8 +769,7 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'completed' }));
-			vi.mocked(cancelDispatchForRun).mockResolvedValue(false);
-			vi.mocked(markRunUserTerminated).mockResolvedValue(false);
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({ success: false, dispatch: null });
 
 			const result = await caller.terminate({ runId: 'run-1' });
 

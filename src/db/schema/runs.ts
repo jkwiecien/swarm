@@ -128,6 +128,11 @@ export const runs = pgTable(
 		agentSessionId: uuid('agent_session_id'),
 		outputBytes: integer('output_bytes').notNull().default(0),
 		outputTruncated: boolean('output_truncated').notNull().default(false),
+		recovery: jsonb('recovery').$type<{
+			state: 'preserved' | 'recovered' | 'blocked';
+			blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
+			agentSessionId?: string | null;
+		}>(),
 	},
 	(table) => [
 		index('idx_runs_project_id').on(table.projectId),

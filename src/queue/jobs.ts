@@ -102,6 +102,11 @@ const jobBase = z.object({
 	 */
 	reasoningOverride: ReasoningLevelSchema.optional(),
 	/**
+	 * Mode for recovering a cancelled preserved worktree: 'resume' to validate and resume the
+	 * session, or 'fresh' to clean it up and start fresh.
+	 */
+	recoveryMode: z.enum(['resume', 'fresh']).optional(),
+	/**
 	 * Set on a concurrency-deferred continuation's retry (issue #214): its dispatch
 	 * dedup slot was already claimed by the original dispatch attempt, so the
 	 * re-dispatch must NOT re-claim it — a prioritized retry fires within the

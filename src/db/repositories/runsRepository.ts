@@ -116,7 +116,7 @@ export async function hasResumableDeferredRun(projectId: string, taskId: string)
 			and(
 				eq(runs.projectId, projectId),
 				eq(runs.taskId, taskId),
-				eq(runs.status, 'deferred'),
+				inArray(runs.status, ['deferred', 'failed']),
 				isNotNull(runs.agentSessionId),
 			),
 		)
@@ -134,6 +134,7 @@ export interface CompleteRunInput {
 	nextRetryAt?: Date | null;
 	usage?: AgentUsage;
 	agentSessionId?: string | null;
+	recovery?: typeof runs.$inferSelect.recovery | null;
 	/**
 	 * The verdict a completed Review run submitted (issue #218). Set only by the
 	 * Review phase's success path; omitted (left as-is) for every other phase, so
@@ -178,6 +179,7 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			reviewVerdict: input.reviewVerdict,
 			reviewOrdinal: input.reviewOrdinal,
 			reviewAutomationOutcome: input.reviewAutomationOutcome,
+			recovery: input.recovery,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
@@ -216,6 +218,7 @@ export async function resetRunToRunning(
 	reasoning?: string | null,
 	engine?: AgentCli,
 	agentSessionId?: string | null,
+	recovery?: typeof runs.$inferSelect.recovery | null,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -249,6 +252,7 @@ export async function resetRunToRunning(
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
 			...(reasoning !== undefined ? { reasoning } : {}),
 			...(agentSessionId !== undefined ? { agentSessionId } : {}),
+			...(recovery !== undefined ? { recovery } : {}),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });
@@ -305,6 +309,84 @@ export async function failRunFromStatus(
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
 		.returning({ id: runs.id });
 	return rows.length > 0;
+}
+
+/**
+ * Atomic transaction to cancel a deferred run and its active dispatch consistently,
+ * preserving session info and payload for future recovery retry.
+ */
+export async function cancelDeferredRunInDb(
+	runId: string,
+	reason: string,
+): Promise<{ success: boolean; dispatch: { id: string; wakeSeq: number } | null }> {
+	const db = getDb();
+	return await db.transaction(async (tx) => {
+		const runRows = await tx
+			.select({
+				status: runs.status,
+				agentSessionId: runs.agentSessionId,
+				jobPayload: runs.jobPayload,
+			})
+			.from(runs)
+			.where(eq(runs.id, runId))
+			.limit(1);
+		const run = runRows[0];
+		if (!run || run.status !== 'deferred') {
+			return { success: false, dispatch: null };
+		}
+
+		const dispatchRows = await tx
+			.select({ id: dispatches.id, state: dispatches.state, wakeSeq: dispatches.wakeSeq })
+			.from(dispatches)
+			.where(
+				and(
+					eq(dispatches.runId, runId),
+					inArray(dispatches.state, ['pending', 'leased', 'running', 'retry-scheduled']),
+				),
+			)
+			.limit(1);
+		const dispatch = dispatchRows[0];
+
+		if (dispatch) {
+			await tx
+				.update(dispatches)
+				.set({
+					state: 'cancelled',
+					lastError: reason,
+					waitReason: null,
+					leaseOwner: null,
+					leaseExpiresAt: null,
+					completedAt: new Date(),
+					updatedAt: new Date(),
+				})
+				.where(eq(dispatches.id, dispatch.id));
+		}
+
+		const hasSession = run.agentSessionId !== null;
+		const recoveryVal = hasSession
+			? {
+					state: 'preserved' as const,
+					agentSessionId: run.agentSessionId,
+				}
+			: null;
+
+		await tx
+			.update(runs)
+			.set({
+				status: 'failed',
+				error: reason,
+				nextRetryAt: null,
+				agentSessionId: run.agentSessionId,
+				recovery: recoveryVal,
+				completedAt: new Date(),
+			})
+			.where(eq(runs.id, runId));
+
+		return {
+			success: true,
+			dispatch: dispatch ? { id: dispatch.id, wakeSeq: dispatch.wakeSeq } : null,
+		};
+	});
 }
 
 /**

@@ -2333,6 +2333,7 @@ describe('processJob', () => {
 				timedOut: false,
 				durationMs: 42,
 				usage: undefined,
+				recovery: null,
 			});
 			expect(storeRunLogs).toHaveBeenCalledExactlyOnceWith('run-1', 'so', 'se');
 		});

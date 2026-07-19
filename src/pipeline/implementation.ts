@@ -59,6 +59,7 @@ import {
 } from '@/pipeline/prompts/implementation.js';
 import {
 	cleanupUnlessPreserved,
+	executeRecoveryGate,
 	sessionRunArgs,
 	shouldPreserveForResume,
 } from '@/pipeline/resume.js';
@@ -154,6 +155,10 @@ export interface RunImplementationPhaseOptions {
 	sessionId?: string;
 	/** Resume this Claude session when its preserved worktree still exists. */
 	resumeSessionId?: string;
+	/** The database run id. */
+	runId?: string;
+	/** Mode for recovering a cancelled preserved worktree. */
+	recoveryMode?: 'resume' | 'fresh';
 	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
 	resumeDelivery?: boolean;
 	/**
@@ -282,7 +287,25 @@ async function acquireImplementationWorktree(
 	resumeSessionId: string | undefined,
 	resumeExistingBranch: boolean,
 	resumeDelivery: boolean,
+	recoveryMode?: 'resume' | 'fresh',
+	projectId?: string,
 ): Promise<{ handle: WorktreeHandle; resumed: boolean; deliveryResumed: boolean }> {
+	if (recoveryMode) {
+		const { reuseHandle } = await executeRecoveryGate(
+			worktrees,
+			taskId,
+			recoveryMode,
+			resumeSessionId,
+			projectId ?? '',
+		);
+		if (reuseHandle) {
+			return {
+				handle: reuseHandle,
+				resumed: true,
+				deliveryResumed: false,
+			};
+		}
+	}
 	// A checkpoint means this run already owns the task branch. Reuse its checkout
 	// when it survived a failed/manual retry so a fresh agent session does not
 	// collide with `task-<id>` or discard partial, unpushed work. A session is only
@@ -325,6 +348,8 @@ export async function runImplementationPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		runId,
+		recoveryMode,
 		resumeDelivery = false,
 		autoAdvance = DEFAULT_AUTO_ADVANCE,
 		resumeExistingBranch = false,
@@ -363,6 +388,8 @@ export async function runImplementationPhase(
 		resumeSessionId,
 		resumeExistingBranch,
 		resumeDelivery,
+		recoveryMode,
+		project.id,
 	);
 	await onBranchProvisioned?.();
 	let preserveForResume = false;
@@ -508,6 +535,12 @@ export async function runImplementationPhase(
 		}
 		throw error;
 	} finally {
-		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'implementation phase');
+		await cleanupUnlessPreserved(
+			worktrees,
+			taskId,
+			preserveForResume,
+			'implementation phase',
+			runId,
+		);
 	}
 }
