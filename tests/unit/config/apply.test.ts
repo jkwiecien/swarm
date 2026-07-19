@@ -34,8 +34,8 @@ describe('applyConfig', () => {
 	beforeEach(() => {
 		vi.mocked(upsertProjectToDb).mockClear();
 		vi.mocked(writeProjectCredential).mockClear();
-		process.env.IMPL_KEY = 'ghp_impl';
-		process.env.REV_KEY = 'ghp_rev';
+		process.env.IMPL_KEY = 'test-token-implementer';
+		process.env.REV_KEY = 'test-token-reviewer';
 		process.env.HOOK_KEY = 'whsec';
 	});
 
@@ -52,8 +52,12 @@ describe('applyConfig', () => {
 		expect(result.projects).toEqual(['proj-1']);
 		expect(result.credentialsWritten).toBe(3);
 		expect(result.credentialsSkipped).toEqual([]);
-		expect(writeProjectCredential).toHaveBeenCalledWith('proj-1', 'IMPL_KEY', 'ghp_impl');
-		expect(writeProjectCredential).toHaveBeenCalledWith('proj-1', 'REV_KEY', 'ghp_rev');
+		expect(writeProjectCredential).toHaveBeenCalledWith(
+			'proj-1',
+			'IMPL_KEY',
+			'test-token-implementer',
+		);
+		expect(writeProjectCredential).toHaveBeenCalledWith('proj-1', 'REV_KEY', 'test-token-reviewer');
 		expect(writeProjectCredential).toHaveBeenCalledWith('proj-1', 'HOOK_KEY', 'whsec');
 	});
 
@@ -90,7 +94,7 @@ describe('applyConfig', () => {
 			id: 'proj-2',
 			credentials: { implementer: 'SHARED', reviewer: 'SHARED', webhookSecret: 'HOOK_KEY' },
 		});
-		process.env.SHARED = 'ghp_shared';
+		process.env.SHARED = 'test-token-shared';
 
 		const result = await applyConfig(SwarmConfigSchema.parse({ projects: [shared] }));
 

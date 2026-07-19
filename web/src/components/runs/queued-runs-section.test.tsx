@@ -108,6 +108,20 @@ describe('QueuedRunsSection', () => {
 		expect(within(section).getByText(/runs/)).not.toBeNull();
 	});
 
+	it('links a queued retry to its existing run detail', () => {
+		const deferredItem: QueuedRun = { ...githubItem, runId: 'run-deferred' };
+		renderSection(<QueuedRunsSection items={[deferredItem]} />);
+
+		expect(screen.getByRole('link', { name: 'View run' }).getAttribute('href')).toBe(
+			'/runs/run-deferred',
+		);
+	});
+
+	it('does not offer View run for fresh queued work without a run ID', () => {
+		renderSection(<QueuedRunsSection items={[githubItem]} />);
+		expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
+	});
+
 	it('shows a Queued badge that is visually distinct from a running badge (no pulse)', () => {
 		renderSection(
 			<>

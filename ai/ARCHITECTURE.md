@@ -144,15 +144,18 @@ approving Review run) skips triggers, worktrees, and project slots entirely —
 `processJob` routes its claimed wake-up straight to
 `processMergeAutomationDispatch`, which merges via the `ScmMergeProvider` and
 settles the dispatch itself (`completed` with a `merge-*` outcome, `failed` on
-a provider error, or `retry-scheduled` while transiently `not-ready`). The Queue API/UI (`runs.queued`) reads waiting dispatches from
-Postgres — state, wait reason, priority, scheduled time — never a BullMQ
-snapshot, and `swarm queue clear` cancels the canonical records first.
-Complementarily, the Runs list (`runs.list` / `listRunsFromDb`) hides a
-`deferred` run while it is still represented in Queue — i.e. it has a waiting
-(`pending`/`retry-scheduled`) dispatch — so a queued unit of work shows up only
-once, in Queue, rather than also as a duplicate `deferred` Run (issue #279).
-Once that dispatch leaves the waiting set the run reappears per its normal
-lifecycle, and a `deferred` run with no waiting dispatch stays visible.
+a provider error, or `retry-scheduled` while transiently `not-ready`).
+
+The dashboard deliberately exposes two complementary read models (issue #313):
+
+- **Queue is dispatch-centric.** The Queue API/UI (`runs.queued`) reads every waiting
+  dispatch from Postgres — state, wait reason, priority, and scheduled time — never a
+  BullMQ snapshot. `swarm queue clear` cancels those canonical records first. A fresh
+  dispatch with no `runId` is Queue-only because no persisted attempt exists yet.
+- **Runs is run-centric.** The Runs list (`runs.list` / `listRunsFromDb`) reads persisted
+  attempts by their normal lifecycle, but hides a `deferred` attempt linked to a pending
+  or retry-scheduled dispatch to avoid displaying a duplicate row (issues #279/#316).
+  Deferred attempts with no waiting dispatch remain visible in Runs as history and for operator recovery.
 
 ### Failure handling & rate-limit retries (issue #91)
 
