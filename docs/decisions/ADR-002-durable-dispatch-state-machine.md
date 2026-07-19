@@ -139,6 +139,15 @@ deterministic job ids, and startup recovery re-publishes lost jobs. It never sta
 agent, so it stays a separate small mechanism rather than being forced through the
 `SwarmJob` dispatch model; folding it in remains possible later.
 
+> **Superseded by issue #292.** Merge automation is now a first-class dispatch kind:
+> a `merge-automation` `SwarmJob` (dedup key `merge:<reviewRunId>`, linked to the
+> approving Review run) is persisted by the worker's Review success path and executed —
+> as a direct PAT merge through the provider-neutral `ScmMergeProvider`, never GitHub's
+> native auto-merge — by `processMergeAutomationDispatch` (`src/worker/merge-automation.ts`),
+> with transient `not-ready` outcomes retried via `retry-scheduled`. The standalone
+> `swarm-merge-follow-ups` queue and its worker are retired; startup reconciliation
+> imports leftover `not-ready` intent as merge dispatches and drains the old queue.
+
 ## Consequences
 
 - It is impossible to observe a normal `running` run without a corresponding

@@ -20,7 +20,6 @@ import type { MergePullRequestOutcome } from '../../../scm/merge.js';
 import {
 	type ConflictCandidatePullRequest,
 	createPullRequest,
-	enablePullRequestAutoMerge,
 	findOpenPullRequest,
 	getGitHubUserForToken,
 	getPullRequest,
@@ -30,7 +29,6 @@ import {
 	getPullRequestTitle,
 	listOpenPullRequestsForBase,
 	mergePullRequestDirect,
-	type PullRequestAutoMergeResult,
 	postIdempotentPullRequestComment,
 	postIssueComment,
 	submitPullRequestReview,
@@ -49,31 +47,21 @@ function errorStatus(error: unknown): number | undefined {
 }
 
 /**
- * Whether a failed `enablePullRequestAutoMerge` call means "this repository
- * doesn't support auto-merge" (GitHub's GraphQL mutation error when the
- * repository's "Allow auto-merge" setting is off) rather than a transport,
- * auth, or rate-limit failure. Only this recognized case falls back to a
- * direct merge attempt — every other GraphQL failure is a `provider-error`
- * (issue #253: "do not turn unrelated ... failures into an eager direct
- * merge").
- */
-function isAutoMergeUnavailable(error: unknown): boolean {
-	return /auto-merge is not allowed|auto-merge is not enabled/i.test(errorMessage(error));
-}
-
-/**
  * Classify a thrown Octokit error from the direct-merge REST endpoint into the
- * provider-neutral outcome. GitHub's REST merge endpoint responds 405 for a
- * PR that isn't currently mergeable (pending/failing checks, missing
- * approvals, conflicts) and 409 for a race on the expected head — both
- * transient, so `not-ready`. A 403 means the repository's own rules refuse the
- * merge outright: `policy-blocked`, including a merge-queue requirement.
- * Anything else (401, 404, 5xx, network failure) is an unexpected
- * `provider-error`.
+ * provider-neutral outcome. A repository whose rules require the merge queue
+ * cannot be merged through the direct endpoint at all — GitHub names the queue
+ * in the error body — so that's `unsupported` (it needs a human or a queue
+ * integration, not a retry). Otherwise GitHub responds 405 for a PR that isn't
+ * currently mergeable (pending/failing checks, missing approvals, conflicts)
+ * and 409 for a race on the expected head — both transient, so `not-ready`. A
+ * 403 means the repository's own rules refuse the merge outright:
+ * `policy-blocked`. Anything else (401, 404, 5xx, network failure) is an
+ * unexpected `provider-error`.
  */
 function classifyDirectMergeError(error: unknown): MergePullRequestOutcome {
 	const message = errorMessage(error);
 	const status = errorStatus(error);
+	if (/merge queue/i.test(message)) return { status: 'unsupported', message };
 	if (status === 405 || status === 409) return { status: 'not-ready', message };
 	if (status === 403) return { status: 'policy-blocked', message };
 	return { status: 'provider-error', message };
@@ -149,20 +137,6 @@ async function mergeReadyPullRequest(
 				status: 'not-eligible',
 				message: 'the approving review is no longer in effect — it has since been dismissed',
 			};
-		}
-	}
-
-	try {
-		const armed = await enablePullRequestAutoMerge(owner, repo, prNumber);
-		return {
-			status: 'not-ready',
-			message: armed.enabled
-				? 'GitHub auto-merge enabled; waiting for required checks and reviews'
-				: armed.message,
-		};
-	} catch (error) {
-		if (!isAutoMergeUnavailable(error)) {
-			return { status: 'provider-error', message: errorMessage(error) };
 		}
 	}
 
@@ -261,29 +235,21 @@ export class GitHubSCMIntegration {
 		);
 	}
 
-	/** Enable GitHub auto-merge as the implementer after an eligible review response. */
-	async enablePullRequestAutoMerge(
-		project: ProjectConfig,
-		prNumber: number,
-	): Promise<PullRequestAutoMergeResult> {
-		const [owner, repo] = project.repo.split('/');
-		return this.withCredentials(project, () => enablePullRequestAutoMerge(owner, repo, prNumber));
-	}
-
 	/**
 	 * {@link ScmMergeProvider.mergePullRequest} for GitHub (issue #253, retried
-	 * durably per issue #278): merge an approved, ready PR as the implementer,
-	 * preferring GitHub's own auto-merge and falling back to a direct merge
-	 * only once auto-merge is confirmed unavailable for the repository.
-	 * Idempotent — a PR found already merged (e.g. a retried call) reports
-	 * `merged` without attempting anything. Re-reads the PR's current state on
-	 * every call, so a retry made long after the original approval re-checks
-	 * eligibility rather than trusting stale context: a changed head, a
-	 * dismissed/overridden approval, or a closed/draft PR reports
-	 * `not-eligible` instead of merging. Never throws: every refusal or
-	 * unexpected failure comes back as a terminal, non-`merged`
-	 * {@link MergePullRequestOutcome} so a completed, already-submitted Review
-	 * can't be retroactively failed by this call.
+	 * durably as a merge dispatch per issue #292): merge an approved, ready PR
+	 * as the implementer via GitHub's direct REST merge endpoint — the primary
+	 * and only merge strategy. GitHub's native auto-merge is deliberately never
+	 * requested: it is unavailable on many private repositories and has no
+	 * portable equivalent in other SCMs (issue #292). Idempotent — a PR found
+	 * already merged (e.g. a retried call) reports `merged` without attempting
+	 * anything. Re-reads the PR's current state on every call, so a retry made
+	 * long after the original approval re-checks eligibility rather than
+	 * trusting stale context: a changed head, a dismissed/overridden approval,
+	 * or a closed/draft PR reports `not-eligible` instead of merging. Never
+	 * throws: every refusal or unexpected failure comes back as a terminal,
+	 * non-`merged` {@link MergePullRequestOutcome} so a completed,
+	 * already-submitted Review can't be retroactively failed by this call.
 	 */
 	async mergePullRequest(
 		project: ProjectConfig,

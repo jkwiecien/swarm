@@ -44,9 +44,23 @@ function makeDispatch(overrides: Partial<DispatchRow> = {}): DispatchRow {
 	};
 }
 
+/** A durable merge intent payload (issue #292). */
+const MERGE_JOB = {
+	type: 'merge-automation' as const,
+	projectId: 'p1',
+	reviewRunId: 'run-1',
+	repo: 'jkwiecien/swarm',
+	prNumber: '17',
+	approvedHeadSha: 'deadbeef',
+};
+
 describe('deriveQueuedPhaseHint', () => {
 	it('hints board for every github-projects job', () => {
 		expect(deriveQueuedPhaseHint(createMockGitHubProjectsWebhookJob())).toBe('board');
+	});
+
+	it('hints merge-automation for a merge-automation job', () => {
+		expect(deriveQueuedPhaseHint(MERGE_JOB)).toBe('merge-automation');
 	});
 
 	it('hints respond-to-review for a non-approved pull_request_review', () => {
@@ -260,6 +274,32 @@ describe('toQueuedRuns', () => {
 		});
 		expect(item.workItemNodeId).toBeUndefined();
 		expect(item.contentType).toBeUndefined();
+	});
+
+	it('maps a merge-automation dispatch to repo + prNumber with its run link (issue #292)', () => {
+		const [item] = toQueuedRuns([
+			makeDispatch({
+				jobPayload: MERGE_JOB,
+				phase: 'merge-automation',
+				state: 'retry-scheduled',
+				waitReason: 'recheck',
+				runId: 'run-1',
+				attempt: 3,
+				availableAt: new Date(1_700_000_030_000),
+			}),
+		]);
+
+		expect(item).toMatchObject({
+			type: 'merge-automation',
+			phaseHint: 'merge-automation',
+			repo: 'jkwiecien/swarm',
+			prNumber: '17',
+			state: 'delayed',
+			waitReason: 'recheck',
+			runId: 'run-1',
+			attempt: 3,
+		});
+		expect(item.workItemNodeId).toBeUndefined();
 	});
 
 	it('maps a github-projects job to workItemNodeId + contentType, no repo fields', () => {

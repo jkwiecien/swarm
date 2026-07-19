@@ -20,6 +20,7 @@ const PR_DRIVEN_PHASES = new Set([
 	'respond-to-review',
 	'respond-to-ci',
 	'resolve-conflicts',
+	'merge-automation',
 ]);
 
 /**
@@ -36,6 +37,7 @@ const QUEUED_PHASE_LABELS: Record<QueuedPhaseHint, string> = {
 	'respond-to-review': 'Respond to review',
 	'respond-to-ci': 'Respond to CI',
 	'resolve-conflicts': 'Resolve conflicts',
+	'merge-automation': 'Merge automation',
 	unknown: 'Unknown',
 };
 
@@ -75,7 +77,8 @@ export function queuedWaitReasonLabel(reason: QueuedWaitReason): string {
 export function queuedWorkItemLabel(item: QueuedRun): string {
 	const workItemRef = parseWorkItemRef(item.workItemUrl);
 	if (workItemRef) return workItemLabel(workItemRef);
-	if (item.type === 'github' && item.prNumber) return `PR #${item.prNumber}`;
+	if ((item.type === 'github' || item.type === 'merge-automation') && item.prNumber)
+		return `PR #${item.prNumber}`;
 	return '—';
 }
 
@@ -86,7 +89,7 @@ export function queuedWorkItemTitle(item: QueuedRun): string | undefined {
 export function queuedWorkItemUrl(item: QueuedRun): string | undefined {
 	if (item.workItemUrl) return item.workItemUrl;
 	if (
-		item.type === 'github' &&
+		(item.type === 'github' || item.type === 'merge-automation') &&
 		item.repo &&
 		item.prNumber &&
 		PR_DRIVEN_PHASES.has(item.phaseHint)

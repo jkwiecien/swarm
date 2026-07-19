@@ -41,6 +41,7 @@ export const queuedPhaseHintSchema = z.enum([
 	'respond-to-review',
 	'respond-to-ci',
 	'resolve-conflicts',
+	'merge-automation',
 	'unknown',
 ]);
 export type QueuedPhaseHint = z.infer<typeof queuedPhaseHintSchema>;
@@ -96,7 +97,7 @@ export const queuedRunSchema = z.object({
 	/** The canonical dispatch id (issue #284) — the handle Put back operates on. */
 	jobId: z.string(),
 	projectId: z.string(),
-	type: z.enum(['github', 'github-projects']),
+	type: z.enum(['github', 'github-projects', 'merge-automation']),
 	state: queuedRunStateSchema,
 	phaseHint: queuedPhaseHintSchema,
 	/** Why this dispatch is waiting, when it recorded a reason. */
@@ -105,9 +106,9 @@ export const queuedRunSchema = z.object({
 	runId: z.string().optional(),
 	/** Deferred-retry attempt counter. */
 	attempt: z.number().int().nonnegative().optional(),
-	/** `github` jobs only — `owner/repo`. */
+	/** `github` and `merge-automation` jobs only — `owner/repo`. */
 	repo: z.string().optional(),
-	/** `github` jobs only — the PR/issue number. */
+	/** `github` and `merge-automation` jobs only — the PR/issue number. */
 	prNumber: z.string().optional(),
 	/** `github-projects` jobs only — the opaque board item node id. */
 	workItemNodeId: z.string().optional(),

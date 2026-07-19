@@ -59,13 +59,17 @@ The following existing options and branches keep their prior semantics:
 - phase/session resumption and the Implementation branch-provisioning
   checkpoint.
 
-## Auto-merge exception
+## Merge automation (updated by issue #292)
 
-The Review auto-merge follow-up remains a separate durable mechanism. It does
-not start an agent phase: its intent is persisted on the Review run and its
-deduplicated wake-ups are handled by the dedicated merge-follow-up queue. It
-is therefore intentionally outside the `SwarmJob`/`dispatches` model while
-retaining durable recovery semantics.
+Originally the Review merge follow-up was left outside the
+`SwarmJob`/`dispatches` model as a separate durable mechanism (its own
+`swarm-merge-follow-ups` queue). Issue #292 folded it in: merge intent is now
+a `merge-automation` dispatch (dedup key `merge:<reviewRunId>`, linked to the
+approving Review run) executed by `src/worker/merge-automation.ts` as a
+direct implementer-PAT merge through the provider-neutral `ScmMergeProvider`
+— GitHub's native auto-merge is never requested. It remains the one dispatch
+kind that never starts an agent phase; outcomes still persist on the Review
+run's `review_merge_*` columns.
 
 ## Non-goals
 

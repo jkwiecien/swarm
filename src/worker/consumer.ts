@@ -88,10 +88,14 @@ import {
 	isRunCancellationRequested,
 	USER_TERMINATION_MESSAGE,
 } from '../queue/cancellation.js';
-import { type SwarmJob, SwarmJobSchema } from '../queue/jobs.js';
+import {
+	type GitHubProjectsWebhookJob,
+	type GitHubWebhookJob,
+	type SwarmJob,
+	SwarmJobSchema,
+} from '../queue/jobs.js';
 import { priorityFor } from '../queue/producer.js';
 import { DeliveryDeferredError } from '../scm/delivery.js';
-import type { MergePullRequestOutcome } from '../scm/merge.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import {
 	buildConflictResolutionKey,
@@ -109,7 +113,11 @@ import {
 	type TriggerResult,
 } from '../triggers/types.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
-import { recordReviewMergeOutcome } from './merge-follow-up.js';
+import {
+	type MergeAutomationSettledOutcome,
+	processMergeAutomationDispatch,
+	requestMergeAutomation,
+} from './merge-automation.js';
 import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
@@ -131,6 +139,9 @@ export type JobOutcome =
 			reason: string;
 	  }
 	| { status: 'skipped-in-flight'; phase: TriggerPhase; taskId: string }
+	// A merge-automation dispatch settled (merged, refused, retry-scheduled, or
+	// failed) — the agent-less dispatch kind (issue #292).
+	| MergeAutomationSettledOutcome
 	| {
 			status: 'phase-succeeded';
 			phase: TriggerPhase;
@@ -760,12 +771,6 @@ function runPhase(
 	reviewOrdinal?: number;
 	/** This Review run's automation outcome (e.g. `manual-intervention-required`) — persisted onto its history row (issue #235). */
 	automationOutcome?: ReviewAutomationOutcome;
-	/**
-	 * The provider-neutral merge attempt's outcome after an `approve` verdict
-	 * (issue #278); `undefined` when merge automation is disabled or the
-	 * verdict wasn't an approval, so nothing was recorded or scheduled.
-	 */
-	mergeOutcome?: MergePullRequestOutcome;
 }> {
 	const overrides = agentOverrideFor(
 		project,
@@ -834,10 +839,7 @@ function runPhase(
 				signal,
 				runAgent,
 			});
-		case 'review': {
-			// SCM provider selection belongs at the composition root. The Review
-			// phase receives only the provider-neutral merge capability.
-			const scm = new GitHubSCMIntegration();
+		case 'review':
 			return runReviewPhase({
 				project,
 				prNumber: trigger.prNumber,
@@ -851,9 +853,7 @@ function runPhase(
 				timeoutMs: overrides.timeoutMs,
 				signal,
 				runAgent,
-				mergePullRequest: scm.mergePullRequest.bind(scm),
 			});
-		}
 		case 'respond-to-review':
 			return runRespondToReviewPhase({
 				project,
@@ -1452,27 +1452,41 @@ async function selfEnqueueSplitChildPlanning(
 }
 
 /**
- * Persist a completed Review run's merge-automation outcome and, when it's a
- * transient `not-ready`, schedule a durable follow-up (issue #278). Called
- * unconditionally from `processJob`'s success path — split out (like
- * `selfEnqueueNextPhase` above) both to keep that function's own branching
- * within the complexity budget and because pipeline code itself must never
- * schedule queue work (`ai/RULES.md` §2): the Review phase only reports the
- * structured outcome of its own single immediate attempt.
+ * Persist a durable merge dispatch after an eligible Review approval (issue
+ * #292). The eligibility gate lives here, at the composition root, so pipeline
+ * code neither merges nor schedules queue work (`ai/RULES.md` §2): only a
+ * completed Review run's submitted `approve` verdict with
+ * `pipeline.respondToReview.autoMerge` on requests a merge — the sole
+ * eligibility rule (issue #235); Respond-to-review's own outcomes never do.
+ * Execution happens later, when the dispatch's wake-up is claimed
+ * (`processMergeAutomationDispatch`), never inline in the Review job.
  */
-async function handleReviewMergeOutcome(
+async function requestMergeAutomationIfEligible(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	runId: string | undefined,
-	mergeOutcome: MergePullRequestOutcome | undefined,
+	verdict: ReviewVerdict | undefined,
 ): Promise<void> {
-	if (trigger.phase !== 'review' || !runId || !mergeOutcome) return;
-	await recordReviewMergeOutcome({
-		projectId: project.id,
-		runId,
+	if (trigger.phase !== 'review') return;
+	if (verdict !== 'approve') return;
+	if (project.pipeline?.respondToReview?.autoMerge !== true) return;
+	if (!runId) {
+		// The dispatch's dedup identity and outcome persistence both key on the
+		// Review run row; without one (a degraded `tryCreateRun`) there is no safe
+		// way to carry the intent — surface the miss instead of merging blindly.
+		logger.warn('Review approval eligible for merge automation, but no run row exists — skipping', {
+			projectId: project.id,
+			prNumber: trigger.prNumber,
+			headSha: trigger.headSha,
+		});
+		return;
+	}
+	await requestMergeAutomation({
+		project,
+		reviewRunId: runId,
+		taskId: trigger.taskId,
 		prNumber: trigger.prNumber,
 		approvedHeadSha: trigger.headSha,
-		outcome: mergeOutcome,
 	});
 }
 
@@ -1635,6 +1649,16 @@ export async function reportInterruptedJobToBoard(jobData: unknown, error: strin
 			return;
 		}
 
+		// A merge-automation dispatch has no board item and posts nothing — its
+		// outcome is already visible on the Review run and the dispatch record.
+		if (job.type === 'merge-automation') {
+			logger.debug('Interrupted-job report: merge-automation dispatch — skipping comment', {
+				projectId: job.projectId,
+				prNumber: job.prNumber,
+			});
+			return;
+		}
+
 		const body = interruptedRunCommentBody(error);
 
 		if (job.type === 'github-projects') {
@@ -1699,7 +1723,10 @@ export async function reportInterruptedJobToBoard(jobData: unknown, error: strin
  * `signal` is the worker's shutdown signal: aborting kills a running agent CLI
  * (SIGTERM→SIGKILL) so graceful shutdown doesn't hang behind a long run.
  */
-function buildTriggerContext(job: SwarmJob, project: ProjectConfig): TriggerContext {
+function buildTriggerContext(
+	job: GitHubWebhookJob | GitHubProjectsWebhookJob,
+	project: ProjectConfig,
+): TriggerContext {
 	return job.type === 'github'
 		? {
 				project,
@@ -1884,6 +1911,14 @@ export async function processJob(
 		throw new Error(`Job references unknown project '${job.projectId}'`);
 	}
 
+	// The agent-less dispatch kind (issue #292): a merge-automation dispatch
+	// carries no webhook event, resolves no trigger, provisions no worktree, and
+	// takes no project slot — it settles itself (complete / fail / bounded
+	// retry-scheduled) against the claimed dispatch record.
+	if (job.type === 'merge-automation') {
+		return processMergeAutomationDispatch(dispatch, job, project);
+	}
+
 	const ctx = buildTriggerContext(job, project);
 
 	const trigger = await registry.dispatch(ctx);
@@ -2043,7 +2078,14 @@ export async function processJob(
 		if (trigger.phase === 'planning' && result.split) {
 			await selfEnqueueSplitChildPlanning(project, result.split.subTaskItemIds);
 		}
-		await handleReviewMergeOutcome(trigger, project, runId, result.mergeOutcome);
+		// Ordering matters: this must run *after* `tryCompleteDispatch` above. The
+		// merge dispatch it persists is linked to this same `runId`, and the
+		// partial unique `uq_dispatches_active_run` index (issue #284) allows only
+		// one non-terminal dispatch per run — creating it while the Review dispatch
+		// is still active would raise a unique violation that `requestMergeAutomation`
+		// only swallows, silently dropping the merge. Completing the Review dispatch
+		// first drops it out of that partial index, so the insert is safe.
+		await requestMergeAutomationIfEligible(trigger, project, runId, result.verdict);
 		return {
 			status: 'phase-succeeded',
 			phase: trigger.phase,
