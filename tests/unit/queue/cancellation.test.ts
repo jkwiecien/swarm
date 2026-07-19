@@ -2,23 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock ioredis so nothing touches Redis — capture the set/publish/subscribe calls
 // the cancellation module makes. Mirrors the project-concurrency test's shape.
-const sadd = vi.fn<(key: string, member: string) => Promise<number>>();
-const srem = vi.fn<(key: string, member: string) => Promise<number>>();
-const sismember = vi.fn<(key: string, member: string) => Promise<number>>();
-const hset = vi.fn<(key: string, field: string, value: string) => Promise<number>>();
-const hget = vi.fn<(key: string, field: string) => Promise<string | null>>();
-const hdel = vi.fn<(key: string, field: string) => Promise<number>>();
-const publish = vi.fn<(channel: string, message: string) => Promise<number>>();
-const subscribe = vi.fn<(channel: string) => Promise<number>>();
-const quit = vi.fn<() => Promise<'OK'>>();
-const disconnect = vi.fn<() => void>();
-const on = vi.fn();
-
-// A subscriber connection is created via `.duplicate()`; give it its own handlers
-// so the message callback can be driven independently of the main client.
-const subOn = vi.fn();
-const subscriberClient = { on: subOn, subscribe, quit, disconnect };
-const redisClient = {
+const {
 	sadd,
 	srem,
 	sismember,
@@ -26,14 +10,94 @@ const redisClient = {
 	hget,
 	hdel,
 	publish,
-	on,
+	subscribe,
 	quit,
-	disconnect,
-	duplicate: () => subscriberClient,
-};
-const RedisMock = vi.fn<(options: Record<string, unknown>) => typeof redisClient>(
-	() => redisClient,
-);
+	subOn,
+	exec,
+	setExecResult,
+	multiChain,
+	multi,
+	RedisMock,
+} = vi.hoisted(() => {
+	const sadd = vi.fn();
+	const srem = vi.fn();
+	const sismember = vi.fn();
+	const hset = vi.fn();
+	const hget = vi.fn();
+	const hdel = vi.fn();
+	const publish = vi.fn();
+	const subscribe = vi.fn();
+	const quit = vi.fn();
+	const disconnect = vi.fn();
+	const on = vi.fn();
+	const subOn = vi.fn();
+
+	let execResult: [Error | null, unknown][] | null = [
+		[null, 1],
+		[null, 1],
+	];
+	const setExecResult = (r: [Error | null, unknown][] | null) => {
+		execResult = r;
+	};
+	const exec = vi.fn(() => Promise.resolve(execResult));
+
+	const multiChain = {
+		sadd: vi.fn((...args: unknown[]) => {
+			sadd(...args);
+			return multiChain;
+		}),
+		hset: vi.fn((...args: unknown[]) => {
+			hset(...args);
+			return multiChain;
+		}),
+		srem: vi.fn((...args: unknown[]) => {
+			srem(...args);
+			return multiChain;
+		}),
+		hdel: vi.fn((...args: unknown[]) => {
+			hdel(...args);
+			return multiChain;
+		}),
+		exec,
+	};
+
+	const multi = vi.fn(() => multiChain);
+
+	const subscriberClient = { on: subOn, subscribe, quit, disconnect };
+	const redisClient = {
+		sadd,
+		srem,
+		sismember,
+		hset,
+		hget,
+		hdel,
+		publish,
+		on,
+		quit,
+		disconnect,
+		duplicate: () => subscriberClient,
+		multi,
+	};
+	const RedisMock = vi.fn(() => redisClient);
+
+	return {
+		sadd,
+		srem,
+		sismember,
+		hset,
+		hget,
+		hdel,
+		publish,
+		subscribe,
+		quit,
+		subOn,
+		exec,
+		setExecResult,
+		multiChain,
+		multi,
+		RedisMock,
+	};
+});
 
 vi.mock('ioredis', () => ({ Redis: RedisMock }));
 
@@ -53,6 +117,16 @@ describe('run cancellation', () => {
 		publish.mockResolvedValue(1);
 		subscribe.mockResolvedValue(1);
 		quit.mockResolvedValue('OK');
+		setExecResult([
+			[null, 1],
+			[null, 1],
+		]);
+		exec.mockClear();
+		multi.mockClear();
+		multiChain.sadd.mockClear();
+		multiChain.hset.mockClear();
+		multiChain.srem.mockClear();
+		multiChain.hdel.mockClear();
 	});
 
 	describe('requestRunCancellation', () => {
@@ -61,6 +135,7 @@ describe('run cancellation', () => {
 
 			await requestRunCancellation('run-1', ORIGIN);
 
+			expect(multi).toHaveBeenCalled();
 			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
 			expect(hset).toHaveBeenCalledWith(
 				'swarm:run-cancellation-origins',
@@ -78,13 +153,25 @@ describe('run cancellation', () => {
 			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
 		});
 
-		it('still resolves when recording the origin fails (durable set entry already landed)', async () => {
-			hset.mockRejectedValueOnce(new Error('down'));
+		it('throws when the transaction execution fails (exec resolves null)', async () => {
+			setExecResult(null);
 			const { requestRunCancellation } = await import('@/queue/cancellation.js');
 
-			await expect(requestRunCancellation('run-1', ORIGIN)).resolves.toBeUndefined();
+			await expect(requestRunCancellation('run-1', ORIGIN)).rejects.toThrow(
+				'run-cancellation: transaction failed to execute',
+			);
+		});
+
+		it('throws when recording the origin fails (transaction rolls back)', async () => {
+			setExecResult([
+				[null, 1],
+				[new Error('hset failed'), null],
+			]);
+			const { requestRunCancellation } = await import('@/queue/cancellation.js');
+
+			await expect(requestRunCancellation('run-1', ORIGIN)).rejects.toThrow('hset failed');
 			expect(sadd).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
-			expect(publish).toHaveBeenCalledWith('swarm:run-cancel', 'run-1');
+			expect(publish).not.toHaveBeenCalled();
 		});
 	});
 
@@ -117,12 +204,16 @@ describe('run cancellation', () => {
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await clearRunCancellation('run-1');
+			expect(multi).toHaveBeenCalled();
 			expect(srem).toHaveBeenCalledWith('swarm:run-cancellations', 'run-1');
 			expect(hdel).toHaveBeenCalledWith('swarm:run-cancellation-origins', 'run-1');
 		});
 
 		it('swallows a clear failure', async () => {
-			srem.mockRejectedValueOnce(new Error('down'));
+			setExecResult([
+				[new Error('down'), null],
+				[null, 1],
+			]);
 			const { clearRunCancellation } = await import('@/queue/cancellation.js');
 
 			await expect(clearRunCancellation('run-1')).resolves.toBeUndefined();

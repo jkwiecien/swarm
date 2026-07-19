@@ -95,25 +95,28 @@ function getRedis(): Redis {
  * caller (the `terminate` mutation) surfaces that so the user knows the request
  * didn't land.
  *
- * `origin` is recorded as a companion structure ({@link getRunCancellationOrigin})
- * alongside the durable set entry — best-effort: a failure to record it only
- * costs the displayed origin (the cancellation itself, and its neutral wording,
- * are unaffected), so it's logged rather than thrown.
+ * `origin` is recorded atomically as a companion structure ({@link getRunCancellationOrigin})
+ * alongside the durable set entry. If either write fails, the entire transaction
+ * rolls back and throws, failing the termination request.
  */
 export async function requestRunCancellation(
 	runId: string,
 	origin: CancellationOrigin,
 ): Promise<void> {
 	const redis = getRedis();
-	await redis.sadd(CANCELLATION_SET_KEY, runId);
-	try {
-		await redis.hset(CANCELLATION_ORIGIN_KEY, runId, JSON.stringify(origin));
-	} catch (err) {
-		logger.warn('run-cancellation: failed to record cancellation origin', {
-			runId,
-			error: String(err),
-		});
+	const results = await redis
+		.multi()
+		.sadd(CANCELLATION_SET_KEY, runId)
+		.hset(CANCELLATION_ORIGIN_KEY, runId, JSON.stringify(origin))
+		.exec();
+
+	if (!results) {
+		throw new Error('run-cancellation: transaction failed to execute');
 	}
+	for (const [err] of results) {
+		if (err) throw err;
+	}
+
 	try {
 		await redis.publish(CANCELLATION_CHANNEL, runId);
 	} catch (err) {
@@ -176,8 +179,19 @@ export async function isRunCancellationRequested(runId: string): Promise<boolean
  */
 export async function clearRunCancellation(runId: string): Promise<void> {
 	try {
-		await getRedis().srem(CANCELLATION_SET_KEY, runId);
-		await getRedis().hdel(CANCELLATION_ORIGIN_KEY, runId);
+		const redis = getRedis();
+		const results = await redis
+			.multi()
+			.srem(CANCELLATION_SET_KEY, runId)
+			.hdel(CANCELLATION_ORIGIN_KEY, runId)
+			.exec();
+
+		if (!results) {
+			throw new Error('run-cancellation: transaction failed to execute');
+		}
+		for (const [err] of results) {
+			if (err) throw err;
+		}
 	} catch (err) {
 		logger.warn('run-cancellation: failed to clear cancellation state', {
 			runId,
