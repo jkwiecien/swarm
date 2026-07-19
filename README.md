@@ -6,7 +6,7 @@
 
 > **MVP note**: the "Cloud" half of the architecture below (Cloud Run / Pub/Sub / Firestore) is `PROJECT.md`'s long-term design and is **not** being built yet. The MVP copies [Cascade](https://github.com/mongrel-intelligence/cascade)'s shape instead — a local router + queue in Docker Compose plus a host-run worker, reachable from GitHub via a Cloudflare Tunnel — and targets **GitHub Projects** as its PM tool and **GitHub** as its sole SCM, single-user. See `ai/ARCHITECTURE.md` for the MVP architecture and the [GitHub Projects board](https://github.com/orgs/SmartTechBrewery/projects/6/views/1) for the current backlog.
 
-**Contents**: [Core idea](#core-idea) · [Architecture at a glance](#architecture-at-a-glance-mvp) · [Pipeline phases](#pipeline-phases) · [Security model](#security-model) · [Extensibility](#extensibility) · [Running the stack](#running-the-stack-local) · [Configuration](#configuration) · [Status](#status) · [Contributing](#contributing)
+**Contents**: [Core idea](#core-idea) · [Architecture at a glance](#architecture-at-a-glance-mvp) · [Pipeline phases](#pipeline-phases) · [Security model](#security-model) · [Extensibility](#extensibility) · [Running the stack](#running-the-stack-local) · [Configuration](#configuration) · [Status](#status) · [Contributing](#contributing) · [License](#license)
 
 ## Core idea
 
@@ -379,3 +379,7 @@ MVP scope and the active backlog live on the **[GitHub Projects board](https://g
 ## Contributing
 
 Agent/contributor conventions (including GitHub workflow rules) live in **[`ai/RULES.md`](./ai/RULES.md)** — read it before making changes.
+
+## License
+
+SWARM is licensed under the [Apache License 2.0](./LICENSE).
