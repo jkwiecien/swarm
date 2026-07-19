@@ -23,7 +23,7 @@
  * slot.
  */
 
-import { and, asc, eq, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { getDb } from '../client.js';
 import { reviewVerdicts } from '../schema/reviewVerdicts.js';
 
@@ -227,6 +227,41 @@ export async function getReviewVerdictByHead(
 				eq(reviewVerdicts.headSha, headSha),
 			),
 		)
+		.limit(1);
+	return rows[0] as ReviewVerdictRecord | undefined;
+}
+
+/**
+ * The most recent *submitted* review this PR already received at an *earlier*
+ * head — the signal that turns the next Review run into a **re-review** (issue
+ * #328). The Review phase reads this before building the reviewer's prompt: when
+ * an earlier `request-changes` verdict exists, the run's job is only to verify
+ * that verdict's requested changes, not to surface newly-noticed issues.
+ *
+ * Only `submitted` slots count (a `pending`/`abandoned` one never happened), and
+ * the current head is excluded via `currentHeadSha` so a same-head retry of the
+ * PR's first review isn't mistaken for a re-review. Returns the highest-ordinal
+ * prior verdict, or `undefined` when this is the PR's first review.
+ */
+export async function getPriorSubmittedReview(
+	projectId: string,
+	repository: string,
+	prNumber: string,
+	currentHeadSha: string,
+): Promise<ReviewVerdictRecord | undefined> {
+	const rows = await getDb()
+		.select(reviewVerdictRecordColumns)
+		.from(reviewVerdicts)
+		.where(
+			and(
+				eq(reviewVerdicts.projectId, projectId),
+				eq(reviewVerdicts.repository, repository),
+				eq(reviewVerdicts.prNumber, prNumber),
+				eq(reviewVerdicts.state, 'submitted'),
+				ne(reviewVerdicts.headSha, currentHeadSha),
+			),
+		)
+		.orderBy(desc(reviewVerdicts.ordinal))
 		.limit(1);
 	return rows[0] as ReviewVerdictRecord | undefined;
 }

@@ -53,6 +53,7 @@ import { getPersonaToken } from '@/config/provider.js';
 import type { ProjectConfig } from '@/config/schema.js';
 import {
 	abandonReviewVerdict as abandonReviewVerdictDefault,
+	getPriorSubmittedReview as getPriorSubmittedReviewDefault,
 	isCapReachingRequestChanges,
 	markReviewVerdictSubmitted as markReviewVerdictSubmittedDefault,
 } from '@/db/repositories/reviewVerdictsRepository.js';
@@ -193,6 +194,13 @@ export interface RunReviewPhaseOptions {
 	 */
 	markReviewVerdictSubmitted?: typeof markReviewVerdictSubmittedDefault;
 	abandonReviewVerdict?: typeof abandonReviewVerdictDefault;
+	/**
+	 * Injectable prior-submitted-review lookup (issue #328) — defaults to the real
+	 * {@link getPriorSubmittedReviewDefault}; overridden in tests. Its result
+	 * decides whether this run is a re-review (a prior `request-changes` verdict)
+	 * and therefore gets the scoped, verify-the-requested-changes-only prompt.
+	 */
+	getPriorSubmittedReview?: typeof getPriorSubmittedReviewDefault;
 }
 
 export interface ReviewPhaseResult {
@@ -234,6 +242,95 @@ function logAgentFailure(taskId: string, prNumber: string, agent: AgentCliResult
 	});
 }
 
+interface ReviewAgentRunParams {
+	/** Reuse a preserved worktree's already-delivered agent output instead of running fresh. */
+	shouldResumeDelivery: boolean;
+	cli: AgentCli;
+	model?: string;
+	reasoning?: ReasoningLevel;
+	sessionId?: string;
+	resumeSessionId?: string;
+	resumed: boolean;
+	worktreePath: string;
+	project: ProjectConfig;
+	prNumber: string;
+	headSha: string;
+	taskId: string;
+	customPrompt?: string;
+	agentToken: string;
+	timeoutMs?: number;
+	signal?: AbortSignal;
+	runAgent: (opts: Parameters<typeof runAgentCli>[0]) => Promise<AgentCliResult>;
+	getPriorSubmittedReview: typeof getPriorSubmittedReviewDefault;
+}
+
+/**
+ * Produce the review agent's result and whether this run is a re-review. Either
+ * resumes a preserved worktree's already-delivered output (no fresh run) or runs
+ * the agent. A fresh run first asks the ledger whether a `request-changes`
+ * verdict was already submitted for this PR at an earlier head (issue #328); if
+ * so it's a **re-review**, and the agent gets the scoped prompt that verifies
+ * only the previously requested changes rather than surfacing newly-noticed
+ * pre-existing issues. Split out of {@link runReviewPhase} to keep that
+ * orchestrator within the cognitive-complexity budget.
+ */
+async function produceReviewAgentResult(
+	params: ReviewAgentRunParams,
+): Promise<{ agent: AgentCliResult; isReReview: boolean }> {
+	const {
+		shouldResumeDelivery,
+		cli,
+		model,
+		reasoning,
+		sessionId,
+		resumeSessionId,
+		resumed,
+		worktreePath,
+		project,
+		prNumber,
+		headSha,
+		taskId,
+		customPrompt,
+		agentToken,
+		timeoutMs,
+		signal,
+		runAgent,
+		getPriorSubmittedReview,
+	} = params;
+
+	if (shouldResumeDelivery) {
+		return { agent: resumedDeliveryAgent(cli), isReReview: false };
+	}
+
+	const priorReview = await getPriorSubmittedReview(project.id, project.repo, prNumber, headSha);
+	const isReReview = priorReview?.verdict === 'request-changes';
+	if (isReReview) {
+		logger.info('Review — running as a re-review (verifying previously requested changes only)', {
+			taskId,
+			prNumber,
+			headSha,
+			priorOrdinal: priorReview?.ordinal,
+		});
+	}
+
+	const agent = await runAgent({
+		cli,
+		model,
+		reasoning,
+		...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
+		cwd: worktreePath,
+		args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha }, customPrompt, isReReview)],
+		// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
+		// call the agent makes acts as the reviewer persona.
+		maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
+		logContext: { taskId, phase: 'review', prNumber, headSha },
+		timeoutMs,
+		signal,
+		env: { GH_TOKEN: agentToken },
+	});
+	return { agent, isReReview };
+}
+
 /**
  * Run the Review phase for one PR. Resolves the reviewer persona's token,
  * provisions a detached worktree at the PR's head SHA, runs the review agent
@@ -269,6 +366,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		graft = graftEnvironment,
 		markReviewVerdictSubmitted = markReviewVerdictSubmittedDefault,
 		abandonReviewVerdict = abandonReviewVerdictDefault,
+		getPriorSubmittedReview = getPriorSubmittedReviewDefault,
 	} = options;
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;
@@ -306,23 +404,26 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 		graft(project.repoRoot, handle.path);
 
 		const shouldResumeDelivery = !legacyMode && deliveryResumed;
-		const agent = shouldResumeDelivery
-			? resumedDeliveryAgent(cli)
-			: await runAgent({
-					cli,
-					model,
-					reasoning,
-					...sessionRunArgs({ sessionId, resumeSessionId }, resumed),
-					cwd: handle.path,
-					args: [buildReviewPrompt({ repo: project.repo, prNumber, headSha }, customPrompt)],
-					// `gh` reads GH_TOKEN ahead of any ambient `gh auth` login, so every gh
-					// call the agent makes acts as the reviewer persona.
-					maxOutputBytes: MAX_AGENT_OUTPUT_BYTES,
-					logContext: { taskId, phase: 'review', prNumber, headSha },
-					timeoutMs,
-					signal,
-					env: { GH_TOKEN: agentToken },
-				});
+		const { agent, isReReview } = await produceReviewAgentResult({
+			shouldResumeDelivery,
+			cli,
+			model,
+			reasoning,
+			sessionId,
+			resumeSessionId,
+			resumed,
+			worktreePath: handle.path,
+			project,
+			prNumber,
+			headSha,
+			taskId,
+			customPrompt,
+			agentToken,
+			timeoutMs,
+			signal,
+			runAgent,
+			getPriorSubmittedReview,
+		});
 
 		if (agent.exitCode !== 0) {
 			logAgentFailure(taskId, prNumber, agent);
@@ -388,6 +489,7 @@ export async function runReviewPhase(options: RunReviewPhaseOptions): Promise<Re
 			verdict,
 			reviewOrdinal,
 			automationOutcome,
+			isReReview,
 		});
 
 		return { verdict, agent, reviewOrdinal, automationOutcome };

@@ -8,6 +8,7 @@ vi.mock('node:fs', () => ({
 	readFileSync: () => verdictFileContents,
 }));
 
+import type { ReviewVerdictRecord } from '@/db/repositories/reviewVerdictsRepository.js';
 import type { AgentCliResult, RunAgentCliOptions } from '@/harness/agent-cli.js';
 import { buildReviewPrompt, REVIEW_VERDICT_FILENAME, runReviewPhase } from '@/pipeline/review.js';
 import { ReviewHandoffSchema } from '@/scm/delivery.js';
@@ -59,6 +60,10 @@ function makeDeps() {
 		// exercise the common case without a live database (issue #235).
 		markReviewVerdictSubmitted: vi.fn(async () => ({ id: 'verdict-1', ordinal: 1 })),
 		abandonReviewVerdict: vi.fn(async () => {}),
+		// No prior submitted review by default → this is the PR's first review (issue #328).
+		getPriorSubmittedReview: vi.fn<() => Promise<ReviewVerdictRecord | undefined>>(
+			async () => undefined,
+		),
 	};
 }
 
@@ -276,6 +281,63 @@ describe('runReviewPhase', () => {
 			await expect(runReviewPhase(deps)).rejects.toThrow(/exited with code 1/);
 		});
 	});
+
+	describe('re-review scoping (issue #328)', () => {
+		const priorRequestChanges: ReviewVerdictRecord = {
+			ordinal: 1,
+			state: 'submitted',
+			verdict: 'request-changes',
+			headSha: 'oldsha0000000000000000000000000000000000',
+		};
+
+		it('looks up the prior submitted review by PR at the current head', async () => {
+			const deps = makeDeps();
+			await runReviewPhase(deps);
+			expect(deps.getPriorSubmittedReview).toHaveBeenCalledWith(
+				deps.project.id,
+				deps.project.repo,
+				'99',
+				HEAD_SHA,
+			);
+		});
+
+		it('gives the agent the scoped re-review prompt after a prior request-changes verdict', async () => {
+			const deps = makeDeps();
+			deps.getPriorSubmittedReview = vi.fn(async () => priorRequestChanges);
+
+			await runReviewPhase(deps);
+
+			const prompt = deps.runAgent.mock.calls[0][0].args?.[0] ?? '';
+			expect(prompt).toContain('This is a RE-REVIEW');
+			expect(prompt).toContain('STAY IN SCOPE');
+			// The full-review-only instruction must not appear on a re-review.
+			expect(prompt).not.toContain('Review ALL changed files');
+		});
+
+		it('gives the agent the full-review prompt when there is no prior review', async () => {
+			const deps = makeDeps();
+			// makeDeps() defaults getPriorSubmittedReview to undefined (first review).
+			await runReviewPhase(deps);
+
+			const prompt = deps.runAgent.mock.calls[0][0].args?.[0] ?? '';
+			expect(prompt).toContain('Review ALL changed files');
+			expect(prompt).not.toContain('This is a RE-REVIEW');
+		});
+
+		it('treats a prior approval/comment as not-a-re-review (full-review prompt)', async () => {
+			const deps = makeDeps();
+			deps.getPriorSubmittedReview = vi.fn(async () => ({
+				...priorRequestChanges,
+				verdict: 'comment',
+			}));
+
+			await runReviewPhase(deps);
+
+			const prompt = deps.runAgent.mock.calls[0][0].args?.[0] ?? '';
+			expect(prompt).toContain('Review ALL changed files');
+			expect(prompt).not.toContain('This is a RE-REVIEW');
+		});
+	});
 });
 
 describe('buildReviewPrompt', () => {
@@ -341,5 +403,40 @@ describe('buildReviewPrompt', () => {
 
 		expect(withoutPlan.success).toBe(false);
 		expect(withPlan.success).toBe(true);
+	});
+
+	describe('re-review variant (issue #328)', () => {
+		it('scopes the re-review to verifying previously requested changes and forbids new findings', () => {
+			const prompt = buildReviewPrompt(context, undefined, true);
+			expect(prompt).toContain('This is a RE-REVIEW');
+			expect(prompt).toContain('verify that the previously requested changes were');
+			expect(prompt).toContain('STAY IN SCOPE');
+			expect(prompt).toContain('Do NOT raise new findings for pre-existing issues');
+			// Approve-when-fixed / otherwise-request-changes-with-a-strong-fix framing.
+			expect(prompt).toContain('use verdict approve');
+			expect(prompt).toContain('strong, specific, actionable instruction on exactly how to fix it');
+		});
+
+		it('keeps the shared review contract (read-only, no gh mutation, hand-off, no merge)', () => {
+			const prompt = buildReviewPrompt(context, undefined, true);
+			expect(prompt).toContain('REVIEW ONLY');
+			expect(prompt).toContain(HEAD_SHA);
+			expect(prompt).toContain(`gh pr view 99 --repo jkwiecien/swarm --comments`);
+			expect(prompt).toContain(`gh pr review 99 --repo jkwiecien/swarm`);
+			expect(prompt).toContain(REVIEW_VERDICT_FILENAME);
+			expect(prompt).toContain('Do not merge the PR');
+			expect(prompt).toContain('GH_TOKEN');
+		});
+
+		it('omits the full-review-only instructions a re-review must not follow', () => {
+			const prompt = buildReviewPrompt(context, undefined, true);
+			expect(prompt).not.toContain('Review ALL changed files');
+			expect(prompt).not.toContain('Include every notable issue in findings');
+		});
+
+		it('defaults to the full initial-review prompt when isReReview is unset', () => {
+			expect(buildReviewPrompt(context)).not.toContain('This is a RE-REVIEW');
+			expect(buildReviewPrompt(context, undefined, false)).not.toContain('This is a RE-REVIEW');
+		});
 	});
 });
