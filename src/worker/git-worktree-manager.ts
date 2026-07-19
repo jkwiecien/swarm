@@ -227,6 +227,69 @@ export class GitWorktreeManager {
 	}
 
 	/**
+	 * Whether the worktree has any local commits that have not been pushed to origin.
+	 */
+	async hasUnpushedWork(taskId: string): Promise<boolean> {
+		const path = this.worktreePath(taskId);
+		try {
+			const branchName = (await this.git(['symbolic-ref', '--short', '-q', 'HEAD'], path)).trim();
+			if (!branchName) return false;
+
+			let upstream: string | null = null;
+			try {
+				upstream = (await this.git(['rev-parse', '--abbrev-ref', '@{u}'], path)).trim();
+			} catch {
+				// no upstream tracking branch
+			}
+
+			if (upstream) {
+				const countStr = (
+					await this.git(['rev-list', '--count', `${upstream}..HEAD`], path)
+				).trim();
+				return parseInt(countStr, 10) > 0;
+			}
+
+			// check if origin has a branch of the same name
+			let remoteBranch: string | null = null;
+			try {
+				await this.git(
+					['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branchName}`],
+					path,
+				);
+				remoteBranch = `origin/${branchName}`;
+			} catch {
+				// remote branch does not exist
+			}
+
+			if (remoteBranch) {
+				const countStr = (
+					await this.git(['rev-list', '--count', `${remoteBranch}..HEAD`], path)
+				).trim();
+				return parseInt(countStr, 10) > 0;
+			}
+
+			// compare against base branch
+			const base = this.project.baseBranch;
+			let baseRef = `origin/${base}`;
+			try {
+				await this.git(['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${base}`], path);
+			} catch {
+				baseRef = base;
+			}
+
+			const countStr = (await this.git(['rev-list', '--count', `${baseRef}..HEAD`], path)).trim();
+			return parseInt(countStr, 10) > 0;
+		} catch (err) {
+			logger.warn('worktree unpushed work check failed — treating as having unpushed work', {
+				taskId,
+				path,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return true;
+		}
+	}
+
+	/**
 	 * `cleanup()` only removes the worktree checkout, never the branch `provision`
 	 * cut for it (§4.2 step 5 is silent on branches on purpose — a *successful*
 	 * Implementation run needs `issue-<id>` to still exist locally so Review /

@@ -154,6 +154,10 @@ export interface RunRespondToCiPhaseOptions {
 	 */
 	sessionId?: string;
 	resumeSessionId?: string;
+	/** The database run id. */
+	runId?: string;
+	/** Mode for recovering a cancelled preserved worktree. */
+	recoveryMode?: 'resume' | 'fresh';
 	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
 	resumeDelivery?: boolean;
 	/** Kill the agent run after this many ms. Omit for no timeout. */
@@ -224,6 +228,8 @@ export async function runRespondToCiPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		runId,
+		recoveryMode,
 		resumeDelivery = false,
 		timeoutMs,
 		signal,
@@ -259,6 +265,8 @@ export async function runRespondToCiPhase(
 		resumeSessionId,
 		() => worktrees.provision(taskId, { createBranch: false, branch: prBranch }),
 		resumeDelivery,
+		recoveryMode,
+		project.id,
 	);
 	let preserveForResume = false;
 	try {
@@ -364,6 +372,12 @@ export async function runRespondToCiPhase(
 		}
 		throw error;
 	} finally {
-		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'respond-to-ci phase');
+		await cleanupUnlessPreserved(
+			worktrees,
+			taskId,
+			preserveForResume,
+			'respond-to-ci phase',
+			runId,
+		);
 	}
 }

@@ -76,6 +76,7 @@ import { runPlanningPhase } from '../pipeline/planning.js';
 import { runResolveConflictsPhase } from '../pipeline/resolve-conflicts.js';
 import { runRespondToCiPhase } from '../pipeline/respond-to-ci.js';
 import { runRespondToReviewPhase } from '../pipeline/respond-to-review.js';
+import { BlockedRecoveryError } from '../pipeline/resume.js';
 import {
 	type ReviewAutomationOutcome,
 	type ReviewVerdict,
@@ -1076,6 +1077,9 @@ async function tryReuseLatestRun(
 		job,
 		implementationUnplanned,
 	);
+	const recoveryVal = job.recoveryMode
+		? { state: 'recovered' as const, agentSessionId: job.agentSessionId ?? null }
+		: null;
 	const claimed = await resetRunToRunning(
 		prior.id,
 		{ ...job, runId: prior.id },
@@ -1085,6 +1089,7 @@ async function tryReuseLatestRun(
 		overrides.reasoning ?? null,
 		overrides.engine,
 		job.resumeSession ? undefined : null,
+		recoveryVal,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -1108,6 +1113,9 @@ async function tryResetCarriedRun(
 			job,
 			implementationUnplanned,
 		);
+		const recoveryVal = job.recoveryMode
+			? { state: 'recovered' as const, agentSessionId: job.agentSessionId ?? null }
+			: null;
 		return (await resetRunToRunning(
 			runId,
 			job,
@@ -1117,6 +1125,7 @@ async function tryResetCarriedRun(
 			overrides.reasoning ?? null,
 			overrides.engine,
 			job.resumeSession ? undefined : null,
+			recoveryVal,
 		))
 			? runId
 			: undefined;
@@ -1317,9 +1326,38 @@ async function finalizeFailedRun(
 			agent,
 		);
 	} else if (outcome.status === 'phase-failed') {
+		let recoveryVal: any = null;
+		let sessionToRetain: string | null = null;
+
+		if (err instanceof BlockedRecoveryError) {
+			recoveryVal = {
+				state: 'blocked',
+				blockedReason: err.reason,
+			};
+		} else {
+			const isCancelled = runId ? await isRunCancellationRequested(runId) : false;
+			if (isCancelled && runId) {
+				const run = await getRunByIdFromDb(runId);
+				const activeSessionId = agent?.sessionId ?? run?.agentSessionId;
+				if (activeSessionId) {
+					sessionToRetain = activeSessionId;
+					recoveryVal = {
+						state: 'preserved',
+						agentSessionId: activeSessionId,
+					};
+				}
+			}
+		}
+
 		await finalizeRun(
 			runId,
-			{ status: 'failed', error: outcome.error, agentSessionId: null, ...agentColumns(agent) },
+			{
+				status: 'failed',
+				error: outcome.error,
+				agentSessionId: sessionToRetain,
+				recovery: recoveryVal,
+				...agentColumns(agent),
+			},
 			agent,
 		);
 	}
@@ -1817,7 +1855,9 @@ async function handlePhaseFailure(
 			? err.failure.kind
 			: err instanceof WorktreeAlreadyExistsError
 				? 'worktree-exists'
-				: undefined;
+				: err instanceof BlockedRecoveryError
+					? 'blocked-recovery'
+					: undefined;
 
 	// A usage/session-limit hit, a worker-shutdown abort, or a worktree "already
 	// exists" directory collision is transient/recoverable: rather than failing the

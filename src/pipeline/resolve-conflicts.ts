@@ -70,6 +70,10 @@ export interface RunResolveConflictsPhaseOptions {
 	/** Assign a fresh session id (`sessionId`) or resume from one on retry (`resumeSessionId`). */
 	sessionId?: string;
 	resumeSessionId?: string;
+	/** The database run id. */
+	runId?: string;
+	/** Mode for recovering a cancelled preserved worktree. */
+	recoveryMode?: 'resume' | 'fresh';
 	/** Resume deterministic delivery from a preserved worktree without rerunning the agent. */
 	resumeDelivery?: boolean;
 	timeoutMs?: number;
@@ -97,6 +101,8 @@ export async function runResolveConflictsPhase(
 		customPrompt,
 		sessionId,
 		resumeSessionId,
+		runId,
+		recoveryMode,
 		resumeDelivery = false,
 		timeoutMs,
 		signal,
@@ -124,6 +130,8 @@ export async function runResolveConflictsPhase(
 		resumeSessionId,
 		() => worktrees.provision(taskId, { createBranch: false, branch: prBranch }),
 		resumeDelivery,
+		recoveryMode,
+		project.id,
 	);
 	let preserveForResume = false;
 	try {
@@ -218,6 +226,12 @@ export async function runResolveConflictsPhase(
 		}
 		throw error;
 	} finally {
-		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'resolve-conflicts phase');
+		await cleanupUnlessPreserved(
+			worktrees,
+			taskId,
+			preserveForResume,
+			'resolve-conflicts phase',
+			runId,
+		);
 	}
 }

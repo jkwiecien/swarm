@@ -10,15 +10,14 @@ import {
 } from '../../db/repositories/dispatchesRepository.js';
 import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
 import {
+	cancelDeferredRunInDb,
 	getRunByIdFromDb,
 	getRunLogsFromDb,
 	getRunOutputEvents,
 	listRunsFromDb,
-	markRunUserTerminated,
 } from '../../db/repositories/runsRepository.js';
 import {
 	cancelDispatchAndWake,
-	cancelDispatchForRun,
 	createAndPublishDispatch,
 	publishDispatchWakeUp,
 } from '../../dispatch/dispatcher.js';
@@ -34,7 +33,7 @@ import {
 	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../../queue/jobs.js';
-import { priorityFor } from '../../queue/producer.js';
+import { priorityFor, removePendingJobById } from '../../queue/producer.js';
 import {
 	deriveQueuedPhaseHint,
 	type QueuedPhaseHint,
@@ -210,6 +209,8 @@ function reconstructRetryJob(
 	model?: string,
 	reasoning?: z.infer<typeof ReasoningLevelSchema>,
 	freshSession = false,
+	recoveryMode?: 'resume' | 'fresh',
+	expectedSessionId?: string | null,
 ): SwarmJob {
 	const job = { ...jobPayload };
 	job.runId = runId;
@@ -220,11 +221,24 @@ function reconstructRetryJob(
 	if (cli) job.cliOverride = cli;
 	if (model) job.modelOverride = model;
 	if (reasoning) job.reasoningOverride = reasoning;
-	if (freshSession) {
+	if (recoveryMode) {
+		job.recoveryMode = recoveryMode;
+		if (recoveryMode === 'resume') {
+			job.resumeSession = true;
+			if (expectedSessionId) job.agentSessionId = expectedSessionId;
+		} else {
+			job.agentSessionId = randomUUID();
+			delete job.resumeSession;
+		}
+	} else if (freshSession) {
 		job.agentSessionId = randomUUID();
 		delete job.resumeSession;
 	}
 	return job;
+}
+
+function wakeJobId(dispatch: { id: string; wakeSeq: number }): string {
+	return `dispatch_${dispatch.id}_w${dispatch.wakeSeq}`;
 }
 
 function alreadyRetrying(): TRPCError {
@@ -330,9 +344,15 @@ export const runsRouter = router({
 			// start-check would instantly terminate the fresh attempt.
 			await clearRunCancellation(input.runId);
 
+			const isRecovery = run.recovery?.state === 'preserved';
 			const applyingOverride =
 				input.cli !== undefined || input.model !== undefined || input.reasoning !== undefined;
-			const startFresh = run.status === 'failed' || run.agentSessionId === null || applyingOverride;
+			let startFresh = run.status === 'failed' || run.agentSessionId === null || applyingOverride;
+			let recoveryMode: 'resume' | 'fresh' | undefined;
+			if (isRecovery) {
+				recoveryMode = applyingOverride ? 'fresh' : 'resume';
+				startFresh = applyingOverride;
+			}
 
 			const active = await getActiveDispatchByRunId(run.id);
 			if (active) {
@@ -353,6 +373,8 @@ export const runsRouter = router({
 					input.model,
 					input.reasoning,
 					startFresh,
+					recoveryMode,
+					run.recovery?.agentSessionId ?? run.agentSessionId,
 				);
 				const reopened = await reopenDispatchForManualRetry(active.id, job);
 				if (!reopened) throw alreadyRetrying();
@@ -383,6 +405,8 @@ export const runsRouter = router({
 				input.model,
 				input.reasoning,
 				startFresh,
+				recoveryMode,
+				run.recovery?.agentSessionId ?? run.agentSessionId,
 			);
 			try {
 				await createAndPublishDispatch({
@@ -458,19 +482,13 @@ export const runsRouter = router({
 			await requestRunCancellation(run.id);
 
 			if (run.status === 'deferred') {
-				// Cancel the canonical dispatch first (issue #284): a cancelled
-				// dispatch refuses every future claim — a late retry wake-up, a slot
-				// release, or reconciliation — so nothing can resurrect this run.
-				// Then atomically fail the row while it's still deferred.
-				await cancelDispatchForRun(run.id, USER_TERMINATION_MESSAGE);
-				if (await markRunUserTerminated(run.id, USER_TERMINATION_MESSAGE, 'deferred')) {
-					// Keep the durable marker until an explicit retry clears it. The
-					// completed handler can still be between persisting `deferred` and
-					// enqueueing its retry; it uses this marker to remove a late retry.
+				const res = await cancelDeferredRunInDb(run.id, USER_TERMINATION_MESSAGE);
+				if (res.success) {
+					if (res.dispatch) {
+						await removePendingJobById(wakeJobId(res.dispatch)).catch(() => false);
+					}
 					return { runId: run.id, status: 'failed' as const };
 				}
-				// Lost the race: a worker picked the retry up between our read and the
-				// conditional flip (the row is now `running`, or already settled).
 				// Report its current state — the flag we set drives the worker to
 				// terminate it if it's running.
 				const latest = await getRunByIdFromDb(run.id);

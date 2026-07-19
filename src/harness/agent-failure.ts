@@ -27,7 +27,8 @@ export type AgentFailureKind =
 	| 'aborted'
 	| 'stalled'
 	| 'error'
-	| 'worktree-exists';
+	| 'worktree-exists'
+	| 'blocked-recovery';
 
 export interface AgentFailure {
 	kind: AgentFailureKind;
