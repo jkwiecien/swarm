@@ -138,7 +138,8 @@ The live task backlog is the [SWARM GitHub Projects board](https://github.com/or
 ## Contributing
 
 Read [`ai/RULES.md`](./ai/RULES.md) before making changes. Run
-`npm run verify` before submitting a change.
+`npm run verify` before submitting a change. GitHub Actions runs the same
+verification command for every pull request.
 
 ## License
 
