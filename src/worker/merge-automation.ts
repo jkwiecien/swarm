@@ -198,7 +198,14 @@ export async function processMergeAutomationDispatch(
 	} catch (err) {
 		outcome = { status: 'provider-error', message: describeError(err) };
 	}
-	await persistMergeOutcome(job, outcome.status, outcome.message, attempt);
+	// A `not-ready` is persisted inside its branch below — but only when a retry
+	// is actually scheduled. On the attempt that spends the budget it would be
+	// immediately overwritten by `retry-exhausted`, so we skip the fleeting write
+	// and let that branch record the terminal outcome directly. Every other status
+	// is terminal here, so persist it once now.
+	if (outcome.status !== 'not-ready') {
+		await persistMergeOutcome(job, outcome.status, outcome.message, attempt);
+	}
 
 	if (outcome.status === 'merged') {
 		logger.info('Merge automation: merged pull request', {
@@ -232,6 +239,7 @@ export async function processMergeAutomationDispatch(
 				prNumber: job.prNumber,
 			};
 		}
+		await persistMergeOutcome(job, 'not-ready', outcome.message, attempt);
 		// Persist the retry intent before any queue work (ADR-002): a crash here
 		// leaves a durable `retry-scheduled` row the reconciler re-publishes.
 		const updated = await scheduleDispatchRetry(dispatch.id, {

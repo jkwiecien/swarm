@@ -2078,6 +2078,13 @@ export async function processJob(
 		if (trigger.phase === 'planning' && result.split) {
 			await selfEnqueueSplitChildPlanning(project, result.split.subTaskItemIds);
 		}
+		// Ordering matters: this must run *after* `tryCompleteDispatch` above. The
+		// merge dispatch it persists is linked to this same `runId`, and the
+		// partial unique `uq_dispatches_active_run` index (issue #284) allows only
+		// one non-terminal dispatch per run — creating it while the Review dispatch
+		// is still active would raise a unique violation that `requestMergeAutomation`
+		// only swallows, silently dropping the merge. Completing the Review dispatch
+		// first drops it out of that partial index, so the insert is safe.
 		await requestMergeAutomationIfEligible(trigger, project, runId, result.verdict);
 		return {
 			status: 'phase-succeeded',

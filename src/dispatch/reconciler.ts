@@ -306,13 +306,21 @@ async function backfillLegacyMergeFollowUps(): Promise<number> {
 	return imported;
 }
 
-/** Obliterate the retired merge-follow-up queue so its delayed jobs can't linger in Redis. */
+/**
+ * Obliterate the retired merge-follow-up queue so its delayed jobs can't linger
+ * in Redis. Only obliterates when the queue actually holds jobs: nothing
+ * consumes it anymore, so this is pure hygiene, and skipping the write once the
+ * queue is empty stops every subsequent startup from re-obliterating an
+ * already-drained queue.
+ */
 async function drainLegacyMergeFollowUpQueue(): Promise<void> {
 	const queue = new Queue(LEGACY_MERGE_FOLLOW_UP_QUEUE, {
 		connection: parseRedisUrl(requireEnv('REDIS_URL')),
 	});
 	try {
-		await queue.obliterate({ force: true });
+		const counts = await queue.getJobCounts();
+		const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+		if (total > 0) await queue.obliterate({ force: true });
 	} catch (err) {
 		logger.warn('dispatch-reconciler: failed to drain the retired merge-follow-up queue', {
 			error: describeError(err),
