@@ -5,6 +5,7 @@ import { getDb } from '../../../src/db/client.js';
 import {
 	cancelWaitingDispatch,
 	createDispatch,
+	listWaitingDispatches,
 } from '../../../src/db/repositories/dispatchesRepository.js';
 import { deleteProjectFromDb } from '../../../src/db/repositories/projectsRepository.js';
 import {
@@ -607,60 +608,94 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(result).toEqual({ data: [], total: 0 });
 		});
 
-		// issue #279: a queued run must appear only in Queue, not twice (once in
-		// Queue and again in the runs list as `deferred`).
-		it('hides a deferred run that is still waiting in the queue, keeps orphaned ones', async () => {
-			// A deferred run whose retry intent is still queued — a waiting dispatch
-			// links it, so the Queue read model already shows it.
-			const queuedRunId = await createRun({
+		it('keeps actionable deferred attempts visible alongside their queued dispatches', async () => {
+			const rateLimitedRunId = await createRun({
 				projectId: PROJECT_ID,
-				taskId: 'queued',
+				taskId: 'rate-limited',
 				phase: 'implementation',
 			});
-			await completeRun(queuedRunId, { status: 'deferred' });
-			const { dispatch } = await createDispatch({
+			await completeRun(rateLimitedRunId, { status: 'deferred', error: 'rate limited' });
+			await createDispatch({
 				projectId: PROJECT_ID,
 				jobPayload: {
 					...createMockGitHubWebhookJob(),
 					projectId: PROJECT_ID,
-					runId: queuedRunId,
+					runId: rateLimitedRunId,
 				} as SwarmJob,
 				source: 'synthetic',
 				waitReason: 'rate-limit',
-				runId: queuedRunId,
+				runId: rateLimitedRunId,
 				state: 'retry-scheduled',
 			});
 
-			// A deferred run with no active dispatch — a dead-end orphan; stays visible.
-			const orphanRunId = await createRun({
+			const capacityRunId = await createRun({
 				projectId: PROJECT_ID,
-				taskId: 'orphan',
+				taskId: 'capacity',
 				phase: 'review',
 			});
-			await completeRun(orphanRunId, { status: 'deferred' });
+			await completeRun(capacityRunId, { status: 'deferred', error: 'provider capacity' });
+			await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: {
+					...createMockGitHubWebhookJob({ deliveryId: 'capacity-dispatch' }),
+					projectId: PROJECT_ID,
+					runId: capacityRunId,
+				} as SwarmJob,
+				source: 'synthetic',
+				waitReason: 'project-capacity',
+				runId: capacityRunId,
+				state: 'pending',
+			});
+
+			// No runId means no attempt exists for Runs to display yet.
+			const fresh = await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: createMockGitHubWebhookJob({
+					deliveryId: 'fresh-dispatch',
+					projectId: PROJECT_ID,
+				}),
+				source: 'webhook',
+			});
+
+			const settledRunId = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'settled',
+				phase: 'resolve-conflicts',
+			});
+			await completeRun(settledRunId, { status: 'deferred' });
+			const settled = await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: {
+					...createMockGitHubWebhookJob({ deliveryId: 'settled-dispatch' }),
+					projectId: PROJECT_ID,
+					runId: settledRunId,
+				} as SwarmJob,
+				source: 'synthetic',
+				runId: settledRunId,
+				state: 'retry-scheduled',
+			});
+			await cancelWaitingDispatch(settled.dispatch.id, 'test settled dispatch');
 
 			const all = await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 });
 			const ids = all.data.map((r) => r.id);
-			expect(ids).toContain(orphanRunId);
-			expect(ids).not.toContain(queuedRunId);
-			expect(all.total).toBe(1);
+			expect(ids).toEqual(expect.arrayContaining([rateLimitedRunId, capacityRunId, settledRunId]));
+			expect(all.total).toBe(3);
 
-			// An explicit `deferred` filter is consistent — still no duplicate.
 			const deferred = await listRunsFromDb({
 				projectId: PROJECT_ID,
 				status: 'deferred',
-				limit: 50,
+				limit: 2,
 				offset: 0,
 			});
-			expect(deferred.data.map((r) => r.id)).toEqual([orphanRunId]);
-			expect(deferred.total).toBe(1);
+			expect(deferred.data).toHaveLength(2);
+			expect(deferred.total).toBe(3);
 
-			// Once the dispatch leaves the waiting set, the run reappears per its
-			// normal lifecycle (acceptance criterion 3).
-			await cancelWaitingDispatch(dispatch.id, 'test');
-			const after = await listRunsFromDb({ projectId: PROJECT_ID, limit: 50, offset: 0 });
-			expect(after.data.map((r) => r.id)).toContain(queuedRunId);
-			expect(after.total).toBe(2);
+			const queued = await listWaitingDispatches(PROJECT_ID);
+			expect(queued.map((dispatch) => dispatch.runId)).toEqual(
+				expect.arrayContaining([rateLimitedRunId, capacityRunId, null]),
+			);
+			expect(queued.map((dispatch) => dispatch.id)).toContain(fresh.dispatch.id);
+			expect(queued.map((dispatch) => dispatch.runId)).not.toContain(settledRunId);
 		});
 	});
 
