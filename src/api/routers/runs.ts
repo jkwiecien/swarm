@@ -29,8 +29,8 @@ import { describeError } from '../../lib/errors.js';
 import { logger } from '../../lib/logger.js';
 import {
 	clearRunCancellation,
+	RUN_CANCELLED_MESSAGE,
 	requestRunCancellation,
-	USER_TERMINATION_MESSAGE,
 } from '../../queue/cancellation.js';
 import { type SwarmJob, SwarmJobSchema } from '../../queue/jobs.js';
 import { priorityFor, removePendingJobById } from '../../queue/producer.js';
@@ -482,7 +482,9 @@ export const runsRouter = router({
 			await requestRunCancellation(run.id);
 
 			if (run.status === 'deferred') {
-				const res = await cancelDeferredRunInDb(run.id, USER_TERMINATION_MESSAGE);
+				// Cancel the canonical dispatch and fail the row atomically while still deferred (issue #284).
+				// Preserves session info and payload for future recovery retry (issue #306).
+				const res = await cancelDeferredRunInDb(run.id, RUN_CANCELLED_MESSAGE);
 				if (res.success) {
 					if (res.dispatch) {
 						await removePendingJobById(wakeJobId(res.dispatch)).catch(() => false);

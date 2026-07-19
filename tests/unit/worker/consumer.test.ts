@@ -258,7 +258,7 @@ const clearRunCancellation = vi.fn(async (_runId: string) => {});
 vi.mock('@/queue/cancellation.js', () => ({
 	isRunCancellationRequested: (runId: string) => isRunCancellationRequested(runId),
 	clearRunCancellation: (runId: string) => clearRunCancellation(runId),
-	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
+	RUN_CANCELLED_MESSAGE: 'Run cancelled after a cancellation request.',
 }));
 
 const registerRunController = vi.fn<(runId: string, controller: AbortController) => void>();
@@ -1806,9 +1806,10 @@ describe('processJob', () => {
 		expect(clearRunCancellation).toHaveBeenCalledWith('run-1');
 	});
 
-	it('settles a user-terminated abort as a terminal failure, not a deferral', async () => {
-		// The user asked to terminate: an aborted run that would normally defer must
-		// instead fail terminally with the user-termination reason (issue #166).
+	it('settles a marker-only cancellation as a terminal failure, not a deferral', async () => {
+		// A cancellation was requested: an aborted run that would normally defer must
+		// instead fail terminally with the neutral cancellation reason (issue #166,
+		// #305), flagged structurally rather than by comparing the error string.
 		isRunCancellationRequested.mockResolvedValue(true);
 		phaseImpl = async () => {
 			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
@@ -1825,18 +1826,25 @@ describe('processJob', () => {
 			status: 'phase-failed',
 			phase: 'review',
 			taskId: '17',
-			error: 'Run terminated by user from the dashboard.',
+			error: 'Run cancelled after a cancellation request.',
+			cancelled: true,
 		});
 		// An intentional stop isn't a stall — no board/PR "failed" comment is posted.
 		expect(commentOnPullRequest).not.toHaveBeenCalled();
-		// The failed row records the user-termination reason.
+		// The failed row records the neutral cancellation reason.
 		expect(completeRun).toHaveBeenCalledWith(
 			'run-1',
 			expect.objectContaining({
 				status: 'failed',
-				error: 'Run terminated by user from the dashboard.',
+				error: 'Run cancelled after a cancellation request.',
 			}),
 		);
+		// The dispatch is cancelled (not failed), so nothing resurrects it.
+		expect(cancelClaimedDispatch).toHaveBeenCalledWith(
+			expect.any(String),
+			'Run cancelled after a cancellation request.',
+		);
+		expect(failDispatch).not.toHaveBeenCalled();
 	});
 
 	it('aborts before running the agent when cancellation was requested at pickup', async () => {

@@ -87,7 +87,7 @@ import type { WorkItem } from '../pm/types.js';
 import {
 	clearRunCancellation,
 	isRunCancellationRequested,
-	USER_TERMINATION_MESSAGE,
+	RUN_CANCELLED_MESSAGE,
 } from '../queue/cancellation.js';
 import {
 	type GitHubProjectsWebhookJob,
@@ -157,6 +157,12 @@ export type JobOutcome =
 			phase: TriggerPhase;
 			taskId: string;
 			error: string;
+			/**
+			 * True when this failure is a cancellation (the durable marker was found
+			 * set), not an agent/provider failure — drives the dispatch-settle branch's
+			 * cancel-vs-fail choice structurally instead of string-comparing `error`.
+			 */
+			cancelled?: boolean;
 	  }
 	| {
 			status: 'phase-deferred';
@@ -1836,7 +1842,7 @@ async function handlePhaseFailure(
 	// `finalizeFailedRun` (logs preserved); we only skip the board "failed" comment,
 	// as an intentional stop isn't a stall a human needs to investigate.
 	if (runId && (await isRunCancellationRequested(runId))) {
-		logger.info(`Phase terminated by user - ${phaseLabel(trigger.phase)}`, {
+		logger.info(`Phase cancelled after cancellation request - ${phaseLabel(trigger.phase)}`, {
 			projectId: project.id,
 			phase: trigger.phase,
 			taskId: trigger.taskId,
@@ -1846,7 +1852,8 @@ async function handlePhaseFailure(
 			status: 'phase-failed',
 			phase: trigger.phase,
 			taskId: trigger.taskId,
-			error: USER_TERMINATION_MESSAGE,
+			error: RUN_CANCELLED_MESSAGE,
+			cancelled: true,
 		};
 	}
 
@@ -2149,8 +2156,8 @@ export async function processJob(
 			if (outcome.status === 'phase-deferred') {
 				await settleDispatchRetry(dispatch, job, outcome);
 			} else if (outcome.status === 'phase-failed') {
-				if (outcome.error === USER_TERMINATION_MESSAGE) {
-					await cancelClaimedDispatch(dispatch.id, USER_TERMINATION_MESSAGE);
+				if (outcome.cancelled) {
+					await cancelClaimedDispatch(dispatch.id, RUN_CANCELLED_MESSAGE);
 				} else {
 					await failDispatch(dispatch.id, outcome.error);
 				}

@@ -36,8 +36,13 @@ const CANCELLATION_SET_KEY = 'swarm:run-cancellations';
 /** Pub/sub channel carrying a just-requested run id for prompt worker abort. */
 const CANCELLATION_CHANNEL = 'swarm:run-cancel';
 
-/** The `error`/message a user-terminated run records — its terminal reason. */
-export const USER_TERMINATION_MESSAGE = 'Run terminated by user from the dashboard.';
+/**
+ * The `error`/message a cancelled run records — its terminal reason. Neutral by
+ * design (issue #305): the durable marker this module tracks proves only that a
+ * cancellation was requested, not who requested it, so the wording must not
+ * assert an unverified actor or origin.
+ */
+export const RUN_CANCELLED_MESSAGE = 'Run cancelled after a cancellation request.';
 
 let redisInstance: Redis | null = null;
 

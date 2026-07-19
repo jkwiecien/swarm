@@ -54,7 +54,7 @@ vi.mock('@/queue/queued-runs.js', () => ({
 vi.mock('@/queue/cancellation.js', () => ({
 	requestRunCancellation: vi.fn(),
 	clearRunCancellation: vi.fn(),
-	USER_TERMINATION_MESSAGE: 'Run terminated by user from the dashboard.',
+	RUN_CANCELLED_MESSAGE: 'Run cancelled after a cancellation request.',
 }));
 
 import { runsRouter } from '@/api/routers/runs.js';
@@ -84,8 +84,8 @@ import {
 import { getPMProvider } from '@/integrations/pm/registry.js';
 import {
 	clearRunCancellation,
+	RUN_CANCELLED_MESSAGE,
 	requestRunCancellation,
-	USER_TERMINATION_MESSAGE,
 } from '@/queue/cancellation.js';
 import type { SwarmJob } from '@/queue/jobs.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
@@ -741,7 +741,7 @@ describe('runsRouter', () => {
 
 			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
 			expect(requestRunCancellation).toHaveBeenCalledWith('run-1');
-			expect(cancelDeferredRunInDb).toHaveBeenCalledWith('run-1', USER_TERMINATION_MESSAGE);
+			expect(cancelDeferredRunInDb).toHaveBeenCalledWith('run-1', RUN_CANCELLED_MESSAGE);
 			// Keep the marker until an explicit retry clears it: a wake-up that
 			// already claimed the dispatch honours it at run start.
 			expect(clearRunCancellation).not.toHaveBeenCalled();

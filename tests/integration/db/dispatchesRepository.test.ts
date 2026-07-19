@@ -24,7 +24,6 @@ import {
 	completeRun,
 	createRun,
 	getRunByIdFromDb,
-	listRunsFromDb,
 } from '../../../src/db/repositories/runsRepository.js';
 import { describeError } from '../../../src/lib/errors.js';
 import type { SwarmJob } from '../../../src/queue/jobs.js';

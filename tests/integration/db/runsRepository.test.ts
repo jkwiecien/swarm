@@ -878,7 +878,11 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 		it('is true for a failed run with its session preserved', async () => {
 			const id = await createRun({ projectId: PROJECT_ID, taskId: '80', phase: 'planning' });
-			await completeRun(id, { status: 'failed', engine: 'claude', agentSessionId: '11111111-1111-4111-8111-111111111111' });
+			await completeRun(id, {
+				status: 'failed',
+				engine: 'claude',
+				agentSessionId: '11111111-1111-4111-8111-111111111111',
+			});
 			expect(await hasResumableDeferredRun(PROJECT_ID, '80')).toBe(true);
 		});
 
