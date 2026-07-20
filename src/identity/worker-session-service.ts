@@ -108,9 +108,11 @@ export async function heartbeat(
 }
 
 /**
- * Gracefully release the worker's lease. Authenticates the worker, then deletes
- * its session only when `fencingToken` matches. Returns `true` if a row was
- * removed.
+ * Gracefully release the worker's lease. Authenticates the worker, then marks the
+ * matching active lease as released, clears its current run, and retains the session
+ * row and its token counter to preserve fencing-token monotonicity. Only releases
+ * when `fencingToken` matches and the session is active. Returns `true` if the
+ * session was updated, `false` if the lease was stale, already released, or not found.
  */
 export async function releaseSession(
 	rawCredential: string,
