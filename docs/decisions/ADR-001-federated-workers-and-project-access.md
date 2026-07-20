@@ -129,8 +129,16 @@ process; worker participation does not grant merge or administrator rights.
 
 ## Open questions
 
-1. Should joining an open project create an immediate `contributor` membership
-   or a pending request approved by a `projectAdmin`?
+1. ~~Should joining an open project create an immediate `contributor` membership
+   or a pending request approved by a `projectAdmin`?~~ **Resolved (#281 task 5):**
+   a **pending request approved by a `projectAdmin`/`instanceAdmin`**, granting
+   `contributor`. This keeps joining separate from execution — the project keeps
+   control over who becomes a member rather than every authenticated user
+   self-enrolling. A project opts in via `visibility: discoverable`; discovery
+   (`projects.listDiscoverable`) and requesting (`projects.requestMembership`)
+   grant no access on their own, and never grant worker registration or routing.
+   The surfaces could support immediate `contributor` by skipping the pending
+   state, but the request/approve default is the shipped behaviour.
 2. Which task classes, if any, may be routed automatically to newly enrolled
    community workers versus trusted maintainers only?
 3. Does a project owner approve workers individually, or do project-wide

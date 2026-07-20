@@ -98,6 +98,7 @@ The file is `{ "projects": [ … ] }` — a non-empty array of project objects. 
 | `baseBranch` | `main` | Branch worktrees are cut from and PRs target. |
 | `branchPrefix` | `issue-` | Prefix for task branch names (`issue-<n>-<slug>`). |
 | `maxConcurrentJobs` | `1` | Maximum jobs this project may run concurrently (positive integer). The worker retains an over-limit phase as durable pending work and dispatches it when a slot frees; this does not consume the external-failure retry budget. Its effective limit is `min(SWARM_WORKER_CONCURRENCY, maxConcurrentJobs)`. |
+| `visibility` | `private` | Discovery / open-join policy (#281 task 5). `private` — visible only to members and instance admins (project-scoped authorization hides it from everyone else). `discoverable` — additionally exposes a **limited** public read (id + name only, never credentials/config/repo/run internals) to any authenticated user via `projects.listDiscoverable`, and lets them file a membership request (`projects.requestMembership`) a `projectAdmin`/`instanceAdmin` approves into a `contributor`. Discovery and joining **never** grant worker registration or task routing — those are separate permissions (ADR-001). Editable by a `projectAdmin` via `projects.update`. |
 | `pm` | `{ type: "github-projects" }` | PM provider discriminator (only `github-projects` exists today). |
 | `githubProjects` | **required** | GitHub Projects board mapping (below). |
 | `credentials` | **required** | References (env-var keys) to GitHub credentials — never the secrets. |

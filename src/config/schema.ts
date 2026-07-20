@@ -314,6 +314,28 @@ export const WorktreeRetentionConfigSchema = z
 	})
 	.describe('Retention policy for stale per-task worktrees under worktreeRoot');
 
+/**
+ * A project's discovery / open-join policy — the per-project visibility that
+ * separates *seeing* a project from *belonging* to it (ADR-001, #281 task 5).
+ *
+ * - `private` (the default) — the project is visible only to its members and
+ *   instance admins; task-4 authorization already hides it from everyone else.
+ * - `discoverable` — additionally exposes a **limited** public read (id + name
+ *   only, never credentials, config, repo, or run internals) to any
+ *   authenticated user via `projects.listDiscoverable`, and lets them file a
+ *   membership request (`projects.requestMembership`).
+ *
+ * Discoverability grants no access on its own: a request must be approved by a
+ * `projectAdmin`/`instanceAdmin`, and approval grants only `contributor` (read).
+ * It never grants worker registration or automatic task routing — those are
+ * separate permissions (ADR-001 access model, out of scope for #281 task 5).
+ */
+export const ProjectVisibilitySchema = z.enum(['private', 'discoverable']);
+export type ProjectVisibility = z.infer<typeof ProjectVisibilitySchema>;
+
+/** Every visibility value — for CLI/dashboard copy and validation. */
+export const PROJECT_VISIBILITIES = ProjectVisibilitySchema.options;
+
 export const ProjectConfigSchema = z.object({
 	/** Stable internal identifier for this SWARM project (one Postgres row per project). */
 	id: z.string().min(1),
@@ -346,6 +368,9 @@ export const ProjectConfigSchema = z.object({
 
 	/** Maximum number of jobs this project may run concurrently. */
 	maxConcurrentJobs: z.number().int().positive().default(PROJECT_DEFAULTS.maxConcurrentJobs),
+
+	/** Discovery / open-join policy (`ProjectVisibilitySchema`); `private` by default. */
+	visibility: ProjectVisibilitySchema.default('private'),
 
 	/**
 	 * PM provider discriminator. SWARM has exactly one provider for the MVP;

@@ -37,6 +37,14 @@ export const projects = pgTable('projects', {
 	maxConcurrentJobs: integer('max_concurrent_jobs')
 		.notNull()
 		.default(PROJECT_DEFAULTS.maxConcurrentJobs),
+	/**
+	 * Discovery / open-join policy — one of `ProjectVisibilitySchema`
+	 * (`src/config/schema.ts`, the source of truth for the values), stored as
+	 * free `text` like `pm_type`. `private` (members only) by default;
+	 * `discoverable` opts the project into the limited public-discovery read and
+	 * join-request flow (#281 task 5). Never wired to execution or routing.
+	 */
+	visibility: text('visibility').notNull().default('private'),
 	pmType: text('pm_type').notNull().default('github-projects'),
 	githubProjects: jsonb('github_projects').$type<GitHubProjectsIntegrationConfig>().notNull(),
 	credentials: jsonb('credentials').$type<Credentials>().notNull(),

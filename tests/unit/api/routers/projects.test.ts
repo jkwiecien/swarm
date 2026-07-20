@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	listAllProjectsFromDb: vi.fn(),
+	listDiscoverableProjectsFromDb: vi.fn(),
 	getProjectByIdFromDb: vi.fn(),
 	createProjectInDb: vi.fn(),
 	createProjectWithMemberInDb: vi.fn(),
@@ -14,12 +15,29 @@ vi.mock('@/db/repositories/projectMembersRepository.js', () => ({
 	addMember: vi.fn(),
 }));
 
+vi.mock('@/db/repositories/projectMembershipRequestsRepository.js', () => ({
+	createMembershipRequest: vi.fn(),
+	getPendingRequest: vi.fn(),
+	getMembershipRequestById: vi.fn(),
+	listPendingRequestsForProject: vi.fn(),
+	approveMembershipRequestInDb: vi.fn(),
+	rejectMembershipRequestInDb: vi.fn(),
+}));
+
 vi.mock('@/identity/membership-service.js', () => ({
 	getMembership: vi.fn(),
 	listAccessibleProjectIds: vi.fn(),
 }));
 
 import { DEFAULT_GITHUB_PROJECTS_CONFIG, projectsRouter } from '@/api/routers/projects.js';
+import {
+	approveMembershipRequestInDb,
+	createMembershipRequest,
+	getMembershipRequestById,
+	getPendingRequest,
+	listPendingRequestsForProject,
+	rejectMembershipRequestInDb,
+} from '@/db/repositories/projectMembershipRequestsRepository.js';
 import { addMember } from '@/db/repositories/projectMembersRepository.js';
 import {
 	createProjectInDb,
@@ -27,9 +45,17 @@ import {
 	deleteProjectFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
+	listDiscoverableProjectsFromDb,
 	upsertProjectToDb,
 } from '@/db/repositories/projectsRepository.js';
-import type { ProjectMembership, ProjectRole } from '@/identity/membership.js';
+import {
+	canAdministerProject,
+	canReadProject,
+	canWriteProject,
+	type ProjectMembership,
+	type ProjectRole,
+} from '@/identity/membership.js';
+import type { MembershipRequest } from '@/identity/membership-request.js';
 import { getMembership, listAccessibleProjectIds } from '@/identity/membership-service.js';
 import type { SwarmUser } from '@/identity/schema.js';
 import { createMockProjectConfig } from '../../../helpers/factories.js';
@@ -62,6 +88,22 @@ function membershipFor(role: ProjectRole, projectId = 'p1'): ProjectMembership {
 	};
 }
 
+const REQUEST_ID = '77777777-7777-4777-8777-777777777777';
+
+function requestFor(
+	status: MembershipRequest['status'] = 'pending',
+	projectId = 'p1',
+): MembershipRequest {
+	return {
+		id: REQUEST_ID,
+		projectId,
+		userId: ORDINARY_USER.id,
+		status,
+		createdAt: new Date(0),
+		updatedAt: new Date(0),
+	};
+}
+
 describe('projectsRouter', () => {
 	// The base suite runs as an instanceAdmin, so authorization is bypassed and
 	// these assertions cover the pre-authz behaviour unchanged; the project-scoped
@@ -80,6 +122,13 @@ describe('projectsRouter', () => {
 		vi.mocked(addMember).mockResolvedValue(membershipFor('projectAdmin'));
 		vi.mocked(getMembership).mockReset();
 		vi.mocked(listAccessibleProjectIds).mockReset();
+		vi.mocked(listDiscoverableProjectsFromDb).mockReset();
+		vi.mocked(createMembershipRequest).mockReset();
+		vi.mocked(getPendingRequest).mockReset();
+		vi.mocked(getMembershipRequestById).mockReset();
+		vi.mocked(listPendingRequestsForProject).mockReset();
+		vi.mocked(approveMembershipRequestInDb).mockReset();
+		vi.mocked(rejectMembershipRequestInDb).mockReset();
 	});
 
 	describe('list', () => {
@@ -153,6 +202,7 @@ describe('projectsRouter', () => {
 			const expectedConfig = {
 				...validProjectInput,
 				maxConcurrentJobs: 1,
+				visibility: 'private',
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -183,6 +233,7 @@ describe('projectsRouter', () => {
 				baseBranch: 'main',
 				branchPrefix: 'issue-',
 				maxConcurrentJobs: 1,
+				visibility: 'private',
 				pm: { type: 'github-projects' as const },
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
@@ -214,6 +265,7 @@ describe('projectsRouter', () => {
 			const expectedConfig = {
 				...validProjectInput,
 				maxConcurrentJobs: 1,
+				visibility: 'private',
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -244,6 +296,7 @@ describe('projectsRouter', () => {
 			const expectedConfig = {
 				...validProjectInput,
 				maxConcurrentJobs: 1,
+				visibility: 'private',
 				githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 				credentials: defaultCredentials,
 			};
@@ -637,6 +690,247 @@ describe('projectsRouter', () => {
 					}),
 				).rejects.toThrowError('Membership insert failed');
 			});
+		});
+	});
+
+	// #281 task 5: the open-project policy — a limited public-discovery read and
+	// a request/approve join flow, kept strictly separate from execution/routing.
+	describe('open-project discovery & join flow', () => {
+		const ordinary = projectsRouter.createCaller({ user: ORDINARY_USER });
+
+		describe('listDiscoverable', () => {
+			it('returns discoverable projects the caller is not already a member of', async () => {
+				vi.mocked(listAccessibleProjectIds).mockResolvedValue(['p1']);
+				vi.mocked(listDiscoverableProjectsFromDb).mockResolvedValue([
+					{ id: 'p1', name: 'Already Mine' },
+					{ id: 'p2', name: 'Open Two' },
+					{ id: 'p3', name: 'Open Three' },
+				]);
+
+				const result = await ordinary.listDiscoverable();
+				expect(result.map((p) => p.id)).toEqual(['p2', 'p3']);
+			});
+
+			it('exposes only id + name — never credentials, config, repo, or run internals', async () => {
+				vi.mocked(listAccessibleProjectIds).mockResolvedValue([]);
+				vi.mocked(listDiscoverableProjectsFromDb).mockResolvedValue([
+					{ id: 'p2', name: 'Open Two' },
+				]);
+
+				const result = await ordinary.listDiscoverable();
+				// The limited view carries exactly the discovery fields and nothing else,
+				// so a secret can never ride along on the discovery surface.
+				expect(Object.keys(result[0]).sort()).toEqual(['id', 'name']);
+			});
+
+			it('returns nothing for an instanceAdmin (they already access every project)', async () => {
+				const result = await caller.listDiscoverable();
+				expect(result).toEqual([]);
+				// Short-circuits before even querying discoverable projects.
+				expect(listDiscoverableProjectsFromDb).not.toHaveBeenCalled();
+				expect(listAccessibleProjectIds).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('requestMembership', () => {
+			it('files a pending request for a discoverable project the caller may not access', async () => {
+				vi.mocked(getProjectByIdFromDb).mockResolvedValue(
+					createMockProjectConfig({ id: 'p1', visibility: 'discoverable' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+				vi.mocked(getPendingRequest).mockResolvedValue(undefined);
+				vi.mocked(createMembershipRequest).mockResolvedValue(requestFor('pending'));
+
+				const result = await ordinary.requestMembership({ projectId: 'p1' });
+				expect(result.status).toBe('pending');
+				expect(createMembershipRequest).toHaveBeenCalledWith({
+					projectId: 'p1',
+					userId: ORDINARY_USER.id,
+				});
+			});
+
+			it('hides a private project: NOT_FOUND, and files no request', async () => {
+				vi.mocked(getProjectByIdFromDb).mockResolvedValue(
+					createMockProjectConfig({ id: 'p1', visibility: 'private' }),
+				);
+
+				await expect(ordinary.requestMembership({ projectId: 'p1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'NOT_FOUND' }),
+				);
+				expect(createMembershipRequest).not.toHaveBeenCalled();
+			});
+
+			it('is NOT_FOUND for an unknown project', async () => {
+				vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
+
+				await expect(ordinary.requestMembership({ projectId: 'missing' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'NOT_FOUND' }),
+				);
+			});
+
+			it('rejects an already-member with CONFLICT', async () => {
+				vi.mocked(getProjectByIdFromDb).mockResolvedValue(
+					createMockProjectConfig({ id: 'p1', visibility: 'discoverable' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(ordinary.requestMembership({ projectId: 'p1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'CONFLICT' }),
+				);
+				expect(createMembershipRequest).not.toHaveBeenCalled();
+			});
+
+			it('rejects a duplicate pending request with CONFLICT', async () => {
+				vi.mocked(getProjectByIdFromDb).mockResolvedValue(
+					createMockProjectConfig({ id: 'p1', visibility: 'discoverable' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+				vi.mocked(getPendingRequest).mockResolvedValue(requestFor('pending'));
+
+				await expect(ordinary.requestMembership({ projectId: 'p1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'CONFLICT' }),
+				);
+				expect(createMembershipRequest).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('listMembershipRequests', () => {
+			it('denies a non-member with NOT_FOUND (existence hidden)', async () => {
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.listMembershipRequests({ projectId: 'p1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'NOT_FOUND' }),
+				);
+				expect(listPendingRequestsForProject).not.toHaveBeenCalled();
+			});
+
+			it('forbids a contributor (join grants read, not administration)', async () => {
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(ordinary.listMembershipRequests({ projectId: 'p1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'FORBIDDEN' }),
+				);
+			});
+
+			it('lets a projectAdmin list the pending requests', async () => {
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(listPendingRequestsForProject).mockResolvedValue([requestFor('pending')]);
+
+				const result = await ordinary.listMembershipRequests({ projectId: 'p1' });
+				expect(result).toHaveLength(1);
+				expect(listPendingRequestsForProject).toHaveBeenCalledWith('p1');
+			});
+		});
+
+		describe('approveMembershipRequest', () => {
+			it('is NOT_FOUND for an unknown request', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(undefined);
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+				expect(approveMembershipRequestInDb).not.toHaveBeenCalled();
+			});
+
+			it('hides the request from a non-member of its project (NOT_FOUND)', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'NOT_FOUND' }));
+				expect(approveMembershipRequestInDb).not.toHaveBeenCalled();
+			});
+
+			it('forbids a non-admin member from approving', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('member'));
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+				expect(approveMembershipRequestInDb).not.toHaveBeenCalled();
+			});
+
+			it('lets a projectAdmin approve a pending request → contributor', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(approveMembershipRequestInDb).mockResolvedValue(true);
+
+				const result = await ordinary.approveMembershipRequest({ requestId: REQUEST_ID });
+				expect(result.status).toBe('approved');
+				expect(approveMembershipRequestInDb).toHaveBeenCalledWith(requestFor('pending'));
+			});
+
+			it('is CONFLICT when the request is already resolved', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('approved'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'CONFLICT' }));
+				expect(approveMembershipRequestInDb).not.toHaveBeenCalled();
+			});
+
+			it('surfaces CONFLICT when conditional transition fails in DB repository (lost race)', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(approveMembershipRequestInDb).mockResolvedValue(false);
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'CONFLICT',
+						message: 'This membership request has already been resolved.',
+					}),
+				);
+			});
+		});
+
+		describe('rejectMembershipRequest', () => {
+			it('lets a projectAdmin reject a pending request without granting membership', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(rejectMembershipRequestInDb).mockResolvedValue(true);
+
+				const result = await ordinary.rejectMembershipRequest({ requestId: REQUEST_ID });
+				expect(result.status).toBe('rejected');
+				expect(rejectMembershipRequestInDb).toHaveBeenCalledWith(REQUEST_ID);
+			});
+
+			it('forbids a contributor from rejecting', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(
+					ordinary.rejectMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+			});
+
+			it('surfaces CONFLICT when conditional transition fails in DB repository (lost race)', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(rejectMembershipRequestInDb).mockResolvedValue(false);
+
+				await expect(
+					ordinary.rejectMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'CONFLICT',
+						message: 'This membership request has already been resolved.',
+					}),
+				);
+			});
+		});
+
+		// The separation guardrail: a `contributor` gained by joining is read-only.
+		// It confers no write/administration capability — and nothing in this task
+		// wires any role to worker registration or task routing (out of scope, #130/#132).
+		it('a contributor gained via join has read access only, never write/admin', () => {
+			expect(canReadProject('contributor')).toBe(true);
+			expect(canWriteProject('contributor')).toBe(false);
+			expect(canAdministerProject('contributor')).toBe(false);
 		});
 	});
 });

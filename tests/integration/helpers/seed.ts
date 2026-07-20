@@ -19,6 +19,7 @@ export async function seedProject(overrides: Partial<ProjectConfig> = {}): Promi
 		worktreeRoot: config.worktreeRoot,
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
+		visibility: config.visibility,
 		pmType: config.pm.type,
 		githubProjects: config.githubProjects,
 		credentials: config.credentials,
