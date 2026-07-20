@@ -48,8 +48,8 @@ cd web && npm install && cd ..
 docker compose up -d --build      # Postgres, Redis, and router
 npm run db:migrate
 npm run db:seed                   # loads swarm.config.json into Postgres
-swarm users add you@example.com --admin    # create your dashboard user, then
-swarm users set-password you@example.com   # set its login password (prompts, no echo)
+npm run swarm -- users add you@example.com --admin    # create your dashboard user, then
+npm run swarm -- users set-password you@example.com   # set its login password (prompts, no echo)
 ```
 
 Start these processes in separate terminals:

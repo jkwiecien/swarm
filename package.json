@@ -8,7 +8,7 @@
 		"swarm": "./bin/swarm.js"
 	},
 	"scripts": {
-		"swarm": "node --import tsx/esm src/cli/index.ts",
+		"swarm": "node --env-file-if-exists=.env --import tsx/esm src/cli/index.ts",
 		"dev": "node --env-file=.env --import tsx/esm --watch src/index.ts",
 		"dev:router": "node --env-file=.env bin/kill-port.js ROUTER_PORT && node --env-file=.env --import tsx/esm --watch src/router/index.ts",
 		"dev:dashboard": "npm run db:migrate && node --env-file=.env bin/kill-port.js DASHBOARD_PORT && node --env-file=.env --import tsx/esm --watch src/dashboard.ts",
