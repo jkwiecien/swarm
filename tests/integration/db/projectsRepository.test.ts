@@ -11,6 +11,7 @@ import {
 	findProjectByIdFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
+	listDiscoverableProjectsFromDb,
 } from '../../../src/db/repositories/projectsRepository.js';
 import { createUser } from '../../../src/db/repositories/usersRepository.js';
 import { projectCredentials } from '../../../src/db/schema/projectCredentials.js';
@@ -180,6 +181,53 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('projectsRepository (integ
 
 			const missing = await getProjectByIdFromDb('non-existent');
 			expect(missing).toBeUndefined();
+		});
+	});
+
+	describe('visibility (#281 task 5)', () => {
+		it('defaults to private and round-trips a discoverable value', async () => {
+			await seedProject({ id: 'proj-private', repo: 'jkwiecien/private-repo' });
+			await createProjectInDb(
+				createMockProjectConfig({
+					id: 'proj-open',
+					repo: 'jkwiecien/open-repo',
+					visibility: 'discoverable',
+				}),
+			);
+
+			expect((await findProjectByIdFromDb('proj-private'))?.visibility).toBe('private');
+			expect((await findProjectByIdFromDb('proj-open'))?.visibility).toBe('discoverable');
+		});
+	});
+
+	describe('listDiscoverableProjectsFromDb', () => {
+		it('returns only discoverable projects, limited to id + name, ordered by name', async () => {
+			await seedProject({ id: 'proj-priv', name: 'Private One', repo: 'jkwiecien/priv' });
+			await createProjectInDb(
+				createMockProjectConfig({
+					id: 'proj-b',
+					name: 'Bravo Open',
+					repo: 'jkwiecien/bravo',
+					visibility: 'discoverable',
+				}),
+			);
+			await createProjectInDb(
+				createMockProjectConfig({
+					id: 'proj-a',
+					name: 'Alpha Open',
+					repo: 'jkwiecien/alpha',
+					visibility: 'discoverable',
+				}),
+			);
+
+			const discoverable = await listDiscoverableProjectsFromDb();
+			// Private project excluded; discoverable ones ordered by name.
+			expect(discoverable).toEqual([
+				{ id: 'proj-a', name: 'Alpha Open' },
+				{ id: 'proj-b', name: 'Bravo Open' },
+			]);
+			// The limited view exposes exactly id + name — no credentials/config leak.
+			expect(Object.keys(discoverable[0]).sort()).toEqual(['id', 'name']);
 		});
 	});
 });

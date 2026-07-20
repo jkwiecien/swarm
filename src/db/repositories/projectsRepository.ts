@@ -13,7 +13,7 @@
 
 import { asc, eq, sql } from 'drizzle-orm';
 
-import type { ProjectConfig } from '../../config/schema.js';
+import type { ProjectConfig, ProjectVisibility } from '../../config/schema.js';
 import { getDb } from '../client.js';
 import { projectMembers } from '../schema/projectMembers.js';
 import { projects } from '../schema/projects.js';
@@ -32,6 +32,7 @@ function rowToProjectConfig(row: ProjectRow): ProjectConfig {
 		baseBranch: row.baseBranch,
 		branchPrefix: row.branchPrefix,
 		maxConcurrentJobs: row.maxConcurrentJobs,
+		visibility: row.visibility as ProjectVisibility,
 		pm: { type: row.pmType as 'github-projects' },
 		githubProjects: row.githubProjects,
 		credentials: row.credentials,
@@ -52,6 +53,7 @@ function projectConfigToRow(config: ProjectConfig) {
 		baseBranch: config.baseBranch,
 		branchPrefix: config.branchPrefix,
 		maxConcurrentJobs: config.maxConcurrentJobs,
+		visibility: config.visibility,
 		pmType: config.pm.type,
 		githubProjects: config.githubProjects,
 		credentials: config.credentials,
@@ -165,6 +167,33 @@ export async function deleteProjectFromDb(id: string): Promise<void> {
 export async function listAllProjectsFromDb(): Promise<ProjectConfig[]> {
 	const rows = await getDb().select().from(projects).orderBy(asc(projects.name));
 	return rows.map(rowToProjectConfig);
+}
+
+/**
+ * The limited public-discovery view of a project (#281 task 5): the *only*
+ * fields exposed to a non-member of a `discoverable` project. Deliberately just
+ * `id` and `name` — never credentials, config, repo, board mapping, or run
+ * internals — so discovery reveals that a project exists and what it is called
+ * without leaking anything a full member sees.
+ */
+export interface DiscoverableProject {
+	id: string;
+	name: string;
+}
+
+/**
+ * List the limited-view (`id` + `name` only) of every `discoverable` project,
+ * ordered by name. The projection is applied in the query itself, so a
+ * project's credentials/config never even leave the DB — the caller can't
+ * accidentally forward a field the discovery view must not expose. Filtering
+ * out the caller's already-accessible projects is the router's job (#281 task 5).
+ */
+export async function listDiscoverableProjectsFromDb(): Promise<DiscoverableProject[]> {
+	return getDb()
+		.select({ id: projects.id, name: projects.name })
+		.from(projects)
+		.where(eq(projects.visibility, 'discoverable'))
+		.orderBy(asc(projects.name));
 }
 
 export { findProjectByIdFromDb as getProjectByIdFromDb };
