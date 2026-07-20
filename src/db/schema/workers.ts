@@ -1,0 +1,54 @@
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import type { AgentCli } from '../../harness/agent-cli.js';
+import { users } from './users.js';
+
+/**
+ * One row per registered **worker** — the persisted form of `Worker`
+ * (`src/identity/worker.ts`), which stays the source of truth for the shape
+ * (ai/CODING_STANDARDS.md "Zod is the source of truth"). The third slice of the
+ * multi-user foundation (ADR-001): where `users` models a person and
+ * `project_members` a person's role on a project, this models a locally operated
+ * execution environment a user owns.
+ *
+ * `owner_user_id` is a `users.id` (`uuid`); the FK is `ON DELETE CASCADE`, so a
+ * worker vanishes with its owner and never dangles. `capabilities` is the
+ * declared set of agent CLIs, persisted as `jsonb` of `AgentCli[]` (the Zod
+ * `WorkerCapabilitiesSchema` is the source of truth for the values), matching how
+ * `runs.usage` persists a typed jsonb value.
+ *
+ * `credential_hash` is a SHA-256 of the worker credential — **never** the raw
+ * token. It is deliberately **not** part of the `Worker` domain read model
+ * (`rowToWorker` drops it) and never leaves the DB layer, the same treatment
+ * `user_sessions.token_hash` / `users.password_hash` get. It is unique so a
+ * credential resolves to at most one worker (the authentication seam).
+ *
+ * Like the rest of the multi-user foundation this is inert for now: nothing reads
+ * it yet — worker sessions (Phase 2) and enrollment/routing (Phase 3, #130) do.
+ */
+export const workers = pgTable(
+	'workers',
+	{
+		id: uuid('id').primaryKey().defaultRandom(),
+		ownerUserId: uuid('owner_user_id')
+			.notNull()
+			.references(() => users.id, { onDelete: 'cascade' }),
+		displayName: text('display_name').notNull(),
+		/** One of `AgentCliSchema` per element (source of truth in `worker.ts`). */
+		capabilities: jsonb('capabilities').$type<AgentCli[]>().notNull(),
+		/** SHA-256 of the worker credential — never the raw token; dropped by `rowToWorker`. */
+		credentialHash: text('credential_hash').notNull().unique(),
+		createdAt: timestamp('created_at').notNull().defaultNow(),
+		updatedAt: timestamp('updated_at')
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+	},
+	(table) => [
+		// A user may operate several workers, but each machine name is unique per
+		// owner so rosters stay unambiguous; a re-register under the same name is a
+		// conflict (pick a new name, or rotate via remove+register).
+		uniqueIndex('idx_workers_owner_display_name').on(table.ownerUserId, table.displayName),
+		// The owner-scoped listing (`listWorkersForOwner`).
+		index('idx_workers_owner').on(table.ownerUserId),
+	],
+);

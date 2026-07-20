@@ -1,0 +1,72 @@
+/**
+ * The registered **worker** identity — the single source of truth for the shape
+ * (ai/CODING_STANDARDS.md "Zod is the source of truth"). A worker is a *locally
+ * operated execution environment* owned by a SWARM user (ADR-001 "User /
+ * worker"): the machine on which that user runs agent CLIs. Where `SwarmUser`
+ * (`./schema.ts`) models *who* a person is and `ProjectMembership`
+ * (`./membership.ts`) models *what* they may do on a project, a worker models
+ * *where* a user can execute — the third-layer identity of the multi-user
+ * foundation.
+ *
+ * It is deliberately **provider-neutral**: a worker is **not** an SCM identity
+ * and **not** an implementer/reviewer GitHub credential (those stay in
+ * `project_credentials`, per persona per project). Its declared CLI capabilities
+ * are the harness vocabulary (`AgentCliSchema`, `../harness/agent-cli.ts`), not a
+ * parallel enum.
+ *
+ * A worker carries its own authentication material — the **worker credential**,
+ * issued once at registration and distinct from any SCM PAT. That secret is
+ * deliberately **absent from this read model**, exactly as `users.password_hash`
+ * is dropped from `SwarmUser`: only a SHA-256 of the credential is persisted (on
+ * `workers.credential_hash`), the raw credential is returned exactly once at
+ * registration, and nothing here ever exposes either form (see
+ * `./worker-service.ts`, mirroring `createSession`/`MintedSession` in
+ * `./auth.ts`).
+ *
+ * This slice is data + CLI only — inert until worker sessions (Phase 2) and
+ * project enrollment/routing (Phase 3, #130) consume it.
+ */
+
+import { z } from 'zod';
+import { AgentCliSchema } from '../harness/agent-cli.js';
+
+/**
+ * A worker's declared CLI capabilities: a de-duplicated, non-empty set of
+ * `AgentCli` values. A worker that supports no CLI can execute nothing, so
+ * registration requires at least one. Trusted as self-declaration for now
+ * (ADR-001 "Worker capabilities and availability") — later phases verify it
+ * against real execution, this slice does not. The transform de-dupes so a
+ * caller passing `claude,claude` stores a single `claude`.
+ */
+export const WorkerCapabilitiesSchema = z
+	.array(AgentCliSchema)
+	.nonempty()
+	.transform((clis) => [...new Set(clis)]);
+
+/**
+ * A safe machine display name — human-facing, shown on rosters and owner
+ * self-service. Trimmed and bounded (1–80 chars); a "safe display name" carries
+ * no path/secret semantics, it is only a label.
+ */
+export const WorkerDisplayNameSchema = z.string().trim().min(1).max(80);
+
+/**
+ * A registered worker. `ownerUserId` is a `users.id` (`uuid`, the SWARM user who
+ * operates the machine); `displayName` is its human-facing label, unique per
+ * owner (`src/db/schema/workers.ts`); `capabilities` is the declared set of agent
+ * CLIs it can run. `id` is generated (`uuid`), not externally supplied.
+ *
+ * The worker credential hash is intentionally **not** a field here — it is a
+ * secret that never leaves the DB layer (`rowToWorker` drops it), the same
+ * treatment `users.password_hash` gets in `SwarmUser`.
+ */
+export const WorkerSchema = z.object({
+	id: z.string().uuid(),
+	ownerUserId: z.string().uuid(),
+	displayName: WorkerDisplayNameSchema,
+	capabilities: z.array(AgentCliSchema),
+	createdAt: z.date(),
+	updatedAt: z.date(),
+});
+
+export type Worker = z.infer<typeof WorkerSchema>;
