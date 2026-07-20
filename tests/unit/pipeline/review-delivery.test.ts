@@ -61,6 +61,9 @@ describe('review production delivery', () => {
 		} as unknown as ScmDeliveryProvider;
 		const markReviewVerdictSubmitted = vi.fn(async () => ({ id: 'verdict-1', ordinal: 1 }));
 		const abandonReviewVerdict = vi.fn(async () => undefined);
+		// No prior submitted review → the first attempt runs as an initial review
+		// (issue #328); stubbed so the phase never touches a real database here.
+		const getPriorSubmittedReview = vi.fn(async () => undefined);
 		const options = {
 			project: createMockProjectConfig(),
 			prNumber: '42',
@@ -73,6 +76,7 @@ describe('review production delivery', () => {
 			delivery,
 			markReviewVerdictSubmitted,
 			abandonReviewVerdict,
+			getPriorSubmittedReview,
 		};
 
 		await expect(runReviewPhase(options)).rejects.toBeInstanceOf(DeliveryDeferredError);

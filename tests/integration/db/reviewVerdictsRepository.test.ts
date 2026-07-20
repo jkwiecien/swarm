@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../src/db/client.js';
 import {
 	abandonReviewVerdict,
+	getPriorSubmittedReview,
 	getReviewVerdictByHead,
 	getReviewVerdictByReviewId,
 	markReviewVerdictSubmitted,
@@ -187,6 +188,48 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 			it('returns undefined for an unknown review id or head', async () => {
 				expect(await getReviewVerdictByReviewId(PROJECT_ID, REPO, 'unknown')).toBeUndefined();
 				expect(await getReviewVerdictByHead(PROJECT_ID, REPO, PR, 'unknown')).toBeUndefined();
+			});
+		});
+
+		describe('getPriorSubmittedReview (issue #328)', () => {
+			it('returns undefined when the PR has no submitted review yet', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				expect(await getPriorSubmittedReview(PROJECT_ID, REPO, PR, 'sha-1')).toBeUndefined();
+			});
+
+			it("excludes the current head's own submitted slot — a same-head retry is not a re-review", async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'request-changes' });
+				// Asked about the very head that was submitted → no *prior* review exists.
+				expect(await getPriorSubmittedReview(PROJECT_ID, REPO, PR, 'sha-1')).toBeUndefined();
+			});
+
+			it('returns the earlier submitted verdict once a re-review head appears', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'request-changes' });
+				const prior = await getPriorSubmittedReview(PROJECT_ID, REPO, PR, 'sha-2');
+				expect(prior).toMatchObject({
+					ordinal: 1,
+					state: 'submitted',
+					verdict: 'request-changes',
+					headSha: 'sha-1',
+				});
+			});
+
+			it('ignores abandoned and pending slots — only submitted verdicts count', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await abandonReviewVerdict(key('sha-1'));
+				await reserveReviewVerdict(key('sha-2')); // pending, not submitted
+				expect(await getPriorSubmittedReview(PROJECT_ID, REPO, PR, 'sha-3')).toBeUndefined();
+			});
+
+			it('returns the highest-ordinal prior verdict when two were submitted', async () => {
+				await reserveReviewVerdict(key('sha-1'));
+				await markReviewVerdictSubmitted(key('sha-1'), { verdict: 'request-changes' });
+				await reserveReviewVerdict(key('sha-2'));
+				await markReviewVerdictSubmitted(key('sha-2'), { verdict: 'approve' });
+				const prior = await getPriorSubmittedReview(PROJECT_ID, REPO, PR, 'sha-3');
+				expect(prior).toMatchObject({ ordinal: 2, verdict: 'approve', headSha: 'sha-2' });
 			});
 		});
 	},
