@@ -10,6 +10,11 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
 }));
 
+vi.mock('@/identity/membership-service.js', () => ({
+	getMembership: vi.fn(),
+	listAccessibleProjectIds: vi.fn(),
+}));
+
 import { credentialsRouter } from '@/api/routers/credentials.js';
 import {
 	deleteProjectCredential,
@@ -17,17 +22,41 @@ import {
 	writeProjectCredential,
 } from '@/db/repositories/credentialsRepository.js';
 import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
+import type { ProjectMembership, ProjectRole } from '@/identity/membership.js';
+import { getMembership } from '@/identity/membership-service.js';
+import type { SwarmUser } from '@/identity/schema.js';
 import { createMockProjectConfig } from '../../../helpers/factories.js';
 
-describe('credentialsRouter', () => {
-	const AUTHED_USER = {
-		id: '00000000-0000-4000-8000-000000000000',
-		identifier: 'tester@example.com',
-		displayName: 'Tester',
-		instanceAdmin: true,
+const ADMIN_USER: SwarmUser = {
+	id: '00000000-0000-4000-8000-000000000000',
+	identifier: 'tester@example.com',
+	displayName: 'Tester',
+	instanceAdmin: true,
+	createdAt: new Date(0),
+	updatedAt: new Date(0),
+};
+
+const ORDINARY_USER: SwarmUser = {
+	id: '00000000-0000-4000-8000-0000000000ff',
+	identifier: 'member@example.com',
+	displayName: 'Member',
+	instanceAdmin: false,
+	createdAt: new Date(0),
+	updatedAt: new Date(0),
+};
+
+function membershipFor(role: ProjectRole): ProjectMembership {
+	return {
+		id: '99999999-9999-4999-8999-999999999999',
+		projectId: 'p1',
+		userId: ORDINARY_USER.id,
+		role,
 		createdAt: new Date(0),
-		updatedAt: new Date(0),
 	};
+}
+
+describe('credentialsRouter', () => {
+	const AUTHED_USER = ADMIN_USER;
 	const caller = credentialsRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
@@ -35,6 +64,7 @@ describe('credentialsRouter', () => {
 		vi.mocked(resolveAllProjectCredentials).mockReset();
 		vi.mocked(writeProjectCredential).mockReset();
 		vi.mocked(deleteProjectCredential).mockReset();
+		vi.mocked(getMembership).mockReset();
 	});
 
 	describe('list', () => {
@@ -224,6 +254,62 @@ describe('credentialsRouter', () => {
 					message: 'Project with ID "missing" not found',
 				}),
 			);
+			expect(deleteProjectCredential).not.toHaveBeenCalled();
+		});
+	});
+
+	// Reading the masked list needs `contributor`; writing or clearing a
+	// credential is `projectAdmin`-only (#281 task 4).
+	describe('project-scoped authorization', () => {
+		const ordinary = credentialsRouter.createCaller({ user: ORDINARY_USER });
+
+		it('denies a non-member list with NOT_FOUND without resolving credentials', async () => {
+			vi.mocked(getMembership).mockResolvedValue(undefined);
+
+			await expect(ordinary.list({ projectId: 'p1' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'NOT_FOUND' }),
+			);
+			expect(getProjectByIdFromDb).not.toHaveBeenCalled();
+			expect(resolveAllProjectCredentials).not.toHaveBeenCalled();
+		});
+
+		it('lets a contributor read the masked list', async () => {
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(resolveAllProjectCredentials).mockResolvedValue({});
+
+			await expect(ordinary.list({ projectId: 'p1' })).resolves.toHaveLength(3);
+		});
+
+		it('forbids a member from setting a credential', async () => {
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('member'));
+
+			await expect(
+				ordinary.set({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER', value: 'secret' }),
+			).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+			expect(writeProjectCredential).not.toHaveBeenCalled();
+		});
+
+		it('lets a projectAdmin set a credential', async () => {
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(writeProjectCredential).mockResolvedValue(undefined);
+
+			await ordinary.set({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER', value: 'secret' });
+			expect(writeProjectCredential).toHaveBeenCalledWith(
+				'p1',
+				'SCM_TOKEN_IMPLEMENTER',
+				'secret',
+				null,
+			);
+		});
+
+		it('forbids a contributor from deleting a credential', async () => {
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+			await expect(
+				ordinary.delete({ projectId: 'p1', envVarKey: 'SCM_TOKEN_IMPLEMENTER' }),
+			).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
 			expect(deleteProjectCredential).not.toHaveBeenCalled();
 		});
 	});

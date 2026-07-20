@@ -42,6 +42,7 @@ import {
 	toQueuedRuns,
 } from '../../queue/queued-runs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
+import { accessibleProjectScope, assertProjectAccess } from '../authz.js';
 import { authedProcedure, router } from '../trpc.js';
 
 const QUEUED_WORK_ITEM_CACHE_TTL_MS = 30_000;
@@ -251,44 +252,88 @@ function alreadyRetrying(): TRPCError {
 
 export const runsRouter = router({
 	// Paginated, filtered list; returns { data, total } straight from the repo.
-	list: authedProcedure.input(ListRunsInputSchema).query(async ({ input }) => {
-		return await listRunsFromDb(input);
+	// Project-scoped (#281 task 4): an explicit `projectId` filter requires read
+	// access to that project; without one the result is bounded to the caller's
+	// accessible projects (every project for an `instanceAdmin`), so a non-member
+	// never sees another project's runs through the cross-project view.
+	list: authedProcedure.input(ListRunsInputSchema).query(async ({ ctx, input }) => {
+		if (input.projectId) {
+			await assertProjectAccess(ctx.user, input.projectId, 'contributor');
+			return await listRunsFromDb(input);
+		}
+		const scope = await accessibleProjectScope(ctx.user);
+		if (scope === null) return await listRunsFromDb(input);
+		if (scope.length === 0) return { data: [], total: 0 };
+		return await listRunsFromDb({ ...input, projectIds: scope });
 	}),
 
 	// Every canonical waiting dispatch (pending / capacity-blocked /
 	// retry-scheduled) — the durable queue read model (issues #234, #284), never
 	// a BullMQ snapshot, so nothing pending can be invisible here. No pagination:
-	// the pending set is small and bounded by worker throughput.
+	// the pending set is small and bounded by worker throughput. Scoped like
+	// `list`: a chosen `projectId` needs read access, and the unscoped view is
+	// filtered to the caller's accessible projects in-memory (the set is small).
 	queued: authedProcedure
 		.input(z.object({ projectId: z.string().min(1).optional() }).optional())
-		.query(async ({ input }) => {
+		.query(async ({ ctx, input }) => {
+			if (input?.projectId) {
+				await assertProjectAccess(ctx.user, input.projectId, 'contributor');
+				return enrichQueuedWorkItems(toQueuedRuns(await listWaitingDispatches(input.projectId)));
+			}
+			const scope = await accessibleProjectScope(ctx.user);
 			const items = toQueuedRuns(await listWaitingDispatches(input?.projectId));
-			return enrichQueuedWorkItems(items);
+			if (scope === null) return enrichQueuedWorkItems(items);
+			const accessible = new Set(scope);
+			return enrichQueuedWorkItems(items.filter((item) => accessible.has(item.projectId)));
 		}),
 
-	// Single run by id; NOT_FOUND when unknown (the only not-found path).
-	getById: authedProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
-		const run = await getRunByIdFromDb(input.id);
-		if (!run) {
-			throw new TRPCError({
-				code: 'NOT_FOUND',
-				message: `Run with ID "${input.id}" not found`,
-			});
-		}
-		return run;
-	}),
+	// Single run by id; NOT_FOUND when unknown (the only not-found path) or when
+	// the caller is not a member of the run's project (existence hidden).
+	getById: authedProcedure
+		.input(z.object({ id: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			const run = await getRunByIdFromDb(input.id);
+			if (!run) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Run with ID "${input.id}" not found`,
+				});
+			}
+			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
+			return run;
+		}),
 
 	// Captured stdout/stderr for a run; null when the run stored no logs (a run
 	// that succeeded, or failed before its output was captured) — not an error.
+	// Needs read access to the run's project (its output can contain sensitive
+	// detail), so the run is resolved first to find that project.
 	getLogs: authedProcedure
 		.input(z.object({ runId: z.string().min(1) }))
-		.query(async ({ input }) => {
+		.query(async ({ ctx, input }) => {
+			const run = await getRunByIdFromDb(input.runId);
+			if (!run) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Run with ID "${input.runId}" not found`,
+				});
+			}
+			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
 			return (await getRunLogsFromDb(input.runId)) ?? null;
 		}),
 
 	getOutput: authedProcedure
 		.input(z.object({ runId: z.string().min(1), after: z.number().int().nonnegative().default(0) }))
-		.query(async ({ input }) => await getRunOutputEvents(input.runId, input.after)),
+		.query(async ({ ctx, input }) => {
+			const run = await getRunByIdFromDb(input.runId);
+			if (!run) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Run with ID "${input.runId}" not found`,
+				});
+			}
+			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
+			return await getRunOutputEvents(input.runId, input.after);
+		}),
 
 	// Fire a run's retry immediately ("Retry now", issues #136, #284).
 	//
@@ -324,7 +369,7 @@ export const runsRouter = router({
 				reasoning: ReasoningLevelSchema.optional(),
 			}),
 		)
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
 			const run = await getRunByIdFromDb(input.runId);
 			if (!run) {
 				throw new TRPCError({
@@ -332,6 +377,8 @@ export const runsRouter = router({
 					message: `Run with ID "${input.runId}" not found`,
 				});
 			}
+			// Driving a run (retrying it) is a `member`+ action on its project.
+			await assertProjectAccess(ctx.user, run.projectId, 'member');
 			if (run.status !== 'deferred' && run.status !== 'failed') {
 				throw new TRPCError({
 					code: 'PRECONDITION_FAILED',
@@ -462,7 +509,7 @@ export const runsRouter = router({
 	// caught by this request.
 	terminate: authedProcedure
 		.input(z.object({ runId: z.string().min(1) }))
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
 			const run = await getRunByIdFromDb(input.runId);
 			if (!run) {
 				throw new TRPCError({
@@ -470,6 +517,8 @@ export const runsRouter = router({
 					message: `Run with ID "${input.runId}" not found`,
 				});
 			}
+			// Terminating a run is a `member`+ action on its project.
+			await assertProjectAccess(ctx.user, run.projectId, 'member');
 
 			// Already terminal — nothing to terminate; report its settled state so a
 			// second click (or a run that finished as we clicked) is a no-op, not an
@@ -524,7 +573,10 @@ export const runsRouter = router({
 				projectId: z.string().min(1),
 			}),
 		)
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
+			// Putting a queued item back is a `member`+ action on its project; a
+			// non-member gets NOT_FOUND before the project is even resolved.
+			await assertProjectAccess(ctx.user, input.projectId, 'member');
 			const project = await getProjectByIdFromDb(input.projectId);
 			if (!project) {
 				throw new TRPCError({
