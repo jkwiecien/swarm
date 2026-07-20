@@ -7,15 +7,18 @@ import {
 	writeProjectCredential,
 } from '../../db/repositories/credentialsRepository.js';
 import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
+import { assertProjectAccess } from '../authz.js';
 import { authedProcedure, router } from '../trpc.js';
 
 /**
  * Project-scoped credentials API — mirrors Cascade's `projectsRouter.credentials`
  * (`cascade/src/api/routers/projects.ts`). `list` never returns plaintext, only a
- * masked preview; SWARM has no project-scoped authorization layer yet — every
- * authenticated user sees every project (that lands in #281 task 4) — so each
- * `authedProcedure` does a plain `getProjectByIdFromDb` existence check instead
- * of Cascade's `verifyProjectOwnership`.
+ * masked preview. Project-scoped authorization (#281 task 4) gates every
+ * procedure via `assertProjectAccess` — SWARM's analogue of Cascade's
+ * `verifyProjectOwnership`: reading the masked list needs `contributor`, while
+ * writing or clearing a credential is a `projectAdmin`-only action. A non-member
+ * gets NOT_FOUND (existence hidden), so the assertion also subsumes the old
+ * existence check.
  */
 
 /**
@@ -30,7 +33,8 @@ function maskCredential(value: string | undefined): string {
 export const credentialsRouter = router({
 	list: authedProcedure
 		.input(z.object({ projectId: z.string().min(1) }))
-		.query(async ({ input }) => {
+		.query(async ({ ctx, input }) => {
+			await assertProjectAccess(ctx.user, input.projectId, 'contributor');
 			const project = await getProjectByIdFromDb(input.projectId);
 			if (!project) {
 				throw new TRPCError({
@@ -60,7 +64,8 @@ export const credentialsRouter = router({
 				name: z.string().optional(),
 			}),
 		)
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
+			await assertProjectAccess(ctx.user, input.projectId, 'projectAdmin');
 			const project = await getProjectByIdFromDb(input.projectId);
 			if (!project) {
 				throw new TRPCError({
@@ -79,7 +84,8 @@ export const credentialsRouter = router({
 
 	delete: authedProcedure
 		.input(z.object({ projectId: z.string().min(1), envVarKey: z.string().min(1) }))
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
+			await assertProjectAccess(ctx.user, input.projectId, 'projectAdmin');
 			const project = await getProjectByIdFromDb(input.projectId);
 			if (!project) {
 				throw new TRPCError({

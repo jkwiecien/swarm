@@ -13,6 +13,11 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
 }));
 
+vi.mock('@/identity/membership-service.js', () => ({
+	getMembership: vi.fn(),
+	listAccessibleProjectIds: vi.fn(),
+}));
+
 vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
 	getActiveDispatchByRunId: vi.fn(),
 	getDispatchById: vi.fn(),
@@ -81,6 +86,9 @@ import {
 	createAndPublishDispatch,
 	publishDispatchWakeUp,
 } from '@/dispatch/dispatcher.js';
+import type { ProjectMembership, ProjectRole } from '@/identity/membership.js';
+import { getMembership, listAccessibleProjectIds } from '@/identity/membership-service.js';
+import type { SwarmUser } from '@/identity/schema.js';
 import { getPMProvider } from '@/integrations/pm/registry.js';
 import {
 	clearRunCancellation,
@@ -180,18 +188,43 @@ function makeDispatch(overrides: Partial<DispatchRow> = {}): DispatchRow {
 	};
 }
 
-describe('runsRouter', () => {
-	const AUTHED_USER = {
-		id: '00000000-0000-4000-8000-000000000000',
-		identifier: 'tester@example.com',
-		displayName: 'Tester',
-		instanceAdmin: true,
+const ADMIN_USER: SwarmUser = {
+	id: '00000000-0000-4000-8000-000000000000',
+	identifier: 'tester@example.com',
+	displayName: 'Tester',
+	instanceAdmin: true,
+	createdAt: new Date(0),
+	updatedAt: new Date(0),
+};
+
+const ORDINARY_USER: SwarmUser = {
+	id: '00000000-0000-4000-8000-0000000000ff',
+	identifier: 'member@example.com',
+	displayName: 'Member',
+	instanceAdmin: false,
+	createdAt: new Date(0),
+	updatedAt: new Date(0),
+};
+
+function membershipFor(role: ProjectRole, projectId = 'p1'): ProjectMembership {
+	return {
+		id: '99999999-9999-4999-8999-999999999999',
+		projectId,
+		userId: ORDINARY_USER.id,
+		role,
 		createdAt: new Date(0),
-		updatedAt: new Date(0),
 	};
+}
+
+describe('runsRouter', () => {
+	// The base suite runs as an instanceAdmin (authorization bypassed); the
+	// project-scoped authorization suite below exercises the ordinary-user paths.
+	const AUTHED_USER = ADMIN_USER;
 	const caller = runsRouter.createCaller({ user: AUTHED_USER });
 
 	beforeEach(() => {
+		vi.mocked(getMembership).mockReset();
+		vi.mocked(listAccessibleProjectIds).mockReset();
 		vi.mocked(listRunsFromDb).mockReset();
 		vi.mocked(getRunByIdFromDb).mockReset();
 		vi.mocked(getRunLogsFromDb).mockReset();
@@ -403,6 +436,7 @@ describe('runsRouter', () => {
 
 	describe('getLogs', () => {
 		it('returns the captured stdout/stderr when getRunLogsFromDb resolves logs', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1' }));
 			const logs = { stdout: 'out', stderr: 'err' };
 			vi.mocked(getRunLogsFromDb).mockResolvedValue(logs);
 
@@ -412,15 +446,26 @@ describe('runsRouter', () => {
 		});
 
 		it('returns null (not an error) when the run stored no logs', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1' }));
 			vi.mocked(getRunLogsFromDb).mockResolvedValue(undefined);
 
 			const result = await caller.getLogs({ runId: 'run-1' });
 			expect(result).toBeNull();
 		});
+
+		it('throws NOT_FOUND for an unknown run without reading logs', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(undefined);
+
+			await expect(caller.getLogs({ runId: 'missing' })).rejects.toThrowError(
+				expect.objectContaining({ code: 'NOT_FOUND' }),
+			);
+			expect(getRunLogsFromDb).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('getOutput', () => {
 		it('passes the cursor through and returns the incremental page', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1' }));
 			const page = {
 				events: [{ id: 8, stream: 'stderr' as const, content: 'warning\n', emittedAt: new Date() }],
 				nextCursor: 8,
@@ -993,6 +1038,169 @@ describe('runsRouter', () => {
 				/picked up while putting it back/,
 			);
 			expect(moveWorkItem).not.toHaveBeenCalled();
+		});
+	});
+
+	// #281 task 4: reads need `contributor`, driving a run needs `member`, and the
+	// unscoped cross-project list/queued views are bounded to the caller's
+	// accessible projects. Exercised through an ordinary (non-admin) caller.
+	describe('project-scoped authorization', () => {
+		const ordinary = runsRouter.createCaller({ user: ORDINARY_USER });
+
+		describe('list', () => {
+			it('bounds the unscoped list to the caller accessible projects', async () => {
+				vi.mocked(listAccessibleProjectIds).mockResolvedValue(['p1', 'p2']);
+				vi.mocked(listRunsFromDb).mockResolvedValue({ data: [], total: 0 });
+
+				await ordinary.list({});
+
+				expect(listRunsFromDb).toHaveBeenCalledWith({
+					limit: 50,
+					offset: 0,
+					projectIds: ['p1', 'p2'],
+				});
+			});
+
+			it('returns an empty page without querying when the caller has no projects', async () => {
+				vi.mocked(listAccessibleProjectIds).mockResolvedValue([]);
+
+				await expect(ordinary.list({})).resolves.toEqual({ data: [], total: 0 });
+				expect(listRunsFromDb).not.toHaveBeenCalled();
+			});
+
+			it('denies an explicit projectId filter the caller is not a member of', async () => {
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.list({ projectId: 'p9' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'NOT_FOUND' }),
+				);
+				expect(listRunsFromDb).not.toHaveBeenCalled();
+			});
+		});
+
+		describe('queued', () => {
+			it('filters the unscoped queued set to the caller accessible projects', async () => {
+				vi.mocked(listAccessibleProjectIds).mockResolvedValue(['p1']);
+				vi.mocked(toQueuedRuns).mockReturnValue([
+					{ projectId: 'p1', type: 'github' },
+					{ projectId: 'p2', type: 'github' },
+				] as never);
+
+				const result = await ordinary.queued({});
+				expect(result).toEqual([{ projectId: 'p1', type: 'github' }]);
+			});
+		});
+
+		describe('reads', () => {
+			it('denies getById on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.getById({ id: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+			});
+
+			it('denies getLogs on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.getLogs({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+			});
+
+			it('denies getOutput on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.getOutput({ runId: 'run-1', after: 0 })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+			});
+
+			it('lets a contributor read a run in their project', async () => {
+				const run = makeRun({ id: 'run-1', projectId: 'p1' });
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(run);
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(ordinary.getById({ id: 'run-1' })).resolves.toEqual(run);
+			});
+		});
+
+		describe('drive-run role boundary', () => {
+			it('denies retryNow to a non-member with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'failed' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+				expect(reopenDispatchForManualRetry).not.toHaveBeenCalled();
+			});
+
+			it('denies terminate to a non-member with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'running' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.terminate({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+				expect(requestRunCancellation).not.toHaveBeenCalled();
+			});
+
+			it('forbids a contributor from retrying a run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'failed' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(ordinary.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({ code: 'FORBIDDEN' }),
+				);
+				expect(reopenDispatchForManualRetry).not.toHaveBeenCalled();
+			});
+
+			it('lets a member terminate a running run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'running' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('member'));
+				vi.mocked(requestRunCancellation).mockResolvedValue(undefined);
+
+				await expect(ordinary.terminate({ runId: 'run-1' })).resolves.toEqual({
+					runId: 'run-1',
+					status: 'terminating',
+				});
+			});
+
+			it('forbids a contributor from putting a queued item back', async () => {
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('contributor'));
+
+				await expect(
+					ordinary.putBack({ jobId: 'dispatch-1', projectId: 'p1' }),
+				).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+				expect(getProjectByIdFromDb).not.toHaveBeenCalled();
+			});
 		});
 	});
 });

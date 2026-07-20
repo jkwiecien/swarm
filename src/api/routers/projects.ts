@@ -3,13 +3,14 @@ import { z } from 'zod';
 
 import { ProjectConfigSchema } from '../../config/schema.js';
 import {
-	createProjectInDb,
+	createProjectWithMemberInDb,
 	deleteProjectFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
 	upsertProjectToDb,
 } from '../../db/repositories/projectsRepository.js';
 import type { GitHubProjectsIntegrationConfig } from '../../integrations/pm/github-projects/config-schema.js';
+import { assertProjectAccess, filterAccessibleProjects } from '../authz.js';
 import { authedProcedure, router } from '../trpc.js';
 import { credentialsRouter } from './credentials.js';
 
@@ -50,30 +51,47 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export const projectsRouter = router({
-	list: authedProcedure.query(async () => {
-		return await listAllProjectsFromDb();
+	// Only the caller's accessible projects: their membership set, or every
+	// project for an `instanceAdmin` (`filterAccessibleProjects`, #281 task 4).
+	list: authedProcedure.query(async ({ ctx }) => {
+		return await filterAccessibleProjects(ctx.user, await listAllProjectsFromDb());
 	}),
 
-	getById: authedProcedure.input(z.object({ id: z.string().min(1) })).query(async ({ input }) => {
-		const project = await getProjectByIdFromDb(input.id);
-		if (!project) {
-			throw new TRPCError({
-				code: 'NOT_FOUND',
-				message: `Project with ID "${input.id}" not found`,
-			});
-		}
-		return project;
-	}),
+	getById: authedProcedure
+		.input(z.object({ id: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			// A non-member gets NOT_FOUND here, so the read below never reveals that a
+			// project they can't see exists.
+			await assertProjectAccess(ctx.user, input.id, 'contributor');
+			const project = await getProjectByIdFromDb(input.id);
+			if (!project) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Project with ID "${input.id}" not found`,
+				});
+			}
+			return project;
+		}),
 
-	create: authedProcedure.input(ProjectCreateInputSchema).mutation(async ({ input }) => {
+	// Any authenticated user may create a project and becomes its `projectAdmin`
+	// (#281 task 4): the creator gets a membership row in the same call, so they
+	// can immediately administer what they just created without an operator
+	// seeding membership first. An `instanceAdmin` administers it regardless, but
+	// the row is still written so the creator keeps access if their installation
+	// role is later removed. Creation and membership insertion are performed
+	// atomically in one transaction so a partial failure never leaves an unowned project.
+	create: authedProcedure.input(ProjectCreateInputSchema).mutation(async ({ ctx, input }) => {
 		const config = {
 			...input,
 			githubProjects: DEFAULT_GITHUB_PROJECTS_CONFIG,
 			credentials: DEFAULT_CREDENTIAL_REFERENCES,
 		};
 		try {
-			await createProjectInDb(config);
-			return config;
+			await createProjectWithMemberInDb(config, {
+				projectId: config.id,
+				userId: ctx.user.id,
+				role: 'projectAdmin',
+			});
 		} catch (error) {
 			if (isUniqueViolation(error)) {
 				throw new TRPCError({
@@ -83,11 +101,15 @@ export const projectsRouter = router({
 			}
 			throw error;
 		}
+		return config;
 	}),
 
 	update: authedProcedure
 		.input(ProjectWriteInputSchema.partial().extend({ id: z.string().min(1) }))
-		.mutation(async ({ input }) => {
+		.mutation(async ({ ctx, input }) => {
+			// Config changes are a `projectAdmin`-only action; a `member`/`contributor`
+			// gets FORBIDDEN, a non-member NOT_FOUND.
+			await assertProjectAccess(ctx.user, input.id, 'projectAdmin');
 			const existing = await getProjectByIdFromDb(input.id);
 			if (!existing) {
 				throw new TRPCError({
@@ -114,16 +136,20 @@ export const projectsRouter = router({
 			}
 		}),
 
-	delete: authedProcedure.input(z.object({ id: z.string().min(1) })).mutation(async ({ input }) => {
-		const existing = await getProjectByIdFromDb(input.id);
-		if (!existing) {
-			throw new TRPCError({
-				code: 'NOT_FOUND',
-				message: `Project with ID "${input.id}" not found`,
-			});
-		}
-		await deleteProjectFromDb(input.id);
-	}),
+	delete: authedProcedure
+		.input(z.object({ id: z.string().min(1) }))
+		.mutation(async ({ ctx, input }) => {
+			// Deleting a project is `projectAdmin`-only (same boundary as `update`).
+			await assertProjectAccess(ctx.user, input.id, 'projectAdmin');
+			const existing = await getProjectByIdFromDb(input.id);
+			if (!existing) {
+				throw new TRPCError({
+					code: 'NOT_FOUND',
+					message: `Project with ID "${input.id}" not found`,
+				});
+			}
+			await deleteProjectFromDb(input.id);
+		}),
 
 	credentials: credentialsRouter,
 });

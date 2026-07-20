@@ -15,7 +15,9 @@ import { asc, eq, sql } from 'drizzle-orm';
 
 import type { ProjectConfig } from '../../config/schema.js';
 import { getDb } from '../client.js';
+import { projectMembers } from '../schema/projectMembers.js';
 import { projects } from '../schema/projects.js';
+import type { AddMemberInput } from './projectMembersRepository.js';
 
 type ProjectRow = typeof projects.$inferSelect;
 
@@ -127,6 +129,25 @@ export async function upsertProjectToDb(config: ProjectConfig): Promise<void> {
 export async function createProjectInDb(config: ProjectConfig): Promise<void> {
 	const values = projectConfigToRow(config);
 	await getDb().insert(projects).values(values);
+}
+
+/**
+ * Create a new project row and insert the creator's owner membership atomically in one database transaction.
+ * If either insert fails, the whole transaction rolls back so a failed membership insert never leaves an unowned project row.
+ */
+export async function createProjectWithMemberInDb(
+	config: ProjectConfig,
+	member: AddMemberInput,
+): Promise<void> {
+	const values = projectConfigToRow(config);
+	await getDb().transaction(async (tx) => {
+		await tx.insert(projects).values(values);
+		await tx.insert(projectMembers).values({
+			projectId: member.projectId,
+			userId: member.userId,
+			role: member.role,
+		});
+	});
 }
 
 /**

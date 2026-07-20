@@ -665,6 +665,15 @@ export async function failStaleRunningRuns(
 
 export interface ListRunsFilter {
 	projectId?: string;
+	/**
+	 * Restrict the result to this set of project ids — the authorization scope a
+	 * non-admin caller is limited to (#281 task 4). Distinct from the single
+	 * `projectId` filter above: `projectId` is a user-chosen filter, `projectIds`
+	 * is the accessible-project boundary the API layer imposes. Callers pass a
+	 * non-empty array (an empty scope is short-circuited to an empty result
+	 * without querying).
+	 */
+	projectIds?: readonly string[];
 	status?: RunStatus;
 	phase?: TriggerPhase;
 	limit: number;
@@ -694,6 +703,9 @@ export async function listRunsFromDb(
 		);
 	const conditions: SQL[] = [or(ne(runs.status, 'deferred'), notExists(hasWaitingDispatch)) as SQL];
 	if (filter.projectId) conditions.push(eq(runs.projectId, filter.projectId));
+	if (filter.projectIds && filter.projectIds.length > 0) {
+		conditions.push(inArray(runs.projectId, [...filter.projectIds]));
+	}
 	if (filter.status) conditions.push(eq(runs.status, filter.status));
 	if (filter.phase) conditions.push(eq(runs.phase, filter.phase));
 
