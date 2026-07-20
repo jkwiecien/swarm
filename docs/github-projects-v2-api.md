@@ -300,6 +300,27 @@ SCM side uses and keeps SWARM correct even as the preview payload shifts.
 
 ---
 
+## 5b. Issue dependencies (blocked-by)
+
+Cross-issue **dependencies** are a GitHub **Issues** feature (not Projects v2), exposed over
+plain REST — so, unlike the item/field reads above, they don't go through GraphQL. SWARM's
+`PMProvider` dependency capability (`supportsDependencies` / `listBlockers` / `addBlockedBy`,
+issue #330) is implemented against these endpoints in the GitHub Projects adapter, resolving a
+board item to its backing issue first (the adapter already does this for comments/updates):
+
+| Operation | Endpoint | Notes |
+| --- | --- | --- |
+| List "blocked by" | `GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` | Returns an array of Issue objects (with `id`, `number`, `state`, `title`, `html_url`). A repo/plan without the feature answers 404/410 — SWARM treats that as "no native blockers". |
+| Add "blocked by" | `POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by` | Body `{ "issue_id": <numeric database id> }` — the blocking issue's **`id`**, *not* its number (resolve it with `issues.get` first). Idempotent: an already-recorded dependency comes back `422`, which SWARM swallows. |
+| Remove "blocked by" | `DELETE /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by/{issue_id}` | Not used by SWARM yet. |
+
+Prose-declared dependencies (an item that says "blocked by #319" in its body or a comment) are
+resolved provider-neutrally: `src/pm/dependencies.ts` extracts the referenced issue numbers, and
+the adapter resolves each to its live `state` via `issues.get`, so both native relationships and
+mentioned prerequisites feed one `listBlockers` result.
+
+---
+
 ## 6. Auth scopes
 
 What the token behind the GraphQL calls and the webhook needs. Confirmed the active

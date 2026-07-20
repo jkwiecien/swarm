@@ -6,13 +6,19 @@ const createIssue = vi.fn();
 const updateIssue = vi.fn();
 const getLabel = vi.fn();
 const createLabel = vi.fn();
+const getIssue = vi.fn();
+const listComments = vi.fn();
+const request = vi.fn();
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	getScopedClient: () => ({
 		graphql,
+		request,
 		issues: {
 			createComment,
 			create: createIssue,
 			update: updateIssue,
+			get: getIssue,
+			listComments,
 			getLabel,
 			createLabel,
 		},
@@ -60,6 +66,9 @@ describe('GitHubProjectsPMProvider', () => {
 		updateIssue.mockReset();
 		getLabel.mockReset();
 		createLabel.mockReset();
+		getIssue.mockReset();
+		listComments.mockReset();
+		request.mockReset();
 	});
 
 	it('createGitHubProjectsProvider builds the provider', () => {
@@ -383,6 +392,111 @@ describe('GitHubProjectsPMProvider', () => {
 				'no backing Issue',
 			);
 			expect(updateIssue).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('supportsDependencies', () => {
+		it('is true — GitHub Issues models dependencies natively', () => {
+			expect(provider.supportsDependencies).toBe(true);
+		});
+	});
+
+	describe('listBlockers', () => {
+		it('merges native "blocked by" relationships with prerequisites mentioned in prose', async () => {
+			// resolveItem → the item (issue #10 in jkwiecien/swarm, body has no refs).
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			// Native blocked-by: issue #5, still open.
+			request.mockResolvedValue({
+				data: [
+					{
+						id: 500,
+						number: 5,
+						title: 'Prereq',
+						html_url: 'https://github.com/jkwiecien/swarm/issues/5',
+						state: 'open',
+					},
+				],
+			});
+			// A comment names a prose dependency on #7.
+			listComments.mockResolvedValue({ data: [{ body: 'This depends on #7 landing first.' }] });
+			getIssue.mockResolvedValue({
+				data: {
+					number: 7,
+					title: 'Seven',
+					html_url: 'https://github.com/jkwiecien/swarm/issues/7',
+					state: 'closed',
+				},
+			});
+
+			const blockers = await provider.listBlockers('PVTI_x');
+
+			expect(request).toHaveBeenCalledWith(
+				'GET /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
+				expect.objectContaining({ owner: 'jkwiecien', repo: 'swarm', issue_number: 10 }),
+			);
+			expect(blockers).toEqual([
+				expect.objectContaining({ reference: '#5', open: true, source: 'dependency' }),
+				expect.objectContaining({ reference: '#7', open: false, source: 'mention' }),
+			]);
+		});
+
+		it('treats a missing issue-dependencies API (404) as no native blockers', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			request.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
+			listComments.mockResolvedValue({ data: [] });
+
+			await expect(provider.listBlockers('PVTI_x')).resolves.toEqual([]);
+		});
+
+		it('returns [] for a draft item with no backing Issue', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			await expect(provider.listBlockers('PVTI_draft')).resolves.toEqual([]);
+			expect(request).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('addBlockedBy', () => {
+		it('POSTs the blocker by its numeric database id to the dependencies API', async () => {
+			graphql.mockImplementation(async (_q: string, vars: { itemId: string }) => ({
+				node: {
+					...ITEM_NODE,
+					id: vars.itemId,
+					content: {
+						...ITEM_NODE.content,
+						number: vars.itemId === 'PVTI_blocker' ? 5 : 20,
+					},
+				},
+			}));
+			getIssue.mockResolvedValue({ data: { id: 9999, number: 5 } });
+			request.mockResolvedValue({ data: {} });
+
+			await provider.addBlockedBy('PVTI_target', 'PVTI_blocker');
+
+			expect(request).toHaveBeenCalledWith(
+				'POST /repos/{owner}/{repo}/issues/{issue_number}/dependencies/blocked_by',
+				expect.objectContaining({
+					owner: 'jkwiecien',
+					repo: 'swarm',
+					issue_number: 20,
+					issue_id: 9999,
+				}),
+			);
+		});
+
+		it('is idempotent — swallows a 422 (dependency already recorded)', async () => {
+			graphql.mockImplementation(async (_q: string, vars: { itemId: string }) => ({
+				node: {
+					...ITEM_NODE,
+					id: vars.itemId,
+					content: { ...ITEM_NODE.content, number: vars.itemId === 'PVTI_blocker' ? 5 : 20 },
+				},
+			}));
+			getIssue.mockResolvedValue({ data: { id: 9999, number: 5 } });
+			request.mockRejectedValue(Object.assign(new Error('Unprocessable'), { status: 422 }));
+
+			await expect(provider.addBlockedBy('PVTI_target', 'PVTI_blocker')).resolves.toBeUndefined();
 		});
 	});
 });

@@ -375,21 +375,43 @@ function enforceSingleTaskBudget(
 }
 
 /**
- * Comment posted on a spawned sibling so the board shows what happened: it came
- * from splitting the parent, it will be planned automatically, and — unlike a
- * normal planned task — it will NOT move to "ToDo" on its own. The human decides
- * when and in what order to start each sibling.
+ * Comment posted on a spawned sibling so the board shows what happened: which
+ * ordered phase it is, that it came from splitting the parent, that it will be
+ * planned automatically but will NOT move to "ToDo" on its own, and — the first
+ * of the two dependency guards (issue #330) — the exact earlier phases that block
+ * it. The second guard is the native `blocked by` relationship {@link applySplit}
+ * records; this human-readable list stands in for it on a provider that can't.
+ *
+ * `predecessors` are every phase that must land before this one, in order (phase 1
+ * first) — for phase N that is phases 1..N-1. Empty only for the first task, which
+ * is the re-scoped parent, not a spawned sibling.
  */
-export function splitChildCommentBody(parent: WorkItem): string {
-	return [
-		'## 🧩 Split from a larger task',
+export function splitChildCommentBody(
+	parent: WorkItem,
+	predecessors: readonly WorkItem[],
+	phaseNumber: number,
+	totalPhases: number,
+): string {
+	const lines = [
+		`## 🧩 Phase ${phaseNumber} of ${totalPhases} — split from a larger task`,
 		'',
 		`This task was split off from **${parent.title}** (${parent.url}) during planning,`,
 		'because that work item was too large to implement well in a single pull request.',
 		'',
-		'SWARM will plan this task automatically. It will **not** move to **ToDo** by itself —',
-		'move it there yourself when you want it started, in the order that suits you.',
-	].join('\n');
+	];
+	if (predecessors.length > 0) {
+		lines.push(
+			'**Blocked by** — these earlier phases must be completed first, in order:',
+			...predecessors.map((p, i) => `- Phase ${i + 1}: ${p.title} (${p.url})`),
+			'',
+		);
+	}
+	lines.push(
+		'SWARM plans this task automatically, but it will **not** move to **ToDo** on its own,',
+		'and its implementation stays blocked until the phases above are done — move it to',
+		'**ToDo** when you are ready and its prerequisites have landed.',
+	);
+	return lines.join('\n');
 }
 
 /**
@@ -509,6 +531,12 @@ async function applySplit(
 	const splitId = randomUUID();
 	const generatedAt = new Date().toISOString();
 	const subTaskItemIds: string[] = [];
+	// Phase 1 is the re-scoped original (with whatever rename patch just applied);
+	// each sibling is the next phase. `predecessors` accumulates them so phase N is
+	// chained behind phases 1..N-1 — the cumulative blocked-by the issue requires.
+	const firstTask: WorkItem = mainPatch ? { ...parent, ...mainPatch } : parent;
+	const totalPhases = split.subTasks.length + 1;
+	const predecessors: WorkItem[] = [firstTask];
 	for (const [childIndex, sub] of split.subTasks.entries()) {
 		const sibling = await pm.createWorkItem({
 			title: sub.title,
@@ -538,10 +566,50 @@ async function applySplit(
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
-		await pm.addComment(sibling.id, splitChildCommentBody(parent));
+		// Guard 2 (issue #330): record the native blocked-by relationship for every
+		// preceding phase, so the worker defers this phase's Implementation until they
+		// all close. Best-effort — a provider that can't model dependencies, or a
+		// transient API failure, must not fail the whole split; the comment below (guard
+		// 1) still names the blockers.
+		await linkBlockedBy(pm, sibling, predecessors, splitId, childIndex);
+		await pm.addComment(
+			sibling.id,
+			splitChildCommentBody(firstTask, predecessors, childIndex + 2, totalPhases),
+		);
 		subTaskItemIds.push(sibling.id);
+		predecessors.push(sibling);
 	}
 	return { subTaskItemIds, mainTaskUpdated: mainPatch !== undefined };
+}
+
+/**
+ * Record `item` as blocked by every one of its preceding phases (issue #330),
+ * behind the provider-agnostic PMProvider dependency capability. No-op when the
+ * provider can't model dependencies; per-link failures are logged and swallowed
+ * so one bad link never aborts the split mid-loop (a retry would duplicate the
+ * siblings) — the split comment still lists the blockers.
+ */
+async function linkBlockedBy(
+	pm: PMProvider,
+	item: WorkItem,
+	blockers: readonly WorkItem[],
+	splitId: string,
+	childIndex: number,
+): Promise<void> {
+	if (!pm.supportsDependencies) return;
+	for (const blocker of blockers) {
+		try {
+			await pm.addBlockedBy(item.id, blocker.id);
+		} catch (error) {
+			logger.warn('Planning — failed to record blocked-by dependency; comment still lists it', {
+				itemId: item.id,
+				blockerId: blocker.id,
+				splitId,
+				childIndex,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 }
 
 /**

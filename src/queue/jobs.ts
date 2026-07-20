@@ -45,6 +45,16 @@ const jobBase = z.object({
 	 */
 	rateLimitRetryAttempt: z.number().int().nonnegative().optional(),
 	/**
+	 * How many times this job has been re-checked while waiting on an unfinished
+	 * dependency (issue #330): an Implementation whose work item is `blocked by` an
+	 * open prerequisite is deferred as a token-free `recheck` dispatch — no worktree,
+	 * no agent — and re-evaluated on {@link DEPENDENCY_RECHECK_INTERVAL_MS}. Absent
+	 * on a fresh webhook; incremented on each dependency re-check so the consumer can
+	 * cap the wait (`MAX_DEPENDENCY_RECHECKS`) and finally fail with an actionable
+	 * "must be done first" message rather than polling forever.
+	 */
+	dependencyRecheckAttempt: z.number().int().nonnegative().optional(),
+	/**
 	 * PM phase to resume after an agent failure. A retried implementation has
 	 * already moved its card to In progress, which normally is deliberately not
 	 * a phase-triggering status; this preserves the original dispatch intent.

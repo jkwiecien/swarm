@@ -20,6 +20,7 @@ import {
 	OPENED_PR_FILENAME,
 	runImplementationPhase,
 } from '@/pipeline/implementation.js';
+import type { WorkItemBlocker } from '@/pm/types.js';
 import type { GitWorktreeManager, WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { createMockProjectConfig, createMockWorkItem } from '../../helpers/factories.js';
 
@@ -60,6 +61,9 @@ function makeDeps() {
 		moveWorkItem: vi.fn(async () => {}),
 		createWorkItem: vi.fn(async () => createMockWorkItem({ id: 'PVTI_sibling' })),
 		updateWorkItem: vi.fn(async () => {}),
+		supportsDependencies: true,
+		listBlockers: vi.fn<() => Promise<WorkItemBlocker[]>>(async () => []),
+		addBlockedBy: vi.fn<(id: string, blockerId: string) => Promise<void>>(async () => {}),
 	};
 	return {
 		project: createMockProjectConfig(),
@@ -81,6 +85,45 @@ describe('runImplementationPhase', () => {
 		prFileContents = 'https://github.com/jkwiecien/swarm/pull/99\n';
 		blockedReasonFileExists = false;
 		blockedReasonFileContents = '';
+	});
+
+	it('defers (throws DependencyBlockedError) when the item is blocked by an open prerequisite', async () => {
+		const deps = makeDeps();
+		deps.pm.listBlockers.mockResolvedValueOnce([
+			{
+				reference: '#319',
+				url: 'https://github.com/o/r/issues/319',
+				title: 'Session auth',
+				open: true,
+				source: 'dependency',
+			},
+		]);
+
+		await expect(runImplementationPhase(deps)).rejects.toMatchObject({
+			name: 'DependencyBlockedError',
+		});
+
+		// Nothing was started: no "In progress" move, no worktree, no credentials, no agent —
+		// so the deferral spends zero model tokens.
+		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+		expect(deps.worktrees.provision).not.toHaveBeenCalled();
+		expect(deps.getToken).not.toHaveBeenCalled();
+		expect(deps.runAgent).not.toHaveBeenCalled();
+	});
+
+	it('proceeds normally when the item has only closed (satisfied) blockers', async () => {
+		const deps = makeDeps();
+		deps.pm.listBlockers.mockResolvedValueOnce([
+			{
+				reference: '#319',
+				url: 'https://github.com/o/r/issues/319',
+				title: 'Session auth',
+				open: false,
+				source: 'dependency',
+			},
+		]);
+		await expect(runImplementationPhase(deps)).resolves.toBeDefined();
+		expect(deps.runAgent).toHaveBeenCalledTimes(1);
 	});
 
 	it('moves the item to inReview after successful delivery when Review is enabled', async () => {
