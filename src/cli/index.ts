@@ -20,6 +20,7 @@ import * as start from './commands/start.js';
 import * as status from './commands/status.js';
 import * as stop from './commands/stop.js';
 import * as users from './commands/users.js';
+import * as workers from './commands/workers.js';
 import * as worktrees from './commands/worktrees.js';
 
 type Command = { run: (argv: string[]) => Promise<number> };
@@ -34,6 +35,7 @@ const COMMANDS: Record<string, Command> = {
 	queue,
 	users,
 	members,
+	workers,
 	worktrees,
 };
 
@@ -51,6 +53,7 @@ Commands:
   queue clear      Remove all pending queue jobs (not active runs)
   users            Manage SWARM users and the installation admin
   members          Manage project membership (who belongs to a project)
+  workers          Register and manage local workers (identity + declared CLIs)
   worktrees prune  Prune stale per-task worktrees
 
 The worker is not managed here — it runs on the host: npm run dev:worker`;
