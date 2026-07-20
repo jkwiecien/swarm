@@ -1,0 +1,1 @@
+ALTER TABLE "worker_sessions" ADD COLUMN "released" boolean DEFAULT false NOT NULL;

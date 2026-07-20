@@ -14,6 +14,7 @@ export default defineConfig({
 		'./src/db/schema/projectMembers.ts',
 		'./src/db/schema/projectMembershipRequests.ts',
 		'./src/db/schema/workers.ts',
+		'./src/db/schema/workerSessions.ts',
 	],
 	out: './src/db/migrations',
 	dialect: 'postgresql',

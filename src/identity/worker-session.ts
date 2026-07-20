@@ -1,0 +1,81 @@
+/**
+ * The worker **session lease** — the single source of truth for the shape
+ * (ai/CODING_STANDARDS.md "Zod is the source of truth"). Where `Worker`
+ * (`./worker.ts`) models *where* a user can execute, a worker session models the
+ * one **live claim** on that execution environment: at most one session exists
+ * per registered worker, so two `swarm-cli` daemons can never drive the same
+ * machine at once (ADR-001 "User / worker"). Phase 2 of the worker slice, on top
+ * of Phase 1's identity (`./worker-service.ts`).
+ *
+ * A session carries a **fencing token** — a per-worker monotonic counter bumped
+ * every time the lease is (re-)acquired. It is the standard fencing-token
+ * pattern for a lease: a stale holder that was replaced (its expired lease
+ * re-acquired by a newer daemon) still remembers the old token, so a later
+ * dispatch/advance can reject its writes by comparing tokens
+ * (`validateFencingToken`, the seam #130 calls). `lastHeartbeatAt` drives
+ * expiry: a session is *live* only while its last heartbeat is within the
+ * heartbeat TTL, and an expired session may be re-acquired with a bumped token.
+ * `currentRunId` is the run the session is executing, or `null` when idle.
+ *
+ * This is the persisted-row read model; `src/db/schema/workerSessions.ts` is its
+ * table and `src/db/repositories/workerSessionsRepository.ts` owns the atomic
+ * acquire/heartbeat/release transitions. The domain-level helpers here
+ * (`isSessionLive`, `nextFencingToken`) stay dependency-free so both the
+ * repository and the service share one definition of "live" and "next token".
+ */
+
+import { z } from 'zod';
+
+/** The fencing token a brand-new session starts at; bumped on every re-acquire. */
+export const INITIAL_FENCING_TOKEN = 1;
+
+/**
+ * A worker session lease. `workerId` is a `workers.id` (`uuid`); `id` is the
+ * session row's own generated `uuid`. `fencingToken` is a per-worker monotonic
+ * counter (starts at {@link INITIAL_FENCING_TOKEN}, bumped on each re-acquire);
+ * `lastHeartbeatAt` is the instant expiry is measured from; `currentRunId` is a
+ * nullable `runs.id` — the run this session is executing, or `null` when idle.
+ */
+export const WorkerSessionSchema = z.object({
+	id: z.string().uuid(),
+	workerId: z.string().uuid(),
+	fencingToken: z.number().int().positive(),
+	lastHeartbeatAt: z.date(),
+	currentRunId: z.string().uuid().nullable(),
+	createdAt: z.date(),
+});
+
+export type WorkerSession = z.infer<typeof WorkerSessionSchema>;
+
+/**
+ * The next fencing token after `current` — the single named place the monotonic
+ * bump lives, so the acquire transaction and its tests agree on it. Tokens only
+ * ever move forward, never reused, so a replaced holder's token can never again
+ * validate as current.
+ */
+export function nextFencingToken(current: number): number {
+	return current + 1;
+}
+
+/**
+ * Whether a session whose last heartbeat was `lastHeartbeatAt` is still *live*
+ * at `now` under a `ttlMs` heartbeat TTL: live while strictly less than the TTL
+ * has elapsed, expired once the elapsed time reaches it. Pure so the repository's
+ * SQL liveness guard and the TTL-boundary unit tests share one definition.
+ */
+export function isSessionLive(lastHeartbeatAt: Date, ttlMs: number, now: Date): boolean {
+	return now.getTime() - lastHeartbeatAt.getTime() < ttlMs;
+}
+
+/**
+ * Raised when a live session already holds the lease for a worker and a second
+ * `acquireLease` is attempted — the "one live session per registered worker"
+ * invariant. A distinct type (not a bare `Error`) so the CLI/daemon can tell a
+ * lease contention apart from an unexpected failure and surface a retry hint.
+ */
+export class WorkerSessionHeldError extends Error {
+	constructor(public readonly workerId: string) {
+		super(`A live session already holds the lease for worker ${workerId}`);
+		this.name = 'WorkerSessionHeldError';
+	}
+}
