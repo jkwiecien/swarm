@@ -81,6 +81,35 @@ export interface UpdateWorkItemPatch {
 	description?: string;
 }
 
+/**
+ * A prerequisite that blocks a work item — enough to gate a run on it and to
+ * name it in a comment or a deferral message. Returned by
+ * {@link PMProvider.listBlockers}. Provider-agnostic: no GitHub-specific fields.
+ */
+export interface WorkItemBlocker {
+	/**
+	 * The blocker's provider-native work-item id when it is itself a card on the
+	 * board, else undefined (a dependency referenced only in prose may point at an
+	 * issue that was never added to the board). Callers gate on {@link open}, not
+	 * on this.
+	 */
+	id?: string;
+	/** Human-readable reference for logs/comments/messages — e.g. an issue number `#319`. */
+	reference: string;
+	/** Web URL of the blocking issue/item. */
+	url: string;
+	/** Title of the blocking issue/item, for human-readable messages. */
+	title: string;
+	/** Whether the blocker is still unfinished — a still-`open` blocker gates dependent work. */
+	open: boolean;
+	/**
+	 * How the dependency was found: a `dependency` relationship the provider models
+	 * natively, or a `mention` parsed from the item's own description/comments. Both
+	 * gate work identically; this is informational, for clearer messages and logs.
+	 */
+	source: 'dependency' | 'mention';
+}
+
 /** Optional server-side filters for {@link PMProvider.listWorkItems}. */
 export interface ListWorkItemsFilter {
 	/**
@@ -156,4 +185,35 @@ export interface PMProvider {
 	 * becomes after a split — the split "can even change [its] name".
 	 */
 	updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void>;
+
+	/**
+	 * Whether this provider models cross-item "blocked by" dependencies at all.
+	 * `false` for a provider with no dependency concept: callers then skip the
+	 * dependency gate and rely on the human-readable comment guard instead of
+	 * calling {@link listBlockers} / {@link addBlockedBy} (which return `[]` / no-op).
+	 * A capability flag rather than an optional method so a second provider
+	 * (Bitbucket, GitLab, Jira) opts out explicitly (ai/RULES.md §2).
+	 */
+	readonly supportsDependencies: boolean;
+
+	/**
+	 * List the prerequisites this work item is *blocked by*, each with its
+	 * open/closed state, so the pipeline can refuse to start dependent work while a
+	 * prerequisite is unfinished. Combines the provider's native dependency
+	 * relationships with dependencies referenced in the item's own description and
+	 * comments (deduplicated). Returns `[]` when the item has none, or when the
+	 * provider has no dependency concept ({@link supportsDependencies} is `false`).
+	 */
+	listBlockers(id: string): Promise<WorkItemBlocker[]>;
+
+	/**
+	 * Record that work item `id` is *blocked by* `blockerId` (a prerequisite that
+	 * must finish first). Idempotent — re-adding an existing relationship is a
+	 * no-op — and a no-op entirely when the provider has no dependency concept
+	 * ({@link supportsDependencies} is `false`). Both are provider-native work-item
+	 * ids. Planning's task-splitting uses this to chain the ordered phases so a
+	 * later phase can't start before its predecessors land (widen-the-interface,
+	 * ai/RULES.md §2).
+	 */
+	addBlockedBy(id: string, blockerId: string): Promise<void>;
 }

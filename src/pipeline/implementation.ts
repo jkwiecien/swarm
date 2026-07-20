@@ -54,6 +54,7 @@ import { agentRunError } from '@/harness/agent-failure.js';
 import type { ReasoningLevel } from '@/harness/models.js';
 import { GitHubSCMIntegration } from '@/integrations/scm/github/scm-integration.js';
 import { logger } from '@/lib/logger.js';
+import { DependencyBlockedError, findOpenBlockers } from '@/pipeline/dependency-guard.js';
 import {
 	BLOCKED_REASON_FILENAME,
 	buildImplementationPrompt,
@@ -346,6 +347,19 @@ export async function runImplementationPhase(
 		runAgent = runAgentCli,
 		graft = graftEnvironment,
 	} = options;
+
+	// Dependency gate (issue #330): never start implementing a task whose
+	// prerequisites are unfinished — the exact out-of-order build that produced the
+	// PR #326/#327 migration conflict. Checked before the "In progress" move, the
+	// worktree, credentials, and the agent, so a blocked run defers having spent
+	// zero model tokens; the worker re-checks it cheaply until the blocker closes.
+	// Provider-agnostic — it speaks only the PMProvider gate (no-op for a provider
+	// that can't model dependencies).
+	const openBlockers = await findOpenBlockers(pm, workItem);
+	if (openBlockers.length > 0) {
+		throw new DependencyBlockedError(workItem, openBlockers);
+	}
+
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
 	const reviewEnabled = project.pipeline?.review?.enabled !== false;
 	const legacyMode = options.getToken !== undefined && options.delivery === undefined;

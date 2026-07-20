@@ -22,6 +22,13 @@ export interface DeferredRetryIntent {
 	pmPhaseStarted?: boolean;
 	/** The retry must reuse the held review-dispatch dedup claim (issue #214). */
 	continuationDispatchClaimed?: boolean;
+	/**
+	 * This is a dependency re-check deferral (issue #330), not an agent failure:
+	 * consume the separate {@link SwarmJob.dependencyRecheckAttempt} budget instead
+	 * of the small rate-limit one, so a task can wait days on an unfinished
+	 * prerequisite without exhausting its retry budget.
+	 */
+	dependencyRecheck?: boolean;
 }
 
 /**
@@ -40,7 +47,12 @@ export function deriveRetryJobPayload(parsed: SwarmJob, intent: DeferredRetryInt
 	} = parsed;
 	return {
 		...job,
-		rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1,
+		// A dependency re-check waits on an external condition, not a failure, so it
+		// spends its own budget and leaves the rate-limit one untouched; every other
+		// deferral consumes a rate-limit attempt as before.
+		...(intent.dependencyRecheck
+			? { dependencyRecheckAttempt: (job.dependencyRecheckAttempt ?? 0) + 1 }
+			: { rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1 }),
 		// Carry the originating run row forward (issue #136) so the retry resets
 		// that same row instead of inserting a second one. `intent.runId` wins
 		// over any stale value on `parsed`.

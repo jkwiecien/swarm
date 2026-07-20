@@ -43,6 +43,9 @@ function providerReturning(workItem: WorkItem, seen: string[] = []): PMProvider 
 		addComment: async () => 'c1',
 		createWorkItem: async () => workItem,
 		updateWorkItem: async () => undefined,
+		supportsDependencies: false,
+		listBlockers: async () => [],
+		addBlockedBy: async () => undefined,
 	};
 }
 

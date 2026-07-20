@@ -70,6 +70,7 @@ import { createGitHubProjectsProvider } from '../integrations/pm/github-projects
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
+import { DependencyBlockedError } from '../pipeline/dependency-guard.js';
 import { runImplementationPhase } from '../pipeline/implementation.js';
 import { phaseLabel } from '../pipeline/phase-label.js';
 import { runPlanningPhase } from '../pipeline/planning.js';
@@ -115,6 +116,11 @@ import {
 	type TriggerPhase,
 	type TriggerResult,
 } from '../triggers/types.js';
+import {
+	maxDependencyRechecks,
+	resolveDependencyMaxWaitMs,
+	resolveDependencyRecheckIntervalMs,
+} from './dependency-recheck.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import {
 	type MergeAutomationSettledOutcome,
@@ -224,6 +230,13 @@ export type JobOutcome =
 			 * *why* the retry is waiting (issue #284).
 			 */
 			failureKind?: DeferrableFailure['kind'];
+			/**
+			 * A dependency re-check deferral (issue #330), not an agent failure: the
+			 * dispatch waits (`recheck`) on an unfinished prerequisite and consumes the
+			 * separate {@link SwarmJob.dependencyRecheckAttempt} budget, leaving the
+			 * rate-limit budget untouched.
+			 */
+			dependencyRecheck?: boolean;
 	  };
 
 /**
@@ -239,6 +252,19 @@ const MAX_RATE_LIMIT_RETRIES = 6;
  * model instead of applying the longer quota-reset policy.
  */
 const MAX_CAPACITY_RETRIES = 2;
+/**
+ * Dependency re-check cadence + budget (issue #330). A blocked Implementation
+ * re-checks its prerequisites every {@link DEPENDENCY_RECHECK_INTERVAL_MS} — a
+ * token-free deferral (the gate runs before any worktree/agent) — for up to
+ * {@link MAX_DEPENDENCY_RECHECKS} attempts, then settles failed with an actionable
+ * "must be done first" message rather than waiting forever. Both derived from env
+ * (`SWARM_DEPENDENCY_RECHECK_MS` / `SWARM_DEPENDENCY_MAX_WAIT_MS`).
+ */
+const DEPENDENCY_RECHECK_INTERVAL_MS = resolveDependencyRecheckIntervalMs();
+const MAX_DEPENDENCY_RECHECKS = maxDependencyRechecks(
+	DEPENDENCY_RECHECK_INTERVAL_MS,
+	resolveDependencyMaxWaitMs(),
+);
 /**
  * Floor on the retry delay, deliberately above the review-dispatch-dedup TTL
  * (5 min, `src/triggers/review-dispatch-dedup.ts`): a review retry that fires
@@ -469,6 +495,56 @@ function deferAgentRunError(
 	};
 }
 
+/**
+ * Handle a {@link DependencyBlockedError} (issue #330): build the token-free
+ * `recheck` deferral while the dependency-recheck budget lasts, or return
+ * `undefined` once it's exhausted so the caller falls through to a terminal
+ * `phase-failed` that posts the "must be done first" message on the item. Split
+ * out of {@link handlePhaseFailure} to keep its branching within budget, mirroring
+ * {@link deferAgentRunError}.
+ */
+function deferDependencyBlock(
+	err: DependencyBlockedError,
+	job: SwarmJob,
+	trigger: TriggerResult,
+	projectId: string,
+	error: string,
+	runId: string | undefined,
+): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
+	const attempt = job.dependencyRecheckAttempt ?? 0;
+	if (attempt >= MAX_DEPENDENCY_RECHECKS) {
+		logger.error(
+			`Phase failed - ${phaseLabel(trigger.phase)} — still blocked after ${attempt} re-checks`,
+			{ projectId, phase: trigger.phase, taskId: trigger.taskId, error },
+		);
+		return undefined;
+	}
+	logger.info(`Phase deferred - ${phaseLabel(trigger.phase)} — waiting on dependency`, {
+		projectId,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		attempt,
+		retryDelayMs: DEPENDENCY_RECHECK_INTERVAL_MS,
+		blockers: err.blockers.map((b) => b.reference),
+	});
+	return {
+		status: 'phase-deferred',
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		retryDelayMs: DEPENDENCY_RECHECK_INTERVAL_MS,
+		reason: error,
+		attempt,
+		resumable: false,
+		dependencyRecheck: true,
+		// The phase was entered (its gate ran) — preserve board dispatch intent so the
+		// re-check re-enters Implementation even though the card never moved.
+		pmPhaseStarted:
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
+		runId,
+	};
+}
+
 /** Map a classified deferrable failure onto the dispatch record's wait reason. */
 function waitReasonForDeferral(kind: DeferrableFailure['kind'] | undefined): DispatchWaitReason {
 	switch (kind) {
@@ -526,13 +602,19 @@ async function settleDispatchRetry(
 		resumeDelivery: outcome.resumeDelivery,
 		pmPhaseStarted: outcome.pmPhaseStarted,
 		continuationDispatchClaimed: outcome.continuationDispatchClaimed,
+		dependencyRecheck: outcome.dependencyRecheck,
 	});
 	await persistRetryPayloadOnRun(outcome.runId, next);
 	const updated = await scheduleDispatchRetry(dispatch.id, {
 		jobPayload: next,
 		availableAt: new Date(Date.now() + outcome.retryDelayMs),
-		waitReason: waitReasonForDeferral(outcome.failureKind),
-		attempt: next.rateLimitRetryAttempt ?? 0,
+		// A dependency deferral waits on an external condition, so it reads as a
+		// `recheck` (like merge-automation), not a failure-driven wait reason, and
+		// tracks its own attempt counter.
+		waitReason: outcome.dependencyRecheck ? 'recheck' : waitReasonForDeferral(outcome.failureKind),
+		attempt: outcome.dependencyRecheck
+			? (next.dependencyRecheckAttempt ?? 0)
+			: (next.rateLimitRetryAttempt ?? 0),
 		runId: outcome.runId,
 	});
 	if (!updated) {
@@ -1864,6 +1946,17 @@ async function handlePhaseFailure(
 			error: RUN_CANCELLED_MESSAGE,
 			cancelled: true,
 		};
+	}
+
+	// A dependency block (issue #330) is neither a failure nor a rate-limit: the
+	// work item is `blocked by` an unfinished prerequisite. Defer as a token-free
+	// `recheck` on its own budget while the budget lasts; once exhausted, fall
+	// through to the terminal path below, which posts this "must be done first"
+	// message on the item. Placed after the cancellation check so a user can still
+	// cancel a run that is merely waiting on a dependency.
+	if (err instanceof DependencyBlockedError) {
+		const deferred = deferDependencyBlock(err, job, trigger, project.id, error, runId);
+		if (deferred) return deferred;
 	}
 
 	const failureKind =
