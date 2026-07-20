@@ -46,7 +46,8 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 			const user = await seedJoiner();
 			const created = await createMembershipRequest({ projectId: 'proj-open', userId: user.id });
 
-			await approveMembershipRequestInDb(created);
+			const result = await approveMembershipRequestInDb(created);
+			expect(result).toBe(true);
 
 			expect((await getMembership(user.id, 'proj-open'))?.role).toBe('contributor');
 			expect((await getMembershipRequestById(created.id))?.status).toBe('approved');
@@ -60,7 +61,8 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 			await addMember({ projectId: 'proj-open', userId: user.id, role: 'projectAdmin' });
 			const created = await createMembershipRequest({ projectId: 'proj-open', userId: user.id });
 
-			await approveMembershipRequestInDb(created);
+			const result = await approveMembershipRequestInDb(created);
+			expect(result).toBe(true);
 
 			expect((await getMembership(user.id, 'proj-open'))?.role).toBe('projectAdmin');
 			expect((await getMembershipRequestById(created.id))?.status).toBe('approved');
@@ -70,7 +72,39 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 			const user = await seedJoiner();
 			const created = await createMembershipRequest({ projectId: 'proj-open', userId: user.id });
 
-			await rejectMembershipRequestInDb(created.id);
+			const result = await rejectMembershipRequestInDb(created.id);
+			expect(result).toBe(true);
+
+			expect((await getMembershipRequestById(created.id))?.status).toBe('rejected');
+			expect(await getMembership(user.id, 'proj-open')).toBeUndefined();
+		});
+
+		it('prevents concurrent resolution: exactly one transition wins, status matches winner, and membership exists only if approval won', async () => {
+			const user = await seedJoiner();
+			const created = await createMembershipRequest({ projectId: 'proj-open', userId: user.id });
+
+			const [approveResult, rejectResult] = await Promise.all([
+				approveMembershipRequestInDb(created),
+				rejectMembershipRequestInDb(created.id),
+			]);
+
+			expect(approveResult !== rejectResult).toBe(true);
+			if (approveResult) {
+				expect((await getMembershipRequestById(created.id))?.status).toBe('approved');
+				expect((await getMembership(user.id, 'proj-open'))?.role).toBe('contributor');
+			} else {
+				expect((await getMembershipRequestById(created.id))?.status).toBe('rejected');
+				expect(await getMembership(user.id, 'proj-open')).toBeUndefined();
+			}
+		});
+
+		it('returns false when attempting to resolve a request that is no longer pending', async () => {
+			const user = await seedJoiner();
+			const created = await createMembershipRequest({ projectId: 'proj-open', userId: user.id });
+
+			expect(await rejectMembershipRequestInDb(created.id)).toBe(true);
+			expect(await approveMembershipRequestInDb(created)).toBe(false);
+			expect(await rejectMembershipRequestInDb(created.id)).toBe(false);
 
 			expect((await getMembershipRequestById(created.id))?.status).toBe('rejected');
 			expect(await getMembership(user.id, 'proj-open')).toBeUndefined();

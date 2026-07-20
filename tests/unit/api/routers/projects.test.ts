@@ -855,7 +855,7 @@ describe('projectsRouter', () => {
 			it('lets a projectAdmin approve a pending request → contributor', async () => {
 				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
 				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
-				vi.mocked(approveMembershipRequestInDb).mockResolvedValue(undefined);
+				vi.mocked(approveMembershipRequestInDb).mockResolvedValue(true);
 
 				const result = await ordinary.approveMembershipRequest({ requestId: REQUEST_ID });
 				expect(result.status).toBe('approved');
@@ -871,13 +871,28 @@ describe('projectsRouter', () => {
 				).rejects.toThrowError(expect.objectContaining({ code: 'CONFLICT' }));
 				expect(approveMembershipRequestInDb).not.toHaveBeenCalled();
 			});
+
+			it('surfaces CONFLICT when conditional transition fails in DB repository (lost race)', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(approveMembershipRequestInDb).mockResolvedValue(false);
+
+				await expect(
+					ordinary.approveMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'CONFLICT',
+						message: 'This membership request has already been resolved.',
+					}),
+				);
+			});
 		});
 
 		describe('rejectMembershipRequest', () => {
 			it('lets a projectAdmin reject a pending request without granting membership', async () => {
 				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
 				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
-				vi.mocked(rejectMembershipRequestInDb).mockResolvedValue(undefined);
+				vi.mocked(rejectMembershipRequestInDb).mockResolvedValue(true);
 
 				const result = await ordinary.rejectMembershipRequest({ requestId: REQUEST_ID });
 				expect(result.status).toBe('rejected');
@@ -891,6 +906,21 @@ describe('projectsRouter', () => {
 				await expect(
 					ordinary.rejectMembershipRequest({ requestId: REQUEST_ID }),
 				).rejects.toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+			});
+
+			it('surfaces CONFLICT when conditional transition fails in DB repository (lost race)', async () => {
+				vi.mocked(getMembershipRequestById).mockResolvedValue(requestFor('pending'));
+				vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
+				vi.mocked(rejectMembershipRequestInDb).mockResolvedValue(false);
+
+				await expect(
+					ordinary.rejectMembershipRequest({ requestId: REQUEST_ID }),
+				).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'CONFLICT',
+						message: 'This membership request has already been resolved.',
+					}),
+				);
 			});
 		});
 

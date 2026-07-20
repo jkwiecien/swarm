@@ -255,7 +255,13 @@ export const projectsRouter = router({
 					message: 'This membership request has already been resolved.',
 				});
 			}
-			await approveMembershipRequestInDb(request);
+			const transitioned = await approveMembershipRequestInDb(request);
+			if (!transitioned) {
+				throw new TRPCError({
+					code: 'CONFLICT',
+					message: 'This membership request has already been resolved.',
+				});
+			}
 			return { ...request, status: 'approved' as const };
 		}),
 
@@ -276,7 +282,13 @@ export const projectsRouter = router({
 					message: 'This membership request has already been resolved.',
 				});
 			}
-			await rejectMembershipRequestInDb(request.id);
+			const transitioned = await rejectMembershipRequestInDb(request.id);
+			if (!transitioned) {
+				throw new TRPCError({
+					code: 'CONFLICT',
+					message: 'This membership request has already been resolved.',
+				});
+			}
 			return { ...request, status: 'rejected' as const };
 		}),
 

@@ -115,24 +115,47 @@ export async function listPendingRequestsForProject(
  * resolves the request without disturbing their existing (possibly higher)
  * role. Approval only ever grants `contributor` (read) — never a role that
  * could drive runs or administer the project.
+ *
+ * Performs a conditional transition that updates only when status is `pending`.
+ * Returns `true` if the transition claimed the pending state, or `false` if
+ * the request was already resolved.
  */
-export async function approveMembershipRequestInDb(request: MembershipRequest): Promise<void> {
-	await getDb().transaction(async (tx) => {
+export async function approveMembershipRequestInDb(request: MembershipRequest): Promise<boolean> {
+	return await getDb().transaction(async (tx) => {
+		const [updated] = await tx
+			.update(projectMembershipRequests)
+			.set({ status: 'approved' })
+			.where(
+				and(
+					eq(projectMembershipRequests.id, request.id),
+					eq(projectMembershipRequests.status, 'pending'),
+				),
+			)
+			.returning();
+		if (!updated) {
+			return false;
+		}
 		await tx
 			.insert(projectMembers)
 			.values({ projectId: request.projectId, userId: request.userId, role: 'contributor' })
 			.onConflictDoNothing({ target: [projectMembers.projectId, projectMembers.userId] });
-		await tx
-			.update(projectMembershipRequests)
-			.set({ status: 'approved' })
-			.where(eq(projectMembershipRequests.id, request.id));
+		return true;
 	});
 }
 
-/** Mark a request `rejected`. Grants no membership. */
-export async function rejectMembershipRequestInDb(id: string): Promise<void> {
-	await getDb()
+/**
+ * Mark a request `rejected`. Grants no membership.
+ * Performs a conditional transition that updates only when status is `pending`.
+ * Returns `true` if the transition claimed the pending state, or `false` if
+ * the request was already resolved.
+ */
+export async function rejectMembershipRequestInDb(id: string): Promise<boolean> {
+	const [updated] = await getDb()
 		.update(projectMembershipRequests)
 		.set({ status: 'rejected' })
-		.where(eq(projectMembershipRequests.id, id));
+		.where(
+			and(eq(projectMembershipRequests.id, id), eq(projectMembershipRequests.status, 'pending')),
+		)
+		.returning();
+	return Boolean(updated);
 }
