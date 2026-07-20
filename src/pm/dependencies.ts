@@ -28,6 +28,16 @@ const DEPENDENCY_KEYWORDS =
 const REFERENCE_PATTERN = /#(\d+)\b|\/issues\/(\d+)\b/g;
 
 /**
+ * Clause boundaries: newlines, semicolons, and *sentence-ending* `.`/`?`/`!`
+ * (one followed by whitespace or end-of-text). A bare period is deliberately
+ * NOT a boundary — an issue URL (`github.com/o/r/issues/281`) and a decimal
+ * ("v1.2") both carry a dot mid-token, and splitting on it would strand the
+ * `/issues/281` ref in a different clause from its "blocked by" keyword
+ * (`#281` is unaffected, but the URL form would be silently missed).
+ */
+const CLAUSE_BOUNDARY = /[\n\r;]+|[.?!]+(?=\s|$)/;
+
+/**
  * Find the issue references a work item's prose declares as blocking
  * prerequisites. Splits the text into clauses (newlines / sentence punctuation),
  * keeps only clauses that carry a {@link DEPENDENCY_KEYWORDS} phrase, and returns
@@ -37,10 +47,10 @@ const REFERENCE_PATTERN = /#(\d+)\b|\/issues\/(\d+)\b/g;
 export function findDependencyReferences(text: string): string[] {
 	if (!text) return [];
 	const found = new Set<string>();
-	// Clause boundaries: a dependency phrase and its issue ref sit in the same
-	// clause, so splitting here keeps an unrelated ref on a neighbouring sentence
-	// from being swept up by a keyword elsewhere.
-	for (const clause of text.split(/[\n\r.;]+/)) {
+	// A dependency phrase and its issue ref sit in the same clause, so splitting
+	// on clause boundaries keeps an unrelated ref on a neighbouring sentence from
+	// being swept up by a keyword elsewhere.
+	for (const clause of text.split(CLAUSE_BOUNDARY)) {
 		if (!DEPENDENCY_KEYWORDS.test(clause)) continue;
 		for (const match of clause.matchAll(REFERENCE_PATTERN)) {
 			const num = match[1] ?? match[2];
@@ -53,11 +63,6 @@ export function findDependencyReferences(text: string): string[] {
 /** Only the blockers that still gate work — the still-open prerequisites. */
 export function openBlockers(blockers: readonly WorkItemBlocker[]): WorkItemBlocker[] {
 	return blockers.filter((b) => b.open);
-}
-
-/** `#319 ("Session auth")` — one blocker rendered for a message or comment. */
-export function describeBlocker(blocker: WorkItemBlocker): string {
-	return `${blocker.reference} (“${blocker.title}”)`;
 }
 
 /**

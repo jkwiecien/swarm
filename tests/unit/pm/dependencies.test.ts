@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
 	blockedRunMessage,
 	dedupeBlockers,
-	describeBlocker,
 	findDependencyReferences,
 	openBlockers,
 } from '@/pm/dependencies.js';
@@ -35,6 +34,14 @@ describe('findDependencyReferences', () => {
 		expect(
 			findDependencyReferences('Blocked by https://github.com/o/r/issues/281 — wait for it.'),
 		).toEqual(['281']);
+	});
+
+	it('resolves an issues/ URL even when the dot ending the sentence follows it', () => {
+		// The dot in `github.com` must not split the URL away from its keyword; only a
+		// sentence-ending dot (followed by whitespace/end) is a clause boundary.
+		expect(findDependencyReferences('Blocked by https://github.com/o/r/issues/281.')).toEqual([
+			'281',
+		]);
 	});
 
 	it('collects multiple distinct references and de-duplicates', () => {
@@ -99,12 +106,5 @@ describe('blockedRunMessage', () => {
 		const msg = blockedRunMessage([blocker(), blocker({ reference: '#5', title: 'DB' })]);
 		expect(msg).toContain('#319');
 		expect(msg).toContain('#5');
-	});
-});
-
-describe('describeBlocker', () => {
-	it('renders the reference and title', () => {
-		expect(describeBlocker(blocker())).toContain('#319');
-		expect(describeBlocker(blocker())).toContain('Session auth');
 	});
 });

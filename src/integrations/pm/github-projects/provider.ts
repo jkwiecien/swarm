@@ -531,6 +531,11 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		description: string,
 	): Promise<WorkItemBlocker[]> {
 		const client = getScopedClient();
+		// Only the first page (100 comments) is scanned — a prose dependency buried
+		// past comment #100 is missed, but the native `blocked by` relationship and
+		// the item's own description remain the durable guards, so this best-effort
+		// scan of the most likely places (description + early discussion) is enough
+		// without paginating a long thread on every gate check.
 		const { data: comments } = await client.issues.listComments({
 			owner,
 			repo,
