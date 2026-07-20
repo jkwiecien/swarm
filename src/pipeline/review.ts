@@ -267,9 +267,10 @@ interface ReviewAgentRunParams {
 /**
  * Produce the review agent's result and whether this run is a re-review. Either
  * resumes a preserved worktree's already-delivered output (no fresh run) or runs
- * the agent. A fresh run first asks the ledger whether a `request-changes`
- * verdict was already submitted for this PR at an earlier head (issue #328); if
- * so it's a **re-review**, and the agent gets the scoped prompt that verifies
+ * the agent. It asks the ledger whether a `request-changes` verdict was already
+ * submitted for this PR at an earlier head (issue #328) in both cases, so the
+ * re-review flag is reported accurately even on a resumed delivery; only a fresh
+ * run additionally uses it to hand the agent the scoped prompt that verifies
  * only the previously requested changes rather than surfacing newly-noticed
  * pre-existing issues. Split out of {@link runReviewPhase} to keep that
  * orchestrator within the cognitive-complexity budget.
@@ -298,12 +299,16 @@ async function produceReviewAgentResult(
 		getPriorSubmittedReview,
 	} = params;
 
-	if (shouldResumeDelivery) {
-		return { agent: resumedDeliveryAgent(cli), isReReview: false };
-	}
-
+	// Read-only, and the current head is excluded, so this can't mistake the run's
+	// own slot for a prior review. Resolved before the resume check so the phase's
+	// completion log reports `isReReview` accurately on a resumed delivery too.
 	const priorReview = await getPriorSubmittedReview(project.id, project.repo, prNumber, headSha);
 	const isReReview = priorReview?.verdict === 'request-changes';
+
+	if (shouldResumeDelivery) {
+		return { agent: resumedDeliveryAgent(cli), isReReview };
+	}
+
 	if (isReReview) {
 		logger.info('Review — running as a re-review (verifying previously requested changes only)', {
 			taskId,
