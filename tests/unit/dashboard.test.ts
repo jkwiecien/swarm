@@ -18,6 +18,11 @@ vi.mock('@/identity/auth.js', () => ({
 	revokeSession: vi.fn(),
 }));
 
+vi.mock('@/identity/membership-service.js', () => ({
+	getMembership: vi.fn(),
+	listAccessibleProjectIds: vi.fn(),
+}));
+
 import { createDashboardApp, SESSION_COOKIE_NAME } from '@/dashboard.js';
 import { listAllProjectsFromDb } from '@/db/repositories/projectsRepository.js';
 import {
@@ -26,6 +31,7 @@ import {
 	revokeSession,
 	verifyCredentials,
 } from '@/identity/auth.js';
+import { listAccessibleProjectIds } from '@/identity/membership-service.js';
 import type { SwarmUser } from '@/identity/schema.js';
 
 const user: SwarmUser = {
@@ -48,6 +54,7 @@ describe('swarm-dashboard API', () => {
 		vi.mocked(createSession).mockReset();
 		vi.mocked(resolveSession).mockReset();
 		vi.mocked(revokeSession).mockReset().mockResolvedValue(undefined);
+		vi.mocked(listAccessibleProjectIds).mockReset();
 	});
 
 	describe('public routes', () => {
@@ -86,6 +93,7 @@ describe('swarm-dashboard API', () => {
 		it('serves an authed procedure when the session cookie resolves to a user', async () => {
 			vi.mocked(resolveSession).mockResolvedValue(user);
 			vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
+			vi.mocked(listAccessibleProjectIds).mockResolvedValue([]);
 
 			const app = createDashboardApp();
 			const res = await app.request('/trpc/projects.list', {
