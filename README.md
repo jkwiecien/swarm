@@ -1,3 +1,5 @@
+<img width="1719" height="798" alt="Zrzut ekranu 2026-07-19 o 08 55 56" src="https://github.com/user-attachments/assets/425238f3-e580-413c-af0a-c1b5e19ec509" />
+
 # SWARM
 
 **Federated Multi-Agent Automation Framework** — a local-first system that
