@@ -1,4 +1,4 @@
-import { bigint, pgTable, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { bigint, boolean, pgTable, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { runs } from './runs.js';
 import { workers } from './workers.js';
 
@@ -23,6 +23,8 @@ import { workers } from './workers.js';
  * heartbeat is within the heartbeat TTL. `current_run_id` FKs `runs.id` `ON
  * DELETE SET NULL` — the run the session is executing, cleared (not cascaded to
  * the session) when that run row is removed, so losing a run never drops the lease.
+ * `released` flags a gracefully released session row retained to preserve fencing-token
+ * monotonicity across releases.
  */
 export const workerSessions = pgTable(
 	'worker_sessions',
@@ -36,6 +38,8 @@ export const workerSessions = pgTable(
 		lastHeartbeatAt: timestamp('last_heartbeat_at').notNull().defaultNow(),
 		/** The run this session is executing, or null when idle; cleared (not cascaded) on run delete. */
 		currentRunId: uuid('current_run_id').references(() => runs.id, { onDelete: 'set null' }),
+		/** True when gracefully released; retained so the fencing counter stays monotonic across releases. */
+		released: boolean('released').notNull().default(false),
 		createdAt: timestamp('created_at').notNull().defaultNow(),
 	},
 	(table) => [

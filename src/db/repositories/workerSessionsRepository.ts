@@ -67,9 +67,9 @@ function livenessCutoff(ttlMs: number): Date {
  * Acquire the single lease for a worker, atomically. In one transaction, lock
  * the worker's existing session row `FOR UPDATE` (if any) and:
  *
- * - **live** (last heartbeat within `ttlMs`) → throw {@link WorkerSessionHeldError};
- * - **expired** → replace it in place with a bumped fencing token, a fresh
- *   heartbeat, and no current run (a new lease on the same row);
+ * - **live** (unreleased and last heartbeat within `ttlMs`) → throw {@link WorkerSessionHeldError};
+ * - **expired / released** → replace it in place with a bumped fencing token, a fresh
+ *   heartbeat, `released: false`, and no current run (a new lease on the same row);
  * - **none** → insert the first session at {@link INITIAL_FENCING_TOKEN}.
  *
  * The row lock serializes concurrent acquires against an existing row, and the
@@ -89,7 +89,7 @@ export async function acquireLease(workerId: string, ttlMs: number): Promise<Wor
 				.limit(1);
 
 			if (existing) {
-				if (isSessionLive(existing.lastHeartbeatAt, ttlMs, now)) {
+				if (!existing.released && isSessionLive(existing.lastHeartbeatAt, ttlMs, now)) {
 					throw new WorkerSessionHeldError(workerId);
 				}
 				const [replaced] = await tx
@@ -98,6 +98,7 @@ export async function acquireLease(workerId: string, ttlMs: number): Promise<Wor
 						fencingToken: nextFencingToken(existing.fencingToken),
 						lastHeartbeatAt: now,
 						currentRunId: null,
+						released: false,
 					})
 					.where(eq(workerSessions.id, existing.id))
 					.returning();
@@ -117,11 +118,11 @@ export async function acquireLease(workerId: string, ttlMs: number): Promise<Wor
 }
 
 /**
- * Record a heartbeat: refresh `last_heartbeat_at` to now, but only for a session
- * that still matches `fencingToken` *and* is not already expired under `ttlMs`.
+ * Record a heartbeat: refresh `last_heartbeat_at` to now, but only for an active
+ * session that still matches `fencingToken` *and* is not already expired under `ttlMs`.
  * Returns `true` if a live, current-token session was refreshed, `false`
- * otherwise — so a heartbeat from a replaced (stale-token) holder, or one that
- * arrives after the lease already lapsed, is rejected rather than reviving it.
+ * otherwise — so a heartbeat from a replaced or released (stale-token) holder, or one
+ * that arrives after the lease already lapsed, is rejected rather than reviving it.
  */
 export async function heartbeat(
 	workerId: string,
@@ -135,6 +136,7 @@ export async function heartbeat(
 			and(
 				eq(workerSessions.workerId, workerId),
 				eq(workerSessions.fencingToken, fencingToken),
+				eq(workerSessions.released, false),
 				gt(workerSessions.lastHeartbeatAt, livenessCutoff(ttlMs)),
 			),
 		)
@@ -143,16 +145,21 @@ export async function heartbeat(
 }
 
 /**
- * Gracefully release the lease: delete the worker's session row, but only when
- * `fencingToken` matches. Returns `true` if a row was removed, `false` if none
- * matched (a no-op, not an error). A stale token — held by a replaced daemon —
- * never matches, so it can't drop the current holder's lease.
+ * Gracefully release the lease: mark the session row as released and clear its run,
+ * retaining the row so its per-worker fencing counter stays monotonic across
+ * re-acquisition. Only releases when `fencingToken` matches and the session is active.
+ * Returns `true` if updated, `false` if none matched.
  */
 export async function releaseLease(workerId: string, fencingToken: number): Promise<boolean> {
 	const rows = await getDb()
-		.delete(workerSessions)
+		.update(workerSessions)
+		.set({ released: true, currentRunId: null })
 		.where(
-			and(eq(workerSessions.workerId, workerId), eq(workerSessions.fencingToken, fencingToken)),
+			and(
+				eq(workerSessions.workerId, workerId),
+				eq(workerSessions.fencingToken, fencingToken),
+				eq(workerSessions.released, false),
+			),
 		)
 		.returning({ id: workerSessions.id });
 	return rows.length > 0;
@@ -160,7 +167,7 @@ export async function releaseLease(workerId: string, fencingToken: number): Prom
 
 /**
  * Set (or clear, with `null`) the run a live session is executing, gated on a
- * matching fencing token and non-expired lease — the same guard as `heartbeat`.
+ * matching fencing token, active status, and non-expired lease — the same guard as `heartbeat`.
  * Returns `true` if a live, current-token session was updated, `false` otherwise.
  */
 export async function setCurrentRun(
@@ -176,6 +183,7 @@ export async function setCurrentRun(
 			and(
 				eq(workerSessions.workerId, workerId),
 				eq(workerSessions.fencingToken, fencingToken),
+				eq(workerSessions.released, false),
 				gt(workerSessions.lastHeartbeatAt, livenessCutoff(ttlMs)),
 			),
 		)
@@ -184,9 +192,9 @@ export async function setCurrentRun(
 }
 
 /**
- * The worker's live session (last heartbeat within `ttlMs`), or `undefined` if
- * it has none or its lease has expired. The read the fencing-token validation
- * seam and dashboard build on.
+ * The worker's live session (unreleased and last heartbeat within `ttlMs`), or
+ * `undefined` if it has none, is released, or its lease has expired. The read the
+ * fencing-token validation seam and dashboard build on.
  */
 export async function getLiveSession(
 	workerId: string,
@@ -198,6 +206,7 @@ export async function getLiveSession(
 		.where(
 			and(
 				eq(workerSessions.workerId, workerId),
+				eq(workerSessions.released, false),
 				gt(workerSessions.lastHeartbeatAt, livenessCutoff(ttlMs)),
 			),
 		)

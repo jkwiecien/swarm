@@ -211,6 +211,13 @@
       "when": 1784569197493,
       "tag": "0029_chemical_smasher",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1784569694048,
+      "tag": "0030_cheerful_cerise",
+      "breakpoints": true
     }
   ]
 }

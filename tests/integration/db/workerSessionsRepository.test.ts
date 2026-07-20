@@ -16,6 +16,7 @@ import { runs } from '../../../src/db/schema/runs.js';
 import { workerSessions } from '../../../src/db/schema/workerSessions.js';
 import { workers } from '../../../src/db/schema/workers.js';
 import { WorkerSessionHeldError } from '../../../src/identity/worker-session.js';
+import { validateFencingToken } from '../../../src/identity/worker-session-service.js';
 import { truncateAll } from '../helpers/db.js';
 import { seedProject } from '../helpers/seed.js';
 
@@ -109,14 +110,45 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 				expect(rows).toHaveLength(1);
 			});
 
-			it('re-acquires after a graceful release, back at fencing token 1', async () => {
+			it('re-acquires after a graceful release, bumping the fencing token to 2 and reusing one row', async () => {
 				const first = await acquireLease(workerA, TTL);
+				expect(first.fencingToken).toBe(1);
 				expect(await releaseLease(workerA, first.fencingToken)).toBe(true);
 				expect(await getLiveSession(workerA, TTL)).toBeUndefined();
 
 				const second = await acquireLease(workerA, TTL);
-				// Released row is gone, so the fresh insert starts over at 1.
-				expect(second.fencingToken).toBe(1);
+				// Released row is retained, so the re-acquire bumps fencing token to 2.
+				expect(second.fencingToken).toBe(2);
+			});
+
+			it('proves a pre-release token cannot heartbeat, set a run, or validate after reacquisition', async () => {
+				const first = await acquireLease(workerA, TTL);
+				expect(await releaseLease(workerA, first.fencingToken)).toBe(true);
+
+				// Pre-release token cannot perform operations while released.
+				expect(await heartbeat(workerA, first.fencingToken, TTL)).toBe(false);
+				expect(await validateFencingToken(workerA, first.fencingToken, TTL)).toBe(false);
+
+				const runId = await createRun({
+					projectId: PROJECT_ID,
+					taskId: 'w-released',
+					phase: 'implementation',
+				});
+				expect(await setCurrentRun(workerA, first.fencingToken, runId, TTL)).toBe(false);
+
+				// Reacquire lease -> gets fencing token 2.
+				const second = await acquireLease(workerA, TTL);
+				expect(second.fencingToken).toBe(2);
+
+				// Pre-release token (1) STILL cannot heartbeat, set a run, or validate after reacquisition.
+				expect(await heartbeat(workerA, first.fencingToken, TTL)).toBe(false);
+				expect(await setCurrentRun(workerA, first.fencingToken, runId, TTL)).toBe(false);
+				expect(await validateFencingToken(workerA, first.fencingToken, TTL)).toBe(false);
+
+				// The new holder's token (2) works.
+				expect(await validateFencingToken(workerA, second.fencingToken, TTL)).toBe(true);
+				expect(await heartbeat(workerA, second.fencingToken, TTL)).toBe(true);
+				expect(await setCurrentRun(workerA, second.fencingToken, runId, TTL)).toBe(true);
 			});
 
 			it('gives two different workers of one user independent live sessions', async () => {
