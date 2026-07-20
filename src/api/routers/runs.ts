@@ -287,8 +287,8 @@ export const runsRouter = router({
 			return enrichQueuedWorkItems(items.filter((item) => accessible.has(item.projectId)));
 		}),
 
-	// Single run by id; NOT_FOUND when unknown (the only not-found path) or when
-	// the caller is not a member of the run's project (existence hidden).
+	// Single run by id; NOT_FOUND when unknown or when the caller is not a member
+	// of the run's project (existence hidden with identical run-not-found message).
 	getById: authedProcedure
 		.input(z.object({ id: z.string().min(1) }))
 		.query(async ({ ctx, input }) => {
@@ -299,7 +299,12 @@ export const runsRouter = router({
 					message: `Run with ID "${input.id}" not found`,
 				});
 			}
-			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
+			await assertProjectAccess(
+				ctx.user,
+				run.projectId,
+				'contributor',
+				`Run with ID "${input.id}" not found`,
+			);
 			return run;
 		}),
 
@@ -317,7 +322,12 @@ export const runsRouter = router({
 					message: `Run with ID "${input.runId}" not found`,
 				});
 			}
-			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
+			await assertProjectAccess(
+				ctx.user,
+				run.projectId,
+				'contributor',
+				`Run with ID "${input.runId}" not found`,
+			);
 			return (await getRunLogsFromDb(input.runId)) ?? null;
 		}),
 
@@ -331,7 +341,12 @@ export const runsRouter = router({
 					message: `Run with ID "${input.runId}" not found`,
 				});
 			}
-			await assertProjectAccess(ctx.user, run.projectId, 'contributor');
+			await assertProjectAccess(
+				ctx.user,
+				run.projectId,
+				'contributor',
+				`Run with ID "${input.runId}" not found`,
+			);
 			return await getRunOutputEvents(input.runId, input.after);
 		}),
 
@@ -378,7 +393,12 @@ export const runsRouter = router({
 				});
 			}
 			// Driving a run (retrying it) is a `member`+ action on its project.
-			await assertProjectAccess(ctx.user, run.projectId, 'member');
+			await assertProjectAccess(
+				ctx.user,
+				run.projectId,
+				'member',
+				`Run with ID "${input.runId}" not found`,
+			);
 			if (run.status !== 'deferred' && run.status !== 'failed') {
 				throw new TRPCError({
 					code: 'PRECONDITION_FAILED',
@@ -518,7 +538,12 @@ export const runsRouter = router({
 				});
 			}
 			// Terminating a run is a `member`+ action on its project.
-			await assertProjectAccess(ctx.user, run.projectId, 'member');
+			await assertProjectAccess(
+				ctx.user,
+				run.projectId,
+				'member',
+				`Run with ID "${input.runId}" not found`,
+			);
 
 			// Already terminal — nothing to terminate; report its settled state so a
 			// second click (or a run that finished as we clicked) is a no-op, not an

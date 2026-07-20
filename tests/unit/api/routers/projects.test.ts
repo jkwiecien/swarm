@@ -5,6 +5,7 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	listAllProjectsFromDb: vi.fn(),
 	getProjectByIdFromDb: vi.fn(),
 	createProjectInDb: vi.fn(),
+	createProjectWithMemberInDb: vi.fn(),
 	upsertProjectToDb: vi.fn(),
 	deleteProjectFromDb: vi.fn(),
 }));
@@ -22,6 +23,7 @@ import { DEFAULT_GITHUB_PROJECTS_CONFIG, projectsRouter } from '@/api/routers/pr
 import { addMember } from '@/db/repositories/projectMembersRepository.js';
 import {
 	createProjectInDb,
+	createProjectWithMemberInDb,
 	deleteProjectFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
@@ -71,6 +73,7 @@ describe('projectsRouter', () => {
 		vi.mocked(listAllProjectsFromDb).mockReset();
 		vi.mocked(getProjectByIdFromDb).mockReset();
 		vi.mocked(createProjectInDb).mockReset();
+		vi.mocked(createProjectWithMemberInDb).mockReset();
 		vi.mocked(upsertProjectToDb).mockReset();
 		vi.mocked(deleteProjectFromDb).mockReset();
 		vi.mocked(addMember).mockReset();
@@ -142,8 +145,8 @@ describe('projectsRouter', () => {
 			webhookSecret: 'SCM_WEBHOOK_SECRET',
 		};
 
-		it('happy path: calls createProjectInDb with the input plus credentials and returns the merged object', async () => {
-			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+		it('happy path: calls createProjectWithMemberInDb with the input plus credentials and creator membership, and returns the merged object', async () => {
+			vi.mocked(createProjectWithMemberInDb).mockResolvedValue(undefined);
 
 			const result = await caller.create(validProjectInput);
 
@@ -155,11 +158,15 @@ describe('projectsRouter', () => {
 			};
 
 			expect(result).toEqual(expectedConfig);
-			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+			expect(createProjectWithMemberInDb).toHaveBeenCalledWith(expectedConfig, {
+				projectId: 'new-proj',
+				userId: ADMIN_USER.id,
+				role: 'projectAdmin',
+			});
 		});
 
 		it('create succeeds with only id/name/repo/repoRoot', async () => {
-			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+			vi.mocked(createProjectWithMemberInDb).mockResolvedValue(undefined);
 
 			const minimalInput = {
 				id: 'minimal-proj',
@@ -182,11 +189,15 @@ describe('projectsRouter', () => {
 			};
 
 			expect(result).toEqual(expectedConfig);
-			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+			expect(createProjectWithMemberInDb).toHaveBeenCalledWith(expectedConfig, {
+				projectId: 'minimal-proj',
+				userId: ADMIN_USER.id,
+				role: 'projectAdmin',
+			});
 		});
 
 		it('strips client-supplied credentials and uses defaults instead', async () => {
-			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+			vi.mocked(createProjectWithMemberInDb).mockResolvedValue(undefined);
 
 			// Cast as any to simulate malicious/careless client sending credentials key
 			const inputWithCreds = {
@@ -208,11 +219,15 @@ describe('projectsRouter', () => {
 			};
 
 			expect(result).toEqual(expectedConfig);
-			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+			expect(createProjectWithMemberInDb).toHaveBeenCalledWith(expectedConfig, {
+				projectId: 'new-proj',
+				userId: ADMIN_USER.id,
+				role: 'projectAdmin',
+			});
 		});
 
 		it('strips client-supplied githubProjects and uses the placeholder default', async () => {
-			vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+			vi.mocked(createProjectWithMemberInDb).mockResolvedValue(undefined);
 
 			// Cast as any to simulate client sending custom githubProjects
 			const inputWithGithubProjects = {
@@ -234,12 +249,16 @@ describe('projectsRouter', () => {
 			};
 
 			expect(result).toEqual(expectedConfig);
-			expect(createProjectInDb).toHaveBeenCalledWith(expectedConfig);
+			expect(createProjectWithMemberInDb).toHaveBeenCalledWith(expectedConfig, {
+				projectId: 'new-proj',
+				userId: ADMIN_USER.id,
+				role: 'projectAdmin',
+			});
 		});
 
 		it('translates duplicate constraint violation (code 23505) to CONFLICT', async () => {
 			const error = Object.assign(new Error('Unique violation'), { code: '23505' });
-			vi.mocked(createProjectInDb).mockRejectedValue(error);
+			vi.mocked(createProjectWithMemberInDb).mockRejectedValue(error);
 
 			await expect(caller.create(validProjectInput)).rejects.toThrowError(
 				expect.objectContaining({
@@ -258,7 +277,7 @@ describe('projectsRouter', () => {
 				code: '23505',
 			});
 			const wrapped = new DrizzleQueryError('insert into "projects" ...', [], pgError);
-			vi.mocked(createProjectInDb).mockRejectedValue(wrapped);
+			vi.mocked(createProjectWithMemberInDb).mockRejectedValue(wrapped);
 
 			await expect(caller.create(validProjectInput)).rejects.toThrowError(
 				expect.objectContaining({
@@ -268,12 +287,12 @@ describe('projectsRouter', () => {
 			);
 		});
 
-		it('propagates unrelated rejections without translating them', async () => {
-			const error = new Error('Some DB connection error');
-			vi.mocked(createProjectInDb).mockRejectedValue(error);
+		it('propagates unrelated rejections (such as a transaction membership error) without translating them', async () => {
+			const error = new Error('Some DB transaction failure');
+			vi.mocked(createProjectWithMemberInDb).mockRejectedValue(error);
 
 			await expect(caller.create(validProjectInput)).rejects.toThrowError(
-				'Some DB connection error',
+				'Some DB transaction failure',
 			);
 		});
 	});
@@ -584,8 +603,8 @@ describe('projectsRouter', () => {
 		});
 
 		describe('create', () => {
-			it('records the creator as a projectAdmin member of the new project', async () => {
-				vi.mocked(createProjectInDb).mockResolvedValue(undefined);
+			it('records the creator as a projectAdmin member in the atomic transaction', async () => {
+				vi.mocked(createProjectWithMemberInDb).mockResolvedValue(undefined);
 
 				await ordinary.create({
 					id: 'new-proj',
@@ -594,27 +613,29 @@ describe('projectsRouter', () => {
 					repoRoot: '/Users/dev/new-proj',
 				});
 
-				expect(addMember).toHaveBeenCalledWith({
-					projectId: 'new-proj',
-					userId: ORDINARY_USER.id,
-					role: 'projectAdmin',
-				});
+				expect(createProjectWithMemberInDb).toHaveBeenCalledWith(
+					expect.objectContaining({ id: 'new-proj' }),
+					{
+						projectId: 'new-proj',
+						userId: ORDINARY_USER.id,
+						role: 'projectAdmin',
+					},
+				);
 			});
 
-			it('does not add a membership when project creation fails', async () => {
-				vi.mocked(createProjectInDb).mockRejectedValue(
-					Object.assign(new Error('dup'), { code: '23505' }),
+			it('fails project creation and propagates error if membership insertion inside transaction fails', async () => {
+				vi.mocked(createProjectWithMemberInDb).mockRejectedValue(
+					new Error('Membership insert failed'),
 				);
 
 				await expect(
 					ordinary.create({
-						id: 'dupe',
-						name: 'Dupe',
-						repo: 'jkwiecien/dupe',
-						repoRoot: '/Users/dev/dupe',
+						id: 'failed-member',
+						name: 'Failed Member',
+						repo: 'jkwiecien/failed-member',
+						repoRoot: '/Users/dev/failed-member',
 					}),
-				).rejects.toThrowError(expect.objectContaining({ code: 'CONFLICT' }));
-				expect(addMember).not.toHaveBeenCalled();
+				).rejects.toThrowError('Membership insert failed');
 			});
 		});
 	});

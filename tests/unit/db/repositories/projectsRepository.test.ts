@@ -5,6 +5,7 @@ vi.mock('@/db/client.js', () => ({ getDb: vi.fn() }));
 import { getDb } from '@/db/client.js';
 import {
 	createProjectInDb,
+	createProjectWithMemberInDb,
 	deleteProjectFromDb,
 	findProjectByBoardFromDb,
 	findProjectByIdFromDb,
@@ -238,6 +239,33 @@ describe('projectsRepository', () => {
 			expect(insertedValues).toMatchObject({ id: 'proj-new', pmType: 'github-projects' });
 			expect(isThenCalled).toBe(true);
 			expect(builder).not.toHaveProperty('onConflictDoUpdate');
+		});
+	});
+
+	describe('createProjectWithMemberInDb', () => {
+		it('inserts project and member inside a transaction block', async () => {
+			const mockTx = {
+				insert: vi.fn(() => ({
+					values: vi.fn(() => Promise.resolve()),
+				})),
+			};
+			let transactionCallback: ((tx: unknown) => Promise<unknown>) | undefined;
+			vi.mocked(getDb).mockReturnValue({
+				transaction: (cb: (tx: unknown) => Promise<unknown>) => {
+					transactionCallback = cb;
+					return cb(mockTx);
+				},
+			} as unknown as ReturnType<typeof getDb>);
+
+			const project = createMockProjectConfig({ id: 'proj-atomic' });
+			await createProjectWithMemberInDb(project, {
+				projectId: 'proj-atomic',
+				userId: 'user-owner',
+				role: 'projectAdmin',
+			});
+
+			expect(transactionCallback).toBeDefined();
+			expect(mockTx.insert).toHaveBeenCalledTimes(2);
 		});
 	});
 

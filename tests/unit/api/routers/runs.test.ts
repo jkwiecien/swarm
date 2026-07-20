@@ -1092,12 +1092,39 @@ describe('runsRouter', () => {
 		});
 
 		describe('reads', () => {
-			it('denies getById on a run in a project the caller cannot see', async () => {
+			it('denies getById on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
 				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
 				vi.mocked(getMembership).mockResolvedValue(undefined);
 
 				await expect(ordinary.getById({ id: 'run-1' })).rejects.toThrowError(
-					expect.objectContaining({ code: 'NOT_FOUND' }),
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+			});
+
+			it('denies getLogs on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.getLogs({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+			});
+
+			it('denies getOutput on a run in a project the caller cannot see with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(makeRun({ id: 'run-1', projectId: 'p1' }));
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.getOutput({ runId: 'run-1', after: 0 })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
 				);
 			});
 
@@ -1111,6 +1138,36 @@ describe('runsRouter', () => {
 		});
 
 		describe('drive-run role boundary', () => {
+			it('denies retryNow to a non-member with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'failed' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.retryNow({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+				expect(reopenDispatchForManualRetry).not.toHaveBeenCalled();
+			});
+
+			it('denies terminate to a non-member with identical error shape as unknown run', async () => {
+				vi.mocked(getRunByIdFromDb).mockResolvedValue(
+					makeRun({ id: 'run-1', projectId: 'p1', status: 'running' }),
+				);
+				vi.mocked(getMembership).mockResolvedValue(undefined);
+
+				await expect(ordinary.terminate({ runId: 'run-1' })).rejects.toThrowError(
+					expect.objectContaining({
+						code: 'NOT_FOUND',
+						message: 'Run with ID "run-1" not found',
+					}),
+				);
+				expect(requestRunCancellation).not.toHaveBeenCalled();
+			});
+
 			it('forbids a contributor from retrying a run', async () => {
 				vi.mocked(getRunByIdFromDb).mockResolvedValue(
 					makeRun({ id: 'run-1', projectId: 'p1', status: 'failed' }),

@@ -2,9 +2,8 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
 import { ProjectConfigSchema } from '../../config/schema.js';
-import { addMember } from '../../db/repositories/projectMembersRepository.js';
 import {
-	createProjectInDb,
+	createProjectWithMemberInDb,
 	deleteProjectFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
@@ -79,7 +78,8 @@ export const projectsRouter = router({
 	// can immediately administer what they just created without an operator
 	// seeding membership first. An `instanceAdmin` administers it regardless, but
 	// the row is still written so the creator keeps access if their installation
-	// role is later removed.
+	// role is later removed. Creation and membership insertion are performed
+	// atomically in one transaction so a partial failure never leaves an unowned project.
 	create: authedProcedure.input(ProjectCreateInputSchema).mutation(async ({ ctx, input }) => {
 		const config = {
 			...input,
@@ -87,7 +87,11 @@ export const projectsRouter = router({
 			credentials: DEFAULT_CREDENTIAL_REFERENCES,
 		};
 		try {
-			await createProjectInDb(config);
+			await createProjectWithMemberInDb(config, {
+				projectId: config.id,
+				userId: ctx.user.id,
+				role: 'projectAdmin',
+			});
 		} catch (error) {
 			if (isUniqueViolation(error)) {
 				throw new TRPCError({
@@ -97,7 +101,6 @@ export const projectsRouter = router({
 			}
 			throw error;
 		}
-		await addMember({ projectId: config.id, userId: ctx.user.id, role: 'projectAdmin' });
 		return config;
 	}),
 

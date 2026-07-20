@@ -38,10 +38,10 @@ import { isInstanceAdmin, type SwarmUser } from '../identity/schema.js';
  * denial is indistinguishable from a non-existent project and existence never
  * leaks. Kept identical to the routers' own message.
  */
-function projectNotFound(projectId: string): TRPCError {
+function projectNotFound(projectId: string, notFoundMessage?: string): TRPCError {
 	return new TRPCError({
 		code: 'NOT_FOUND',
-		message: `Project with ID "${projectId}" not found`,
+		message: notFoundMessage ?? `Project with ID "${projectId}" not found`,
 	});
 }
 
@@ -50,17 +50,21 @@ function projectNotFound(projectId: string): TRPCError {
  * to nothing on success. An `instanceAdmin` always passes; a non-member gets
  * `NOT_FOUND` (existence hidden); a member below `minRole` gets `FORBIDDEN`. See
  * the matrix in this file's header for which procedures pass which `minRole`.
+ * Pass `notFoundMessage` when checking access via a resource look-up (e.g. a run)
+ * so non-member denials match the resource-not-found error shape instead of leaking
+ * project existence.
  */
 export async function assertProjectAccess(
 	user: SwarmUser,
 	projectId: string,
 	minRole: ProjectRole,
+	notFoundMessage?: string,
 ): Promise<void> {
 	if (isInstanceAdmin(user)) return;
 
 	const membership = await getMembership(user.id, projectId);
 	if (!membership) {
-		throw projectNotFound(projectId);
+		throw projectNotFound(projectId, notFoundMessage);
 	}
 	if (!roleAtLeast(membership.role, minRole)) {
 		throw new TRPCError({

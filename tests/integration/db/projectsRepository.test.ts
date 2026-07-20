@@ -3,13 +3,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { getDb } from '../../../src/db/client.js';
 import { writeProjectCredential } from '../../../src/db/repositories/credentialsRepository.js';
+import { getMembership } from '../../../src/db/repositories/projectMembersRepository.js';
 import {
 	createProjectInDb,
+	createProjectWithMemberInDb,
 	deleteProjectFromDb,
 	findProjectByIdFromDb,
 	getProjectByIdFromDb,
 	listAllProjectsFromDb,
 } from '../../../src/db/repositories/projectsRepository.js';
+import { createUser } from '../../../src/db/repositories/usersRepository.js';
 import { projectCredentials } from '../../../src/db/schema/projectCredentials.js';
 import { createMockProjectConfig } from '../../helpers/factories.js';
 import { truncateAll } from '../helpers/db.js';
@@ -66,6 +69,51 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('projectsRepository (integ
 			// Assert original row remains untouched
 			const resolved = await findProjectByIdFromDb('dup-id');
 			expect(resolved?.name).toBe('Original Name');
+		});
+	});
+
+	describe('createProjectWithMemberInDb', () => {
+		it('inserts project and owner membership atomically in a transaction', async () => {
+			const user = await createUser({ identifier: 'owner@example.com', displayName: 'Owner' });
+			const config = createMockProjectConfig({
+				id: 'proj-atomic',
+				name: 'Atomic Project',
+				repo: 'jkwiecien/atomic-repo',
+			});
+
+			await createProjectWithMemberInDb(config, {
+				projectId: 'proj-atomic',
+				userId: user.id,
+				role: 'projectAdmin',
+			});
+
+			const project = await findProjectByIdFromDb('proj-atomic');
+			expect(project).toBeDefined();
+			expect(project?.name).toBe('Atomic Project');
+
+			const membership = await getMembership(user.id, 'proj-atomic');
+			expect(membership).toBeDefined();
+			expect(membership?.role).toBe('projectAdmin');
+		});
+
+		it('rolls back project insertion if membership insertion fails', async () => {
+			const config = createMockProjectConfig({
+				id: 'proj-rollback',
+				name: 'Rollback Project',
+				repo: 'jkwiecien/rollback-repo',
+			});
+
+			// '00000000-0000-4000-8000-000000000000' does not exist in users table -> foreign key violation
+			await expect(
+				createProjectWithMemberInDb(config, {
+					projectId: 'proj-rollback',
+					userId: '00000000-0000-4000-8000-000000000000',
+					role: 'projectAdmin',
+				}),
+			).rejects.toThrow();
+
+			const project = await findProjectByIdFromDb('proj-rollback');
+			expect(project).toBeUndefined();
 		});
 	});
 
