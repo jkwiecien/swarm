@@ -13,8 +13,8 @@ cp .env.docker.example .env   # adjust POSTGRES_PASSWORD / ports if needed
 docker compose up -d --build  # postgres, redis, router (NOT the worker) — detached
 npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL from .env)
 npm run db:seed               # load swarm.config.json into Postgres (projects + credentials)
-swarm users add you@example.com --admin   # create the first user, then:
-swarm users set-password you@example.com   # set their dashboard login password (prompts, no echo)
+npm run swarm -- users add you@example.com --admin   # create the first user, then:
+npm run swarm -- users set-password you@example.com   # set their dashboard login password (prompts, no echo)
 cd web && npm install && cd .. # install web dashboard dependencies
 npm run dev:dashboard         # start the dashboard API on the host (default port 3101)
 npm run dev:web               # start the Vite dev server (default port 5173)
@@ -74,7 +74,7 @@ The `swarm` operator CLI (`src/cli/`, SWARM-22) wraps the config + stack steps a
 - `swarm users <add|list|grant-admin|revoke-admin|set-password>` — manages SWARM users and their dashboard credentials (the multi-user foundation, issue #281): `add <identifier> [--name <displayName>] [--admin]` creates a user by login handle (username/email) and optionally makes them the installation admin; `list` lists them; `grant-admin`/`revoke-admin <identifier>` toggle the installation-admin role; `set-password <identifier>` sets the user's dashboard login password (prompts without echo on a TTY, or reads it from stdin for scripting — never logged). Requires `DATABASE_URL`. A user needs a password set before they can sign in to the dashboard.
 - `swarm members <add|list|set-role|remove>` — manages project membership (the multi-user foundation, issue #281): `add <project-id> <user-identifier> [--role <role>]` adds a user (by login handle) to a project with a per-project role (`projectAdmin | member | contributor`, default `member`); `list <project-id>` lists a project's members; `set-role <project-id> <user-identifier> --role <role>` changes an existing member's role; `remove <project-id> <user-identifier>` removes them. Roles rank `projectAdmin` (administer) > `member` (write) > `contributor` (read). Requires `DATABASE_URL`. Membership is not yet enforced by any router — it is the read model authorization will build on.
 
-It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly.
+It manages only the containerized stack — the worker still runs on the host (`npm run dev:worker`). Run it from source with `npm run swarm -- <command>`, or `npm run build` and invoke the `swarm` bin directly. The `npm run swarm` wrapper loads `.env` automatically (via `--env-file-if-exists=.env`, so `swarm init` still works before `.env` exists), so DB-backed subcommands like `users` and `members` see `DATABASE_URL`/`DATABASE_SSL` without exporting them first. The bare `swarm` bin reads only the ambient environment — export those vars (or use the `npm run swarm --` wrapper) when running it directly.
 
 The worker isn't containerized because it provisions Git worktrees and spawns the `claude` / `antigravity` CLIs — those need the developer's own PATH, authentication, and config, which a container wouldn't have. Running it on the host is the local-first fit. It connects to the Compose Redis/Postgres over their published host ports (`REDIS_URL` / `DATABASE_URL` in `.env`), so **`git` and the `claude` / `antigravity` CLIs must be installed and authenticated on your machine** for the worker to get past provision/spawn.
 
