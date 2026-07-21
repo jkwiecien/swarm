@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, type Mock, vi } from 'vitest';
 import type { AgentConfig } from '../../../../src/config/schema.js';
 import {
 	PhaseConfigRow,
@@ -105,8 +105,7 @@ describe('PhaseEnabledCell', () => {
 
 describe('PhaseConfigRow', () => {
 	const mockConfig: AgentConfig = {
-		cli: 'claude',
-		model: 'claude-3-5-sonnet',
+		targets: [{ cli: 'claude', model: 'sonnet', reasoning: 'high' }],
 		timeoutMs: 30 * 60 * 1000,
 	};
 
@@ -218,15 +217,74 @@ describe('PhaseConfigRow', () => {
 		fireEvent.click(screen.getByText('Review'));
 		expect(handleSelect).toHaveBeenCalledTimes(1);
 	});
+
+	it('summarizes every target in priority order, then the timeout', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow
+						phase="planning"
+						config={{
+							targets: [
+								{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
+								{ cli: 'codex', model: 'gpt-5.6-terra' },
+							],
+							timeoutMs: 30 * 60 * 1000,
+						}}
+						isPending={false}
+						onSelect={() => {}}
+					/>
+				</tbody>
+			</table>,
+		);
+
+		expect(screen.getByText('Claude · Sonnet · High ▸ Codex · GPT-5.6 Terra · 30m')).toBeDefined();
+	});
+
+	it('summarizes a config written before targets existed from its single selection', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow
+						phase="planning"
+						config={{ cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' }}
+						isPending={false}
+						onSelect={() => {}}
+					/>
+				</tbody>
+			</table>,
+		);
+
+		expect(screen.getByText('Antigravity · Gemini 3.5 Flash · High')).toBeDefined();
+	});
+
+	it('falls back to "Coded defaults" when the phase overrides nothing', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow phase="planning" config={{}} isPending={false} onSelect={() => {}} />
+				</tbody>
+			</table>,
+		);
+
+		expect(screen.getByText('Coded defaults')).toBeDefined();
+	});
 });
 
 describe('PhaseSettingsDetail', () => {
 	const mockConfig: AgentConfig = {
-		cli: 'claude',
-		model: 'claude-3-5-sonnet',
+		targets: [{ cli: 'claude', model: 'sonnet', reasoning: 'high' }],
 		timeoutMs: 30 * 60 * 1000,
 		prompt: 'Custom test instructions',
 	};
+
+	/** The target handlers every render needs; override only what a test asserts on. */
+	const targetHandlers = () => ({
+		handleTargetChange: vi.fn(),
+		handleAddTarget: vi.fn(),
+		handleRemoveTarget: vi.fn(),
+		handleMoveTarget: vi.fn(),
+	});
 
 	it('renders with Enabled toggle aligned with the current state', () => {
 		const handleEnabledChange = vi.fn();
@@ -237,9 +295,7 @@ describe('PhaseSettingsDetail', () => {
 				isPending={false}
 				enabled={true}
 				handleEnabledChange={handleEnabledChange}
-				handleCliChange={() => {}}
-				handleModelChange={() => {}}
-				handleReasoningChange={() => {}}
+				{...targetHandlers()}
 				handleTimeoutChange={() => {}}
 				handlePromptChange={() => {}}
 				onBack={() => {}}
@@ -267,9 +323,7 @@ describe('PhaseSettingsDetail', () => {
 				config={mockConfig}
 				isPending={false}
 				enabled={undefined}
-				handleCliChange={() => {}}
-				handleModelChange={() => {}}
-				handleReasoningChange={() => {}}
+				{...targetHandlers()}
 				handleTimeoutChange={() => {}}
 				handlePromptChange={() => {}}
 				onBack={() => {}}
@@ -290,9 +344,7 @@ describe('PhaseSettingsDetail', () => {
 				config={mockConfig}
 				isPending={false}
 				enabled={undefined}
-				handleCliChange={() => {}}
-				handleModelChange={() => {}}
-				handleReasoningChange={() => {}}
+				{...targetHandlers()}
 				handleTimeoutChange={() => {}}
 				handlePromptChange={() => {}}
 				onBack={() => {}}
@@ -326,9 +378,7 @@ describe('PhaseSettingsDetail', () => {
 				enabled={undefined}
 				autoAdvance={true}
 				handleAutoAdvanceChange={handleAutoAdvanceChange}
-				handleCliChange={() => {}}
-				handleModelChange={() => {}}
-				handleReasoningChange={() => {}}
+				{...targetHandlers()}
 				handleTimeoutChange={() => {}}
 				handlePromptChange={() => {}}
 				onBack={() => {}}
@@ -352,9 +402,7 @@ describe('PhaseSettingsDetail', () => {
 				isPending={false}
 				enabled={true}
 				enabledDisabled={true}
-				handleCliChange={() => {}}
-				handleModelChange={() => {}}
-				handleReasoningChange={() => {}}
+				{...targetHandlers()}
 				handleTimeoutChange={() => {}}
 				handlePromptChange={() => {}}
 				onBack={() => {}}
@@ -363,6 +411,165 @@ describe('PhaseSettingsDetail', () => {
 
 		expect(screen.getByText('Enabled')).toBeDefined();
 		expect(screen.getByText('Locked off while Review is disabled.')).toBeDefined();
+	});
+});
+
+describe('PhaseSettingsDetail — model targets', () => {
+	/** The four target-list handlers the detail screen calls, stubbed per render. */
+	interface TargetHandlerMocks {
+		handleTargetChange: Mock;
+		handleAddTarget: Mock;
+		handleRemoveTarget: Mock;
+		handleMoveTarget: Mock;
+	}
+
+	const twoTargets: AgentConfig = {
+		targets: [
+			{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
+			{ cli: 'codex', model: 'gpt-5.6-terra' },
+		],
+	};
+
+	function renderDetail(config: AgentConfig, handlers: Partial<TargetHandlerMocks> = {}) {
+		const mocks: TargetHandlerMocks = {
+			handleTargetChange: vi.fn(),
+			handleAddTarget: vi.fn(),
+			handleRemoveTarget: vi.fn(),
+			handleMoveTarget: vi.fn(),
+			...handlers,
+		};
+		render(
+			<PhaseSettingsDetail
+				phase="planning"
+				config={config}
+				isPending={false}
+				enabled={undefined}
+				{...mocks}
+				handleTimeoutChange={() => {}}
+				handlePromptChange={() => {}}
+				onBack={() => {}}
+			/>,
+		);
+		return mocks;
+	}
+
+	it('renders one row per target, in priority order, flagging the one that runs', () => {
+		renderDetail(twoTargets);
+
+		expect(screen.getByText('Priority 1')).toBeDefined();
+		expect(screen.getByText('Priority 2')).toBeDefined();
+		// Only the highest-priority target is dispatched until capability-aware
+		// routing lands, so exactly one row is flagged.
+		expect(screen.getAllByText('Runs now')).toHaveLength(1);
+
+		expect((screen.getByLabelText('Agent CLI, target 1') as HTMLSelectElement).value).toBe(
+			'claude',
+		);
+		expect((screen.getByLabelText('Model, target 1') as HTMLSelectElement).value).toBe('sonnet');
+		expect((screen.getByLabelText('Reasoning, target 1') as HTMLSelectElement).value).toBe('high');
+		expect((screen.getByLabelText('Agent CLI, target 2') as HTMLSelectElement).value).toBe('codex');
+	});
+
+	it('renders a config written before targets existed as its single target', () => {
+		renderDetail({ cli: 'antigravity', model: 'Gemini 3.5 Flash (High)' });
+
+		expect((screen.getByLabelText('Agent CLI, target 1') as HTMLSelectElement).value).toBe(
+			'antigravity',
+		);
+		expect((screen.getByLabelText('Model, target 1') as HTMLSelectElement).value).toBe(
+			'gemini-3.5-flash',
+		);
+		expect((screen.getByLabelText('Reasoning, target 1') as HTMLSelectElement).value).toBe('high');
+	});
+
+	it('offers each row only the CLIs no other row claims', () => {
+		renderDetail(twoTargets);
+
+		const first = screen.getByLabelText('Agent CLI, target 1') as HTMLSelectElement;
+		const second = screen.getByLabelText('Agent CLI, target 2') as HTMLSelectElement;
+		expect([...first.options].map((option) => option.value)).toEqual(['claude', 'antigravity']);
+		expect([...second.options].map((option) => option.value)).toEqual(['antigravity', 'codex']);
+	});
+
+	it("scopes a row's Model options to its own CLI", () => {
+		renderDetail(twoTargets);
+
+		const model = screen.getByLabelText('Model, target 2') as HTMLSelectElement;
+		const options = [...model.options].map((option) => option.value);
+		expect(options).toContain('gpt-5.6-terra');
+		expect(options).not.toContain('sonnet');
+	});
+
+	it("disables a row's Reasoning selector for a model with no reasoning control", () => {
+		// Haiku has no `--effort` control, so the level isn't selectable for it.
+		renderDetail({ targets: [{ cli: 'claude', model: 'haiku' }] });
+
+		expect((screen.getByLabelText('Reasoning, target 1') as HTMLSelectElement).disabled).toBe(true);
+	});
+
+	it('reports a CLI/model/reasoning edit as a patch on that row', () => {
+		const { handleTargetChange } = renderDetail(twoTargets);
+
+		fireEvent.change(screen.getByLabelText('Agent CLI, target 2'), {
+			target: { value: 'antigravity' },
+		});
+		expect(handleTargetChange).toHaveBeenCalledWith('planning', 1, { cli: 'antigravity' });
+
+		fireEvent.change(screen.getByLabelText('Model, target 1'), { target: { value: 'opus' } });
+		expect(handleTargetChange).toHaveBeenCalledWith('planning', 0, { model: 'opus' });
+
+		fireEvent.change(screen.getByLabelText('Reasoning, target 1'), { target: { value: 'max' } });
+		expect(handleTargetChange).toHaveBeenCalledWith('planning', 0, { reasoning: 'max' });
+	});
+
+	it('reorders and removes by position', () => {
+		const { handleMoveTarget, handleRemoveTarget } = renderDetail(twoTargets);
+
+		// The ends can't move past the list.
+		expect((screen.getByLabelText('Move target 1 up') as HTMLButtonElement).disabled).toBe(true);
+		expect((screen.getByLabelText('Move target 2 down') as HTMLButtonElement).disabled).toBe(true);
+
+		fireEvent.click(screen.getByLabelText('Move target 2 up'));
+		expect(handleMoveTarget).toHaveBeenCalledWith('planning', 1, 'up');
+
+		fireEvent.click(screen.getByLabelText('Move target 1 down'));
+		expect(handleMoveTarget).toHaveBeenCalledWith('planning', 0, 'down');
+
+		fireEvent.click(screen.getByLabelText('Remove target 2'));
+		expect(handleRemoveTarget).toHaveBeenCalledWith('planning', 1);
+	});
+
+	it('adds a target until every CLI is used', () => {
+		const { handleAddTarget } = renderDetail(twoTargets);
+
+		const add = screen.getByRole('button', { name: 'Add target' }) as HTMLButtonElement;
+		expect(add.disabled).toBe(false);
+		fireEvent.click(add);
+		expect(handleAddTarget).toHaveBeenCalledWith('planning');
+	});
+
+	it('disables Add target once all three CLIs have one', () => {
+		renderDetail({
+			targets: [{ cli: 'claude' }, { cli: 'codex' }, { cli: 'antigravity' }],
+		});
+
+		expect((screen.getByRole('button', { name: 'Add target' }) as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+		expect(screen.getByText('Every agent CLI already has a target.')).toBeDefined();
+	});
+
+	it('explains that an empty list keeps the phase on coded defaults', () => {
+		renderDetail({});
+
+		expect(screen.queryByLabelText('Agent CLI, target 1')).toBeNull();
+		expect(screen.getByText(/this phase runs on the pipeline's coded defaults/)).toBeDefined();
+	});
+
+	it('flags a duplicate CLI, the state the config schema rejects', () => {
+		renderDetail({ targets: [{ cli: 'claude' }, { cli: 'claude', model: 'opus' }] });
+
+		expect(screen.getByText(/Each agent CLI can appear at most once/)).toBeDefined();
 	});
 });
 
