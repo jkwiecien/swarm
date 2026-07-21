@@ -391,6 +391,32 @@ describe('AgentConfigSchema targets (issue #342)', () => {
 		expect(agent).toEqual({ timeoutMs: 10 * 60 * 1000, prompt: 'house style' });
 	});
 
+	it('clears stale top-level fields when targets is explicitly empty', () => {
+		// A user can clear configured target/mirror fields by specifying targets: []
+		// even if legacy top-level fields are present in the input.
+		expect(
+			AgentConfigSchema.parse({
+				cli: 'claude',
+				model: 'sonnet',
+				reasoning: 'high',
+				targets: [],
+			}),
+		).toEqual({});
+	});
+
+	it('continues to fold legacy fields into one target when targets is absent', () => {
+		// Absent targets means legacy input should be folded.
+		const agent = AgentConfigSchema.parse({
+			cli: 'claude',
+			model: 'sonnet',
+		});
+		expect(agent).toEqual({
+			cli: 'claude',
+			model: 'sonnet',
+			targets: [{ cli: 'claude', model: 'sonnet' }],
+		});
+	});
+
 	it('keeps targets optional on the inferred type (existing literals still compile)', () => {
 		// The dashboard builds `AgentConfig` literals with the mirror fields only
 		// (`cleanAgentConfig`, web/src/routes/projects/$projectId.tsx) — adding

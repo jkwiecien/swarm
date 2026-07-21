@@ -187,7 +187,7 @@ export const AgentConfigSchema = z
 		// spreading a `prompt` key onto the result) so the inferred output keeps
 		// `prompt` optional, matching every other field.
 		agent.prompt = normalizeCustomPrompt(agent.prompt);
-		if (!agent.targets?.length) {
+		if (agent.targets === undefined) {
 			// A config written before `targets` existed (or one the pre-list dashboard
 			// saved): fold its single selection into the list so every reader sees one
 			// shape. Parsing it through `AgentTargetSchema` keeps target validation —
@@ -205,19 +205,33 @@ export const AgentConfigSchema = z
 			}
 			const { cli, model, reasoning } = legacy.data;
 			if (cli || model || reasoning) agent.targets = [legacy.data];
-			// An override that selects nothing (or an explicitly empty list) stays on
-			// the coded defaults — no list, no mirror.
+			// An override that selects nothing stays on the coded defaults — no list, no mirror.
 			else delete agent.targets;
+		} else if (agent.targets.length === 0) {
+			// An explicitly empty target list is an authoritative clear: delete all
+			// targets and mirror fields so the parsed result has none.
+			delete agent.targets;
+			delete agent.cli;
+			delete agent.model;
+			delete agent.reasoning;
 		}
+
 		// The top-level fields are a derived mirror of the highest-priority target,
 		// so single-selection readers (the worker, the dashboard) keep working
 		// without knowing the list exists. Assigned unconditionally: a stale mirror
 		// left beside an explicit `targets` list must be overwritten, not merged.
 		const [primary] = agent.targets ?? [];
 		if (primary) {
-			agent.cli = primary.cli;
-			agent.model = primary.model;
-			agent.reasoning = primary.reasoning;
+			if (primary.cli !== undefined) agent.cli = primary.cli;
+			else delete agent.cli;
+			if (primary.model !== undefined) agent.model = primary.model;
+			else delete agent.model;
+			if (primary.reasoning !== undefined) agent.reasoning = primary.reasoning;
+			else delete agent.reasoning;
+		} else {
+			delete agent.cli;
+			delete agent.model;
+			delete agent.reasoning;
 		}
 		return agent;
 	})
