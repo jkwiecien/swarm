@@ -1,20 +1,41 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createRoute, Link, useNavigate } from '@tanstack/react-router';
 import {
+	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
+	ChevronUp,
 	Cpu,
 	GitBranch,
 	GitMerge,
 	Play,
+	Plus,
 	Settings,
 	SquareKanban,
+	Trash2,
 } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { CredentialsPanel } from '@/components/projects/credentials-panel.js';
 import { GitHubProjectsMappingForm } from '@/components/projects/github-projects-mapping-form.js';
 import { ProjectRunsPanel } from '@/components/runs/project-runs-panel.js';
+import {
+	addTarget,
+	areTargetsDirty,
+	availableClisFor,
+	CLI_LABELS,
+	canAddTarget,
+	capitalize,
+	cleanTargets,
+	hasDuplicateCli,
+	modelLabel,
+	moveTarget,
+	patchTarget,
+	removeTarget,
+	summarizeTargets,
+	targetKey,
+	toTargetList,
+} from '@/lib/agent-targets.js';
 import {
 	type BoardMappingForm,
 	buildGithubProjectsUpdate,
@@ -61,15 +82,14 @@ import { trpc, trpcClient } from '@/lib/trpc.js';
 import type {
 	AgentConfig,
 	AgentsConfig,
+	AgentTarget,
 	PipelineConfig,
 	ReviewChecksPolicy,
 } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
 import {
-	AGENT_MODELS,
 	capabilityFor,
 	MODEL_CAPABILITIES,
-	normalizeModelSelection,
 	type ReasoningLevel,
 	reasoningChoicesFor,
 } from '../../../../src/harness/models.js';
@@ -111,11 +131,6 @@ const CODED_DEFAULT_MODEL: Record<string, string> = {
 	antigravity: 'gemini-3.5-flash',
 };
 
-/** The user-facing label for a model id (its capability label, or the id itself). */
-function modelLabel(cli: AgentCli, model: string): string {
-	return capabilityFor(cli, model)?.label ?? model;
-}
-
 function getModelDefaultLabel(
 	cli: AgentCli,
 	projectDefaults?: Record<string, string | undefined>,
@@ -135,10 +150,6 @@ function getReasoningDefaultLabel(cli: AgentCli, model?: string): string {
 	return def ? `Default (${capitalize(def)})` : 'Default (unknown)';
 }
 
-function capitalize(value: string): string {
-	return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
 /**
  * The placeholder shown in a phase's Reasoning selector: "—" with no model, the
  * model's default level when it exposes a choice, else "Fixed" (a single-variant
@@ -156,60 +167,54 @@ function reasoningPlaceholderLabel(
 }
 
 /**
- * Derive the dependent CLI/Model/Reasoning/Timeout selector state for a phase's
- * config — the Model list depends on the CLI, the Reasoning list on the model.
- * Pulled out of {@link PhaseSettingsDetail} to keep its cognitive complexity
- * within budget.
+ * Derive the dependent Model/Reasoning selector state for one target row — the
+ * Model list depends on the row's CLI, the Reasoning list on its `(cli, model)`.
+ * Pulled out of {@link TargetRow} to keep its cognitive complexity within budget.
  */
-function phaseFieldState(config: AgentConfig, isPending: boolean) {
-	const selectedCli = config.cli;
-	const selectedModel = config.model;
+function targetFieldState(target: AgentTarget, isPending: boolean) {
 	const reasoningOptions =
-		selectedCli && selectedModel ? reasoningChoicesFor(selectedCli, selectedModel) : [];
+		target.cli && target.model ? reasoningChoicesFor(target.cli, target.model) : [];
 	return {
-		selectedCli,
-		selectedModel,
-		selectedReasoning: config.reasoning,
-		timeoutMinutes:
-			config.timeoutMs != null ? config.timeoutMs / (60 * 1000) : DEFAULT_TIMEOUT_MINUTES,
-		modelOptions: selectedCli ? MODEL_CAPABILITIES[selectedCli] : [],
+		modelOptions: target.cli ? MODEL_CAPABILITIES[target.cli] : [],
 		reasoningOptions,
-		reasoningDisabled: isPending || !selectedModel || reasoningOptions.length === 0,
+		reasoningDisabled: isPending || !target.model || reasoningOptions.length === 0,
 		reasoningPlaceholder: reasoningPlaceholderLabel(
-			selectedCli,
-			selectedModel,
+			target.cli,
+			target.model,
 			reasoningOptions.length,
 		),
 	};
 }
 
+/** The phase timeout in whole minutes — the unit the field edits (config stores ms). */
+function timeoutMinutesOf(config: AgentConfig): number {
+	return config.timeoutMs != null ? config.timeoutMs / (60 * 1000) : DEFAULT_TIMEOUT_MINUTES;
+}
+
 /**
- * Normalize a stored per-phase config for display: a legacy combined antigravity
- * model string (`"Gemini 3.5 Flash (High)"`) becomes its logical id + reasoning
- * so the Model and Reasoning selectors render the right selections. Non-legacy
- * values pass through untouched.
+ * Normalize the stored per-phase configs for editing: every phase's selection
+ * becomes its ordered `targets` list (folding in a pre-`targets` config's single
+ * `cli`/`model`/`reasoning` mirror and any legacy combined antigravity model
+ * string), and that list is the form's single source of truth — the derived
+ * mirror is dropped so no stale copy of it can be edited or saved.
  */
 function normalizeAgentsForDisplay(agents: AgentsConfig): AgentsConfig {
 	const next: AgentsConfig = { ...agents };
 	for (const phase of PHASES) {
 		const config = agents[phase];
-		if (!config?.cli || !config.model) continue;
-		const { model, reasoning } = normalizeModelSelection(config.cli, config.model);
-		if (model !== config.model) {
-			next[phase] = { ...config, model, reasoning: config.reasoning ?? reasoning };
-		}
+		if (!config) continue;
+		next[phase] = {
+			targets: toTargetList(config),
+			timeoutMs: config.timeoutMs,
+			prompt: config.prompt,
+		};
 	}
 	return next;
 }
 
 function isPhaseConfigDirty(local: AgentConfig = {}, db: AgentConfig = {}): boolean {
-	const normalizedDb = db.cli && db.model ? normalizeModelSelection(db.cli, db.model) : undefined;
-	const dbModel = normalizedDb?.model ?? db.model;
-	const dbReasoning = db.reasoning ?? normalizedDb?.reasoning;
 	return (
-		(local.cli ?? '') !== (db.cli ?? '') ||
-		(local.model ?? '') !== (dbModel ?? '') ||
-		(local.reasoning ?? '') !== (dbReasoning ?? '') ||
+		areTargetsDirty(toTargetList(local), db) ||
 		(local.timeoutMs ?? '') !== (db.timeoutMs ?? '') ||
 		isCustomPromptDirty(local.prompt, db.prompt)
 	);
@@ -229,23 +234,18 @@ function cleanAgentsConfig(agents: AgentsConfig): AgentsConfig | undefined {
 	return Object.keys(cleanAgents).length > 0 ? cleanAgents : undefined;
 }
 
-function cleanAgentConfig({
-	cli,
-	model,
-	reasoning,
-	timeoutMs,
-	prompt,
-}: AgentConfig): AgentConfig | undefined {
+function cleanAgentConfig(config: AgentConfig): AgentConfig | undefined {
+	const { timeoutMs, prompt } = config;
 	// Whitespace-only prompt is not a meaningful override (issue #135) — drop it so
 	// it's neither persisted nor counted as a set value here.
 	const normalizedPrompt = normalizeCustomPrompt(prompt);
-	if (!cli && !model && !reasoning && !timeoutMs && !normalizedPrompt) return undefined;
-	// Reasoning is meaningless without a model to validate it against — drop it if
-	// the model was cleared, so a stale level can't reach the server.
+	const cleanedTargets = cleanTargets(toTargetList(config));
+	if (cleanedTargets.length === 0 && !timeoutMs && !normalizedPrompt) return undefined;
+	// Only `targets` is sent: the schema re-derives the top-level `cli`/`model`/
+	// `reasoning` mirror from the highest-priority target, so writing it here could
+	// only introduce a stale second copy (issue #345).
 	return {
-		cli,
-		model,
-		reasoning: model ? reasoning : undefined,
+		targets: cleanedTargets.length > 0 ? cleanedTargets : undefined,
 		timeoutMs,
 		prompt: normalizedPrompt,
 	};
@@ -510,26 +510,17 @@ const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 /** Card wrapper recipe shared by the phase-detail sections. */
 const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
-/** Display labels for the agent CLIs, used in the phase-row summary. */
-const CLI_LABELS: Record<AgentCli, string> = {
-	claude: 'Claude',
-	antigravity: 'Antigravity',
-	codex: 'Codex',
-};
-
 /**
- * A one-line summary of a phase's current CLI/model/reasoning/timeout override
- * for the navigation row — "Coded defaults" when nothing is set, else the set
- * values joined (e.g. "Claude · Sonnet · High · 30m"). The custom prompt is
- * surfaced separately as a badge, not folded into this string.
+ * A one-line summary of a phase's current target list and timeout override for
+ * the navigation row — "Coded defaults" when nothing is set, else the targets in
+ * priority order followed by the timeout (e.g. "Claude · Sonnet · High ▸ Codex ·
+ * GPT-5.6 Terra · 30m"). The custom prompt is surfaced separately as a badge, not
+ * folded into this string.
  */
 function phaseConfigSummary(config: AgentConfig): string {
 	const parts: string[] = [];
-	if (config.cli) {
-		parts.push(CLI_LABELS[config.cli]);
-		if (config.model) parts.push(modelLabel(config.cli, config.model));
-		if (config.reasoning) parts.push(capitalize(config.reasoning));
-	}
+	const targets = summarizeTargets(toTargetList(config));
+	if (targets) parts.push(targets);
 	if (config.timeoutMs != null) parts.push(`${config.timeoutMs / (60 * 1000)}m`);
 	return parts.length > 0 ? parts.join(' · ') : 'Coded defaults';
 }
@@ -704,7 +695,19 @@ export function PhaseConfigRow({
 	);
 }
 
-interface PhaseSettingsDetailProps {
+/** Handlers that mutate one phase's ordered target list, shared by the row and list. */
+interface TargetHandlers {
+	handleTargetChange: (
+		phase: keyof AgentsConfig,
+		index: number,
+		patch: Partial<AgentTarget>,
+	) => void;
+	handleAddTarget: (phase: keyof AgentsConfig) => void;
+	handleRemoveTarget: (phase: keyof AgentsConfig, index: number) => void;
+	handleMoveTarget: (phase: keyof AgentsConfig, index: number, direction: 'up' | 'down') => void;
+}
+
+interface PhaseSettingsDetailProps extends TargetHandlers {
 	phase: (typeof PHASES)[number];
 	config: AgentConfig;
 	projectDefaults?: AgentsConfig['defaults'];
@@ -714,9 +717,6 @@ interface PhaseSettingsDetailProps {
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	autoAdvance?: boolean;
 	handleAutoAdvanceChange?: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
-	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
 	onBack: () => void;
@@ -733,12 +733,257 @@ function PhaseDetailNote({ phase }: { phase: (typeof PHASES)[number] }) {
 	return <p className="text-xs text-zinc-400">{description}</p>;
 }
 
+/** Icon-button recipe for a target row's reorder/remove actions (ai/DESIGN_SYSTEM.md §4). */
+const ROW_ACTION_CLASS =
+	'p-1.5 rounded text-zinc-500 hover:bg-zinc-800/60 focus:outline-none focus:ring-1 focus:ring-violet-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+
+/** Secondary-button recipe for the "Add target" control (ai/DESIGN_SYSTEM.md §4). */
+const SECONDARY_BUTTON_CLASS =
+	'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed';
+
+interface TargetRowProps extends Omit<TargetHandlers, 'handleAddTarget'> {
+	phase: (typeof PHASES)[number];
+	target: AgentTarget;
+	index: number;
+	/** Total number of targets — the last row can't move down. */
+	total: number;
+	/** CLIs this row may select: every one no other row already claims. */
+	cliOptions: AgentCli[];
+	projectDefaults?: AgentsConfig['defaults'];
+	isPending: boolean;
+}
+
 /**
- * The per-phase detail screen: the CLI/Model/Reasoning/Timeout selectors that
- * used to live inline in the summary row, plus a read-only summary of the phase's
- * fixed SWARM system prompt and the editable, optional Custom prompt (issue
- * #135). It shares the route's `agents` state and the single Save/Reset model
- * (rendered by {@link AgentConfigurationForm}) — nothing here saves on its own.
+ * One target in a phase's priority list: its rank, the reorder/remove actions,
+ * and the dependent CLI → Model → Reasoning selectors. Each selector's accessible
+ * name carries the rank, since a phase can hold several identical-looking rows.
+ */
+function TargetRow({
+	phase,
+	target,
+	index,
+	total,
+	cliOptions,
+	projectDefaults,
+	isPending,
+	handleTargetChange,
+	handleRemoveTarget,
+	handleMoveTarget,
+}: TargetRowProps) {
+	const { modelOptions, reasoningOptions, reasoningDisabled, reasoningPlaceholder } =
+		targetFieldState(target, isPending);
+	const rank = index + 1;
+	const idBase = `${phase}-target-${index}`;
+
+	return (
+		<li className="p-4 border border-zinc-800 rounded-md bg-panel/20 space-y-3">
+			<div className="flex items-center justify-between gap-2">
+				<div className="flex items-center gap-2">
+					<span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+						Priority {rank}
+					</span>
+					{index === 0 && (
+						<span className="px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300 bg-violet-950/40 border border-violet-900/40 rounded">
+							Runs now
+						</span>
+					)}
+				</div>
+				<div className="flex items-center gap-1">
+					<button
+						type="button"
+						onClick={() => handleMoveTarget(phase, index, 'up')}
+						disabled={isPending || index === 0}
+						aria-label={`Move target ${rank} up`}
+						className={`${ROW_ACTION_CLASS} hover:text-zinc-200`}
+					>
+						<ChevronUp className="h-4 w-4" aria-hidden="true" />
+					</button>
+					<button
+						type="button"
+						onClick={() => handleMoveTarget(phase, index, 'down')}
+						disabled={isPending || index === total - 1}
+						aria-label={`Move target ${rank} down`}
+						className={`${ROW_ACTION_CLASS} hover:text-zinc-200`}
+					>
+						<ChevronDown className="h-4 w-4" aria-hidden="true" />
+					</button>
+					<button
+						type="button"
+						onClick={() => handleRemoveTarget(phase, index)}
+						disabled={isPending}
+						aria-label={`Remove target ${rank}`}
+						className={`${ROW_ACTION_CLASS} hover:text-red-400`}
+					>
+						<Trash2 className="h-4 w-4" aria-hidden="true" />
+					</button>
+				</div>
+			</div>
+
+			<div className="grid gap-4 sm:grid-cols-3">
+				<div>
+					<label htmlFor={`${idBase}-cli`} className={LABEL_CLASS}>
+						Agent CLI
+					</label>
+					<select
+						id={`${idBase}-cli`}
+						aria-label={`Agent CLI, target ${rank}`}
+						value={target.cli ?? ''}
+						onChange={(e) =>
+							handleTargetChange(phase, index, { cli: (e.target.value || undefined) as AgentCli })
+						}
+						disabled={isPending}
+						className={FIELD_CLASS}
+					>
+						{/* Only reachable for a hand-written config that set a model without a
+						    CLI — a row added here always names one. */}
+						{!target.cli && <option value="">Unset</option>}
+						{cliOptions.map((cli) => (
+							<option key={cli} value={cli}>
+								{CLI_LABELS[cli]}
+							</option>
+						))}
+					</select>
+				</div>
+				<div>
+					<label htmlFor={`${idBase}-model`} className={LABEL_CLASS}>
+						Model
+					</label>
+					<select
+						id={`${idBase}-model`}
+						aria-label={`Model, target ${rank}`}
+						value={target.model ?? ''}
+						onChange={(e) =>
+							handleTargetChange(phase, index, { model: e.target.value || undefined })
+						}
+						disabled={isPending || !target.cli}
+						className={`${FIELD_CLASS} font-mono`}
+					>
+						<option value="">
+							{target.cli ? getModelDefaultLabel(target.cli, projectDefaults) : 'Default (Unset)'}
+						</option>
+						{modelOptions.map((model) => (
+							<option key={model.id} value={model.id}>
+								{model.label}
+							</option>
+						))}
+					</select>
+				</div>
+				<div>
+					<label htmlFor={`${idBase}-reasoning`} className={LABEL_CLASS}>
+						Reasoning
+					</label>
+					<select
+						id={`${idBase}-reasoning`}
+						aria-label={`Reasoning, target ${rank}`}
+						value={target.reasoning ?? ''}
+						onChange={(e) =>
+							handleTargetChange(phase, index, {
+								reasoning: (e.target.value || undefined) as ReasoningLevel,
+							})
+						}
+						disabled={reasoningDisabled}
+						className={FIELD_CLASS}
+					>
+						<option value="">{reasoningPlaceholder}</option>
+						{reasoningOptions.map((level) => (
+							<option key={level} value={level}>
+								{capitalize(level)}
+							</option>
+						))}
+					</select>
+				</div>
+			</div>
+		</li>
+	);
+}
+
+interface PhaseTargetListProps extends TargetHandlers {
+	phase: (typeof PHASES)[number];
+	targets: AgentTarget[];
+	projectDefaults?: AgentsConfig['defaults'];
+	isPending: boolean;
+}
+
+/**
+ * A phase's model targets in priority order, with add/remove/reorder. Order is
+ * the whole point of the list: SWARM dispatches the highest-priority target, and
+ * the rest record the fallback order a later change will use (issue #346) — the
+ * helper text and the "Runs now" badge say so rather than implying all of them
+ * run. Each CLI may appear at most once, so a row's CLI selector offers only the
+ * CLIs no other row claims (mirroring the schema's `targets` refine).
+ */
+function PhaseTargetList({
+	phase,
+	targets,
+	projectDefaults,
+	isPending,
+	handleTargetChange,
+	handleAddTarget,
+	handleRemoveTarget,
+	handleMoveTarget,
+}: PhaseTargetListProps) {
+	const canAdd = canAddTarget(targets);
+	return (
+		<div className="space-y-3">
+			<div className="flex items-start justify-between gap-4">
+				<div>
+					<h3 className="text-sm font-semibold text-zinc-200">Model targets</h3>
+					<p className="text-xs text-zinc-400 mt-1">
+						Listed in priority order. SWARM runs the top target; the ones below it record which CLI
+						to fall back to and are not dispatched yet. Each CLI can be used at most once, and an
+						empty list leaves the phase on the pipeline's coded defaults.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={() => handleAddTarget(phase)}
+					disabled={isPending || !canAdd}
+					className={`${SECONDARY_BUTTON_CLASS} shrink-0`}
+				>
+					<Plus className="h-3.5 w-3.5" aria-hidden="true" />
+					Add target
+				</button>
+			</div>
+
+			{targets.length === 0 ? (
+				<p className="p-4 border border-dashed border-zinc-800 rounded-md bg-panel/20 text-xs text-zinc-500">
+					No targets — this phase runs on the pipeline's coded defaults.
+				</p>
+			) : (
+				<ol className="space-y-3">
+					{targets.map((target, index) => (
+						<TargetRow
+							key={targetKey(targets, index)}
+							phase={phase}
+							target={target}
+							index={index}
+							total={targets.length}
+							cliOptions={availableClisFor(targets, index)}
+							projectDefaults={projectDefaults}
+							isPending={isPending}
+							handleTargetChange={handleTargetChange}
+							handleRemoveTarget={handleRemoveTarget}
+							handleMoveTarget={handleMoveTarget}
+						/>
+					))}
+				</ol>
+			)}
+
+			{!canAdd && <p className="text-xs text-zinc-500">Every agent CLI already has a target.</p>}
+			{hasDuplicateCli(targets) && (
+				<p className="text-xs text-red-400">
+					Each agent CLI can appear at most once — remove the duplicate target before saving.
+				</p>
+			)}
+		</div>
+	);
+}
+
+/**
+ * The per-phase detail screen: the phase's ordered list of model targets, its
+ * timeout, and the editable, optional Custom prompt (issue #135). It shares the
+ * route's `agents` state and the single Save/Reset model (rendered by
+ * {@link AgentConfigurationForm}) — nothing here saves on its own.
  */
 export function PhaseSettingsDetail({
 	phase,
@@ -750,25 +995,20 @@ export function PhaseSettingsDetail({
 	handleEnabledChange,
 	autoAdvance,
 	handleAutoAdvanceChange,
-	handleCliChange,
-	handleModelChange,
-	handleReasoningChange,
+	handleTargetChange,
+	handleAddTarget,
+	handleRemoveTarget,
+	handleMoveTarget,
 	handleTimeoutChange,
 	handlePromptChange,
 	onBack,
 }: PhaseSettingsDetailProps) {
 	const phaseLabel = PHASE_LABELS[phase];
 	const autoAdvancePhase = autoAdvanceConfigPhase(phase);
-	const {
-		selectedCli,
-		selectedModel,
-		selectedReasoning,
-		timeoutMinutes,
-		modelOptions,
-		reasoningOptions,
-		reasoningDisabled,
-		reasoningPlaceholder,
-	} = phaseFieldState(config, isPending);
+	// Projected rather than read straight off `config.targets` so a phase still
+	// carrying only the pre-`targets` single selection renders as its one target.
+	const targets = toTargetList(config);
+	const timeoutMinutes = timeoutMinutesOf(config);
 
 	const promptValue = config.prompt ?? '';
 	const promptErr = customPromptError(promptValue);
@@ -845,66 +1085,18 @@ export function PhaseSettingsDetail({
 					)}
 				</div>
 
+				<PhaseTargetList
+					phase={phase}
+					targets={targets}
+					projectDefaults={projectDefaults}
+					isPending={isPending}
+					handleTargetChange={handleTargetChange}
+					handleAddTarget={handleAddTarget}
+					handleRemoveTarget={handleRemoveTarget}
+					handleMoveTarget={handleMoveTarget}
+				/>
+
 				<div className="grid gap-5 sm:grid-cols-2">
-					<div>
-						<label htmlFor={`${phase}-cli`} className={LABEL_CLASS}>
-							Agent CLI
-						</label>
-						<select
-							id={`${phase}-cli`}
-							value={selectedCli ?? ''}
-							onChange={(e) => handleCliChange(phase, e.target.value)}
-							disabled={isPending}
-							className={FIELD_CLASS}
-						>
-							<option value="">Default (Unset)</option>
-							<option value="claude">Claude</option>
-							<option value="antigravity">Antigravity</option>
-							<option value="codex">Codex</option>
-						</select>
-					</div>
-					<div>
-						<label htmlFor={`${phase}-model`} className={LABEL_CLASS}>
-							Model
-						</label>
-						<select
-							id={`${phase}-model`}
-							value={selectedModel ?? ''}
-							onChange={(e) => handleModelChange(phase, e.target.value)}
-							disabled={isPending || !selectedCli}
-							className={`${FIELD_CLASS} font-mono`}
-						>
-							<option value="">
-								{selectedCli
-									? getModelDefaultLabel(selectedCli, projectDefaults)
-									: 'Default (Unset)'}
-							</option>
-							{modelOptions.map((model) => (
-								<option key={model.id} value={model.id}>
-									{model.label}
-								</option>
-							))}
-						</select>
-					</div>
-					<div>
-						<label htmlFor={`${phase}-reasoning`} className={LABEL_CLASS}>
-							Reasoning
-						</label>
-						<select
-							id={`${phase}-reasoning`}
-							value={selectedReasoning ?? ''}
-							onChange={(e) => handleReasoningChange(phase, e.target.value)}
-							disabled={reasoningDisabled}
-							className={FIELD_CLASS}
-						>
-							<option value="">{reasoningPlaceholder}</option>
-							{reasoningOptions.map((level) => (
-								<option key={level} value={level}>
-									{capitalize(level)}
-								</option>
-							))}
-						</select>
-					</div>
 					<div>
 						<label htmlFor={`${phase}-timeout`} className={LABEL_CLASS}>
 							Timeout (minutes)
@@ -954,7 +1146,7 @@ export function PhaseSettingsDetail({
 	);
 }
 
-interface AgentConfigurationFormProps {
+interface AgentConfigurationFormProps extends TargetHandlers {
 	agents: AgentsConfig;
 	pipelineEnabled: PipelineEnabledForm;
 	pipelineAutoAdvance: PipelineAutoAdvanceForm;
@@ -964,16 +1156,17 @@ interface AgentConfigurationFormProps {
 	onBack: () => void;
 	handleEnabledChange: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	handleAutoAdvanceChange: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
-	handleCliChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleModelChange: (phase: keyof AgentsConfig, value: string) => void;
-	handleReasoningChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleTimeoutChange: (phase: keyof AgentsConfig, value: string) => void;
 	handlePromptChange: (phase: keyof AgentsConfig, value: string) => void;
 	handleSubmit: (e: React.FormEvent) => void;
 	handleReset: () => void;
 	isDirty: boolean;
-	/** True when any phase's custom prompt is over the bound — blocks Save. */
-	hasPromptError: boolean;
+	/**
+	 * True when a phase's custom prompt is over the bound, or two of its targets
+	 * name the same CLI — either would fail server-side validation, so Save is
+	 * blocked and the offending field carries the message.
+	 */
+	hasValidationError: boolean;
 	isPending: boolean;
 	isSuccess: boolean;
 	isError: boolean;
@@ -996,15 +1189,16 @@ function AgentConfigurationForm({
 	onBack,
 	handleEnabledChange,
 	handleAutoAdvanceChange,
-	handleCliChange,
-	handleModelChange,
-	handleReasoningChange,
+	handleTargetChange,
+	handleAddTarget,
+	handleRemoveTarget,
+	handleMoveTarget,
 	handleTimeoutChange,
 	handlePromptChange,
 	handleSubmit,
 	handleReset,
 	isDirty,
-	hasPromptError,
+	hasValidationError,
 	isPending,
 	isSuccess,
 	isError,
@@ -1035,9 +1229,10 @@ function AgentConfigurationForm({
 					}
 					handleEnabledChange={handleEnabledChange}
 					handleAutoAdvanceChange={handleAutoAdvanceChange}
-					handleCliChange={handleCliChange}
-					handleModelChange={handleModelChange}
-					handleReasoningChange={handleReasoningChange}
+					handleTargetChange={handleTargetChange}
+					handleAddTarget={handleAddTarget}
+					handleRemoveTarget={handleRemoveTarget}
+					handleMoveTarget={handleMoveTarget}
 					handleTimeoutChange={handleTimeoutChange}
 					handlePromptChange={handlePromptChange}
 					onBack={onBack}
@@ -1049,8 +1244,8 @@ function AgentConfigurationForm({
 							Phases Configuration
 						</h2>
 						<p className="text-xs text-zinc-400 mb-4">
-							Select a phase to configure its agent CLI, model, and an optional custom prompt. Unset
-							values fall back to the pipeline's coded defaults.
+							Select a phase to configure its model targets in priority order and an optional custom
+							prompt. Unset values fall back to the pipeline's coded defaults.
 						</p>
 
 						<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
@@ -1116,7 +1311,7 @@ function AgentConfigurationForm({
 			<div className="flex items-center gap-2 border-t border-zinc-800 pt-4">
 				<button
 					type="submit"
-					disabled={isPending || !isDirty || hasPromptError}
+					disabled={isPending || !isDirty || hasValidationError}
 					className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-violet-600 rounded-md hover:bg-violet-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-colors shadow-lg shadow-violet-650/10 disabled:opacity-55 disabled:cursor-not-allowed"
 				>
 					{isPending ? 'Saving…' : 'Save Changes'}
@@ -1447,10 +1642,13 @@ function ProjectDetailRouteComponent() {
 		);
 	}, [project, agents, pipelineEnabled, pipelineAutoAdvance]);
 
-	// An over-limit custom prompt on any phase would only fail server-side; surface
-	// it client-side so Save is blocked and the field error is the sole feedback.
-	const hasAgentPromptError = useMemo(
-		() => anyCustomPromptError(PHASES.map((phase) => agents[phase]?.prompt)),
+	// An over-limit custom prompt — or a duplicate target CLI, which the selectors
+	// don't offer but the schema also rejects — would only fail server-side; surface
+	// both client-side so Save is blocked and the field error is the sole feedback.
+	const hasAgentValidationError = useMemo(
+		() =>
+			anyCustomPromptError(PHASES.map((phase) => agents[phase]?.prompt)) ||
+			PHASES.some((phase) => hasDuplicateCli(agents[phase]?.targets ?? [])),
 		[agents],
 	);
 
@@ -1467,62 +1665,33 @@ function ProjectDetailRouteComponent() {
 		[boardMapping, project],
 	);
 
-	const handleCliChange = (phase: keyof AgentsConfig, value: string) => {
-		const cli = value ? (value as AgentCli) : undefined;
-		setAgents((prev) => {
-			const updatedPhase: AgentConfig = { ...(prev[phase] as AgentConfig) };
-			if (cli) {
-				updatedPhase.cli = cli;
-				if (updatedPhase.model && !AGENT_MODELS[cli].includes(updatedPhase.model)) {
-					updatedPhase.model = undefined;
-				}
-			} else {
-				updatedPhase.cli = undefined;
-				updatedPhase.model = undefined;
-			}
-			// Reasoning is model-specific: any CLI change may make the old level invalid,
-			// so clear it rather than keep a hidden incompatible value (issue #180).
-			updatedPhase.reasoning = undefined;
-			return {
-				...prev,
-				[phase]: updatedPhase,
-			};
-		});
-		updateMutation.reset();
-	};
-
-	const handleModelChange = (phase: keyof AgentsConfig, value: string) => {
+	/** Replace one phase's ordered target list, leaving its other fields untouched. */
+	const updateTargets = (
+		phase: keyof AgentsConfig,
+		update: (targets: AgentTarget[]) => AgentTarget[],
+	) => {
 		setAgents((prev) => {
 			const current = (prev[phase] ?? {}) as AgentConfig;
-			const model = value || undefined;
-			// Keep the reasoning only if the newly selected model still supports it.
-			const stillValid =
-				current.reasoning &&
-				current.cli &&
-				model &&
-				(reasoningChoicesFor(current.cli, model) as readonly string[]).includes(current.reasoning);
-			return {
-				...prev,
-				[phase]: {
-					...current,
-					model,
-					reasoning: stillValid ? current.reasoning : undefined,
-				},
-			};
+			// `toTargetList` is what the screen renders, so an edit starts from exactly
+			// the list the user sees — including one projected from a legacy selection.
+			return { ...prev, [phase]: { ...current, targets: update(toTargetList(current)) } };
 		});
 		updateMutation.reset();
 	};
 
-	const handleReasoningChange = (phase: keyof AgentsConfig, value: string) => {
-		setAgents((prev) => ({
-			...prev,
-			[phase]: {
-				...prev[phase],
-				reasoning: value ? (value as ReasoningLevel) : undefined,
-			},
-		}));
-		updateMutation.reset();
-	};
+	const handleTargetChange = (
+		phase: keyof AgentsConfig,
+		index: number,
+		patch: Partial<AgentTarget>,
+	) => updateTargets(phase, (targets) => patchTarget(targets, index, patch));
+
+	const handleAddTarget = (phase: keyof AgentsConfig) => updateTargets(phase, addTarget);
+
+	const handleRemoveTarget = (phase: keyof AgentsConfig, index: number) =>
+		updateTargets(phase, (targets) => removeTarget(targets, index));
+
+	const handleMoveTarget = (phase: keyof AgentsConfig, index: number, direction: 'up' | 'down') =>
+		updateTargets(phase, (targets) => moveTarget(targets, index, direction));
 
 	const handleTimeoutChange = (phase: keyof AgentsConfig, value: string) => {
 		// The field edits whole minutes; the config stores milliseconds.
@@ -1564,9 +1733,9 @@ function ProjectDetailRouteComponent() {
 
 	const handleAgentsSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
-		// Save is disabled while a prompt is over-limit, but guard here too so an
-		// Enter-to-submit from a field can't bypass the client-side bound (issue #135).
-		if (hasAgentPromptError) return;
+		// Save is disabled while the form holds an invalid value, but guard here too so
+		// an Enter-to-submit from a field can't bypass the client-side check (issue #135).
+		if (hasAgentValidationError) return;
 		const finalAgents = cleanAgentsConfig(agents);
 		updateMutation.mutate({
 			id: projectId,
@@ -1820,15 +1989,16 @@ function ProjectDetailRouteComponent() {
 					onBack={backToAgentConfig}
 					handleEnabledChange={handleEnabledChange}
 					handleAutoAdvanceChange={handleAutoAdvanceChange}
-					handleCliChange={handleCliChange}
-					handleModelChange={handleModelChange}
-					handleReasoningChange={handleReasoningChange}
+					handleTargetChange={handleTargetChange}
+					handleAddTarget={handleAddTarget}
+					handleRemoveTarget={handleRemoveTarget}
+					handleMoveTarget={handleMoveTarget}
 					handleTimeoutChange={handleTimeoutChange}
 					handlePromptChange={handlePromptChange}
 					handleSubmit={handleAgentsSubmit}
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
-					hasPromptError={hasAgentPromptError}
+					hasValidationError={hasAgentValidationError}
 					isPending={updateMutation.isPending}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
