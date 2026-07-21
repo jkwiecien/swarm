@@ -1,13 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { registerWorker, refreshWorkerCapabilities, listWorkersForOwner, getWorker } = vi.hoisted(
-	() => ({
+const {
+	registerWorker,
+	refreshWorkerCapabilities,
+	listWorkersForOwner,
+	getWorker,
+	WorkerCapabilityReductionError,
+} = vi.hoisted(() => {
+	class WorkerCapabilityReductionError extends Error {
+		constructor(
+			public workerId: string,
+			public offending: string[],
+		) {
+			super(`Cannot update capabilities: ${offending.join(', ')}`);
+			this.name = 'WorkerCapabilityReductionError';
+		}
+	}
+	return {
 		registerWorker: vi.fn(),
 		refreshWorkerCapabilities: vi.fn(),
 		listWorkersForOwner: vi.fn(),
 		getWorker: vi.fn(),
-	}),
-);
+		WorkerCapabilityReductionError,
+	};
+});
 const { removeWorker } = vi.hoisted(() => ({ removeWorker: vi.fn() }));
 const { findUserByIdentifier, listUsers } = vi.hoisted(() => ({
 	findUserByIdentifier: vi.fn(),
@@ -40,6 +56,7 @@ vi.mock('@/identity/worker-service.js', () => ({
 	refreshWorkerCapabilities,
 	listWorkersForOwner,
 	getWorker,
+	WorkerCapabilityReductionError,
 }));
 vi.mock('@/identity/worker-enrollment-service.js', () => ({
 	enrollWorker,
@@ -207,6 +224,15 @@ describe('swarm workers', () => {
 		it('fails cleanly for a missing worker', async () => {
 			refreshWorkerCapabilities.mockResolvedValue(undefined);
 			expect(await run(['set-cli', WORKER_ID, '--cli', 'claude'])).toBe(1);
+		});
+
+		it('translates a capability reduction error to a friendly message and exits 1', async () => {
+			refreshWorkerCapabilities.mockRejectedValue(
+				new WorkerCapabilityReductionError(WORKER_ID, ['claude']),
+			);
+			const error = vi.spyOn(console, 'error');
+			expect(await run(['set-cli', WORKER_ID, '--cli', 'codex'])).toBe(1);
+			expect(error).toHaveBeenCalledWith(expect.stringContaining('Cannot update capabilities'));
 		});
 	});
 

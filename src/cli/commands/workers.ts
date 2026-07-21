@@ -48,6 +48,7 @@ import {
 	listWorkersForOwner,
 	refreshWorkerCapabilities,
 	registerWorker,
+	WorkerCapabilityReductionError,
 } from '../../identity/worker-service.js';
 import * as out from '../_shared/output.js';
 
@@ -262,15 +263,23 @@ async function setCliCommand(argv: string[]): Promise<number> {
 	const capabilities = parseClis(values.cli);
 	if (!capabilities) return 1;
 
-	const updated = await refreshWorkerCapabilities(workerId, capabilities);
-	if (!updated) {
-		out.error(`no worker with id '${workerId}'`);
-		return 1;
+	try {
+		const updated = await refreshWorkerCapabilities(workerId, capabilities);
+		if (!updated) {
+			out.error(`no worker with id '${workerId}'`);
+			return 1;
+		}
+		out.info(
+			`set CLIs for worker '${updated.displayName}' (${workerId}) to ${updated.capabilities.join(', ')}`,
+		);
+		return 0;
+	} catch (err) {
+		if (err instanceof WorkerCapabilityReductionError) {
+			out.error(err.message);
+			return 1;
+		}
+		throw err;
 	}
-	out.info(
-		`set CLIs for worker '${updated.displayName}' (${workerId}) to ${updated.capabilities.join(', ')}`,
-	);
-	return 0;
 }
 
 async function removeWorkerCommand(argv: string[]): Promise<number> {

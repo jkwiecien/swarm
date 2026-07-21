@@ -21,8 +21,9 @@
 import { asc, eq } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
-import type { Worker } from '../../identity/worker.js';
+import { type Worker, WorkerCapabilityReductionError } from '../../identity/worker.js';
 import { getDb } from '../client.js';
+import { workerProjectEnrollments } from '../schema/workerProjectEnrollments.js';
 import { workers } from '../schema/workers.js';
 
 type WorkerRow = typeof workers.$inferSelect;
@@ -101,18 +102,48 @@ export async function findWorkerByCredentialHash(hash: string): Promise<Worker |
 
 /**
  * Replace a worker's declared capabilities. Returns the updated worker, or
- * `undefined` if no worker has that id (nothing to update).
+ * `undefined` if no worker has that id (nothing to update). Rejects with
+ * {@link WorkerCapabilityReductionError} if any existing enrollment for the worker
+ * requires a CLI not present in the updated capabilities.
  */
 export async function updateWorkerCapabilities(
 	id: string,
 	capabilities: AgentCli[],
 ): Promise<Worker | undefined> {
-	const [row] = await getDb()
-		.update(workers)
-		.set({ capabilities })
-		.where(eq(workers.id, id))
-		.returning();
-	return row ? rowToWorker(row) : undefined;
+	return await getDb().transaction(async (tx) => {
+		const existingWorkerRows = await tx.select().from(workers).where(eq(workers.id, id)).limit(1);
+		const existingWorker = existingWorkerRows[0];
+		if (!existingWorker) return undefined;
+
+		const enrollments = await tx
+			.select()
+			.from(workerProjectEnrollments)
+			.where(eq(workerProjectEnrollments.workerId, id));
+
+		const newCapSet = new Set(capabilities);
+		const offendingSet = new Set<AgentCli>();
+
+		for (const enrollment of enrollments) {
+			const allowedClis = enrollment.allowedClis as AgentCli[];
+			for (const cli of allowedClis) {
+				if (!newCapSet.has(cli)) {
+					offendingSet.add(cli);
+				}
+			}
+		}
+
+		if (offendingSet.size > 0) {
+			throw new WorkerCapabilityReductionError(id, Array.from(offendingSet));
+		}
+
+		const [updatedRow] = await tx
+			.update(workers)
+			.set({ capabilities })
+			.where(eq(workers.id, id))
+			.returning();
+
+		return updatedRow ? rowToWorker(updatedRow) : undefined;
+	});
 }
 
 /**

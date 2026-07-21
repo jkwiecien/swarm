@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../src/db/client.js';
 import { createUser } from '../../../src/db/repositories/usersRepository.js';
+import { createEnrollment } from '../../../src/db/repositories/workerEnrollmentsRepository.js';
 import {
 	createWorker,
 	findWorkerByCredentialHash,
@@ -11,7 +12,9 @@ import {
 	updateWorkerCapabilities,
 } from '../../../src/db/repositories/workersRepository.js';
 import { users } from '../../../src/db/schema/users.js';
+import { WorkerCapabilityReductionError } from '../../../src/identity/worker.js';
 import { truncateAll } from '../helpers/db.js';
+import { seedProject } from '../helpers/seed.js';
 
 describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('workersRepository (integration)', () => {
 	let adaId: string;
@@ -131,6 +134,32 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('workersRepository (integr
 			expect(
 				await updateWorkerCapabilities('00000000-0000-4000-8000-000000000000', ['claude']),
 			).toBeUndefined();
+		});
+
+		it('rejects a capability reduction when an enrollment requires a CLI being removed', async () => {
+			await seedProject({ id: 'proj-repo-test', repo: 'jkwiecien/repo-test' });
+			const worker = await createWorker({
+				ownerUserId: adaId,
+				displayName: 'ada-multi-cli',
+				capabilities: ['claude', 'codex'],
+				credentialHash: 'hash-multi',
+			});
+			await createEnrollment({
+				workerId: worker.id,
+				projectId: 'proj-repo-test',
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: 1,
+				sharingConsent: true,
+			});
+
+			await expect(updateWorkerCapabilities(worker.id, ['codex'])).rejects.toThrow(
+				WorkerCapabilityReductionError,
+			);
+
+			// Worker capabilities remain unchanged
+			const rechecked = await getWorkerById(worker.id);
+			expect(rechecked?.capabilities).toEqual(['claude', 'codex']);
 		});
 	});
 
