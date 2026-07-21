@@ -784,7 +784,7 @@ function TargetRow({
 					</span>
 					{index === 0 && (
 						<span className="px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300 bg-violet-950/40 border border-violet-900/40 rounded">
-							Runs now
+							Preferred
 						</span>
 					)}
 				</div>
@@ -906,11 +906,12 @@ interface PhaseTargetListProps extends TargetHandlers {
 
 /**
  * A phase's model targets in priority order, with add/remove/reorder. Order is
- * the whole point of the list: SWARM dispatches the highest-priority target, and
- * the rest record the fallback order a later change will use (issue #346) — the
- * helper text and the "Runs now" badge say so rather than implying all of them
- * run. Each CLI may appear at most once, so a row's CLI selector offers only the
- * CLIs no other row claims (mirroring the schema's `targets` refine).
+ * the whole point of the list: the worker runs the highest-priority target whose
+ * CLI it can actually run and falls back down the list (issue #346) — the helper
+ * text and the "Preferred" badge say so rather than implying all of them run, or
+ * that the top one always does. Each CLI may appear at most once, so a row's CLI
+ * selector offers only the CLIs no other row claims (mirroring the schema's
+ * `targets` refine).
  */
 function PhaseTargetList({
 	phase,
@@ -929,9 +930,9 @@ function PhaseTargetList({
 				<div>
 					<h3 className="text-sm font-semibold text-zinc-200">Model targets</h3>
 					<p className="text-xs text-zinc-400 mt-1">
-						Listed in priority order. SWARM runs the top target; the ones below it record which CLI
-						to fall back to and are not dispatched yet. Each CLI can be used at most once, and an
-						empty list leaves the phase on the pipeline's coded defaults.
+						Listed in priority order. SWARM runs the top target whose CLI is available on the
+						worker, falling back down the list; each CLI can be used at most once, and an empty list
+						leaves the phase on the pipeline's coded defaults.
 					</p>
 				</div>
 				<button

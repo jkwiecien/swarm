@@ -453,14 +453,14 @@ describe('PhaseSettingsDetail — model targets', () => {
 		return mocks;
 	}
 
-	it('renders one row per target, in priority order, flagging the one that runs', () => {
+	it('renders one row per target, in priority order, flagging the preferred one', () => {
 		renderDetail(twoTargets);
 
 		expect(screen.getByText('Priority 1')).toBeDefined();
 		expect(screen.getByText('Priority 2')).toBeDefined();
-		// Only the highest-priority target is dispatched until capability-aware
-		// routing lands, so exactly one row is flagged.
-		expect(screen.getAllByText('Runs now')).toHaveLength(1);
+		// The worker routes down the list when a CLI is unavailable (issue #346), so
+		// the badge marks the *preferred* target — exactly one row.
+		expect(screen.getAllByText('Preferred')).toHaveLength(1);
 
 		expect((screen.getByLabelText('Agent CLI, target 1') as HTMLSelectElement).value).toBe(
 			'claude',
