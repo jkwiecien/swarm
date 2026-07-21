@@ -231,7 +231,7 @@ describe('runPlanningPhase', () => {
 		// created with the human description (the marker is embedded via a follow-up update).
 		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(2);
 		for (const call of deps.pm.createWorkItem.mock.calls) {
-			expect(call[0]).toMatchObject({ status: 'planning', labels: [SPLIT_CHILD_LABEL] });
+			expect(call[0]).toMatchObject({ status: 'planning', labels: ['swarm', SPLIT_CHILD_LABEL] });
 		}
 		expect(deps.pm.createWorkItem.mock.calls.map((c) => c[0].title)).toEqual([
 			'Second slice',

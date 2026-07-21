@@ -542,7 +542,7 @@ async function applySplit(
 			title: sub.title,
 			description: sub.description,
 			status: SIBLING_START_STATUS,
-			labels: [SPLIT_CHILD_LABEL],
+			labels: ['swarm', SPLIT_CHILD_LABEL],
 		});
 		try {
 			const contract = buildPreplanContract({
