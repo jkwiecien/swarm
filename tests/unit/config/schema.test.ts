@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	type AgentConfig,
 	AgentConfigSchema,
 	AgentsConfigSchema,
 	CUSTOM_PROMPT_MAX_LENGTH,
@@ -89,12 +90,23 @@ describe('ProjectConfigSchema', () => {
 				review: { cli: 'codex', model: 'gpt-5.6-sol' },
 			},
 		});
+		// Each single selection is also mirrored into a one-element `targets` list
+		// (issue #342); the top-level fields stay the highest-priority target.
 		expect(project.agents).toEqual({
-			planning: { cli: 'claude', model: 'sonnet' },
+			planning: { cli: 'claude', model: 'sonnet', targets: [{ cli: 'claude', model: 'sonnet' }] },
 			// The legacy combined antigravity string migrates losslessly to logical
 			// model + reasoning (issue #180).
-			implementation: { cli: 'antigravity', model: 'gemini-3.5-flash', reasoning: 'high' },
-			review: { cli: 'codex', model: 'gpt-5.6-sol' },
+			implementation: {
+				cli: 'antigravity',
+				model: 'gemini-3.5-flash',
+				reasoning: 'high',
+				targets: [{ cli: 'antigravity', model: 'gemini-3.5-flash', reasoning: 'high' }],
+			},
+			review: {
+				cli: 'codex',
+				model: 'gpt-5.6-sol',
+				targets: [{ cli: 'codex', model: 'gpt-5.6-sol' }],
+			},
 		});
 	});
 
@@ -102,7 +114,12 @@ describe('ProjectConfigSchema', () => {
 		const project = createMockProjectConfig({
 			agents: { planning: { cli: 'claude', model: 'sonnet', reasoning: 'high' } },
 		});
-		expect(project.agents?.planning).toEqual({ cli: 'claude', model: 'sonnet', reasoning: 'high' });
+		expect(project.agents?.planning).toEqual({
+			cli: 'claude',
+			model: 'sonnet',
+			reasoning: 'high',
+			targets: [{ cli: 'claude', model: 'sonnet', reasoning: 'high' }],
+		});
 	});
 
 	it('rejects a reasoning level the selected model does not support', () => {
@@ -293,6 +310,119 @@ describe('ProjectConfigSchema', () => {
 				worktreeRetention: { maxWorktrees: 5.5 },
 			}),
 		).toThrow();
+	});
+});
+
+describe('AgentConfigSchema targets (issue #342)', () => {
+	it('keeps an ordered target list and mirrors the highest-priority one', () => {
+		const agent = AgentConfigSchema.parse({
+			targets: [
+				{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
+				{ cli: 'codex', model: 'gpt-5.6-terra' },
+			],
+		});
+		expect(agent.targets).toEqual([
+			{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
+			{ cli: 'codex', model: 'gpt-5.6-terra' },
+		]);
+		expect(agent).toMatchObject({ cli: 'claude', model: 'sonnet', reasoning: 'high' });
+	});
+
+	it('folds a legacy single-selection config into a one-element list', () => {
+		const agent = AgentConfigSchema.parse({ cli: 'claude', model: 'sonnet' });
+		expect(agent.targets).toEqual([{ cli: 'claude', model: 'sonnet' }]);
+		// The mirror is what every pre-#342 reader (the worker, the dashboard) uses.
+		expect(agent).toMatchObject({ cli: 'claude', model: 'sonnet' });
+	});
+
+	it('migrates a legacy antigravity combined string into its sole target', () => {
+		const agent = AgentConfigSchema.parse({
+			cli: 'antigravity',
+			model: 'Gemini 3.5 Flash (High)',
+		});
+		expect(agent.targets).toEqual([
+			{ cli: 'antigravity', model: 'gemini-3.5-flash', reasoning: 'high' },
+		]);
+		expect(agent).toMatchObject({
+			cli: 'antigravity',
+			model: 'gemini-3.5-flash',
+			reasoning: 'high',
+		});
+	});
+
+	it('rewrites a stale mirror from the highest-priority target', () => {
+		const agent = AgentConfigSchema.parse({
+			cli: 'codex',
+			model: 'gpt-5.5',
+			reasoning: 'high',
+			targets: [{ cli: 'claude' }],
+		});
+		expect(agent.cli).toBe('claude');
+		expect(agent.model).toBeUndefined();
+		expect(agent.reasoning).toBeUndefined();
+	});
+
+	it('rejects two targets naming the same cli', () => {
+		expect(() =>
+			AgentConfigSchema.parse({ targets: [{ cli: 'claude' }, { cli: 'claude', model: 'opus' }] }),
+		).toThrow(/same cli twice/);
+	});
+
+	it('validates every target, not just the highest-priority one', () => {
+		expect(() =>
+			AgentConfigSchema.parse({ targets: [{ cli: 'claude' }, { cli: 'codex', model: 'opus' }] }),
+		).toThrow(/known models/);
+		expect(() =>
+			AgentConfigSchema.parse({
+				targets: [
+					{ cli: 'claude', model: 'sonnet' },
+					{ cli: 'antigravity', reasoning: 'high' },
+				],
+			}),
+		).toThrow(/reasoning/);
+	});
+
+	it('leaves a selection-free override on the coded defaults', () => {
+		// No cli/model/reasoning anywhere — no list to build and nothing to mirror.
+		expect(AgentConfigSchema.parse({})).toEqual({});
+		expect(AgentConfigSchema.parse({ targets: [] })).toEqual({});
+		// timeoutMs and prompt stay phase-level: they bound the run whichever target wins.
+		const agent = AgentConfigSchema.parse({ timeoutMs: 10 * 60 * 1000, prompt: '  house style ' });
+		expect(agent).toEqual({ timeoutMs: 10 * 60 * 1000, prompt: 'house style' });
+	});
+
+	it('clears stale top-level fields when targets is explicitly empty', () => {
+		// A user can clear configured target/mirror fields by specifying targets: []
+		// even if legacy top-level fields are present in the input.
+		expect(
+			AgentConfigSchema.parse({
+				cli: 'claude',
+				model: 'sonnet',
+				reasoning: 'high',
+				targets: [],
+			}),
+		).toEqual({});
+	});
+
+	it('continues to fold legacy fields into one target when targets is absent', () => {
+		// Absent targets means legacy input should be folded.
+		const agent = AgentConfigSchema.parse({
+			cli: 'claude',
+			model: 'sonnet',
+		});
+		expect(agent).toEqual({
+			cli: 'claude',
+			model: 'sonnet',
+			targets: [{ cli: 'claude', model: 'sonnet' }],
+		});
+	});
+
+	it('keeps targets optional on the inferred type (existing literals still compile)', () => {
+		// The dashboard builds `AgentConfig` literals with the mirror fields only
+		// (`cleanAgentConfig`, web/src/routes/projects/$projectId.tsx) — adding
+		// `targets` must not force the key onto them.
+		const legacyLiteral = { cli: 'claude', model: 'sonnet' } satisfies AgentConfig;
+		expect(AgentConfigSchema.parse(legacyLiteral).targets).toHaveLength(1);
 	});
 });
 

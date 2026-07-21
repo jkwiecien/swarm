@@ -180,6 +180,31 @@ describe('projectsRepository', () => {
 				},
 			});
 		});
+
+		it('round-trips an ordered target list through the jsonb column (issue #342)', async () => {
+			const { values } = stubInsert();
+			const agents = {
+				planning: {
+					targets: [
+						{ cli: 'claude' as const, model: 'opus', reasoning: 'high' as const },
+						{ cli: 'codex' as const, model: 'gpt-5.6-terra' },
+					],
+				},
+			};
+			await upsertProjectToDb(createMockProjectConfig({ id: 'proj-1', agents }));
+
+			// `agents` is a jsonb blob typed by the Zod schema — a target list needs no
+			// migration, but it must survive serialization in priority order.
+			const written = values.mock.calls[0][0] as { agents: unknown };
+			stubDb([{ ...row, agents: JSON.parse(JSON.stringify(written.agents)) }]);
+			const project = await findProjectByRepoFromDb('jkwiecien/swarm');
+			expect(project?.agents?.planning?.targets).toEqual([
+				{ cli: 'claude', model: 'opus', reasoning: 'high' },
+				{ cli: 'codex', model: 'gpt-5.6-terra' },
+			]);
+			// The mirror the worker/dashboard read still resolves the top target.
+			expect(project?.agents?.planning).toMatchObject({ cli: 'claude', model: 'opus' });
+		});
 	});
 
 	describe('listAllProjectsFromDb', () => {

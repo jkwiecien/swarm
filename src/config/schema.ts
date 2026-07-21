@@ -80,11 +80,12 @@ export const CredentialsSchema = z
 	.describe('References to a project GitHub credentials (never the secrets themselves)');
 
 /**
- * Per-phase agent CLI/model/reasoning override. Every field is optional — omit
- * `cli` to keep the phase's own coded default (`DEFAULT_PLANNING_CLI` and
- * friends, `src/pipeline/*.ts`), omit `model` to run on that CLI's own default
- * model, omit `reasoning` to inherit the effective model's known default (the
- * CLI's own default when it controls it).
+ * One agent model target — a CLI, the logical model to run on it, and the
+ * reasoning level to run it at. Every field is optional: omit `cli` to keep the
+ * phase's own coded default (`DEFAULT_PLANNING_CLI` and friends,
+ * `src/pipeline/*.ts`), omit `model` to run on that CLI's own default model,
+ * omit `reasoning` to inherit the effective model's known default (the CLI's own
+ * default when it controls it).
  *
  * `model`, when given, must be a *logical* model id for its CLI per
  * `AGENT_MODELS` (`src/harness/models.ts`) — `claude`'s aliases (`sonnet`, …),
@@ -98,12 +99,72 @@ export const CredentialsSchema = z
  * `reasoning`, when given, must be a level the effective `(cli, model)` supports
  * (`ModelCapability.reasoningChoices`) — validated against the model, never as a
  * free-standing per-CLI string (issue #180).
+ *
+ * A phase holds these in priority order (`AgentConfigSchema.targets`).
+ */
+export const AgentTargetSchema = z
+	.object({
+		cli: AgentCliSchema.optional(),
+		model: z.string().min(1).optional(),
+		reasoning: ReasoningLevelSchema.optional(),
+	})
+	.transform((target) => {
+		// Migrate a pre-#180 combined antigravity model string losslessly into
+		// logical model + reasoning. An explicit `reasoning` already on the target
+		// wins over the one recovered from the string. Mutate in place (rather than
+		// spreading onto a fresh object) so the inferred output keeps every field
+		// optional instead of widening into a union of two shapes.
+		if (target.cli === 'antigravity' && target.model) {
+			const split = splitAntigravityModel(target.model);
+			if (split) {
+				target.model = split.model;
+				target.reasoning = target.reasoning ?? split.reasoning;
+			}
+		}
+		return target;
+	})
+	.refine((target) => !target.model || isKnownModel(target.cli, target.model), {
+		message: 'model must be one of the known models for its cli (src/harness/models.ts)',
+	})
+	.refine(
+		(target) => {
+			if (!target.reasoning) return true;
+			// Can't validate reasoning without a concrete (cli, model) to check it against.
+			if (!target.cli || !target.model) return false;
+			const cap = capabilityFor(target.cli, target.model);
+			if (!cap) return true; // legacy/unknown model — leave the value untouched
+			return (cap.reasoningChoices as readonly string[]).includes(target.reasoning);
+		},
+		{ message: 'reasoning must be a level supported by the selected cli/model (issue #180)' },
+	)
+	.describe('One agent CLI/model/reasoning target a phase can run on');
+
+/**
+ * Per-phase agent override: an ordered list of model `targets` plus the
+ * phase-level `timeoutMs`/`prompt`. Every field is optional; an empty object
+ * keeps the phase entirely on its coded defaults.
+ *
+ * `targets` is a priority list — index 0 is the most preferred target, and at
+ * most one entry may name any given CLI (a phase asks for "this model on codex",
+ * not two). **Only the highest-priority target is used today**; selecting a
+ * lower-priority one when the preferred CLI is unavailable is a later change.
+ *
+ * The top-level `cli`/`model`/`reasoning` fields are a **derived mirror of
+ * `targets[0]`**, not independent settings: a config that sets only them (every
+ * config written before `targets` existed, including one storing a legacy
+ * combined antigravity model string) normalizes on parse into a one-element
+ * `targets` list, and the mirror is rewritten from `targets[0]` whenever a list
+ * is given. Readers that only understand a single selection — the worker's
+ * `agentOverrideFor` and the dashboard — therefore keep resolving the
+ * highest-priority target unchanged.
  */
 export const AgentConfigSchema = z
 	.object({
 		cli: AgentCliSchema.optional(),
 		model: z.string().min(1).optional(),
 		reasoning: ReasoningLevelSchema.optional(),
+		/** Model targets in priority order, at most one per CLI (see above). */
+		targets: z.array(AgentTargetSchema).optional(),
 		/** A bounded per-phase timeout: 5–45 minutes, stored in milliseconds. */
 		timeoutMs: z
 			.number()
@@ -120,42 +181,76 @@ export const AgentConfigSchema = z
 		 */
 		prompt: z.string().optional(),
 	})
-	.transform((agent) => {
+	.transform((agent, ctx) => {
 		// Whitespace-only is not a meaningful override — normalize it away so it's
 		// neither stored nor composed (issue #135). Mutate in place (rather than
 		// spreading a `prompt` key onto the result) so the inferred output keeps
 		// `prompt` optional, matching every other field.
 		agent.prompt = normalizeCustomPrompt(agent.prompt);
-		// Migrate a pre-#180 combined antigravity model string losslessly into
-		// logical model + reasoning. An explicit `reasoning` already on the config
-		// wins over the one recovered from the string.
-		if (agent.cli === 'antigravity' && agent.model) {
-			const split = splitAntigravityModel(agent.model);
-			if (split) {
-				return { ...agent, model: split.model, reasoning: agent.reasoning ?? split.reasoning };
+		if (agent.targets === undefined) {
+			// A config written before `targets` existed (or one the pre-list dashboard
+			// saved): fold its single selection into the list so every reader sees one
+			// shape. Parsing it through `AgentTargetSchema` keeps target validation —
+			// including the legacy antigravity migration — in exactly one place.
+			const legacy = AgentTargetSchema.safeParse({
+				cli: agent.cli,
+				model: agent.model,
+				reasoning: agent.reasoning,
+			});
+			if (!legacy.success) {
+				// `fatal` aborts the parse: without it the refinements below would still
+				// run, on the `z.NEVER` this returns rather than on a config.
+				for (const issue of legacy.error.issues) ctx.addIssue({ ...issue, fatal: true });
+				return z.NEVER;
 			}
+			const { cli, model, reasoning } = legacy.data;
+			if (cli || model || reasoning) agent.targets = [legacy.data];
+			// An override that selects nothing stays on the coded defaults — no list, no mirror.
+			else delete agent.targets;
+		} else if (agent.targets.length === 0) {
+			// An explicitly empty target list is an authoritative clear: delete all
+			// targets and mirror fields so the parsed result has none.
+			delete agent.targets;
+			delete agent.cli;
+			delete agent.model;
+			delete agent.reasoning;
+		}
+
+		// The top-level fields are a derived mirror of the highest-priority target,
+		// so single-selection readers (the worker, the dashboard) keep working
+		// without knowing the list exists. Assigned unconditionally: a stale mirror
+		// left beside an explicit `targets` list must be overwritten, not merged.
+		const [primary] = agent.targets ?? [];
+		if (primary) {
+			if (primary.cli !== undefined) agent.cli = primary.cli;
+			else delete agent.cli;
+			if (primary.model !== undefined) agent.model = primary.model;
+			else delete agent.model;
+			if (primary.reasoning !== undefined) agent.reasoning = primary.reasoning;
+			else delete agent.reasoning;
+		} else {
+			delete agent.cli;
+			delete agent.model;
+			delete agent.reasoning;
 		}
 		return agent;
-	})
-	.refine((agent) => !agent.model || isKnownModel(agent.cli, agent.model), {
-		message: 'model must be one of the known models for its cli (src/harness/models.ts)',
 	})
 	.refine((agent) => !agent.prompt || agent.prompt.length <= CUSTOM_PROMPT_MAX_LENGTH, {
 		message: `prompt must be at most ${CUSTOM_PROMPT_MAX_LENGTH} characters (issue #135)`,
 		path: ['prompt'],
 	})
 	.refine(
-		(agent) => {
-			if (!agent.reasoning) return true;
-			// Can't validate reasoning without a concrete (cli, model) to check it against.
-			if (!agent.cli || !agent.model) return false;
-			const cap = capabilityFor(agent.cli, agent.model);
-			if (!cap) return true; // legacy/unknown model — leave the value untouched
-			return (cap.reasoningChoices as readonly string[]).includes(agent.reasoning);
+		// A phase names each CLI at most once — two targets on the same CLI would be
+		// an ambiguous priority rather than a fallback. `undefined` participates in
+		// the same uniqueness check, so the coded-default-CLI entry is also unique.
+		(agent) =>
+			!agent.targets || new Set(agent.targets.map((t) => t.cli)).size === agent.targets.length,
+		{
+			message: 'targets must not name the same cli twice (at most one target per cli)',
+			path: ['targets'],
 		},
-		{ message: 'reasoning must be a level supported by the selected cli/model (issue #180)' },
 	)
-	.describe('Per-phase agent CLI/model/reasoning override');
+	.describe('Per-phase agent override — an ordered list of CLI/model/reasoning targets');
 
 /**
  * Per-CLI default model — the model used when a phase specifies (or falls back
@@ -404,6 +499,7 @@ export const SwarmConfigSchema = z.object({
 });
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
+export type AgentTarget = z.infer<typeof AgentTargetSchema>;
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
 export type AgentsConfig = z.infer<typeof AgentsConfigSchema>;
