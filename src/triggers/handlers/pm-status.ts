@@ -23,7 +23,8 @@ import type { ProjectConfig } from '../../config/schema.js';
 import { createGitHubProjectsProvider } from '../../integrations/pm/github-projects/provider.js';
 import { resolvePipelinePhaseForOptionId } from '../../integrations/pm/github-projects/status-mapping.js';
 import { logger } from '../../lib/logger.js';
-import type { PMProvider } from '../../pm/types.js';
+import { evaluatePreplan, isPreplanSkip, SPLIT_CHILD_LABEL } from '../../pipeline/preplan.js';
+import type { PMProvider, WorkItem } from '../../pm/types.js';
 import { recordStatusAndDetectChange } from '../pm-status-dedup.js';
 import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
 import { issueNumberFromUrl } from './shared.js';
@@ -38,6 +39,29 @@ import { issueNumberFromUrl } from './shared.js';
  * that.
  */
 const TRIGGERING_ACTIONS = new Set(['edited', 'created', 'reordered']);
+
+/**
+ * Check whether a split child entering Planning has already been planned outside of
+ * dispatch. A marker alone is insufficient: removing the split-child label is an
+ * operator signal to fall back to a normal Planning run.
+ */
+function shouldSkipPreplanned(
+	phase: string | null,
+	workItem: WorkItem,
+	resumePmPhase?: string,
+): boolean {
+	if (phase !== 'planning' || resumePmPhase) return false;
+	const preplan = evaluatePreplan(workItem);
+	const isSplitChild = workItem.labels.some((label) => label.name === SPLIT_CHILD_LABEL);
+	if (isSplitChild && isPreplanSkip(preplan)) {
+		logger.info(
+			'pm-status: item already preplanned outside of dispatch — skipping planning dispatch',
+			{ itemId: workItem.id, splitId: preplan.contract.splitId },
+		);
+		return true;
+	}
+	return false;
+}
 
 export interface PmStatusTriggerDeps {
 	/** Injectable PM-provider factory — defaults to the GitHub Projects provider; overridden in tests. */
@@ -110,6 +134,10 @@ export function createPmStatusTrigger(deps: PmStatusTriggerDeps = {}): TriggerHa
 					itemNodeId: event.itemNodeId,
 					statusId: workItem.statusId,
 				});
+				return null;
+			}
+
+			if (shouldSkipPreplanned(phase, workItem, ctx.resumePmPhase)) {
 				return null;
 			}
 
