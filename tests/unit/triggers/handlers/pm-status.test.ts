@@ -45,6 +45,7 @@ function providerReturning(workItem: WorkItem, seen: string[] = []): PMProvider 
 		createWorkItem: async () => workItem,
 		updateWorkItem: async () => undefined,
 		supportsDependencies: false,
+		supportsAssignees: false,
 		listBlockers: async () => [],
 		addBlockedBy: async () => undefined,
 	};

@@ -62,6 +62,7 @@ function makeDeps() {
 		createWorkItem: vi.fn(async () => createMockWorkItem({ id: 'PVTI_sibling' })),
 		updateWorkItem: vi.fn(async () => {}),
 		supportsDependencies: true,
+		supportsAssignees: true,
 		listBlockers: vi.fn<() => Promise<WorkItemBlocker[]>>(async () => []),
 		addBlockedBy: vi.fn<(id: string, blockerId: string) => Promise<void>>(async () => {}),
 	};
