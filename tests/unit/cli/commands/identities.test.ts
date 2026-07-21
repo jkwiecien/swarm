@@ -81,6 +81,24 @@ describe('swarm identities', () => {
 			expect(linkIdentity).not.toHaveBeenCalled();
 		});
 
+		it('rejects whitespace-only provider or handle', async () => {
+			expect(
+				await run(['link', '--user', 'ada@example.com', '--provider', ' ', '--handle', 'ada']),
+			).toBe(1);
+			expect(
+				await run([
+					'link',
+					'--user',
+					'ada@example.com',
+					'--provider',
+					'github-projects',
+					'--handle',
+					' ',
+				]),
+			).toBe(1);
+			expect(linkIdentity).not.toHaveBeenCalled();
+		});
+
 		it('fails for an unknown user', async () => {
 			findUserByIdentifier.mockResolvedValue(undefined);
 			expect(await run(['link', ...LINK_ARGS])).toBe(1);
@@ -102,6 +120,12 @@ describe('swarm identities', () => {
 
 		it('requires --provider and --handle', async () => {
 			expect(await run(['unlink', '--handle', 'ada'])).toBe(1);
+			expect(unlinkIdentity).not.toHaveBeenCalled();
+		});
+
+		it('rejects whitespace-only provider or handle', async () => {
+			expect(await run(['unlink', '--provider', ' ', '--handle', 'ada'])).toBe(1);
+			expect(await run(['unlink', '--provider', 'github-projects', '--handle', ' '])).toBe(1);
 			expect(unlinkIdentity).not.toHaveBeenCalled();
 		});
 

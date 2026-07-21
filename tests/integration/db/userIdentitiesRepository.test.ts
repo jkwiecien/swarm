@@ -80,6 +80,15 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 					linkIdentity({ userId: graceId, provider: PROVIDER, handle: 'ADA' }),
 				).rejects.toThrow('already linked to another user');
 			});
+
+			it('rejects whitespace-only provider or handle values with ZodError', async () => {
+				await expect(
+					linkIdentity({ userId: adaId, provider: ' ', handle: 'ada' }),
+				).rejects.toThrow();
+				await expect(
+					linkIdentity({ userId: adaId, provider: PROVIDER, handle: ' ' }),
+				).rejects.toThrow();
+			});
 		});
 
 		describe('listIdentitiesForUser / listIdentities', () => {

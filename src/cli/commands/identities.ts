@@ -62,8 +62,16 @@ async function link(argv: string[]): Promise<number> {
 		out.info(USAGE);
 		return 0;
 	}
-	if (!values.user || !values.provider || !values.handle) {
-		out.error('identities link: --user, --provider and --handle are all required');
+	if (
+		!values.user ||
+		!values.provider ||
+		!values.handle ||
+		!values.provider.trim() ||
+		!values.handle.trim()
+	) {
+		out.error(
+			'identities link: --user, --provider and --handle are all required and cannot be empty or whitespace-only',
+		);
 		out.info(USAGE);
 		return 1;
 	}
@@ -89,8 +97,10 @@ async function unlink(argv: string[]): Promise<number> {
 		out.info(USAGE);
 		return 0;
 	}
-	if (!values.provider || !values.handle) {
-		out.error('identities unlink: --provider and --handle are required');
+	if (!values.provider || !values.handle || !values.provider.trim() || !values.handle.trim()) {
+		out.error(
+			'identities unlink: --provider and --handle are required and cannot be empty or whitespace-only',
+		);
 		out.info(USAGE);
 		return 1;
 	}

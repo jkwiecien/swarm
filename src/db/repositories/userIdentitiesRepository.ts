@@ -14,18 +14,16 @@
 
 import { and, asc, eq } from 'drizzle-orm';
 
-import { normalizeIdentityKey, type UserIdentity } from '../../identity/user-identity.js';
+import {
+	type LinkIdentityInput,
+	LinkIdentityInputSchema,
+	normalizeIdentityKey,
+	type UserIdentity,
+} from '../../identity/user-identity.js';
 import { getDb } from '../client.js';
 import { userIdentities } from '../schema/userIdentities.js';
 
 type UserIdentityRow = typeof userIdentities.$inferSelect;
-
-/** The fields a caller supplies to create a link; `id`/`createdAt` are generated. */
-export interface LinkIdentityInput {
-	userId: string;
-	provider: string;
-	handle: string;
-}
 
 /** Re-assemble a `UserIdentity` from a persisted `user_identities` row. */
 function rowToUserIdentity(row: UserIdentityRow): UserIdentity {
@@ -62,6 +60,13 @@ async function findIdentity(provider: string, handle: string): Promise<UserIdent
 export async function linkIdentity(input: LinkIdentityInput): Promise<UserIdentity> {
 	const provider = normalizeIdentityKey(input.provider);
 	const handle = normalizeIdentityKey(input.handle);
+
+	LinkIdentityInputSchema.parse({
+		userId: input.userId,
+		provider,
+		handle,
+	});
+
 	const [row] = await getDb()
 		.insert(userIdentities)
 		.values({ userId: input.userId, provider, handle })

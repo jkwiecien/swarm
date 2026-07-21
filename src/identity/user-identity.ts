@@ -53,3 +53,11 @@ export const UserIdentitySchema = z.object({
 });
 
 export type UserIdentity = z.infer<typeof UserIdentitySchema>;
+
+export const LinkIdentityInputSchema = UserIdentitySchema.pick({
+	userId: true,
+	provider: true,
+	handle: true,
+});
+
+export type LinkIdentityInput = z.infer<typeof LinkIdentityInputSchema>;
