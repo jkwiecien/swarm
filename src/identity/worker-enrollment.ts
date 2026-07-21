@@ -24,7 +24,7 @@
  */
 
 import { z } from 'zod';
-import { AgentCliSchema } from '../harness/agent-cli.js';
+import { type AgentCli, AgentCliSchema } from '../harness/agent-cli.js';
 
 /**
  * The lifecycle state of an enrollment. An enrollment starts `pending` (the
@@ -86,6 +86,24 @@ export const WorkerEnrollmentSchema = z.object({
 });
 
 export type WorkerEnrollment = z.infer<typeof WorkerEnrollmentSchema>;
+
+/**
+ * Raised when an enrollment's `allowedClis` are not a subset of the worker's
+ * declared `capabilities` — a worker cannot be permitted to run a CLI it never
+ * declared it can run. A distinct type so the router can surface it as a
+ * `BAD_REQUEST` rather than an unexpected failure.
+ */
+export class AllowedClisNotCapableError extends Error {
+	constructor(
+		public readonly workerId: string,
+		public readonly offending: AgentCli[],
+	) {
+		super(
+			`Worker ${workerId} cannot be enrolled to run CLIs it does not declare: ${offending.join(', ')}`,
+		);
+		this.name = 'AllowedClisNotCapableError';
+	}
+}
 
 /**
  * The routability predicate — the named seam the #130 dispatch gate checks

@@ -46,6 +46,7 @@ import { getWorkerById, listWorkersForOwner } from '../db/repositories/workersRe
 import type { AgentCli } from '../harness/agent-cli.js';
 import type { Worker } from './worker.js';
 import {
+	AllowedClisNotCapableError,
 	ConcurrencyAllocationSchema,
 	EnrollmentAllowedClisSchema,
 	type EnrollmentStatus,
@@ -55,6 +56,7 @@ import {
 import { getLiveSessionForWorker } from './worker-session-service.js';
 
 export {
+	AllowedClisNotCapableError,
 	ConcurrencyAllocationSchema,
 	ENROLLMENT_STATUSES,
 	EnrollmentAllowedClisSchema,
@@ -63,24 +65,6 @@ export {
 	isRoutable,
 	type WorkerEnrollment,
 } from './worker-enrollment.js';
-
-/**
- * Raised when an enrollment's `allowedClis` are not a subset of the worker's
- * declared `capabilities` — a worker cannot be permitted to run a CLI it never
- * declared it can run. A distinct type so the router can surface it as a
- * `BAD_REQUEST` rather than an unexpected failure.
- */
-export class AllowedClisNotCapableError extends Error {
-	constructor(
-		public readonly workerId: string,
-		public readonly offending: AgentCli[],
-	) {
-		super(
-			`Worker ${workerId} cannot be enrolled to run CLIs it does not declare: ${offending.join(', ')}`,
-		);
-		this.name = 'AllowedClisNotCapableError';
-	}
-}
 
 /**
  * Derived run state for a worker — never client-supplied. `busy` is `true` only

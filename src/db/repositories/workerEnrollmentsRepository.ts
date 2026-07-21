@@ -18,9 +18,14 @@
 import { and, asc, eq } from 'drizzle-orm';
 
 import type { AgentCli } from '../../harness/agent-cli.js';
-import type { EnrollmentStatus, WorkerEnrollment } from '../../identity/worker-enrollment.js';
+import {
+	AllowedClisNotCapableError,
+	type EnrollmentStatus,
+	type WorkerEnrollment,
+} from '../../identity/worker-enrollment.js';
 import { getDb } from '../client.js';
 import { workerProjectEnrollments } from '../schema/workerProjectEnrollments.js';
+import { workers } from '../schema/workers.js';
 
 type EnrollmentRow = typeof workerProjectEnrollments.$inferSelect;
 
@@ -52,22 +57,39 @@ export interface CreateEnrollmentInput {
 /**
  * Create an enrollment. Rejects with the pg `23505` unique violation if this
  * worker already has an enrollment for this project (at most one per
- * `(worker, project)`) — changing an existing enrollment is
- * {@link updateEnrollmentConstraints} / {@link updateEnrollmentStatus}, not a re-create.
+ * `(worker, project)`). Locks the worker row FOR UPDATE inside a transaction and
+ * throws {@link AllowedClisNotCapableError} if any allowed CLI is not a declared capability of the worker.
  */
 export async function createEnrollment(input: CreateEnrollmentInput): Promise<WorkerEnrollment> {
-	const [row] = await getDb()
-		.insert(workerProjectEnrollments)
-		.values({
-			workerId: input.workerId,
-			projectId: input.projectId,
-			status: input.status,
-			allowedClis: input.allowedClis,
-			concurrencyAllocation: input.concurrencyAllocation,
-			sharingConsent: input.sharingConsent,
-		})
-		.returning();
-	return rowToEnrollment(row);
+	return await getDb().transaction(async (tx) => {
+		const [workerRow] = await tx
+			.select()
+			.from(workers)
+			.where(eq(workers.id, input.workerId))
+			.for('update')
+			.limit(1);
+
+		if (workerRow) {
+			const capabilitySet = new Set(workerRow.capabilities as AgentCli[]);
+			const offending = input.allowedClis.filter((cli) => !capabilitySet.has(cli));
+			if (offending.length > 0) {
+				throw new AllowedClisNotCapableError(input.workerId, offending);
+			}
+		}
+
+		const [row] = await tx
+			.insert(workerProjectEnrollments)
+			.values({
+				workerId: input.workerId,
+				projectId: input.projectId,
+				status: input.status,
+				allowedClis: input.allowedClis,
+				concurrencyAllocation: input.concurrencyAllocation,
+				sharingConsent: input.sharingConsent,
+			})
+			.returning();
+		return rowToEnrollment(row);
+	});
 }
 
 /** Resolve an enrollment by its generated id. Returns `undefined` if unknown. */
@@ -166,7 +188,9 @@ export interface UpdateEnrollmentConstraintsInput {
 /**
  * Update an enrollment's execution constraints (`allowedClis` and/or
  * `concurrencyAllocation`). A no-field update is a no-op that still returns the
- * current row. Returns `undefined` if no enrollment has that id.
+ * current row. Returns `undefined` if no enrollment has that id. Locks the associated
+ * worker row FOR UPDATE inside a transaction and throws {@link AllowedClisNotCapableError} if `allowedClis`
+ * contains CLIs not in the worker's capabilities.
  */
 export async function updateEnrollmentConstraints(
 	id: string,
@@ -180,12 +204,37 @@ export async function updateEnrollmentConstraints(
 	if (Object.keys(patch).length === 0) {
 		return getEnrollmentById(id);
 	}
-	const [row] = await getDb()
-		.update(workerProjectEnrollments)
-		.set(patch)
-		.where(eq(workerProjectEnrollments.id, id))
-		.returning();
-	return row ? rowToEnrollment(row) : undefined;
+	return await getDb().transaction(async (tx) => {
+		const existingRows = await tx
+			.select()
+			.from(workerProjectEnrollments)
+			.where(eq(workerProjectEnrollments.id, id))
+			.limit(1);
+		const existing = existingRows[0];
+		if (!existing) return undefined;
+
+		const [workerRow] = await tx
+			.select()
+			.from(workers)
+			.where(eq(workers.id, existing.workerId))
+			.for('update')
+			.limit(1);
+
+		if (patch.allowedClis !== undefined && workerRow) {
+			const capabilitySet = new Set(workerRow.capabilities as AgentCli[]);
+			const offending = patch.allowedClis.filter((cli) => !capabilitySet.has(cli));
+			if (offending.length > 0) {
+				throw new AllowedClisNotCapableError(workerRow.id, offending);
+			}
+		}
+
+		const [row] = await tx
+			.update(workerProjectEnrollments)
+			.set(patch)
+			.where(eq(workerProjectEnrollments.id, id))
+			.returning();
+		return row ? rowToEnrollment(row) : undefined;
+	});
 }
 
 /**

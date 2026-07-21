@@ -111,7 +111,12 @@ export async function updateWorkerCapabilities(
 	capabilities: AgentCli[],
 ): Promise<Worker | undefined> {
 	return await getDb().transaction(async (tx) => {
-		const existingWorkerRows = await tx.select().from(workers).where(eq(workers.id, id)).limit(1);
+		const existingWorkerRows = await tx
+			.select()
+			.from(workers)
+			.where(eq(workers.id, id))
+			.for('update')
+			.limit(1);
 		const existingWorker = existingWorkerRows[0];
 		if (!existingWorker) return undefined;
 
