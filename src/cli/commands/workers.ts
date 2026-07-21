@@ -1,15 +1,18 @@
 /**
  * `swarm workers` — the operator front-door onto the registered-worker identity
- * model (#132 Phase 1). It lets an owner register the local machines they run
- * agent CLIs on, and declare which CLIs each supports, before any dashboard
- * worker UI exists — the worker-side companion to `swarm users`
- * (`commands/users.ts`) and `swarm members` (`commands/members.ts`).
+ * model (#132 Phase 1) and its project enrollment (#337 Phase 3). It lets an
+ * owner register the local machines they run agent CLIs on and declare which
+ * CLIs each supports, then enroll a worker into a project and control its
+ * sharing consent — before any dashboard worker UI exists. The worker-side
+ * companion to `swarm users` (`commands/users.ts`) and `swarm members`
+ * (`commands/members.ts`).
  *
- * A thin file/CLI shell over `identity/worker-service.ts` (+ the repository's
- * `removeWorker`), using `node:util` `parseArgs` + `_shared/output.ts` like
- * `commands/members.ts`, resolving owners by their login handle so operators work
- * in the identifiers they know rather than raw uuids. The DB pool is closed in a
- * `finally` (`closeDb()`).
+ * A thin file/CLI shell over `identity/worker-service.ts` and
+ * `identity/worker-enrollment-service.ts` (+ a couple of repository lookups),
+ * using `node:util` `parseArgs` + `_shared/output.ts` like `commands/members.ts`,
+ * resolving owners by their login handle so operators work in the identifiers
+ * they know rather than raw uuids. The DB pool is closed in a `finally`
+ * (`closeDb()`).
  *
  * The one secret it handles is the **worker credential**: `register` prints it
  * exactly once with a "store it now" note (analogous to `swarm users
@@ -21,15 +24,27 @@
  *   swarm workers list [<owner-identifier>]
  *   swarm workers set-cli <worker-id> --cli <c1,c2,...>
  *   swarm workers remove <worker-id>
+ *   swarm workers enroll <worker-id> <project-id> --cli <c1,c2,...> [--concurrency <n>] [--active] [--consent]
+ *   swarm workers approve <worker-id> <project-id>
+ *   swarm workers consent <worker-id> <project-id> <on|off>
  */
 
 import { parseArgs } from 'node:util';
 import { closeDb } from '../../db/client.js';
+import { findProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
 import { findUserByIdentifier, listUsers } from '../../db/repositories/usersRepository.js';
+import { getEnrollment } from '../../db/repositories/workerEnrollmentsRepository.js';
 import { removeWorker } from '../../db/repositories/workersRepository.js';
 import { type AgentCli, AgentCliSchema } from '../../harness/agent-cli.js';
 import type { Worker } from '../../identity/worker.js';
 import {
+	AllowedClisNotCapableError,
+	approveEnrollment,
+	enrollWorker,
+	setSharingConsent,
+} from '../../identity/worker-enrollment-service.js';
+import {
+	getWorker,
 	listWorkersForOwner,
 	refreshWorkerCapabilities,
 	registerWorker,
@@ -45,6 +60,9 @@ Usage:
   swarm workers list [<owner-identifier>]
   swarm workers set-cli <worker-id> --cli <c1,c2,...>
   swarm workers remove <worker-id>
+  swarm workers enroll <worker-id> <project-id> --cli <c1,c2,...> [--concurrency <n>] [--active] [--consent]
+  swarm workers approve <worker-id> <project-id>
+  swarm workers consent <worker-id> <project-id> <on|off>
 
   register   Register a worker for an owner (by login handle) with a display
              name and declared CLIs (--cli, comma-separated, one or more of
@@ -55,11 +73,19 @@ Usage:
              with the owner identifier). Never prints a credential or its hash.
   set-cli    Replace a worker's declared CLIs by worker id.
   remove     Deregister a worker by worker id.
+  enroll     Enroll a worker into a project with allowed CLIs (--cli, a subset of
+             the worker's capabilities) and an optional --concurrency (default 1).
+             Starts pending with sharing consent off; --active approves it and
+             --consent grants sharing consent at once (operator seeding).
+  approve    Approve a pending enrollment (worker + project) → active.
+  consent    Turn an enrollment's owner-controlled sharing consent on or off.
+             Revoking it blocks future dispatch without stopping a running agent.
 
 Requires DATABASE_URL. A worker is a local execution environment owned by a
-SWARM user; it is inert until worker sessions and project enrollment consume it.`;
+SWARM user; an enrollment offers it to a project, and it is routable only while
+active AND sharing consent is on.`;
 
-const SUBCOMMANDS = ['register', 'list', 'set-cli', 'remove'];
+const SUBCOMMANDS = ['register', 'list', 'set-cli', 'remove', 'enroll', 'approve', 'consent'];
 
 /**
  * A duplicate `(owner, displayName)` surfaces the pg `23505` unique violation,
@@ -265,6 +291,166 @@ async function removeWorkerCommand(argv: string[]): Promise<number> {
 	return 0;
 }
 
+/**
+ * Resolve a worker + project the operator named by id, printing a friendly error
+ * and returning `undefined` if either is missing — shared by the enrollment
+ * subcommands.
+ */
+async function resolveWorkerAndProject(workerId: string, projectId: string) {
+	const worker = await getWorker(workerId);
+	if (!worker) {
+		out.error(`no worker with id '${workerId}'`);
+		return undefined;
+	}
+	const project = await findProjectByIdFromDb(projectId);
+	if (!project) {
+		out.error(`no project with id '${projectId}'`);
+		return undefined;
+	}
+	return { worker };
+}
+
+/**
+ * Parse the optional `--concurrency` flag into a positive integer, printing a
+ * friendly error on an invalid value. `{ ok: true, value: undefined }` means the
+ * flag was omitted (the service defaults it).
+ */
+function parseConcurrencyFlag(
+	raw: string | undefined,
+): { ok: true; value?: number } | { ok: false } {
+	if (raw === undefined) return { ok: true, value: undefined };
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < 1) {
+		out.error(`--concurrency must be a positive integer, got '${raw}'`);
+		return { ok: false };
+	}
+	return { ok: true, value };
+}
+
+/** Perform the enrollment write and report it, translating the two known errors to exit 1. */
+async function performEnroll(
+	worker: Worker,
+	projectId: string,
+	allowedClis: AgentCli[],
+	concurrencyAllocation: number | undefined,
+	active: boolean,
+	consent: boolean,
+): Promise<number> {
+	try {
+		const enrollment = await enrollWorker({
+			worker,
+			projectId,
+			allowedClis,
+			concurrencyAllocation,
+			status: active ? 'active' : undefined,
+			sharingConsent: consent,
+		});
+		out.info(
+			`enrolled worker '${worker.displayName}' (${worker.id}) in '${projectId}' — status ${enrollment.status}, CLIs ${enrollment.allowedClis.join(', ')}, concurrency ${enrollment.concurrencyAllocation}, sharing consent ${enrollment.sharingConsent ? 'on' : 'off'}`,
+		);
+		return 0;
+	} catch (err) {
+		if (err instanceof AllowedClisNotCapableError) {
+			out.error(err.message);
+			return 1;
+		}
+		if (isUniqueViolation(err)) {
+			out.error(`worker '${worker.id}' is already enrolled in '${projectId}'`);
+			return 1;
+		}
+		throw err;
+	}
+}
+
+async function enrollCommand(argv: string[]): Promise<number> {
+	const { values, positionals } = parseArgs({
+		args: argv,
+		options: {
+			cli: { type: 'string' },
+			concurrency: { type: 'string' },
+			active: { type: 'boolean' },
+			consent: { type: 'boolean' },
+			help: { type: 'boolean', short: 'h' },
+		},
+		allowPositionals: true,
+	});
+	if (values.help) {
+		out.info(USAGE);
+		return 0;
+	}
+
+	const [workerId, projectId] = positionals;
+	if (!workerId || !projectId) {
+		out.error('workers enroll: <worker-id> and <project-id> are required');
+		out.info(USAGE);
+		return 1;
+	}
+	if (!values.cli) {
+		out.error('workers enroll: --cli <c1,c2,...> is required');
+		out.info(USAGE);
+		return 1;
+	}
+	const allowedClis = parseClis(values.cli);
+	if (!allowedClis) return 1;
+
+	const concurrency = parseConcurrencyFlag(values.concurrency);
+	if (!concurrency.ok) return 1;
+
+	const resolved = await resolveWorkerAndProject(workerId, projectId);
+	if (!resolved) return 1;
+
+	return performEnroll(
+		resolved.worker,
+		projectId,
+		allowedClis,
+		concurrency.value,
+		values.active ?? false,
+		values.consent ?? false,
+	);
+}
+
+async function approveCommand(argv: string[]): Promise<number> {
+	const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+	const [workerId, projectId] = positionals;
+	if (!workerId || !projectId) {
+		out.error('workers approve: <worker-id> and <project-id> are required');
+		out.info(USAGE);
+		return 1;
+	}
+
+	const enrollment = await getEnrollment(workerId, projectId);
+	if (!enrollment) {
+		out.error(`no enrollment for worker '${workerId}' in '${projectId}'`);
+		return 1;
+	}
+	await approveEnrollment(enrollment.id);
+	out.info(`approved enrollment for worker '${workerId}' in '${projectId}' (now active)`);
+	return 0;
+}
+
+async function consentCommand(argv: string[]): Promise<number> {
+	const { positionals } = parseArgs({ args: argv, allowPositionals: true });
+	const [workerId, projectId, toggle] = positionals;
+	if (!workerId || !projectId || !toggle) {
+		out.error('workers consent: <worker-id> <project-id> <on|off> are required');
+		out.info(USAGE);
+		return 1;
+	}
+	if (toggle !== 'on' && toggle !== 'off') {
+		out.error(`workers consent: expected 'on' or 'off', got '${toggle}'`);
+		return 1;
+	}
+
+	const enrollment = await getEnrollment(workerId, projectId);
+	if (!enrollment) {
+		out.error(`no enrollment for worker '${workerId}' in '${projectId}'`);
+		return 1;
+	}
+	await setSharingConsent(enrollment.id, toggle === 'on');
+	out.info(`sharing consent for worker '${workerId}' in '${projectId}' is now ${toggle}`);
+	return 0;
+}
+
 export async function run(argv: string[]): Promise<number> {
 	const [subcommand, ...rest] = argv;
 
@@ -288,6 +474,12 @@ export async function run(argv: string[]): Promise<number> {
 				return await listWorkersCommand(rest);
 			case 'set-cli':
 				return await setCliCommand(rest);
+			case 'enroll':
+				return await enrollCommand(rest);
+			case 'approve':
+				return await approveCommand(rest);
+			case 'consent':
+				return await consentCommand(rest);
 			default:
 				return await removeWorkerCommand(rest);
 		}

@@ -6,6 +6,7 @@ import { quotaRouter } from './routers/quota.js';
 import { runsRouter } from './routers/runs.js';
 import { scmRouter } from './routers/scm.js';
 import { settingsRouter } from './routers/settings.js';
+import { workersRouter } from './routers/workers.js';
 import { router } from './trpc.js';
 
 export const appRouter = router({
@@ -16,6 +17,7 @@ export const appRouter = router({
 	scm: scmRouter,
 	settings: settingsRouter,
 	quota: quotaRouter,
+	workers: workersRouter,
 });
 
 export type AppRouter = typeof appRouter;
