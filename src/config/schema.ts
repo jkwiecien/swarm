@@ -146,17 +146,18 @@ export const AgentTargetSchema = z
  *
  * `targets` is a priority list — index 0 is the most preferred target, and at
  * most one entry may name any given CLI (a phase asks for "this model on codex",
- * not two). **Only the highest-priority target is used today**; selecting a
- * lower-priority one when the preferred CLI is unavailable is a later change.
+ * not two). The worker runs the highest-priority target whose CLI it can
+ * actually run, falling back to `targets[0]` when it can run none
+ * (`src/worker/target-selection.ts`, issue #346).
  *
  * The top-level `cli`/`model`/`reasoning` fields are a **derived mirror of
  * `targets[0]`**, not independent settings: a config that sets only them (every
  * config written before `targets` existed, including one storing a legacy
  * combined antigravity model string) normalizes on parse into a one-element
  * `targets` list, and the mirror is rewritten from `targets[0]` whenever a list
- * is given. Readers that only understand a single selection — the worker's
- * `agentOverrideFor` and the dashboard — therefore keep resolving the
- * highest-priority target unchanged.
+ * is given. Readers that only understand a single selection — a per-run pinned
+ * retry and the dashboard — therefore keep resolving the highest-priority
+ * target unchanged.
  */
 export const AgentConfigSchema = z
 	.object({

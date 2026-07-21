@@ -133,6 +133,12 @@ import {
 	linkRunAbortController,
 	unregisterRunController,
 } from './run-cancellation.js';
+import {
+	loadAvailableClis,
+	selectTarget,
+	type TargetSelection,
+	type WorkerCliAvailability,
+} from './target-selection.js';
 
 /** What became of a dequeued job — returned to BullMQ as the job's result. */
 export type JobOutcome =
@@ -686,7 +692,13 @@ async function handleConcurrencyDeferral(
 	// Every blocked phase gets a run row now. This makes new Planning and
 	// Implementation work visible while it waits, rather than creating a row only
 	// after a timer happens to fire.
-	const runId = await tryCreateRun(project, await loadGlobalDefaults(), trigger, job);
+	const runId = await tryCreateRun(
+		project,
+		await loadGlobalDefaults(),
+		await loadAvailableClis(),
+		trigger,
+		job,
+	);
 	if (runId) deferred.runId = runId;
 
 	// Retain a concurrency-blocked SCM phase as a prioritized continuation once
@@ -833,6 +845,39 @@ function resolveReasoning(
 }
 
 /**
+ * Make a phase's routing decision (issue #346) visible in the worker log: quiet
+ * (debug) when the preferred target won, louder when this worker had to route
+ * around a CLI it cannot run — the case an operator needs to see, since it
+ * explains why a run used a model the project didn't ask for first.
+ */
+function logAgentRouting(
+	project: ProjectConfig,
+	trigger: TriggerResult,
+	routing?: TargetSelection,
+): void {
+	if (!routing) return;
+	const context = {
+		projectId: project.id,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		// An undefined `cli` means the phase's own coded default (`DEFAULT_*_CLI`).
+		cli: routing.target.cli ?? 'phase default',
+		model: routing.target.model,
+		targetIndex: routing.index,
+	};
+	if (routing.fallback) {
+		logger.warn('No configured target CLI is available here - using the preferred target', context);
+	} else if (routing.skipped.length > 0) {
+		logger.info('Routed the phase to a lower-priority target', {
+			...context,
+			unavailable: routing.skipped,
+		});
+	} else {
+		logger.debug('Routed the phase to its preferred target', context);
+	}
+}
+
+/**
  * Run the pipeline phase a matched trigger resolved to. The orchestrators
  * differ in their inputs but all resolve to a result carrying the agent run
  * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
@@ -848,6 +893,7 @@ function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	job: SwarmJob,
 	runId: string | undefined,
 	signal?: AbortSignal,
@@ -866,10 +912,12 @@ function runPhase(
 	const overrides = agentOverrideFor(
 		project,
 		globalDefaults,
+		availableClis,
 		trigger.phase,
 		job,
 		implementationUnplanned,
 	);
+	logAgentRouting(project, trigger, overrides.routing);
 	const runAgent = createLiveOutputRunner(runId);
 	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
 	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
@@ -1073,10 +1121,14 @@ function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
  * The model is resolved through the same fallback chain `runPhase` uses
  * (per-phase → project default → global default → coded default), so the
  * recorded value matches what actually runs.
+ *
+ * Which of the phase's `targets` is resolved depends on `availableClis` — the
+ * CLIs this worker can actually run (issue #346). See {@link selectTarget}.
  */
 function agentOverrideFor(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	phase: TriggerPhase,
 	job?: SwarmJob,
 	implementationUnplanned = false,
@@ -1087,6 +1139,8 @@ function agentOverrideFor(
 	reasoning?: ReasoningLevel;
 	timeoutMs?: number;
 	customPrompt?: string;
+	/** The routing decision behind `cli`, when the phase configured targets. */
+	routing?: TargetSelection;
 } {
 	const phaseConfig = (() => {
 		switch (phase) {
@@ -1106,12 +1160,21 @@ function agentOverrideFor(
 				return project.agents?.resolveConflicts ?? {};
 		}
 	})();
-	const cli = job?.cliOverride ?? phaseConfig.cli;
-	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, phaseConfig.model);
 	const overrideReasoning = isReasoningLevel(job?.reasoningOverride)
 		? job?.reasoningOverride
 		: undefined;
-	const reasoning = resolveReasoning(cli, model, phaseConfig.reasoning, overrideReasoning);
+	// A per-run override pins one exact selection (a manual "retry with this
+	// CLI/model" — `src/api/routers/runs.ts`), so it wins over routing: the run
+	// resolves against the phase's own configured selection, as it did before.
+	const pinned = Boolean(job?.cliOverride ?? job?.modelOverride ?? overrideReasoning);
+	const routing = pinned ? undefined : selectTarget(phaseConfig.targets, availableClis);
+	// The phase-level `cli`/`model`/`reasoning` mirror `targets[0]`, so they are the
+	// right source whenever routing selected nothing (no list configured, or a
+	// pinned run) — including a config that predates the list entirely.
+	const target = routing?.target ?? phaseConfig;
+	const cli = job?.cliOverride ?? target.cli;
+	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, target.model);
+	const reasoning = resolveReasoning(cli, model, target.reasoning, overrideReasoning);
 	// Fall back to the worker's default wall-clock timeout when the project set no
 	// per-phase override, so *every* agent invocation is bounded (issue #165).
 	return {
@@ -1119,6 +1182,7 @@ function agentOverrideFor(
 		engine: cli ?? DEFAULT_ENGINE,
 		model,
 		reasoning,
+		routing,
 		timeoutMs: phaseConfig.timeoutMs ?? AGENT_TIMEOUT_MS,
 		// The project's optional per-phase custom prompt (issue #135). No default —
 		// absent means the phase composes exactly its static prompt.
@@ -1148,6 +1212,7 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 async function tryReuseLatestRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1162,6 +1227,7 @@ async function tryReuseLatestRun(
 	const overrides = agentOverrideFor(
 		project,
 		globalDefaults,
+		availableClis,
 		trigger.phase,
 		job,
 		implementationUnplanned,
@@ -1188,6 +1254,7 @@ async function tryReuseLatestRun(
 async function tryResetCarriedRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1198,6 +1265,7 @@ async function tryResetCarriedRun(
 		const overrides = agentOverrideFor(
 			project,
 			globalDefaults,
+			availableClis,
 			trigger.phase,
 			job,
 			implementationUnplanned,
@@ -1278,6 +1346,7 @@ async function tryFetchPrTitle(
 async function reuseRunRow(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1293,10 +1362,24 @@ async function reuseRunRow(
 				error: describeError(err),
 			});
 		}
-		return tryResetCarriedRun(project, globalDefaults, trigger, job, implementationUnplanned);
+		return tryResetCarriedRun(
+			project,
+			globalDefaults,
+			availableClis,
+			trigger,
+			job,
+			implementationUnplanned,
+		);
 	}
 	try {
-		return await tryReuseLatestRun(project, globalDefaults, trigger, job, implementationUnplanned);
+		return await tryReuseLatestRun(
+			project,
+			globalDefaults,
+			availableClis,
+			trigger,
+			job,
+			implementationUnplanned,
+		);
 	} catch (err) {
 		logger.error('Failed to reuse terminal run row (creating a new one)', {
 			projectId: project.id,
@@ -1311,6 +1394,7 @@ async function reuseRunRow(
 async function tryCreateRun(
 	project: ProjectConfig,
 	globalDefaults: AgentDefaults | undefined,
+	availableClis: WorkerCliAvailability,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1318,6 +1402,7 @@ async function tryCreateRun(
 	const reusedRunId = await reuseRunRow(
 		project,
 		globalDefaults,
+		availableClis,
 		trigger,
 		job,
 		implementationUnplanned,
@@ -1328,6 +1413,7 @@ async function tryCreateRun(
 		const overrides = agentOverrideFor(
 			project,
 			globalDefaults,
+			availableClis,
 			trigger.phase,
 			job,
 			implementationUnplanned,
@@ -2145,6 +2231,10 @@ export async function processJob(
 		// per job, best-effort: a DB hiccup falls through to the coded defaults rather
 		// than failing the run.
 		const globalDefaults = await loadGlobalDefaults();
+		// The CLIs this worker can actually run, for capability-aware target routing
+		// (issue #346). Loaded once per job for the same reason, and equally
+		// best-effort: an unknown answer routes to the phase's preferred target.
+		const availableClis = await loadAvailableClis();
 		const implementationUnplanned =
 			trigger.phase === 'implementation' &&
 			!(await wasPrecededByPlanning(project.id, trigger.taskId));
@@ -2152,14 +2242,27 @@ export async function processJob(
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-		runId = await tryCreateRun(project, globalDefaults, trigger, job, implementationUnplanned);
+		runId = await tryCreateRun(
+			project,
+			globalDefaults,
+			availableClis,
+			trigger,
+			job,
+			implementationUnplanned,
+		);
 
 		// The dispatch is now `running` against its run row; renew the lease to
 		// cover this phase's own wall-clock timeout so a live run is never
 		// reclaimed, while a dead one is reclaimed soon after the timeout passes.
 		const effectiveTimeoutMs =
-			agentOverrideFor(project, globalDefaults, trigger.phase, job, implementationUnplanned)
-				.timeoutMs ?? AGENT_TIMEOUT_MS;
+			agentOverrideFor(
+				project,
+				globalDefaults,
+				availableClis,
+				trigger.phase,
+				job,
+				implementationUnplanned,
+			).timeoutMs ?? AGENT_TIMEOUT_MS;
 		await markDispatchRunning(
 			dispatch.id,
 			runId,
@@ -2176,6 +2279,7 @@ export async function processJob(
 			trigger,
 			project,
 			globalDefaults,
+			availableClis,
 			job,
 			runId,
 			runAbort.signal,
