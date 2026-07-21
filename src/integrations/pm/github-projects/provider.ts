@@ -28,6 +28,7 @@ import type {
 	PMType,
 	UpdateWorkItemPatch,
 	WorkItem,
+	WorkItemAssignee,
 	WorkItemBlocker,
 	WorkItemLabel,
 } from '../../../pm/types.js';
@@ -43,6 +44,7 @@ interface ContentNode {
 	url?: string;
 	repository?: { nameWithOwner?: string };
 	labels?: { nodes?: Array<{ id?: string; name?: string; color?: string }> };
+	assignees?: { nodes?: Array<{ id?: string; login?: string; name?: string | null }> };
 }
 
 interface ItemNode {
@@ -93,11 +95,13 @@ const GET_ITEM_QUERY = /* GraphQL */ `
 						number title body url
 						repository { nameWithOwner }
 						labels(first: 20) { nodes { id name color } }
+						assignees(first: 10) { nodes { id login name } }
 					}
 					... on PullRequest {
 						number title body url
 						repository { nameWithOwner }
 						labels(first: 20) { nodes { id name color } }
+						assignees(first: 10) { nodes { id login name } }
 					}
 				}
 				fieldValueByName(name: "Status") {
@@ -124,11 +128,13 @@ const LIST_ITEMS_QUERY = /* GraphQL */ `
 								number title body url
 								repository { nameWithOwner }
 								labels(first: 20) { nodes { id name color } }
+								assignees(first: 10) { nodes { id login name } }
 							}
 							... on PullRequest {
 								number title body url
 								repository { nameWithOwner }
 								labels(first: 20) { nodes { id name color } }
+								assignees(first: 10) { nodes { id login name } }
 							}
 						}
 						fieldValueByName(name: "Status") {
@@ -187,6 +193,19 @@ function mapLabels(content: ContentNode | null | undefined): WorkItemLabel[] {
 		.map((n) => ({ id: n.id, name: n.name, color: n.color }));
 }
 
+/**
+ * Map the issue/PR's assignees to the provider-neutral shape. GitHub's `login`
+ * vocabulary stops here — the rest of SWARM speaks `WorkItemAssignee.handle`
+ * (ai/RULES.md §2). A `name` GitHub leaves unset comes back as `null`/`''`,
+ * which is "no display name" rather than an empty one.
+ */
+function mapAssignees(content: ContentNode | null | undefined): WorkItemAssignee[] {
+	const nodes = content?.assignees?.nodes ?? [];
+	return nodes
+		.filter((n): n is { id?: string; login: string; name?: string | null } => !!n?.login)
+		.map((n) => ({ handle: n.login, displayName: n.name || undefined, providerId: n.id }));
+}
+
 function ownerRepoFrom(content: ContentNode | null | undefined): {
 	owner?: string;
 	repo?: string;
@@ -208,6 +227,7 @@ function toResolvedItem(item: ItemNode): ResolvedItem {
 		status: item.fieldValueByName?.name,
 		statusId: item.fieldValueByName?.optionId,
 		labels: mapLabels(content),
+		assignees: mapAssignees(content),
 		createdAt: item.createdAt,
 		updatedAt: item.updatedAt,
 	};
@@ -222,6 +242,11 @@ export class GitHubProjectsPMProvider implements PMProvider {
 	// blocked-by capability. A future Bitbucket/GitLab provider sets this to `false`
 	// if it can't, and callers fall back to the human-readable comment guard.
 	readonly supportsDependencies = true;
+
+	// GitHub Issues/PRs carry assignees natively, so every item this adapter maps
+	// reports them (`mapAssignees`). A provider without the concept sets this
+	// `false` and every item stays unassigned.
+	readonly supportsAssignees = true;
 
 	private readonly scm = new GitHubSCMIntegration();
 
@@ -400,6 +425,8 @@ export class GitHubProjectsPMProvider implements PMProvider {
 							: { id: String(l.id), name: l.name ?? '', color: l.color ?? undefined },
 					)
 					.filter((l): l is WorkItemLabel => l.name.length > 0),
+				// A freshly created issue is unassigned — SWARM never assigns on create.
+				assignees: [],
 			};
 		});
 	}

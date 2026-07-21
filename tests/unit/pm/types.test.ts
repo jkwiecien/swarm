@@ -77,6 +77,7 @@ class InMemoryPMProvider implements PMProvider {
 			url: `https://example.test/${id}`,
 			statusId: this.statusOptions[input.status],
 			labels: (input.labels ?? []).map((name) => ({ id: name, name })),
+			assignees: [],
 		};
 		this.items.set(id, item);
 		return item;
@@ -92,6 +93,8 @@ class InMemoryPMProvider implements PMProvider {
 	}
 
 	readonly supportsDependencies = true;
+
+	readonly supportsAssignees = true;
 
 	private readonly blockedBy = new Map<string, Set<string>>();
 
@@ -200,6 +203,20 @@ describe('PMProvider contract', () => {
 			title: 'New',
 			description: 'Old body',
 		});
+	});
+
+	it('carries provider-neutral assignees, and reports none as an empty array', async () => {
+		const provider = new InMemoryPMProvider([
+			createMockWorkItem({ id: 'a', assignees: [{ handle: 'ada', displayName: 'Ada L.' }] }),
+			createMockWorkItem({ id: 'b' }),
+		]);
+
+		expect(provider.supportsAssignees).toBe(true);
+		await expect(provider.getWorkItem('a')).resolves.toMatchObject({
+			assignees: [{ handle: 'ada', displayName: 'Ada L.' }],
+		});
+		// Never undefined — a caller reads `assignees` without a null check.
+		expect((await provider.getWorkItem('b')).assignees).toEqual([]);
 	});
 
 	it('accepts branded work-item IDs unwrapped at the boundary', async () => {

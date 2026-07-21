@@ -78,6 +78,7 @@ export function createMockWorkItem(overrides: Partial<WorkItem> = {}): WorkItem 
 		status: 'In progress',
 		statusId: '47fc9ee4',
 		labels: [],
+		assignees: [],
 		...overrides,
 	};
 }

@@ -129,6 +129,7 @@ function makeDeps() {
 			async () => {},
 		),
 		supportsDependencies: true,
+		supportsAssignees: true,
 		listBlockers: vi.fn(async () => []),
 		addBlockedBy: vi.fn<(id: string, blockerId: string) => Promise<void>>(async () => {}),
 	};

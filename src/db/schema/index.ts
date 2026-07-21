@@ -6,6 +6,7 @@ export { projectMembers } from './projectMembers.js';
 export { projects } from './projects.js';
 export { reviewVerdicts } from './reviewVerdicts.js';
 export { runLogs, runOutputEvents, runs } from './runs.js';
+export { userIdentities } from './userIdentities.js';
 export { userSessions } from './userSessions.js';
 export { users } from './users.js';
 export { workerProjectEnrollments } from './workerProjectEnrollments.js';
