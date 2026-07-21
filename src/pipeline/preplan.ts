@@ -28,6 +28,9 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { WorkItem } from '@/pm/types.js';
 
+/** Label that identifies a sibling created by Planning's automatic split. */
+export const SPLIT_CHILD_LABEL = 'swarm:split-child';
+
 /**
  * Label an operator adds to a preplanned child to force a fresh Planning run,
  * bypassing an otherwise-valid marker (issue #178 "an operator explicitly

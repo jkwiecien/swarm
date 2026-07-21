@@ -102,7 +102,7 @@ describe('pm-status trigger', () => {
 			expect(result).toEqual({ phase: 'planning', taskId: '10', workItem });
 		});
 
-		it('returns null (skips planning dispatch) when item entering Planning is already preplanned', async () => {
+		it('returns null (skips planning dispatch) when a split child entering Planning is already preplanned', async () => {
 			const itemUrl = 'https://github.com/jkwiecien/swarm/issues/10';
 			const contract = buildPreplanContract({
 				splitId: 'split-1',
@@ -121,6 +121,27 @@ describe('pm-status trigger', () => {
 			});
 			const result = await trigger(workItem).handle(ctx());
 			expect(result).toBeNull();
+		});
+
+		it('dispatches Planning when a valid preplan marker has no split-child label', async () => {
+			const itemUrl = 'https://github.com/jkwiecien/swarm/issues/10';
+			const contract = buildPreplanContract({
+				splitId: 'split-1',
+				childIndex: 0,
+				parentUrl: 'https://github.com/jkwiecien/swarm/issues/9',
+				itemUrl,
+				humanDescription: 'Subtask 1 description',
+				plan: '# Subtask Plan',
+				generatedAt: '2026-07-21T00:00:00Z',
+			});
+			const workItem = createMockWorkItem({
+				statusId: '61e4505c', // Planning
+				url: itemUrl,
+				description: embedPreplanMarker('Subtask 1 description', contract),
+				labels: [],
+			});
+			const result = await trigger(workItem).handle(ctx());
+			expect(result).toEqual({ phase: 'planning', taskId: '10', workItem });
 		});
 
 		it('dispatches Planning when preplanned item carries replan label (swarm:replan)', async () => {

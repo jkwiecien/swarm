@@ -209,7 +209,7 @@ describe('runPlanningPhase', () => {
 		expect(result).toMatchObject({ movedTo: 'todo' });
 	});
 
-	it('splits a large task: spawns siblings in Planning with the split-child label and a comment, and re-scopes the original', async () => {
+	it('splits a large task: spawns siblings in Backlog with the split-child label and a comment, and re-scopes the original', async () => {
 		splitExists = true;
 		splitContents = JSON.stringify({
 			mainTask: { title: 'First slice', description: 'Just the API' },
@@ -227,11 +227,11 @@ describe('runPlanningPhase', () => {
 			description: 'Just the API',
 		});
 
-		// Two siblings created, each in Planning, each carrying the split-child label,
+		// Two siblings created, each in Backlog, each carrying the split-child label,
 		// created with the human description (the marker is embedded via a follow-up update).
 		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(2);
 		for (const call of deps.pm.createWorkItem.mock.calls) {
-			expect(call[0]).toMatchObject({ status: 'planning', labels: ['swarm', SPLIT_CHILD_LABEL] });
+			expect(call[0]).toMatchObject({ status: 'backlog', labels: ['swarm', SPLIT_CHILD_LABEL] });
 		}
 		expect(deps.pm.createWorkItem.mock.calls.map((c) => c[0].title)).toEqual([
 			'Second slice',

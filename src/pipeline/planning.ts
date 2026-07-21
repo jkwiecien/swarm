@@ -44,6 +44,7 @@ import {
 	embedPreplanMarker,
 	evaluatePreplan,
 	isPreplanSkip,
+	SPLIT_CHILD_LABEL,
 } from '@/pipeline/preplan.js';
 import {
 	buildPlanningPrompt,
@@ -62,6 +63,7 @@ import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
 import { graftEnvironment } from '@/worktree/graft.js';
 
+export { SPLIT_CHILD_LABEL } from '@/pipeline/preplan.js';
 // The static planning prompt and the hand-off filenames it names now live in
 // `src/pipeline/prompts/planning.ts` (issue #135); re-exported here so existing
 // importers of `@/pipeline/planning.js` keep resolving them unchanged.
@@ -71,15 +73,6 @@ export {
 	PROPOSED_SCOPE_FILENAME,
 	PROPOSED_SPLIT_FILENAME,
 };
-
-/**
- * Label applied to every sibling item Planning spawns when it splits a task.
- * Two jobs: it's a visible marker on the board that an item came from a split,
- * and it's the signal {@link runPlanningPhase} reads to force `autoAdvance` off
- * for that item's own Planning run — a split-off task must never move itself to
- * "ToDo", no matter how the workflow is configured (the human sequences them).
- */
-export const SPLIT_CHILD_LABEL = 'swarm:split-child';
 
 /** The re-scope/rename patch for the original item (the smaller first task). */
 const MainTaskSchema = z.object({
@@ -187,11 +180,10 @@ const DEFAULT_AUTO_SPLIT = true;
 const DEFAULT_MAX_CONCERNS = 1;
 
 /**
- * Status a spawned sibling starts in: "Planning", so the existing
- * `pm-status-changed` trigger plans it on its own (the same persona-move →
- * webhook path Planning's own `autoAdvance` → Implementation already relies on).
+ * Status a spawned sibling starts in: Backlog. Its parent already supplied the
+ * child-specific plan, so the sibling waits for a human to deliberately start it.
  */
-const SIBLING_START_STATUS: PmStatusKey = 'planning';
+const SIBLING_START_STATUS: PmStatusKey = 'backlog';
 
 /**
  * Cap on captured agent output, so a chatty/runaway Antigravity run can't grow the
@@ -498,11 +490,11 @@ function readPlanOrThrow(
 
 /**
  * Apply a split: re-scope/rename the original item into the smaller first task
- * (when the agent asked), then spawn each sibling task in "Planning" — tagged so
- * its own Planning run won't auto-advance, with a comment explaining the split,
- * and with the parent-written plan embedded as a validated preplanned marker in
- * its issue body ({@link embedPreplanMarker}) so the sibling's own Planning run
- * reuses that plan instead of launching a fresh agent (docs/OPTIMIZATION.md §3).
+ * (when the agent asked), then spawn each sibling task in Backlog — tagged as a
+ * split child, with a comment explaining the split, and with the parent-written
+ * plan embedded as a validated preplanned marker in
+ * its issue body ({@link embedPreplanMarker}) so the trigger can skip a redundant
+ * Planning dispatch instead of launching a fresh agent (docs/OPTIMIZATION.md §3).
  * Returns the spawned siblings' IDs (in order) and whether the original was
  * patched. Split out of {@link runPlanningPhase} for the same complexity-budget
  * reason as {@link readPlanOrThrow}.
@@ -622,10 +614,9 @@ async function linkBlockedBy(
  * When `autoSplit` (default `true`) is on and the agent judged the item too large,
  * it also writes `proposed_split.json`: the original item is re-scoped into the
  * smaller first task (`proposed_plan.md` is that task's plan) and the remaining
- * work is spawned as sibling items. Each sibling starts in "Planning" (so the
- * pm-status trigger plans it), is tagged with {@link SPLIT_CHILD_LABEL} so its own
- * Planning run never auto-advances, and gets a comment explaining the split — the
- * human then moves each sibling to "ToDo" in the order they choose. The original
+ * work is spawned as sibling items. Each sibling starts in Backlog, is tagged with
+ * {@link SPLIT_CHILD_LABEL}, and gets a comment explaining the split — the human
+ * then starts each sibling in order. The original
  * (first task) still honors `autoAdvance` as usual, unless it is itself a
  * split-child.
  *
