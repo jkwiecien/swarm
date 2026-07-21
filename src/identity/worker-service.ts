@@ -35,6 +35,7 @@ import type { Worker } from './worker.js';
 import { WorkerCapabilitiesSchema, WorkerDisplayNameSchema } from './worker.js';
 
 export type { Worker } from './worker.js';
+export { WorkerCapabilityReductionError } from './worker.js';
 
 /**
  * Worker credential: 32 random bytes (256 bits) is well beyond guessing range,

@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { AgentCliSchema } from '../harness/agent-cli.js';
+import { type AgentCli, AgentCliSchema } from '../harness/agent-cli.js';
 
 /**
  * A worker's declared CLI capabilities: a de-duplicated, non-empty set of
@@ -70,3 +70,19 @@ export const WorkerSchema = z.object({
 });
 
 export type Worker = z.infer<typeof WorkerSchema>;
+
+/**
+ * Raised when updating a worker's capabilities to a set that excludes one or
+ * more CLIs required by its existing project enrollments.
+ */
+export class WorkerCapabilityReductionError extends Error {
+	constructor(
+		public readonly workerId: string,
+		public readonly offending: AgentCli[],
+	) {
+		super(
+			`Cannot update capabilities for worker ${workerId}: existing enrollment(s) require CLIs not in updated capabilities: ${offending.join(', ')}`,
+		);
+		this.name = 'WorkerCapabilityReductionError';
+	}
+}

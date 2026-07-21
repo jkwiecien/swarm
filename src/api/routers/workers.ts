@@ -1,0 +1,254 @@
+import { TRPCError } from '@trpc/server';
+import { z } from 'zod';
+
+import { AgentCliSchema } from '../../harness/agent-cli.js';
+import { isInstanceAdmin, type SwarmUser } from '../../identity/schema.js';
+import {
+	AllowedClisNotCapableError,
+	approveEnrollment,
+	enrollWorker,
+	getEnrollment,
+	listOwnerWorkers,
+	listProjectRoster,
+	setEnrollmentStatus,
+	setSharingConsent,
+	updateEnrollmentConstraints,
+} from '../../identity/worker-enrollment-service.js';
+import { getWorker, type Worker } from '../../identity/worker-service.js';
+import { assertProjectAccess } from '../authz.js';
+import { authedProcedure, router } from '../trpc.js';
+
+/**
+ * The tRPC **workers** router (#337 Phase 3) — the enrollment-side companion to
+ * `routers/projects.ts`. It exposes two clearly separated surfaces, both gated
+ * by the identity/authorization layers ADR-001 establishes:
+ *
+ * - **Owner self-service**, scoped to `ctx.user`: an owner lists *their own*
+ *   workers and enrollments (`listMine`), offers a worker to a project
+ *   (`enroll`), and controls the revocable sharing consent (`setConsent`) and
+ *   execution constraints (`updateConstraints`). Ownership is checked per call;
+ *   a caller who does not own the worker (and is not an `instanceAdmin`) gets
+ *   `NOT_FOUND`, so worker/enrollment existence never leaks across owners.
+ * - **Project roster**, gated by `assertProjectAccess` exactly like
+ *   `routers/projects.ts`: a `contributor` reads the roster (`roster`); only a
+ *   `projectAdmin` approves an enrollment (`approveEnrollment`) or revokes/
+ *   reactivates one (`setStatus`). A non-member gets `NOT_FOUND` (existence
+ *   hidden), a member below the required role `FORBIDDEN`.
+ *
+ * Read models here expose **no secrets** (the service assembles secret-free
+ * views) and derive busy/current-run from run lifecycle, never from the client.
+ * None of this dispatches work: revoking consent/enrollment only flips the
+ * `isRoutable` predicate the #130 gate consumes — it never terminates a running
+ * agent (out of scope).
+ */
+
+/** The `NOT_FOUND` a non-owner (or anyone querying an unknown id) receives for a worker. */
+function workerNotFound(workerId: string): TRPCError {
+	return new TRPCError({ code: 'NOT_FOUND', message: `Worker with ID "${workerId}" not found` });
+}
+
+/** The `NOT_FOUND` a non-owner/non-member (or anyone querying an unknown id) receives for an enrollment. */
+function enrollmentNotFound(enrollmentId: string): TRPCError {
+	return new TRPCError({
+		code: 'NOT_FOUND',
+		message: `Enrollment with ID "${enrollmentId}" not found`,
+	});
+}
+
+/**
+ * Resolve a worker the caller may act on as its owner. An `instanceAdmin` may
+ * act on any worker (layer-1 override); any other user only on their own. A
+ * missing worker and a worker owned by someone else both surface the same
+ * `NOT_FOUND`, so ownership never leaks which worker ids are real.
+ */
+async function resolveOwnedWorker(user: SwarmUser, workerId: string): Promise<Worker> {
+	const worker = await getWorker(workerId);
+	if (!worker || (!isInstanceAdmin(user) && worker.ownerUserId !== user.id)) {
+		throw workerNotFound(workerId);
+	}
+	return worker;
+}
+
+/**
+ * Resolve an enrollment plus its worker, hiding both behind one `NOT_FOUND`
+ * unless the caller owns the worker (or is an `instanceAdmin`). Used by the
+ * owner-scoped enrollment mutations so a non-owner cannot even learn an
+ * enrollment id exists.
+ */
+async function resolveOwnedEnrollment(user: SwarmUser, enrollmentId: string) {
+	const enrollment = await getEnrollment(enrollmentId);
+	if (!enrollment) throw enrollmentNotFound(enrollmentId);
+	const worker = await getWorker(enrollment.workerId);
+	if (!worker || (!isInstanceAdmin(user) && worker.ownerUserId !== user.id)) {
+		throw enrollmentNotFound(enrollmentId);
+	}
+	return { enrollment, worker };
+}
+
+const AllowedClisInput = z.array(AgentCliSchema).min(1);
+const ConcurrencyInput = z.number().int().positive();
+
+export const workersRouter = router({
+	// --- Owner self-service (scoped to ctx.user) ---
+
+	// The caller's own workers and their enrollments, with derived run state. A
+	// user who operates no workers gets an empty list.
+	listMine: authedProcedure.query(async ({ ctx }) => {
+		return await listOwnerWorkers(ctx.user.id);
+	}),
+
+	// Offer one of the caller's workers to a project (a `pending` enrollment
+	// awaiting a projectAdmin's approval). The caller must own the worker
+	// (NOT_FOUND otherwise) and be able to see the project (`contributor`, so an
+	// unknown/inaccessible project is NOT_FOUND). Sharing consent starts off.
+	enroll: authedProcedure
+		.input(
+			z.object({
+				workerId: z.string().uuid(),
+				projectId: z.string().min(1),
+				allowedClis: AllowedClisInput,
+				concurrencyAllocation: ConcurrencyInput.optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const worker = await resolveOwnedWorker(ctx.user, input.workerId);
+			await assertProjectAccess(ctx.user, input.projectId, 'contributor');
+			try {
+				return await enrollWorker({
+					worker,
+					projectId: input.projectId,
+					allowedClis: input.allowedClis,
+					concurrencyAllocation: input.concurrencyAllocation,
+				});
+			} catch (error) {
+				if (error instanceof AllowedClisNotCapableError) {
+					throw new TRPCError({ code: 'BAD_REQUEST', message: error.message });
+				}
+				if (isUniqueViolation(error)) {
+					throw new TRPCError({
+						code: 'CONFLICT',
+						message: 'This worker is already enrolled in this project.',
+					});
+				}
+				throw error;
+			}
+		}),
+
+	// Set/revoke the owner-controlled sharing consent on one of the caller's
+	// enrollments. Revoking (false) flips `isRoutable` false — blocking future
+	// dispatch — without terminating any running agent.
+	setConsent: authedProcedure
+		.input(z.object({ enrollmentId: z.string().uuid(), sharingConsent: z.boolean() }))
+		.mutation(async ({ ctx, input }) => {
+			await resolveOwnedEnrollment(ctx.user, input.enrollmentId);
+			const updated = await setSharingConsent(input.enrollmentId, input.sharingConsent);
+			if (!updated) throw enrollmentNotFound(input.enrollmentId);
+			return updated;
+		}),
+
+	// Update the execution constraints (allowed CLIs / concurrency) on one of the
+	// caller's enrollments. An `allowedClis` change is re-validated against the
+	// worker's capabilities (BAD_REQUEST if it exceeds them).
+	updateConstraints: authedProcedure
+		.input(
+			z.object({
+				enrollmentId: z.string().uuid(),
+				allowedClis: AllowedClisInput.optional(),
+				concurrencyAllocation: ConcurrencyInput.optional(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const { worker } = await resolveOwnedEnrollment(ctx.user, input.enrollmentId);
+			try {
+				const updated = await updateEnrollmentConstraints({
+					worker,
+					enrollmentId: input.enrollmentId,
+					allowedClis: input.allowedClis,
+					concurrencyAllocation: input.concurrencyAllocation,
+				});
+				if (!updated) throw enrollmentNotFound(input.enrollmentId);
+				return updated;
+			} catch (error) {
+				if (error instanceof AllowedClisNotCapableError) {
+					throw new TRPCError({ code: 'BAD_REQUEST', message: error.message });
+				}
+				throw error;
+			}
+		}),
+
+	// --- Project roster (project-scoped authorization) ---
+
+	// The project's worker roster — every enrolled worker with the secret-free
+	// view and derived busy/current-run. A `contributor` may read it; a
+	// non-member gets NOT_FOUND (existence hidden).
+	roster: authedProcedure
+		.input(z.object({ projectId: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			await assertProjectAccess(ctx.user, input.projectId, 'contributor');
+			return await listProjectRoster(input.projectId);
+		}),
+
+	// Approve a pending enrollment → active (a `projectAdmin` action). Keyed on
+	// the enrollment's own project, so a non-admin can neither approve nor learn
+	// the enrollment exists (the same NOT_FOUND whether missing or inaccessible).
+	approveEnrollment: authedProcedure
+		.input(z.object({ enrollmentId: z.string().uuid() }))
+		.mutation(async ({ ctx, input }) => {
+			const enrollment = await getEnrollment(input.enrollmentId);
+			if (!enrollment) throw enrollmentNotFound(input.enrollmentId);
+			await assertProjectAccess(
+				ctx.user,
+				enrollment.projectId,
+				'projectAdmin',
+				`Enrollment with ID "${input.enrollmentId}" not found`,
+			);
+			const updated = await approveEnrollment(input.enrollmentId);
+			if (!updated) throw enrollmentNotFound(input.enrollmentId);
+			return updated;
+		}),
+
+	// Revoke (suspend) or reactivate an enrollment (a `projectAdmin` action).
+	// Suspending flips `isRoutable` false without deleting the enrollment or
+	// terminating a running agent. Same access boundary/existence-hiding as approval.
+	setStatus: authedProcedure
+		.input(
+			z.object({
+				enrollmentId: z.string().uuid(),
+				status: z.enum(['active', 'suspended']),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const enrollment = await getEnrollment(input.enrollmentId);
+			if (!enrollment) throw enrollmentNotFound(input.enrollmentId);
+			await assertProjectAccess(
+				ctx.user,
+				enrollment.projectId,
+				'projectAdmin',
+				`Enrollment with ID "${input.enrollmentId}" not found`,
+			);
+			const updated = await setEnrollmentStatus(input.enrollmentId, input.status);
+			if (!updated) throw enrollmentNotFound(input.enrollmentId);
+			return updated;
+		}),
+});
+
+function hasUniqueViolationCode(error: unknown): boolean {
+	return (
+		typeof error === 'object' &&
+		error !== null &&
+		'code' in error &&
+		(error as { code: unknown }).code === '23505'
+	);
+}
+
+/**
+ * drizzle-orm wraps every node-postgres query error in a `DrizzleQueryError`,
+ * which has no top-level `code` — the original pg error (carrying `code: '23505'`
+ * for a unique violation) is on `.cause`. Check both, exactly like
+ * `routers/projects.ts`.
+ */
+function isUniqueViolation(error: unknown): boolean {
+	return (
+		hasUniqueViolationCode(error) || (error instanceof Error && hasUniqueViolationCode(error.cause))
+	);
+}

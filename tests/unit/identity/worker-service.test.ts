@@ -26,6 +26,7 @@ import {
 	refreshWorkerCapabilities,
 	registerWorker,
 	resolveWorkerByCredential,
+	WorkerCapabilityReductionError,
 } from '@/identity/worker-service.js';
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -122,6 +123,16 @@ describe('refreshWorkerCapabilities', () => {
 	it('rejects an empty set without hitting the repository', async () => {
 		await expect(refreshWorkerCapabilities('worker-1', [])).rejects.toThrow();
 		expect(updateWorkerCapabilities).not.toHaveBeenCalled();
+	});
+
+	it('propagates WorkerCapabilityReductionError from repository when reduction violates existing enrollments', async () => {
+		updateWorkerCapabilities.mockRejectedValue(
+			new WorkerCapabilityReductionError('worker-1', ['claude']),
+		);
+
+		await expect(refreshWorkerCapabilities('worker-1', ['codex'])).rejects.toThrow(
+			WorkerCapabilityReductionError,
+		);
 	});
 });
 

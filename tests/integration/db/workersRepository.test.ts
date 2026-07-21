@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '../../../src/db/client.js';
 import { createUser } from '../../../src/db/repositories/usersRepository.js';
+import { createEnrollment } from '../../../src/db/repositories/workerEnrollmentsRepository.js';
 import {
 	createWorker,
 	findWorkerByCredentialHash,
@@ -11,7 +12,12 @@ import {
 	updateWorkerCapabilities,
 } from '../../../src/db/repositories/workersRepository.js';
 import { users } from '../../../src/db/schema/users.js';
+import { workerProjectEnrollments } from '../../../src/db/schema/workerProjectEnrollments.js';
+import type { AgentCli } from '../../../src/harness/agent-cli.js';
+import { WorkerCapabilityReductionError } from '../../../src/identity/worker.js';
+import { AllowedClisNotCapableError } from '../../../src/identity/worker-enrollment.js';
 import { truncateAll } from '../helpers/db.js';
+import { seedProject } from '../helpers/seed.js';
 
 describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('workersRepository (integration)', () => {
 	let adaId: string;
@@ -131,6 +137,119 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('workersRepository (integr
 			expect(
 				await updateWorkerCapabilities('00000000-0000-4000-8000-000000000000', ['claude']),
 			).toBeUndefined();
+		});
+
+		it('rejects a capability reduction when an enrollment requires a CLI being removed', async () => {
+			await seedProject({ id: 'proj-repo-test', repo: 'jkwiecien/repo-test' });
+			const worker = await createWorker({
+				ownerUserId: adaId,
+				displayName: 'ada-multi-cli',
+				capabilities: ['claude', 'codex'],
+				credentialHash: 'hash-multi',
+			});
+			await createEnrollment({
+				workerId: worker.id,
+				projectId: 'proj-repo-test',
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: 1,
+				sharingConsent: true,
+			});
+
+			await expect(updateWorkerCapabilities(worker.id, ['codex'])).rejects.toThrow(
+				WorkerCapabilityReductionError,
+			);
+
+			// Worker capabilities remain unchanged
+			const rechecked = await getWorkerById(worker.id);
+			expect(rechecked?.capabilities).toEqual(['claude', 'codex']);
+		});
+
+		it('allows capability expansion and compatible reductions when existing enrollments remain subsets', async () => {
+			await seedProject({ id: 'proj-compat-test', repo: 'jkwiecien/compat-test' });
+			const worker = await createWorker({
+				ownerUserId: adaId,
+				displayName: 'ada-compat',
+				capabilities: ['claude', 'codex', 'antigravity'],
+				credentialHash: 'hash-compat',
+			});
+			await createEnrollment({
+				workerId: worker.id,
+				projectId: 'proj-compat-test',
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: 1,
+				sharingConsent: true,
+			});
+
+			// Compatible reduction: removing 'antigravity' (not required by enrollment)
+			const reduced = await updateWorkerCapabilities(worker.id, ['claude', 'codex']);
+			expect(reduced?.capabilities).toEqual(['claude', 'codex']);
+
+			// Expansion: adding 'antigravity' back
+			const expanded = await updateWorkerCapabilities(worker.id, [
+				'claude',
+				'codex',
+				'antigravity',
+			]);
+			expect(expanded?.capabilities).toEqual(['claude', 'codex', 'antigravity']);
+		});
+
+		it('serializes capability reduction against concurrent enrollment creation without breaking the invariant', async () => {
+			await seedProject({ id: 'proj-race-test', repo: 'jkwiecien/race-test' });
+			const worker = await createWorker({
+				ownerUserId: adaId,
+				displayName: 'ada-race',
+				capabilities: ['claude', 'codex'],
+				credentialHash: 'hash-race',
+			});
+
+			const [enrollRes, capRes] = await Promise.allSettled([
+				createEnrollment({
+					workerId: worker.id,
+					projectId: 'proj-race-test',
+					status: 'active',
+					allowedClis: ['codex'],
+					concurrencyAllocation: 1,
+					sharingConsent: true,
+				}),
+				updateWorkerCapabilities(worker.id, ['claude']),
+			]);
+
+			// One transaction must succeed and one must be rejected
+			const succeeded = [enrollRes, capRes].filter((r) => r.status === 'fulfilled');
+			const rejected = [enrollRes, capRes].filter((r) => r.status === 'rejected');
+
+			expect(succeeded).toHaveLength(1);
+			expect(rejected).toHaveLength(1);
+
+			if (capRes.status === 'fulfilled') {
+				// Capability reduction to ['claude'] won, enrollment with ['codex'] was rejected
+				expect(enrollRes.status).toBe('rejected');
+				expect((enrollRes as PromiseRejectedResult).reason).toBeInstanceOf(
+					AllowedClisNotCapableError,
+				);
+			} else {
+				// Enrollment with ['codex'] won, capability reduction to ['claude'] was rejected
+				expect(capRes.status === 'rejected').toBe(true);
+				expect((capRes as PromiseRejectedResult).reason).toBeInstanceOf(
+					WorkerCapabilityReductionError,
+				);
+			}
+
+			// Verify invariant holds in database: active enrollment's allowedClis is a subset of worker capabilities
+			const finalWorker = await getWorkerById(worker.id);
+			const enrollments = await getDb()
+				.select()
+				.from(workerProjectEnrollments)
+				.where(eq(workerProjectEnrollments.workerId, worker.id));
+
+			const workerCapSet = new Set(finalWorker?.capabilities ?? []);
+			for (const enrollment of enrollments) {
+				for (const cli of enrollment.allowedClis as AgentCli[]) {
+					expect(workerCapSet.has(cli)).toBe(true);
+				}
+			}
 		});
 	});
 
