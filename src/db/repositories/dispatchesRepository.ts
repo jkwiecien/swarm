@@ -53,6 +53,8 @@ export type DispatchWaitReason =
 	| 'worktree-exists'
 	| 'stalled'
 	| 'recheck'
+	/** No eligible worker could take the dispatch (issue #339's federated gate). */
+	| 'worker-eligibility'
 	| 'manual-retry'
 	| 'recovered';
 

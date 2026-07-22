@@ -38,6 +38,28 @@ describe('deriveRetryJobPayload', () => {
 		expect(next).toMatchObject({ resumePmPhase: 'implementation', runId: 'run-1' });
 	});
 
+	it('spends the worker-eligibility budget for a gate deferral, leaving the others alone', () => {
+		const next = deriveRetryJobPayload(
+			createMockGitHubProjectsWebhookJob({
+				workerEligibilityRecheckAttempt: 4,
+				dependencyRecheckAttempt: 2,
+				rateLimitRetryAttempt: 1,
+			}),
+			{
+				phase: 'implementation',
+				resumable: false,
+				pmPhaseStarted: true,
+				workerEligibilityRecheck: true,
+			},
+		);
+
+		expect(next.workerEligibilityRecheckAttempt).toBe(5);
+		// Waiting for an eligible worker is not a failure and not a dependency wait:
+		// neither of the other budgets moves.
+		expect(next.dependencyRecheckAttempt).toBe(2);
+		expect(next.rateLimitRetryAttempt).toBe(1);
+	});
+
 	it('keeps PM resume for an interrupted Implementation', () => {
 		const next = deriveRetryJobPayload(createMockGitHubProjectsWebhookJob(), {
 			phase: 'implementation',
