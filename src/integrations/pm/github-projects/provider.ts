@@ -100,13 +100,13 @@ const GET_ITEM_QUERY = /* GraphQL */ `
 					... on Issue {
 						number title body url
 						repository { nameWithOwner }
-						labels(first: 50) { nodes { id name color } }
+						labels(first: 100) { nodes { id name color } }
 						assignees(first: 10) { nodes { id login name } }
 					}
 					... on PullRequest {
 						number title body url
 						repository { nameWithOwner }
-						labels(first: 50) { nodes { id name color } }
+						labels(first: 100) { nodes { id name color } }
 						assignees(first: 10) { nodes { id login name } }
 					}
 				}
@@ -133,13 +133,13 @@ const LIST_ITEMS_QUERY = /* GraphQL */ `
 							... on Issue {
 								number title body url
 								repository { nameWithOwner }
-								labels(first: 50) { nodes { id name color } }
+								labels(first: 100) { nodes { id name color } }
 								assignees(first: 10) { nodes { id login name } }
 							}
 							... on PullRequest {
 								number title body url
 								repository { nameWithOwner }
-								labels(first: 50) { nodes { id name color } }
+								labels(first: 100) { nodes { id name color } }
 								assignees(first: 10) { nodes { id login name } }
 							}
 						}

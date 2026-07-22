@@ -2430,6 +2430,22 @@ describe('processJob', () => {
 			expect(phaseCalls).toHaveLength(1);
 		});
 
+		it('runs the phase when the configured label appears beyond the former 50-item boundary', async () => {
+			const dummyLabels = Array.from({ length: 50 }, (_, i) => ({
+				id: `DUMMY_${i}`,
+				name: `dummy-label-${i}`,
+			}));
+			const labels = [...dummyLabels, { id: 'LA_1', name: 'swarm' }];
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger(labels)),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(1);
+		});
+
 		it('skips an unlabeled item without spending a slot, a worktree, or tokens', async () => {
 			const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
 
