@@ -29,7 +29,9 @@ import {
 	storeRunLogs,
 	updateReviewMergeOutcome,
 } from '../../../src/db/repositories/runsRepository.js';
+import { createUser } from '../../../src/db/repositories/usersRepository.js';
 import { runLogs, runs } from '../../../src/db/schema/runs.js';
+import { registerWorker } from '../../../src/identity/worker-service.js';
 import type { SwarmJob } from '../../../src/queue/jobs.js';
 import { createMockGitHubWebhookJob } from '../../helpers/factories.js';
 import { truncateAll } from '../helpers/db.js';
@@ -821,33 +823,59 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 	});
 
 	describe('failOrphanedRunningRuns', () => {
-		it('flips leftover running rows to failed and leaves settled ones untouched', async () => {
-			const orphanA = await createRun({ projectId: PROJECT_ID, taskId: '1', phase: 'review' });
-			const orphanB = await createRun({
-				projectId: PROJECT_ID,
-				taskId: '2',
-				phase: 'implementation',
+		it('reconciles only the authenticated worker or unfederated startup scope', async () => {
+			const owner = await createUser({
+				identifier: 'run-owner@example.com',
+				displayName: 'Run Owner',
 			});
-			const settled = await createRun({ projectId: PROJECT_ID, taskId: '3', phase: 'planning' });
-			await completeRun(settled, { status: 'completed' });
+			const workerA = await registerWorker({
+				ownerUserId: owner.id,
+				displayName: 'worker-a',
+				capabilities: ['claude'],
+			});
+			const workerB = await registerWorker({
+				ownerUserId: owner.id,
+				displayName: 'worker-b',
+				capabilities: ['claude'],
+			});
+			const unfederatedRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'local',
+				phase: 'review',
+			});
+			const workerARun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'worker-a',
+				phase: 'implementation',
+				workerId: workerA.worker.id,
+			});
+			const workerBRun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'worker-b',
+				phase: 'planning',
+				workerId: workerB.worker.id,
+			});
+			const settledWorkerARun = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'worker-a-settled',
+				phase: 'review',
+				workerId: workerA.worker.id,
+			});
+			await completeRun(settledWorkerARun, { status: 'completed' });
 
-			const count = await failOrphanedRunningRuns('interrupted by restart');
+			expect(await failOrphanedRunningRuns('worker A restarted', workerA.worker.id)).toBe(1);
+			expect((await getRunByIdFromDb(workerARun))?.status).toBe('failed');
+			expect((await getRunByIdFromDb(unfederatedRun))?.status).toBe('running');
+			expect((await getRunByIdFromDb(workerBRun))?.status).toBe('running');
+			expect((await getRunByIdFromDb(settledWorkerARun))?.status).toBe('completed');
 
-			expect(count).toBe(2);
-			for (const id of [orphanA, orphanB]) {
-				const row = await getRunByIdFromDb(id);
-				expect(row?.status).toBe('failed');
-				expect(row?.error).toBe('interrupted by restart');
-				expect(row?.completedAt).toBeInstanceOf(Date);
-			}
-			// A run that already reached a terminal status is not rewritten.
-			const settledRow = await getRunByIdFromDb(settled);
-			expect(settledRow?.status).toBe('completed');
-			expect(settledRow?.error).toBeNull();
+			expect(await failOrphanedRunningRuns('local worker restarted', null)).toBe(1);
+			expect((await getRunByIdFromDb(unfederatedRun))?.status).toBe('failed');
+			expect((await getRunByIdFromDb(workerBRun))?.status).toBe('running');
 		});
 
 		it('returns 0 when there are no running rows', async () => {
-			expect(await failOrphanedRunningRuns('nothing to do')).toBe(0);
+			expect(await failOrphanedRunningRuns('nothing to do', null)).toBe(0);
 		});
 	});
 

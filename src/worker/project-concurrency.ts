@@ -79,8 +79,8 @@ export async function releaseProjectSlot(projectId: string): Promise<void> {
 }
 
 /**
- * Clear counters leaked by a crashed single-worker process. A multi-worker
- * deployment must replace this startup reset with expiring per-worker leases.
+ * Clear counters leaked by a crashed unfederated process. Federated execution
+ * uses database-backed selected-worker claims instead of these Redis counters.
  */
 export async function resetProjectSlot(projectId: string): Promise<void> {
 	try {

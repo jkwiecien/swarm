@@ -192,6 +192,24 @@ export async function setCurrentRun(
 }
 
 /**
+ * The worker's retained session row whatever its state — live, expired, or
+ * gracefully released. Deliberately *not* liveness-gated: it exists so a caller
+ * can read `lastHeartbeatAt` as **last seen** for a worker that is currently
+ * offline (the row survives expiry and release to keep the fencing counter
+ * monotonic). {@link getLiveSession} stays the only liveness check; never derive
+ * online/offline from this read. `undefined` when the worker never connected.
+ */
+export async function getRetainedSession(workerId: string): Promise<WorkerSession | undefined> {
+	const rows = await getDb()
+		.select()
+		.from(workerSessions)
+		.where(eq(workerSessions.workerId, workerId))
+		.limit(1);
+	const row = rows[0];
+	return row ? rowToSession(row) : undefined;
+}
+
+/**
  * The worker's live session (unreleased and last heartbeat within `ttlMs`), or
  * `undefined` if it has none, is released, or its lease has expired. The read the
  * fencing-token validation seam and dashboard build on.

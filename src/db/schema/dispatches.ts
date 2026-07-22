@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import {
+	bigint,
 	boolean,
 	index,
 	integer,
@@ -13,6 +14,8 @@ import {
 import type { SwarmJob } from '../../queue/jobs.js';
 import { projects } from './projects.js';
 import { runs } from './runs.js';
+import { workerSessions } from './workerSessions.js';
+import { workers } from './workers.js';
 
 /**
  * The durable dispatch record — the single source of truth for every attempt to
@@ -85,6 +88,16 @@ export const dispatches = pgTable(
 		jobPayload: jsonb('job_payload').$type<SwarmJob>().notNull(),
 		/** The runs row this dispatch's attempts execute against, once one exists. */
 		runId: uuid('run_id').references(() => runs.id, { onDelete: 'set null' }),
+		/** Worker selected and capacity-claimed for this attempt; retained on terminal rows for audit. */
+		selectedWorkerId: uuid('selected_worker_id').references(() => workers.id, {
+			onDelete: 'set null',
+		}),
+		/** The live worker session that owned this attempt's execution claim. */
+		workerSessionId: uuid('worker_session_id').references(() => workerSessions.id, {
+			onDelete: 'set null',
+		}),
+		/** Fencing token observed while atomically claiming the selected session/capacity. */
+		workerFencingToken: bigint('worker_fencing_token', { mode: 'number' }),
 		leaseOwner: text('lease_owner'),
 		leaseExpiresAt: timestamp('lease_expires_at'),
 		lastError: text('last_error'),
@@ -105,5 +118,6 @@ export const dispatches = pgTable(
 		index('idx_dispatches_state').on(table.state),
 		index('idx_dispatches_project_state').on(table.projectId, table.state),
 		index('idx_dispatches_coalesce_key').on(table.coalesceKey),
+		index('idx_dispatches_selected_worker').on(table.selectedWorkerId, table.state),
 	],
 );

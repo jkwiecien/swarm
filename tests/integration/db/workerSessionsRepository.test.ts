@@ -7,6 +7,7 @@ import { createUser } from '../../../src/db/repositories/usersRepository.js';
 import {
 	acquireLease,
 	getLiveSession,
+	getRetainedSession,
 	heartbeat,
 	releaseLease,
 	setCurrentRun,
@@ -233,6 +234,38 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 
 				// The session survives; only its run pointer is cleared.
 				expect((await getLiveSession(workerA, TTL))?.currentRunId).toBeNull();
+			});
+		});
+
+		describe('getRetainedSession', () => {
+			it('is undefined for a worker that never acquired a lease', async () => {
+				expect(await getRetainedSession(workerA)).toBeUndefined();
+			});
+
+			it('keeps the last heartbeat after expiry, while the live lookup reports offline', async () => {
+				const session = await acquireLease(workerA, TTL);
+				const heartbeatAt = (await getRetainedSession(workerA))?.lastHeartbeatAt;
+				expect(heartbeatAt).toBeInstanceOf(Date);
+
+				await expireSession(workerA);
+
+				expect(await getLiveSession(workerA, TTL)).toBeUndefined();
+				const retained = await getRetainedSession(workerA);
+				// Still the same row (same fencing token), now carrying the expired heartbeat
+				// the dashboard shows as "last seen".
+				expect(retained?.fencingToken).toBe(session.fencingToken);
+				expect(retained?.lastHeartbeatAt.getTime()).toBeLessThan(heartbeatAt!.getTime());
+			});
+
+			it('survives a graceful release, so a cleanly stopped worker keeps a last-seen value', async () => {
+				const session = await acquireLease(workerA, TTL);
+				expect(await releaseLease(workerA, session.fencingToken)).toBe(true);
+
+				expect(await getLiveSession(workerA, TTL)).toBeUndefined();
+				expect(await getRetainedSession(workerA)).toMatchObject({
+					workerId: workerA,
+					fencingToken: session.fencingToken,
+				});
 			});
 		});
 

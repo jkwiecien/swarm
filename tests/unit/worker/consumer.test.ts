@@ -3,9 +3,12 @@ import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCli, AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
 import type { CliQuotaSnapshot } from '@/harness/quota.js';
+import type { ResolvedAssignee } from '@/identity/assignee-resolver.js';
+import type { SwarmUser } from '@/identity/schema.js';
+import type { WorkerDispatchCandidate } from '@/identity/worker-enrollment-service.js';
 import { logger } from '@/lib/logger.js';
 import { DependencyBlockedError } from '@/pipeline/dependency-guard.js';
-import type { PMProvider } from '@/pm/types.js';
+import type { PMProvider, WorkItemAssignee } from '@/pm/types.js';
 import type { CancellationOrigin } from '@/queue/cancellation.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
 import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
@@ -29,7 +32,13 @@ vi.mock('@/db/repositories/projectsRepository.js', () => ({
 }));
 
 const addComment = vi.fn(async (_id: string, _text: string) => 'comment-1');
-const provider = { type: 'github-projects', addComment } as unknown as PMProvider;
+const provider = {
+	type: 'github-projects',
+	// The real GitHub Projects adapter reports assignee support; the eligibility
+	// gate reads this flag to decide whether to resolve an item's assignee.
+	supportsAssignees: true,
+	addComment,
+} as unknown as PMProvider;
 const providerBuiltWith: ProjectConfig[] = [];
 vi.mock('@/integrations/pm/github-projects/provider.js', () => ({
 	createGitHubProjectsProvider: (project: ProjectConfig) => {
@@ -58,13 +67,24 @@ function mockPhase(phase: string) {
 		return phaseImpl(phase, args);
 	};
 }
-vi.mock('@/pipeline/planning.js', () => ({ runPlanningPhase: mockPhase('planning') }));
+// Each mocked phase module keeps its coded `DEFAULT_*_CLI`: the eligibility gate
+// judges a worker's capability against the phase's *effective* CLI, so
+// `PHASE_DEFAULT_CLI` (`@/worker/target-policy.js`) reads these constants.
+vi.mock('@/pipeline/planning.js', () => ({
+	runPlanningPhase: mockPhase('planning'),
+	DEFAULT_PLANNING_CLI: 'claude',
+}));
 vi.mock('@/pipeline/implementation.js', () => ({
 	runImplementationPhase: mockPhase('implementation'),
+	DEFAULT_IMPLEMENTATION_CLI: 'claude',
 }));
-vi.mock('@/pipeline/review.js', () => ({ runReviewPhase: mockPhase('review') }));
+vi.mock('@/pipeline/review.js', () => ({
+	runReviewPhase: mockPhase('review'),
+	DEFAULT_REVIEW_CLI: 'claude',
+}));
 vi.mock('@/pipeline/respond-to-review.js', () => ({
 	runRespondToReviewPhase: mockPhase('respond-to-review'),
+	DEFAULT_RESPOND_CLI: 'claude',
 }));
 
 vi.mock('@/queue/producer.js', () => ({
@@ -113,6 +133,7 @@ const createAndPublishDispatch = vi.fn(async (_input: unknown) => ({
 const promoteNextCapacityDispatch = vi.fn(async (_projectId: string, _prioritize?: boolean) => {});
 const publishDispatchWakeUp = vi.fn(async (_dispatch: unknown) => {});
 vi.mock('@/dispatch/dispatcher.js', () => ({
+	DISPATCH_LEASE_OWNER: 'test-host:1',
 	claimDispatchForJob: (job: Record<string, unknown>, leaseMs: number) =>
 		claimDispatchForJob(job, leaseMs),
 	createAndPublishDispatch: (input: unknown) => createAndPublishDispatch(input),
@@ -140,7 +161,18 @@ const scheduleDispatchRetry = vi.fn(
 		state: 'retry-scheduled',
 	}),
 );
+const claimWorkerForDispatch = vi.fn(
+	async (
+		_input: unknown,
+	): Promise<
+		{ claimed: true; dispatch: MockDispatchRow } | { claimed: false; reason: 'wrong-worker-host' }
+	> => ({
+		claimed: true,
+		dispatch: mockDispatchRow({}),
+	}),
+);
 vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
+	claimWorkerForDispatch: (input: unknown) => claimWorkerForDispatch(input),
 	completeDispatch: (id: string, outcome: string) => completeDispatch(id, outcome),
 	failDispatch: (id: string, error: string) => failDispatch(id, error),
 	cancelClaimedDispatch: (id: string, reason: string) => cancelClaimedDispatch(id, reason),
@@ -248,6 +280,29 @@ vi.mock('@/worker/merge-automation.js', () => ({
 	requestMergeAutomation: (input: unknown) => requestMergeAutomation(input),
 	processMergeAutomationDispatch: (dispatch: unknown, job: unknown, project: unknown) =>
 		processMergeAutomationDispatch(dispatch, job, project),
+}));
+
+// The federated dispatch gate (issue #339) reads the project's enrolled workers
+// and resolves an item's assignee to a SWARM user. Both are mocked at their
+// module boundary so these tests drive routing without Postgres; the default —
+// no enrolled workers — is an unfederated project, where the local worker runs
+// every phase exactly as it did before the gate existed.
+const listProjectDispatchCandidates = vi.fn<
+	(projectId: string) => Promise<WorkerDispatchCandidate[]>
+>(async () => []);
+vi.mock('@/identity/worker-enrollment-service.js', () => ({
+	listProjectDispatchCandidates: (projectId: string) => listProjectDispatchCandidates(projectId),
+}));
+
+const resolveAssignedUser = vi.fn<
+	(
+		workItem: { assignees: WorkItemAssignee[] },
+		provider: string,
+	) => Promise<ResolvedAssignee | undefined>
+>(async () => undefined);
+vi.mock('@/identity/assignee-resolver.js', () => ({
+	resolveAssignedUser: (workItem: { assignees: WorkItemAssignee[] }, provider: string) =>
+		resolveAssignedUser(workItem, provider),
 }));
 
 type SlotAcquisition = { acquired: false } | { acquired: true; tracked: boolean };
@@ -401,6 +456,11 @@ describe('processJob', () => {
 		recordDispatchResolution.mockClear();
 		deferDispatchToPending.mockClear();
 		scheduleDispatchRetry.mockClear();
+		claimWorkerForDispatch.mockClear();
+		claimWorkerForDispatch.mockResolvedValue({
+			claimed: true,
+			dispatch: mockDispatchRow({}),
+		});
 		refreshConflictResolutionClaim.mockClear();
 		refreshReviewDispatchClaim.mockClear();
 		releaseReviewDispatch.mockClear();
@@ -424,6 +484,10 @@ describe('processJob', () => {
 		getAppSettings.mockResolvedValue({});
 		getAllCliQuotas.mockClear();
 		getAllCliQuotas.mockResolvedValue([]);
+		listProjectDispatchCandidates.mockClear();
+		listProjectDispatchCandidates.mockResolvedValue([]);
+		resolveAssignedUser.mockClear();
+		resolveAssignedUser.mockResolvedValue(undefined);
 		acquireProjectSlot.mockClear();
 		acquireProjectSlot.mockResolvedValue({ acquired: true, tracked: true });
 		releaseProjectSlot.mockClear();
@@ -1649,6 +1713,232 @@ describe('processJob', () => {
 		const [, body] = addComment.mock.calls[0];
 		expect(body).toContain('#319');
 		expect(body).toMatch(/must be done first/i);
+	});
+
+	describe('federated dispatch gate (issue #339)', () => {
+		const ALICE = '11111111-1111-4111-8111-111111111111';
+		const BOB = '22222222-2222-4222-8222-222222222222';
+
+		function candidate(
+			id: string,
+			overrides: {
+				ownerUserId?: string;
+				capabilities?: AgentCli[];
+				sharingConsent?: boolean;
+				activeRuns?: number;
+			} = {},
+		): WorkerDispatchCandidate {
+			const capabilities = overrides.capabilities ?? ['claude'];
+			return {
+				worker: {
+					id,
+					ownerUserId: overrides.ownerUserId ?? ALICE,
+					displayName: `worker-${id}`,
+					capabilities,
+					createdAt: new Date('2026-01-01T00:00:00Z'),
+					updatedAt: new Date('2026-01-01T00:00:00Z'),
+				},
+				enrollment: {
+					id: `enr-${id}`,
+					workerId: id,
+					projectId: 'swarm',
+					status: 'active',
+					allowedClis: capabilities,
+					concurrencyAllocation: 1,
+					sharingConsent: overrides.sharingConsent ?? true,
+					createdAt: new Date('2026-01-01T00:00:00Z'),
+					updatedAt: new Date('2026-01-01T00:00:00Z'),
+				},
+				availability: { connected: true, activeRuns: overrides.activeRuns ?? 0 },
+			};
+		}
+
+		const assignedItem = () =>
+			createMockWorkItem({ statusId: '61e4505c', assignees: [{ handle: 'octocat' }] });
+		const planningTrigger = (workItem = assignedItem()): TriggerResult => ({
+			phase: 'planning',
+			taskId: '10',
+			workItem,
+		});
+		const executionIdentity = (workerId: string) => ({
+			workerId,
+			sessionId: `session-${workerId}`,
+			fencingToken: 7,
+			heartbeatTtlMs: 60_000,
+		});
+
+		it('runs the phase locally for an unfederated project (no enrolled workers)', async () => {
+			// The single-local-worker MVP is untouched by the gate: with nothing
+			// enrolled there is no other machine to gate, so the phase just runs.
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(1);
+		});
+
+		it('defers before provisioning anything when no eligible worker may take it', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([
+				candidate('w-1', { sharingConsent: false }),
+			]);
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+			);
+
+			// A token-free wait: no agent invoked, no run row, no dispatch lease
+			// renewal — and no premature "failed" comment on the item.
+			expect(outcome).toMatchObject({ status: 'phase-deferred', workerEligibilityRecheck: true });
+			expect(phaseCalls).toEqual([]);
+			expect(createRun).not.toHaveBeenCalled();
+			expect(markDispatchRunning).not.toHaveBeenCalled();
+			expect(addComment).not.toHaveBeenCalled();
+		});
+
+		it('records the wait durably as worker-eligibility on its own budget', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([candidate('w-1', { activeRuns: 1 })]);
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 3 }),
+				registryReturning(planningTrigger()),
+			);
+
+			expect(scheduleDispatchRetry).toHaveBeenCalledOnce();
+			const [, input] = scheduleDispatchRetry.mock.calls[0] as [string, Record<string, unknown>];
+			expect(input).toMatchObject({ waitReason: 'worker-eligibility', attempt: 1 });
+			// The rate-limit budget is untouched: waiting for a worker is not a failure.
+			expect(input.jobPayload).toMatchObject({
+				workerEligibilityRecheckAttempt: 1,
+				rateLimitRetryAttempt: 3,
+			});
+		});
+
+		it('fails with the actionable reason once the re-check budget is exhausted', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([
+				candidate('w-1', { sharingConsent: false }),
+			]);
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob({ workerEligibilityRecheckAttempt: 1_000_000 }),
+				registryReturning(planningTrigger()),
+			);
+
+			expect(outcome.status).toBe('phase-failed');
+			expect(addComment).toHaveBeenCalledOnce();
+			const [, body] = addComment.mock.calls[0];
+			expect(body).toMatch(/sharing consent/i);
+		});
+
+		it('never routes an assigned item to another user’s free worker', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([candidate('w-bob', { ownerUserId: BOB })]);
+			resolveAssignedUser.mockResolvedValue({
+				user: { id: ALICE, identifier: 'octocat', displayName: 'octocat' } as SwarmUser,
+				assignee: { handle: 'octocat' },
+			});
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+			);
+
+			expect(outcome).toMatchObject({ status: 'phase-deferred', workerEligibilityRecheck: true });
+			expect(phaseCalls).toEqual([]);
+		});
+
+		it('refuses execution when a different authenticated worker host dequeues the job', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([candidate('w-alice')]);
+			claimWorkerForDispatch.mockResolvedValue({
+				claimed: false,
+				reason: 'wrong-worker-host',
+			});
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-bob'),
+			);
+
+			expect(outcome).toMatchObject({ status: 'phase-deferred', workerEligibilityRecheck: true });
+			expect(claimWorkerForDispatch).toHaveBeenCalledWith(
+				expect.objectContaining({
+					selectedWorkerId: 'w-alice',
+					executionWorkerId: 'w-bob',
+				}),
+			);
+			expect(phaseCalls).toEqual([]);
+			expect(createRun).not.toHaveBeenCalled();
+			expect(markDispatchRunning).not.toHaveBeenCalled();
+		});
+
+		it('re-checks on every dispatch, so a revocation blocks the next attempt only', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([candidate('w-1')]);
+			const first = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-1'),
+			);
+			expect(first.status).toBe('phase-succeeded');
+
+			// Consent is revoked between attempts: the already-finished run keeps its
+			// result, and only the *next* dispatch is refused.
+			listProjectDispatchCandidates.mockResolvedValue([
+				candidate('w-1', { sharingConsent: false }),
+			]);
+			const second = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning({ ...planningTrigger(), taskId: '11' }),
+			);
+
+			expect(second).toMatchObject({ status: 'phase-deferred', workerEligibilityRecheck: true });
+			expect(phaseCalls).toHaveLength(1);
+		});
+
+		it('dispatches the exact target the gate selected, not the preferred one', async () => {
+			// Target priority first, worker order second: only a claude worker is
+			// enrolled, so the codex-preferred phase runs its claude target — and the
+			// run row records that same target.
+			projectLookup = () =>
+				createMockProjectConfig({
+					agents: {
+						planning: {
+							targets: [
+								{ cli: 'codex', model: 'gpt-5.6-terra' },
+								{ cli: 'claude', model: 'opus', reasoning: 'high' },
+							],
+						},
+					},
+				});
+			listProjectDispatchCandidates.mockResolvedValue([
+				candidate('w-claude', { capabilities: ['claude'] }),
+			]);
+
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-claude'),
+			);
+
+			expect(phaseCalls[0].args).toMatchObject({
+				cli: 'claude',
+				model: 'opus',
+				reasoning: 'high',
+			});
+			expect(createRun).toHaveBeenCalledWith(
+				expect.objectContaining({
+					workerId: 'w-claude',
+					workerFencingToken: 7,
+					engine: 'claude',
+					model: 'opus',
+					reasoning: 'high',
+				}),
+			);
+		});
 	});
 
 	it('defers a capacity failure briefly without posting a failure comment', async () => {

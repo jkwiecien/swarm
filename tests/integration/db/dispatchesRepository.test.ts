@@ -1,16 +1,23 @@
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { getDb } from '../../../src/db/client.js';
 import {
 	cancelAllWaitingDispatches,
+	cancelClaimedDispatch,
 	cancelWaitingDispatch,
 	claimDispatch,
+	claimWorkerForDispatch,
 	completeDispatch,
 	createDispatch,
+	type DispatchRow,
 	deferDispatchToPending,
 	failDispatch,
 	failExpiredDispatchLeases,
+	failSupersededWorkerDispatchClaims,
 	getActiveDispatchByRunId,
 	getDispatchById,
+	getWorkerDispatchClaimState,
 	listDeferredRunsWithoutActiveDispatch,
 	listWaitingDispatches,
 	listWakeablePendingDispatches,
@@ -25,6 +32,12 @@ import {
 	createRun,
 	getRunByIdFromDb,
 } from '../../../src/db/repositories/runsRepository.js';
+import { createUser } from '../../../src/db/repositories/usersRepository.js';
+import { createEnrollment } from '../../../src/db/repositories/workerEnrollmentsRepository.js';
+import { acquireLease } from '../../../src/db/repositories/workerSessionsRepository.js';
+import { createWorker } from '../../../src/db/repositories/workersRepository.js';
+import { dispatches } from '../../../src/db/schema/dispatches.js';
+import { projects } from '../../../src/db/schema/projects.js';
 import { describeError } from '../../../src/lib/errors.js';
 import type { SwarmJob } from '../../../src/queue/jobs.js';
 import { createMockGitHubWebhookJob } from '../../helpers/factories.js';
@@ -164,6 +177,247 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 					: failDispatch(dispatch.id, 'boom'));
 				expect(await claimDispatch(dispatch.id, OWNER, 60_000)).toBeNull();
 			}
+		});
+	});
+
+	describe('federated worker execution claims', () => {
+		async function seedFederatedWorker(allocation = 1, suffix = String(allocation)) {
+			const owner = await createUser({
+				identifier: `owner-${suffix}@example.com`,
+				displayName: 'Owner',
+			});
+			const worker = await createWorker({
+				ownerUserId: owner.id,
+				displayName: `worker-${suffix}`,
+				capabilities: ['claude'],
+				credentialHash: `hash-${suffix}`,
+			});
+			await createEnrollment({
+				workerId: worker.id,
+				projectId: PROJECT_ID,
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: allocation,
+				sharingConsent: true,
+			});
+			const session = await acquireLease(worker.id, 60_000);
+			return { worker, session };
+		}
+
+		async function leasedDispatch(owner: string) {
+			const { dispatch } = await createDispatch({
+				projectId: PROJECT_ID,
+				jobPayload: job(),
+				source: 'webhook',
+			});
+			const leased = await claimDispatch(dispatch.id, owner, 60_000);
+			if (!leased) throw new Error('test dispatch was not leased');
+			return leased;
+		}
+
+		it('allows only the selected authenticated worker host to claim execution', async () => {
+			const { worker, session } = await seedFederatedWorker();
+			const dispatch = await leasedDispatch('host-b:1');
+
+			const result = await claimWorkerForDispatch({
+				dispatchId: dispatch.id,
+				dispatchLeaseOwner: 'host-b:1',
+				projectId: PROJECT_ID,
+				selectedWorkerId: worker.id,
+				executionWorkerId: '22222222-2222-4222-8222-222222222222',
+				workerSessionId: session.id,
+				workerFencingToken: session.fencingToken,
+				cli: 'claude',
+				heartbeatTtlMs: 60_000,
+			});
+
+			expect(result).toEqual({ claimed: false, reason: 'wrong-worker-host' });
+			expect(await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).toEqual({
+				activeRuns: 0,
+				currentRunId: null,
+			});
+		});
+
+		it('atomically prevents simultaneous dispatches from exceeding allocation', async () => {
+			await getDb()
+				.update(projects)
+				.set({ maxConcurrentJobs: 2 })
+				.where(eq(projects.id, PROJECT_ID));
+			const { worker, session } = await seedFederatedWorker(1);
+			const [first, second] = await Promise.all([
+				leasedDispatch('host-a:1'),
+				leasedDispatch('host-a:2'),
+			]);
+			const claim = (dispatch: DispatchRow) =>
+				claimWorkerForDispatch({
+					dispatchId: dispatch.id,
+					dispatchLeaseOwner: dispatch.leaseOwner ?? '',
+					projectId: PROJECT_ID,
+					selectedWorkerId: worker.id,
+					executionWorkerId: worker.id,
+					workerSessionId: session.id,
+					workerFencingToken: session.fencingToken,
+					cli: 'claude',
+					heartbeatTtlMs: 60_000,
+				});
+
+			const results = await Promise.all([claim(first), claim(second)]);
+			expect(results.filter((result) => result.claimed)).toHaveLength(1);
+			expect(results.filter((result) => !result.claimed)).toEqual([
+				{ claimed: false, reason: 'worker-unavailable' },
+			]);
+			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(1);
+		});
+
+		it('serializes two worker identities against the project concurrency limit', async () => {
+			const firstHost = await seedFederatedWorker(1, 'host-a');
+			const secondHost = await seedFederatedWorker(1, 'host-b');
+			const [first, second] = await Promise.all([
+				leasedDispatch('host-a:1'),
+				leasedDispatch('host-b:1'),
+			]);
+			const claim = (
+				dispatch: DispatchRow,
+				host: Awaited<ReturnType<typeof seedFederatedWorker>>,
+			) =>
+				claimWorkerForDispatch({
+					dispatchId: dispatch.id,
+					dispatchLeaseOwner: dispatch.leaseOwner ?? '',
+					projectId: PROJECT_ID,
+					selectedWorkerId: host.worker.id,
+					executionWorkerId: host.worker.id,
+					workerSessionId: host.session.id,
+					workerFencingToken: host.session.fencingToken,
+					cli: 'claude',
+					heartbeatTtlMs: 60_000,
+				});
+
+			const results = await Promise.all([claim(first, firstHost), claim(second, secondHost)]);
+			expect(results.filter((result) => result.claimed)).toHaveLength(1);
+			expect(results.filter((result) => !result.claimed)).toEqual([
+				{ claimed: false, reason: 'project-capacity' },
+			]);
+			const totalActive =
+				(await getWorkerDispatchClaimState(firstHost.worker.id, PROJECT_ID)).activeRuns +
+				(await getWorkerDispatchClaimState(secondHost.worker.id, PROJECT_ID)).activeRuns;
+			expect(totalActive).toBe(1);
+		});
+
+		it('clears a claim on deferral so another dispatch can reserve the slot', async () => {
+			const { worker, session } = await seedFederatedWorker(1);
+			const first = await leasedDispatch('host-a:1');
+			const claimed = await claimWorkerForDispatch({
+				dispatchId: first.id,
+				dispatchLeaseOwner: 'host-a:1',
+				projectId: PROJECT_ID,
+				selectedWorkerId: worker.id,
+				executionWorkerId: worker.id,
+				workerSessionId: session.id,
+				workerFencingToken: session.fencingToken,
+				cli: 'claude',
+				heartbeatTtlMs: 60_000,
+			});
+			expect(claimed.claimed).toBe(true);
+
+			const deferred = await scheduleDispatchRetry(first.id, {
+				jobPayload: job(),
+				availableAt: new Date(Date.now() + 60_000),
+				waitReason: 'worker-eligibility',
+				attempt: 1,
+			});
+			expect(deferred).toMatchObject({
+				selectedWorkerId: null,
+				workerSessionId: null,
+				workerFencingToken: null,
+			});
+			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(0);
+		});
+
+		it('releases capacity on success, terminal failure, and cancellation', async () => {
+			const { worker, session } = await seedFederatedWorker(1);
+			const settle = [
+				(id: string) => completeDispatch(id, 'phase-succeeded'),
+				(id: string) => failDispatch(id, 'terminal failure'),
+				(id: string) => cancelClaimedDispatch(id, 'operator cancelled'),
+			];
+			for (const [index, settleDispatch] of settle.entries()) {
+				const dispatch = await leasedDispatch(`host-a:${index}`);
+				const claim = await claimWorkerForDispatch({
+					dispatchId: dispatch.id,
+					dispatchLeaseOwner: dispatch.leaseOwner ?? '',
+					projectId: PROJECT_ID,
+					selectedWorkerId: worker.id,
+					executionWorkerId: worker.id,
+					workerSessionId: session.id,
+					workerFencingToken: session.fencingToken,
+					cli: 'claude',
+					heartbeatTtlMs: 60_000,
+				});
+				expect(claim.claimed).toBe(true);
+				await settleDispatch(dispatch.id);
+				expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(0);
+			}
+		});
+
+		it('recovers capacity durably after a claimed dispatch lease expires', async () => {
+			const { worker, session } = await seedFederatedWorker(1);
+			const expired = await leasedDispatch('host-a:expired');
+			const firstClaim = await claimWorkerForDispatch({
+				dispatchId: expired.id,
+				dispatchLeaseOwner: expired.leaseOwner ?? '',
+				projectId: PROJECT_ID,
+				selectedWorkerId: worker.id,
+				executionWorkerId: worker.id,
+				workerSessionId: session.id,
+				workerFencingToken: session.fencingToken,
+				cli: 'claude',
+				heartbeatTtlMs: 60_000,
+			});
+			expect(firstClaim.claimed).toBe(true);
+			await getDb()
+				.update(dispatches)
+				.set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+				.where(eq(dispatches.id, expired.id));
+			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(0);
+
+			const replacement = await leasedDispatch('host-a:replacement');
+			const replacementClaim = await claimWorkerForDispatch({
+				dispatchId: replacement.id,
+				dispatchLeaseOwner: replacement.leaseOwner ?? '',
+				projectId: PROJECT_ID,
+				selectedWorkerId: worker.id,
+				executionWorkerId: worker.id,
+				workerSessionId: session.id,
+				workerFencingToken: session.fencingToken,
+				cli: 'claude',
+				heartbeatTtlMs: 60_000,
+			});
+			expect(replacementClaim.claimed).toBe(true);
+		});
+
+		it('releases an older fenced session claim immediately after re-acquisition', async () => {
+			const { worker, session } = await seedFederatedWorker(1);
+			const dispatch = await leasedDispatch('host-a:old-session');
+			const claim = await claimWorkerForDispatch({
+				dispatchId: dispatch.id,
+				dispatchLeaseOwner: dispatch.leaseOwner ?? '',
+				projectId: PROJECT_ID,
+				selectedWorkerId: worker.id,
+				executionWorkerId: worker.id,
+				workerSessionId: session.id,
+				workerFencingToken: session.fencingToken,
+				cli: 'claude',
+				heartbeatTtlMs: 60_000,
+			});
+			expect(claim.claimed).toBe(true);
+
+			const failed = await failSupersededWorkerDispatchClaims(
+				worker.id,
+				session.fencingToken + 1,
+				'old fenced session',
+			);
+			expect(failed.map((row) => row.id)).toEqual([dispatch.id]);
+			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(0);
 		});
 	});
 
@@ -307,7 +561,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 	});
 
 	describe('lease reclaim (claim → run boundary)', () => {
-		it('fails only expired leases when a cutoff is supplied, and all claims at startup', async () => {
+		it("fails only expired leases and preserves another host's live claim", async () => {
 			const expired = await createDispatch({
 				projectId: PROJECT_ID,
 				jobPayload: job(),
@@ -325,9 +579,6 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 			const reclaimed = await failExpiredDispatchLeases('dead worker', new Date());
 			expect(reclaimed.map((d) => d.id)).toEqual([expired.dispatch.id]);
 			expect((await getDispatchById(live.dispatch.id))?.state).toBe('leased');
-
-			const startup = await failExpiredDispatchLeases('worker restarted');
-			expect(startup.map((d) => d.id)).toEqual([live.dispatch.id]);
 		});
 
 		it('covers running dispatches too — a dead run row cannot hide behind `running`', async () => {

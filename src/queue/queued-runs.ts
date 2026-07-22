@@ -57,6 +57,7 @@ export const QueuedWaitReasonSchema = z.enum([
 	'worktree-exists',
 	'stalled',
 	'recheck',
+	'worker-eligibility',
 	'manual-retry',
 	'recovered',
 ]);

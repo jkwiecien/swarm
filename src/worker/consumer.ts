@@ -21,6 +21,7 @@ import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
 import {
 	cancelClaimedDispatch,
+	claimWorkerForDispatch,
 	completeDispatch,
 	type DispatchRow,
 	type DispatchWaitReason,
@@ -47,6 +48,7 @@ import {
 import {
 	claimDispatchForJob,
 	createAndPublishDispatch,
+	DISPATCH_LEASE_OWNER,
 	parseDispatchPayload,
 	promoteNextCapacityDispatch,
 	publishDispatchWakeUp,
@@ -59,12 +61,7 @@ import {
 	AgentRunError,
 	agentRunError,
 } from '../harness/agent-failure.js';
-import {
-	capabilityFor,
-	DEFAULT_MODEL_PER_CLI,
-	isReasoningLevel,
-	type ReasoningLevel,
-} from '../harness/models.js';
+import { capabilityFor, DEFAULT_MODEL_PER_CLI, type ReasoningLevel } from '../harness/models.js';
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
@@ -126,18 +123,30 @@ import {
 	resolveDependencyMaxWaitMs,
 	resolveDependencyRecheckIntervalMs,
 } from './dependency-recheck.js';
+import {
+	type DispatchSelection,
+	evaluateDispatchEligibility,
+	type GateDecision,
+	WorkerIneligibleError,
+} from './eligibility-gate.js';
+import type { WorkerExecutionIdentity } from './execution-identity.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import {
 	type MergeAutomationSettledOutcome,
 	processMergeAutomationDispatch,
 	requestMergeAutomation,
 } from './merge-automation.js';
-import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
+import {
+	acquireProjectSlot,
+	releaseProjectSlot,
+	type SlotAcquisition,
+} from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
 	linkRunAbortController,
 	unregisterRunController,
 } from './run-cancellation.js';
+import { PHASE_DEFAULT_CLI, phaseAgentConfig, resolveTargetPolicy } from './target-policy.js';
 import {
 	loadAvailableClis,
 	selectTarget,
@@ -260,6 +269,13 @@ export type JobOutcome =
 			 * rate-limit budget untouched.
 			 */
 			dependencyRecheck?: boolean;
+			/**
+			 * A worker-eligibility re-check deferral (issue #339): the federated
+			 * dispatch gate found no eligible worker for this phase, so the dispatch
+			 * waits (`worker-eligibility`) on its own budget — again token-free, since
+			 * the gate runs before any worktree or agent.
+			 */
+			workerEligibilityRecheck?: boolean;
 	  };
 
 /**
@@ -288,6 +304,18 @@ const MAX_DEPENDENCY_RECHECKS = maxDependencyRechecks(
 	DEPENDENCY_RECHECK_INTERVAL_MS,
 	resolveDependencyMaxWaitMs(),
 );
+/**
+ * The federated eligibility gate's re-check (issue #339) waits on exactly the
+ * same kind of external condition as the dependency gate — a human granting
+ * consent, an admin approving an enrollment, an assignee's worker finishing its
+ * current run — and is equally token-free (it runs before any worktree or
+ * agent), so it deliberately shares that cadence and budget rather than
+ * introducing a second pair of knobs. Its *attempt counter* is separate
+ * (`workerEligibilityRecheckAttempt`), so waiting on a dependency and waiting on
+ * a worker never consume each other's budget.
+ */
+const ELIGIBILITY_RECHECK_INTERVAL_MS = DEPENDENCY_RECHECK_INTERVAL_MS;
+const MAX_ELIGIBILITY_RECHECKS = MAX_DEPENDENCY_RECHECKS;
 /**
  * Floor on the retry delay, deliberately above the review-dispatch-dedup TTL
  * (5 min, `src/triggers/review-dispatch-dedup.ts`): a review retry that fires
@@ -568,6 +596,62 @@ function deferDependencyBlock(
 	};
 }
 
+/**
+ * Handle a {@link WorkerIneligibleError} (issue #339): no eligible worker may
+ * take this dispatch. Like {@link deferDependencyBlock} this is a wait, not a
+ * failure — the gate runs before any worktree or agent, so re-checking is
+ * token-free — and it consumes its own bounded budget. Returns `undefined` once
+ * that budget is exhausted, so the caller falls through to a terminal
+ * `phase-failed` that posts the actionable reason (missing consent, missing
+ * enrollment, no capable worker, …) on the item rather than dropping the work.
+ */
+function deferWorkerIneligible(
+	err: WorkerIneligibleError,
+	job: SwarmJob,
+	trigger: TriggerResult,
+	projectId: string,
+	error: string,
+	runId: string | undefined,
+): Extract<JobOutcome, { status: 'phase-deferred' }> | undefined {
+	const attempt = job.workerEligibilityRecheckAttempt ?? 0;
+	if (attempt >= MAX_ELIGIBILITY_RECHECKS) {
+		logger.error(
+			`Phase failed - ${phaseLabel(trigger.phase)} — no eligible worker after ${attempt} re-checks`,
+			{ projectId, phase: trigger.phase, taskId: trigger.taskId, reason: err.reason, error },
+		);
+		return undefined;
+	}
+	logger.info(`Phase deferred - ${phaseLabel(trigger.phase)} — waiting for an eligible worker`, {
+		projectId,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		attempt,
+		retryDelayMs: ELIGIBILITY_RECHECK_INTERVAL_MS,
+		reason: err.reason,
+	});
+	return {
+		status: 'phase-deferred',
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		retryDelayMs: ELIGIBILITY_RECHECK_INTERVAL_MS,
+		reason: error,
+		attempt,
+		resumable: false,
+		workerEligibilityRecheck: true,
+		// The gate refused before anything ran, so preserve board dispatch intent
+		// exactly as the dependency gate does — the re-check must re-enter the same
+		// phase even though the card never moved.
+		pmPhaseStarted:
+			job.type === 'github-projects' &&
+			(trigger.phase === 'planning' || trigger.phase === 'implementation'),
+		// The gate refuses before `tryCreateRun`, so a fresh dispatch has no row yet
+		// (`runId` is undefined). A retry carries its originating row, which must
+		// survive so the next re-check keeps re-using it rather than orphaning it —
+		// the same reason the concurrency deferral carries `job.runId`.
+		runId: runId ?? job.runId,
+	};
+}
+
 /** Map a classified deferrable failure onto the dispatch record's wait reason. */
 function waitReasonForDeferral(kind: DeferrableFailure['kind'] | undefined): DispatchWaitReason {
 	switch (kind) {
@@ -606,6 +690,30 @@ async function persistRetryPayloadOnRun(runId: string | undefined, job: SwarmJob
 }
 
 /**
+ * The dispatch record's wait reason for a deferral. The two token-free
+ * re-checks wait on an external condition rather than on a failure, so each
+ * reads as its own reason (like merge-automation's `recheck`) instead of a
+ * failure-driven one.
+ */
+function deferralWaitReason(
+	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
+): DispatchWaitReason {
+	if (outcome.dependencyRecheck) return 'recheck';
+	if (outcome.workerEligibilityRecheck) return 'worker-eligibility';
+	return waitReasonForDeferral(outcome.failureKind);
+}
+
+/** The attempt counter this deferral consumed — each wait tracks its own (see {@link deferralWaitReason}). */
+function deferralAttempt(
+	outcome: Extract<JobOutcome, { status: 'phase-deferred' }>,
+	next: SwarmJob,
+): number {
+	if (outcome.dependencyRecheck) return next.dependencyRecheckAttempt ?? 0;
+	if (outcome.workerEligibilityRecheck) return next.workerEligibilityRecheckAttempt ?? 0;
+	return next.rateLimitRetryAttempt ?? 0;
+}
+
+/**
  * Settle a claimed dispatch as `retry-scheduled`: derive the next attempt's
  * payload, persist it durably on the dispatch (the crash-safe retry intent —
  * issue #284), then publish the delayed wake-up. A publish failure is logged,
@@ -626,18 +734,14 @@ async function settleDispatchRetry(
 		pmPhaseStarted: outcome.pmPhaseStarted,
 		continuationDispatchClaimed: outcome.continuationDispatchClaimed,
 		dependencyRecheck: outcome.dependencyRecheck,
+		workerEligibilityRecheck: outcome.workerEligibilityRecheck,
 	});
 	await persistRetryPayloadOnRun(outcome.runId, next);
 	const updated = await scheduleDispatchRetry(dispatch.id, {
 		jobPayload: next,
 		availableAt: new Date(Date.now() + outcome.retryDelayMs),
-		// A dependency deferral waits on an external condition, so it reads as a
-		// `recheck` (like merge-automation), not a failure-driven wait reason, and
-		// tracks its own attempt counter.
-		waitReason: outcome.dependencyRecheck ? 'recheck' : waitReasonForDeferral(outcome.failureKind),
-		attempt: outcome.dependencyRecheck
-			? (next.dependencyRecheckAttempt ?? 0)
-			: (next.rateLimitRetryAttempt ?? 0),
+		waitReason: deferralWaitReason(outcome),
+		attempt: deferralAttempt(outcome, next),
 		runId: outcome.runId,
 	});
 	if (!updated) {
@@ -709,10 +813,12 @@ async function handleConcurrencyDeferral(
 	// Every blocked phase gets a run row now. This makes new Planning and
 	// Implementation work visible while it waits, rather than creating a row only
 	// after a timer happens to fire.
+	// No gate selection here: this defers *before* the eligibility gate runs, so
+	// the row records the target local routing would pick. The eventual wake-up
+	// re-enters `processJob` and resolves its target through the gate.
 	const runId = await tryCreateRun(
 		project,
-		await loadGlobalDefaults(),
-		await loadAvailableClis(),
+		{ globalDefaults: await loadGlobalDefaults(), availableClis: await loadAvailableClis() },
 		trigger,
 		job,
 	);
@@ -833,13 +939,14 @@ async function wasPrecededByPlanning(projectId: string, taskId: string): Promise
 }
 
 /**
- * Resolve the *explicitly requested* reasoning level for a phase — per-run
- * `reasoningOverride` → per-phase config, and nothing else. Unlike `model`,
- * reasoning has no per-CLI defaults tier: a default level valid for one model
- * can be invalid for another (issue #180). Omitting it here means the CLI keeps
- * its own default behavior (claude/codex get no reasoning flag; antigravity's
- * combined-variant string falls back to the model's default inside
- * `resolveModelLaunch`), which is what we persist as "Default (unknown)".
+ * Resolve the *explicitly requested* reasoning level for a phase — the selected
+ * target's level, which `resolveTargetPolicy` has already folded a per-run
+ * `reasoningOverride` into. Unlike `model`, reasoning has no per-CLI defaults
+ * tier: a default level valid for one model can be invalid for another (issue
+ * #180). Omitting it here means the CLI keeps its own default behavior
+ * (claude/codex get no reasoning flag; antigravity's combined-variant string
+ * falls back to the model's default inside `resolveModelLaunch`), which is what
+ * we persist as "Default (unknown)".
  *
  * A requested level is dropped (→ `undefined`) when the effective model doesn't
  * support it, so a stale override left over from a different model/CLI can't
@@ -848,10 +955,8 @@ async function wasPrecededByPlanning(projectId: string, taskId: string): Promise
 function resolveReasoning(
 	cli: AgentCli | undefined,
 	model: string,
-	phaseReasoning?: ReasoningLevel,
-	overrideReasoning?: ReasoningLevel,
+	requested?: ReasoningLevel,
 ): ReasoningLevel | undefined {
-	const requested = overrideReasoning ?? phaseReasoning;
 	if (!requested) return undefined;
 	if (!cli) return requested;
 	const cap = capabilityFor(cli, model);
@@ -859,6 +964,38 @@ function resolveReasoning(
 	return (cap.reasoningChoices as readonly ReasoningLevel[]).includes(requested)
 		? requested
 		: undefined;
+}
+
+/**
+ * Everything one dequeued job's model-target resolution depends on, resolved
+ * once per job and threaded through run creation, the dispatch lease, and the
+ * phase invocation — so all three agree on the *same* target instead of each
+ * re-deriving one (issue #339's ordered-target addendum).
+ */
+interface PhaseResolution {
+	/** Global per-CLI default models — the tier between project and coded defaults. */
+	globalDefaults: AgentDefaults | undefined;
+	/** The CLIs this worker can run, for local capability routing (issue #346). */
+	availableClis: WorkerCliAvailability;
+	/**
+	 * The target the federated eligibility gate selected together with its worker
+	 * (issue #339). Absent for an unfederated project, where local routing picks
+	 * the target instead.
+	 */
+	selection?: DispatchSelection;
+	/** Authenticated session that claimed `selection`; present exactly when selection is bound. */
+	executionIdentity?: WorkerExecutionIdentity;
+}
+
+/** Adapt the federated worker+target selection to the shared target-routing shape. */
+function targetSelectionFor(selection: DispatchSelection | undefined): TargetSelection | undefined {
+	if (!selection) return undefined;
+	return {
+		target: selection.target,
+		index: selection.targetIndex,
+		skipped: selection.skippedClis,
+		fallback: false,
+	};
 }
 
 /**
@@ -909,8 +1046,7 @@ function logAgentRouting(
 function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	job: SwarmJob,
 	runId: string | undefined,
 	signal?: AbortSignal,
@@ -928,8 +1064,7 @@ function runPhase(
 }> {
 	const overrides = agentOverrideFor(
 		project,
-		globalDefaults,
-		availableClis,
+		resolution,
 		trigger.phase,
 		job,
 		implementationUnplanned,
@@ -1139,13 +1274,15 @@ function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
  * (per-phase → project default → global default → coded default), so the
  * recorded value matches what actually runs.
  *
- * Which of the phase's `targets` is resolved depends on `availableClis` — the
- * CLIs this worker can actually run (issue #346). See {@link selectTarget}.
+ * Which of the phase's `targets` is resolved comes from {@link PhaseResolution}:
+ * the federated gate's chosen target when a worker was selected for it (issue
+ * #339), else the highest-priority target *this* worker can run (issue #346, see
+ * {@link selectTarget}). A per-run override still pins one exact target and is
+ * never routed around.
  */
 function agentOverrideFor(
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	phase: TriggerPhase,
 	job?: SwarmJob,
 	implementationUnplanned = false,
@@ -1159,39 +1296,21 @@ function agentOverrideFor(
 	/** The routing decision behind `cli`, when the phase configured targets. */
 	routing?: TargetSelection;
 } {
-	const phaseConfig = (() => {
-		switch (phase) {
-			case 'planning':
-				return project.agents?.planning ?? {};
-			case 'implementation':
-				return implementationUnplanned
-					? (project.agents?.implementationUnplanned ?? project.agents?.implementation ?? {})
-					: (project.agents?.implementation ?? {});
-			case 'review':
-				return project.agents?.review ?? {};
-			case 'respond-to-review':
-				return project.agents?.respondToReview ?? {};
-			case 'respond-to-ci':
-				return project.agents?.respondToCi ?? {};
-			case 'resolve-conflicts':
-				return project.agents?.resolveConflicts ?? {};
-		}
-	})();
-	const overrideReasoning = isReasoningLevel(job?.reasoningOverride)
-		? job?.reasoningOverride
-		: undefined;
+	const phaseConfig = phaseAgentConfig(project, phase, implementationUnplanned);
 	// A per-run override pins one exact selection (a manual "retry with this
 	// CLI/model" — `src/api/routers/runs.ts`), so it wins over routing: the run
 	// resolves against the phase's own configured selection, as it did before.
-	const pinned = Boolean(job?.cliOverride ?? job?.modelOverride ?? overrideReasoning);
-	const routing = pinned ? undefined : selectTarget(phaseConfig.targets, availableClis);
-	// The phase-level `cli`/`model`/`reasoning` mirror `targets[0]`, so they are the
-	// right source whenever routing selected nothing (no list configured, or a
-	// pinned run) — including a config that predates the list entirely.
-	const target = routing?.target ?? phaseConfig;
-	const cli = job?.cliOverride ?? target.cli;
-	const model = job?.modelOverride ?? resolveModel(project, globalDefaults, cli, target.model);
-	const reasoning = resolveReasoning(cli, model, target.reasoning, overrideReasoning);
+	const policy = resolveTargetPolicy(phaseConfig, job);
+	const routing = policy.pinned
+		? undefined
+		: (targetSelectionFor(resolution.selection) ??
+			selectTarget(phaseConfig.targets, resolution.availableClis));
+	// With no routing decision the policy's own first entry applies: the pinned
+	// target, or the phase's coded defaults when it configured no list at all.
+	const target = routing?.target ?? policy.targets[0];
+	const cli = target.cli;
+	const model = resolveModel(project, resolution.globalDefaults, cli, target.model);
+	const reasoning = resolveReasoning(cli, model, target.reasoning);
 	// Fall back to the worker's default wall-clock timeout when the project set no
 	// per-phase override, so *every* agent invocation is bounded (issue #165).
 	return {
@@ -1228,8 +1347,7 @@ async function loadGlobalDefaults(): Promise<AgentDefaults | undefined> {
 
 async function tryReuseLatestRun(
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1243,8 +1361,7 @@ async function tryReuseLatestRun(
 	}
 	const overrides = agentOverrideFor(
 		project,
-		globalDefaults,
-		availableClis,
+		resolution,
 		trigger.phase,
 		job,
 		implementationUnplanned,
@@ -1262,6 +1379,8 @@ async function tryReuseLatestRun(
 		overrides.engine,
 		job.resumeSession ? undefined : null,
 		recoveryVal,
+		resolution.selection?.workerId,
+		resolution.executionIdentity?.fencingToken,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -1270,8 +1389,7 @@ async function tryReuseLatestRun(
 
 async function tryResetCarriedRun(
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1281,8 +1399,7 @@ async function tryResetCarriedRun(
 	try {
 		const overrides = agentOverrideFor(
 			project,
-			globalDefaults,
-			availableClis,
+			resolution,
 			trigger.phase,
 			job,
 			implementationUnplanned,
@@ -1300,6 +1417,8 @@ async function tryResetCarriedRun(
 			overrides.engine,
 			job.resumeSession ? undefined : null,
 			recoveryVal,
+			resolution.selection?.workerId,
+			resolution.executionIdentity?.fencingToken,
 		))
 			? runId
 			: undefined;
@@ -1362,8 +1481,7 @@ async function tryFetchPrTitle(
  */
 async function reuseRunRow(
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
@@ -1379,24 +1497,10 @@ async function reuseRunRow(
 				error: describeError(err),
 			});
 		}
-		return tryResetCarriedRun(
-			project,
-			globalDefaults,
-			availableClis,
-			trigger,
-			job,
-			implementationUnplanned,
-		);
+		return tryResetCarriedRun(project, resolution, trigger, job, implementationUnplanned);
 	}
 	try {
-		return await tryReuseLatestRun(
-			project,
-			globalDefaults,
-			availableClis,
-			trigger,
-			job,
-			implementationUnplanned,
-		);
+		return await tryReuseLatestRun(project, resolution, trigger, job, implementationUnplanned);
 	} catch (err) {
 		logger.error('Failed to reuse terminal run row (creating a new one)', {
 			projectId: project.id,
@@ -1410,27 +1514,18 @@ async function reuseRunRow(
 
 async function tryCreateRun(
 	project: ProjectConfig,
-	globalDefaults: AgentDefaults | undefined,
-	availableClis: WorkerCliAvailability,
+	resolution: PhaseResolution,
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned = false,
 ): Promise<string | undefined> {
-	const reusedRunId = await reuseRunRow(
-		project,
-		globalDefaults,
-		availableClis,
-		trigger,
-		job,
-		implementationUnplanned,
-	);
+	const reusedRunId = await reuseRunRow(project, resolution, trigger, job, implementationUnplanned);
 	if (reusedRunId) return reusedRunId;
 	const prNumber = 'prNumber' in trigger ? trigger.prNumber : undefined;
 	try {
 		const overrides = agentOverrideFor(
 			project,
-			globalDefaults,
-			availableClis,
+			resolution,
 			trigger.phase,
 			job,
 			implementationUnplanned,
@@ -1439,6 +1534,8 @@ async function tryCreateRun(
 			projectId: project.id,
 			taskId: trigger.taskId,
 			phase: trigger.phase,
+			workerId: resolution.selection?.workerId,
+			workerFencingToken: resolution.executionIdentity?.fencingToken,
 			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
 			workItemTitle: 'workItem' in trigger ? trigger.workItem.title : undefined,
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
@@ -2018,6 +2115,17 @@ async function handlePhaseFailure(
 		if (deferred) return deferred;
 	}
 
+	// The federated dispatch gate refused this attempt (issue #339): no eligible
+	// worker may take the phase. Like a dependency block this is a wait, not a
+	// failure — nothing ran, nothing was provisioned — so defer on its own budget
+	// and, once exhausted, fall through to the terminal path below, which posts
+	// the actionable reason (grant consent, approve the enrollment, enroll a
+	// worker that can run the configured CLI) on the item.
+	if (err instanceof WorkerIneligibleError) {
+		const deferred = deferWorkerIneligible(err, job, trigger, project.id, error, runId);
+		if (deferred) return deferred;
+	}
+
 	const failureKind =
 		err instanceof AgentRunError
 			? err.failure.kind
@@ -2077,10 +2185,133 @@ async function handlePhaseFailure(
 	return { status: 'phase-failed', phase: trigger.phase, taskId: trigger.taskId, error };
 }
 
+/**
+ * Run the federated eligibility gate for this dispatch (issue #339) and return
+ * the selected target, or `undefined` when the project is not federated (no
+ * enrolled workers — the local worker runs it, exactly as before).
+ *
+ * Throws {@link WorkerIneligibleError} when no eligible worker may take the
+ * phase: `handlePhaseFailure` turns that into a bounded, token-free
+ * `worker-eligibility` deferral, and finally into an actionable board comment.
+ * A failure to *read* the roster defers the same way rather than dispatching
+ * unchecked — sharing consent is a hard prerequisite (ADR-001), so an unknown
+ * answer must never be treated as permission.
+ */
+async function gateDispatch(
+	project: ProjectConfig,
+	trigger: TriggerResult,
+	job: SwarmJob,
+	implementationUnplanned: boolean,
+): Promise<DispatchSelection | undefined> {
+	const phaseConfig = phaseAgentConfig(project, trigger.phase, implementationUnplanned);
+	// PR-driven phases carry no board item, so they take the unassigned path.
+	const workItem = 'workItem' in trigger ? trigger.workItem : undefined;
+	let decision: GateDecision;
+	try {
+		decision = await evaluateDispatchEligibility({
+			projectId: project.id,
+			targets: resolveTargetPolicy(phaseConfig, job).targets,
+			phaseDefaultCli: PHASE_DEFAULT_CLI[trigger.phase],
+			workItem,
+			// Only an item that actually names an assignee needs the provider (for
+			// its `type`, to resolve the identity link) — an unassigned item takes
+			// the unassigned path without one being constructed.
+			pm: workItem?.assignees.length ? createGitHubProjectsProvider(project) : undefined,
+		});
+	} catch (err) {
+		throw new WorkerIneligibleError(
+			'worker-unavailable',
+			`Could not read this project's worker roster to confirm dispatch eligibility: ${describeError(err)}`,
+		);
+	}
+	if (decision.status === 'unfederated') return undefined;
+	if (decision.status === 'ineligible') {
+		throw new WorkerIneligibleError(decision.reason, decision.message);
+	}
+	const { selection } = decision;
+	logger.info('Routed the phase to an eligible worker', {
+		projectId: project.id,
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		workerId: selection.workerId,
+		worker: selection.workerName,
+		assignedUserId: selection.assignedUserId,
+		cli: selection.cli,
+		model: selection.target.model,
+		targetIndex: selection.targetIndex,
+		unavailable: selection.skippedClis,
+	});
+	return selection;
+}
+
+/**
+ * Convert the gate's read-side selection into a fenced, atomic execution claim.
+ * The claim re-checks the session, enrollment, consent, CLI, and capacity under
+ * one worker-session row lock, closing the observation-to-execution race.
+ */
+async function bindSelectedWorker(
+	dispatch: DispatchRow,
+	selection: DispatchSelection,
+	executionIdentity: WorkerExecutionIdentity | undefined,
+): Promise<void> {
+	if (!executionIdentity) {
+		throw new WorkerIneligibleError(
+			selection.assignedUserId ? 'assignee-worker-unavailable' : 'worker-unavailable',
+			`Worker '${selection.workerName}' was selected, but this process has no authenticated SWARM_WORKER_CREDENTIAL and may not execute that worker's dispatch. Waiting for the selected worker host.`,
+		);
+	}
+	const claim = await claimWorkerForDispatch({
+		dispatchId: dispatch.id,
+		dispatchLeaseOwner: DISPATCH_LEASE_OWNER,
+		projectId: dispatch.projectId,
+		selectedWorkerId: selection.workerId,
+		executionWorkerId: executionIdentity.workerId,
+		workerSessionId: executionIdentity.sessionId,
+		workerFencingToken: executionIdentity.fencingToken,
+		cli: selection.cli,
+		heartbeatTtlMs: executionIdentity.heartbeatTtlMs,
+	});
+	if (claim.claimed) return;
+
+	const assignedUnavailable = selection.assignedUserId
+		? 'assignee-worker-unavailable'
+		: 'worker-unavailable';
+	switch (claim.reason) {
+		case 'wrong-worker-host':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				`Worker '${selection.workerName}' was selected, but this queue job was claimed by a different authenticated worker host. Waiting for the selected worker host; cross-worker execution is forbidden.`,
+			);
+		case 'worker-unavailable':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				`Worker '${selection.workerName}' lost its live session or available capacity before execution could be claimed. Waiting and re-checking eligibility.`,
+			);
+		case 'project-capacity':
+			throw new WorkerIneligibleError(
+				'worker-unavailable',
+				`Project '${dispatch.projectId}' reached its configured concurrent-job limit before worker execution could be claimed. Waiting for an active dispatch to settle.`,
+			);
+		case 'missing-enrollment':
+		case 'missing-consent':
+		case 'missing-cli-capability':
+			throw new WorkerIneligibleError(
+				claim.reason,
+				`Worker '${selection.workerName}' became ineligible (${claim.reason}) before execution could be claimed. Re-checking the project worker roster before retry.`,
+			);
+		case 'not-claimable':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				'The durable dispatch changed state before its selected-worker claim could be persisted. Re-checking before retry.',
+			);
+	}
+}
+
 export async function processJob(
 	job: SwarmJob,
 	registry: TriggerRegistry,
 	signal?: AbortSignal,
+	executionIdentity?: WorkerExecutionIdentity,
 ): Promise<JobOutcome> {
 	// Claim the durable dispatch behind this wake-up before acting on anything
 	// (issue #284): a cancelled/completed/superseded dispatch refuses the claim,
@@ -2220,14 +2451,7 @@ export async function processJob(
 		return { status: 'skipped-in-flight', phase: trigger.phase, taskId: trigger.taskId };
 	}
 	inFlightTaskIds.add(trigger.taskId);
-	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
-	if (!slot.acquired) {
-		inFlightTaskIds.delete(trigger.taskId);
-		// Pre-run deferral (concurrency limit): the dispatch returns to `pending`
-		// (wait reason `project-capacity`) and is woken by a freed slot — it sits
-		// outside the try/catch below and finalizes its own row.
-		return handleConcurrencyDeferral(dispatch, job, trigger, project);
-	}
+	let slot: SlotAcquisition = { acquired: true, tracked: false };
 
 	let runId: string | undefined;
 	// A deferred outcome hands the run to `reenqueueDeferred`, which relies on
@@ -2252,30 +2476,34 @@ export async function processJob(
 			trigger.phase === 'implementation' &&
 			!(await wasPrecededByPlanning(project.id, trigger.taskId));
 
+		// The federated dispatch gate (issue #339): confirm an eligible worker may
+		// take this phase — and on which configured target — *before* anything is
+		// provisioned or invoked. Runs on every (re)dispatch, so a revocation between
+		// attempts blocks the next one; it never touches a run already in flight.
+		const selection = await gateDispatch(project, trigger, job, implementationUnplanned);
+		const resolution: PhaseResolution = {
+			globalDefaults,
+			availableClis,
+			selection,
+			executionIdentity: selection ? executionIdentity : undefined,
+		};
+		if (selection) await bindSelectedWorker(dispatch, selection, executionIdentity);
+		if (!selection) {
+			slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
+			if (!slot.acquired) return handleConcurrencyDeferral(dispatch, job, trigger, project);
+		}
+
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
 		// dashboard is a secondary view, so a DB hiccup must never fail a real run.
-		runId = await tryCreateRun(
-			project,
-			globalDefaults,
-			availableClis,
-			trigger,
-			job,
-			implementationUnplanned,
-		);
+		runId = await tryCreateRun(project, resolution, trigger, job, implementationUnplanned);
 
 		// The dispatch is now `running` against its run row; renew the lease to
 		// cover this phase's own wall-clock timeout so a live run is never
 		// reclaimed, while a dead one is reclaimed soon after the timeout passes.
 		const effectiveTimeoutMs =
-			agentOverrideFor(
-				project,
-				globalDefaults,
-				availableClis,
-				trigger.phase,
-				job,
-				implementationUnplanned,
-			).timeoutMs ?? AGENT_TIMEOUT_MS;
+			agentOverrideFor(project, resolution, trigger.phase, job, implementationUnplanned)
+				.timeoutMs ?? AGENT_TIMEOUT_MS;
 		await markDispatchRunning(
 			dispatch.id,
 			runId,
@@ -2291,8 +2519,7 @@ export async function processJob(
 		const result = await runPhase(
 			trigger,
 			project,
-			globalDefaults,
-			availableClis,
+			resolution,
 			job,
 			runId,
 			runAbort.signal,
@@ -2401,7 +2628,7 @@ export async function processJob(
 		// a later legitimate dispatch for the same task — a genuine retry, or a
 		// re-run after this one finished — isn't blocked. A deferred job is
 		// re-enqueued and re-enters `processJob` fresh, past this release.
-		if (slot.tracked) {
+		if (slot.acquired && slot.tracked) {
 			await releaseProjectSlot(project.id);
 			// A slot just freed — wake the next capacity-blocked dispatch for this
 			// project (issues #214/#219, #284) so SCM work blocked only by concurrency
