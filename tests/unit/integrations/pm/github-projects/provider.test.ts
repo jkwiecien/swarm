@@ -89,6 +89,8 @@ describe('GitHubProjectsPMProvider', () => {
 				status: 'In progress',
 				statusId: '47fc9ee4',
 				labels: [{ id: 'L1', name: 'phase-4', color: 'blue' }],
+				// The node carries no `assignees` at all — an unassigned item is `[]`.
+				assignees: [],
 				createdAt: '2026-07-01T00:00:00Z',
 				updatedAt: '2026-07-02T00:00:00Z',
 			});
@@ -100,6 +102,65 @@ describe('GitHubProjectsPMProvider', () => {
 		it('throws when the item does not resolve', async () => {
 			graphql.mockResolvedValue({ node: null });
 			await expect(provider.getWorkItem('PVTI_missing')).rejects.toThrow('did not resolve');
+		});
+	});
+
+	describe('assignees', () => {
+		it('declares assignee support', () => {
+			expect(provider.supportsAssignees).toBe(true);
+		});
+
+		it('maps GitHub logins to provider-neutral assignees', async () => {
+			graphql.mockResolvedValue({
+				node: {
+					...ITEM_NODE,
+					content: {
+						...ITEM_NODE.content,
+						assignees: {
+							nodes: [
+								{ id: 'U_ada', login: 'ada', name: 'Ada Lovelace' },
+								// A GitHub account with no profile name reports null/'' — that's
+								// "no display name", not an empty one.
+								{ id: 'U_grace', login: 'grace', name: null },
+							],
+						},
+					},
+				},
+			});
+
+			const item = await provider.getWorkItem('PVTI_x');
+
+			expect(item.assignees).toEqual([
+				{ handle: 'ada', displayName: 'Ada Lovelace', providerId: 'U_ada' },
+				{ handle: 'grace', displayName: undefined, providerId: 'U_grace' },
+			]);
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('assignees(first: 10)'), {
+				itemId: 'PVTI_x',
+			});
+		});
+
+		it('drops a node with no login and carries assignees through listWorkItems', async () => {
+			graphql.mockResolvedValue({
+				node: {
+					items: {
+						nodes: [
+							{
+								...ITEM_NODE,
+								content: {
+									...ITEM_NODE.content,
+									assignees: { nodes: [{ login: 'ada' }, { id: 'U_broken' }] },
+								},
+							},
+						],
+					},
+				},
+			});
+
+			const [item] = await provider.listWorkItems();
+
+			expect(item.assignees).toEqual([
+				{ handle: 'ada', displayName: undefined, providerId: undefined },
+			]);
 		});
 	});
 

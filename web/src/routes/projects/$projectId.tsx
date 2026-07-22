@@ -32,7 +32,6 @@ import {
 	moveTarget,
 	patchTarget,
 	removeTarget,
-	summarizeTargets,
 	targetKey,
 	toTargetList,
 } from '@/lib/agent-targets.js';
@@ -510,24 +509,22 @@ const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 /** Card wrapper recipe shared by the phase-detail sections. */
 const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
-/**
- * A one-line summary of a phase's current target list and timeout override for
- * the navigation row — "Coded defaults" when nothing is set, else the targets in
- * priority order followed by the timeout (e.g. "Claude · Sonnet · High ▸ Codex ·
- * GPT-5.6 Terra · 30m"). The custom prompt is surfaced separately as a badge, not
- * folded into this string.
- */
-function phaseConfigSummary(config: AgentConfig): string {
-	const parts: string[] = [];
-	const targets = summarizeTargets(toTargetList(config));
-	if (targets) parts.push(targets);
-	if (config.timeoutMs != null) parts.push(`${config.timeoutMs / (60 * 1000)}m`);
-	return parts.length > 0 ? parts.join(' · ') : 'Coded defaults';
+/** The first target's model — the preferred model shown in the phase summary. */
+function preferredModelSummary(
+	config: AgentConfig,
+	projectDefaults?: AgentsConfig['defaults'],
+): string {
+	const preferredTarget = toTargetList(config)[0];
+	if (!preferredTarget?.cli) return 'Coded default';
+	return preferredTarget.model
+		? modelLabel(preferredTarget.cli, preferredTarget.model)
+		: getModelDefaultLabel(preferredTarget.cli, projectDefaults);
 }
 
 interface PhaseConfigRowProps {
 	phase: (typeof PHASES)[number];
 	config: AgentConfig;
+	projectDefaults?: AgentsConfig['defaults'];
 	isPending: boolean;
 	/** Enabled state for the optional phases; `undefined` for mandatory rows. */
 	enabled?: boolean;
@@ -620,6 +617,7 @@ export function PhaseToggleSwitch({
 export function PhaseConfigRow({
 	phase,
 	config,
+	projectDefaults,
 	isPending,
 	enabled,
 	enabledDisabled,
@@ -670,7 +668,9 @@ export function PhaseConfigRow({
 			</td>
 			<td className="px-4 py-3.5">
 				<div className="flex flex-wrap items-center gap-2">
-					<span className="text-sm text-zinc-300">{phaseConfigSummary(config)}</span>
+					<span className="text-sm text-zinc-300">
+						{preferredModelSummary(config, projectDefaults)}
+					</span>
 					{hasCustomPrompt && (
 						<span className="px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300 bg-violet-950/40 border border-violet-900/40 rounded">
 							Custom prompt
@@ -736,10 +736,6 @@ function PhaseDetailNote({ phase }: { phase: (typeof PHASES)[number] }) {
 /** Icon-button recipe for a target row's reorder/remove actions (ai/DESIGN_SYSTEM.md §4). */
 const ROW_ACTION_CLASS =
 	'p-1.5 rounded text-zinc-500 hover:bg-zinc-800/60 focus:outline-none focus:ring-1 focus:ring-violet-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
-
-/** Secondary-button recipe for the "Add target" control (ai/DESIGN_SYSTEM.md §4). */
-const SECONDARY_BUTTON_CLASS =
-	'inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed';
 
 interface TargetRowProps extends Omit<TargetHandlers, 'handleAddTarget'> {
 	phase: (typeof PHASES)[number];
@@ -926,24 +922,13 @@ function PhaseTargetList({
 	const canAdd = canAddTarget(targets);
 	return (
 		<div className="space-y-3">
-			<div className="flex items-start justify-between gap-4">
-				<div>
-					<h3 className="text-sm font-semibold text-zinc-200">Model targets</h3>
-					<p className="text-xs text-zinc-400 mt-1">
-						Listed in priority order. SWARM runs the top target whose CLI is available on the
-						worker, falling back down the list; each CLI can be used at most once, and an empty list
-						leaves the phase on the pipeline's coded defaults.
-					</p>
-				</div>
-				<button
-					type="button"
-					onClick={() => handleAddTarget(phase)}
-					disabled={isPending || !canAdd}
-					className={`${SECONDARY_BUTTON_CLASS} shrink-0`}
-				>
-					<Plus className="h-3.5 w-3.5" aria-hidden="true" />
-					Add target
-				</button>
+			<div>
+				<h3 className="text-sm font-semibold text-zinc-200">Model targets</h3>
+				<p className="text-xs text-zinc-400 mt-1">
+					Listed in priority order. SWARM runs the top target whose CLI is available on the worker,
+					falling back down the list; each CLI can be used at most once, and an empty list leaves
+					the phase on the pipeline's coded defaults.
+				</p>
 			</div>
 
 			{targets.length === 0 ? (
@@ -970,7 +955,23 @@ function PhaseTargetList({
 				</ol>
 			)}
 
-			{!canAdd && <p className="text-xs text-zinc-500">Every agent CLI already has a target.</p>}
+			{canAdd && (
+				<button
+					type="button"
+					onClick={() => handleAddTarget(phase)}
+					disabled={isPending}
+					aria-label="Add target"
+					className="flex w-full items-center gap-3 border border-dashed border-zinc-800 rounded-md bg-panel/20 p-4 text-left transition-colors hover:bg-zinc-800/20 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:cursor-not-allowed disabled:opacity-55"
+				>
+					<Plus className="h-4 w-4 shrink-0 text-zinc-400" aria-hidden="true" />
+					<span>
+						<span className="block text-sm font-medium text-zinc-200">Add target</span>
+						<span className="block text-xs text-zinc-400 mt-1">
+							Add an unused CLI as the next fallback target.
+						</span>
+					</span>
+				</button>
+			)}
 			{hasDuplicateCli(targets) && (
 				<p className="text-xs text-red-400">
 					Each agent CLI can appear at most once — remove the duplicate target before saving.
@@ -1256,7 +1257,7 @@ function AgentConfigurationForm({
 										<th className="px-4 py-3">Phase</th>
 										<th className="px-4 py-3">Enabled</th>
 										<th className="px-4 py-3">Auto-advance</th>
-										<th className="px-4 py-3">Configuration</th>
+										<th className="px-4 py-3">Preffered model</th>
 										<th className="px-4 py-3">
 											<span className="sr-only">Open</span>
 										</th>
@@ -1270,6 +1271,7 @@ function AgentConfigurationForm({
 												key={phase}
 												phase={phase}
 												config={agents[phase] ?? {}}
+												projectDefaults={agents.defaults}
 												isPending={isPending}
 												enabled={
 													TOGGLEABLE_PHASES.has(phase)

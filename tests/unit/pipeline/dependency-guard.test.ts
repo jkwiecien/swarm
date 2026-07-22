@@ -16,6 +16,7 @@ function pmWith(
 		createWorkItem: vi.fn(async () => createMockWorkItem()),
 		updateWorkItem: vi.fn(async () => {}),
 		supportsDependencies: overrides.supportsDependencies ?? true,
+		supportsAssignees: true,
 		listBlockers: overrides.listBlockers ?? vi.fn(async () => []),
 		addBlockedBy: vi.fn(async () => {}),
 	};

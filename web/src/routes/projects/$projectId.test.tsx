@@ -141,6 +141,32 @@ describe('PhaseConfigRow', () => {
 		expect(handleAutoAdvanceChange).toHaveBeenCalledWith('planning', false);
 	});
 
+	it('shows only the preferred model in the summary cell', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow
+						phase="planning"
+						config={{
+							targets: [
+								{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
+								{ cli: 'codex', model: 'gpt-5.6-terra' },
+							],
+							timeoutMs: 30 * 60 * 1000,
+						}}
+						isPending={false}
+						enabled={undefined}
+						onSelect={() => {}}
+					/>
+				</tbody>
+			</table>,
+		);
+
+		expect(screen.getByText('Sonnet')).toBeDefined();
+		expect(screen.queryByText('GPT-5.6 Terra')).toBeNull();
+		expect(screen.queryByText(/30m/)).toBeNull();
+	});
+
 	it('renders Review row with auto-advance as N/A', () => {
 		render(
 			<table>
@@ -218,19 +244,16 @@ describe('PhaseConfigRow', () => {
 		expect(handleSelect).toHaveBeenCalledTimes(1);
 	});
 
-	it('summarizes every target in priority order, then the timeout', () => {
+	it('shows the configured default for a preferred target without a model override', () => {
 		render(
 			<table>
 				<tbody>
 					<PhaseConfigRow
 						phase="planning"
 						config={{
-							targets: [
-								{ cli: 'claude', model: 'sonnet', reasoning: 'high' },
-								{ cli: 'codex', model: 'gpt-5.6-terra' },
-							],
-							timeoutMs: 30 * 60 * 1000,
+							targets: [{ cli: 'codex' }],
 						}}
+						projectDefaults={{ codex: 'gpt-5.5' }}
 						isPending={false}
 						onSelect={() => {}}
 					/>
@@ -238,10 +261,10 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Claude · Sonnet · High ▸ Codex · GPT-5.6 Terra · 30m')).toBeDefined();
+		expect(screen.getByText('Default (GPT-5.5)')).toBeDefined();
 	});
 
-	it('summarizes a config written before targets existed from its single selection', () => {
+	it('shows the model from a config written before targets existed', () => {
 		render(
 			<table>
 				<tbody>
@@ -255,10 +278,10 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Antigravity · Gemini 3.5 Flash · High')).toBeDefined();
+		expect(screen.getByText('Gemini 3.5 Flash')).toBeDefined();
 	});
 
-	it('falls back to "Coded defaults" when the phase overrides nothing', () => {
+	it('falls back to "Coded default" when the phase overrides nothing', () => {
 		render(
 			<table>
 				<tbody>
@@ -267,7 +290,7 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Coded defaults')).toBeDefined();
+		expect(screen.getByText('Coded default')).toBeDefined();
 	});
 });
 
@@ -539,24 +562,23 @@ describe('PhaseSettingsDetail — model targets', () => {
 		expect(handleRemoveTarget).toHaveBeenCalledWith('planning', 1);
 	});
 
-	it('adds a target until every CLI is used', () => {
+	it('adds a target from the card below the target list', () => {
 		const { handleAddTarget } = renderDetail(twoTargets);
 
 		const add = screen.getByRole('button', { name: 'Add target' }) as HTMLButtonElement;
 		expect(add.disabled).toBe(false);
+		expect(add.className).toContain('border-dashed');
+		expect(screen.getByRole('list').nextElementSibling).toBe(add);
 		fireEvent.click(add);
 		expect(handleAddTarget).toHaveBeenCalledWith('planning');
 	});
 
-	it('disables Add target once all three CLIs have one', () => {
+	it('hides the add-target card once all three CLIs have one', () => {
 		renderDetail({
 			targets: [{ cli: 'claude' }, { cli: 'codex' }, { cli: 'antigravity' }],
 		});
 
-		expect((screen.getByRole('button', { name: 'Add target' }) as HTMLButtonElement).disabled).toBe(
-			true,
-		);
-		expect(screen.getByText('Every agent CLI already has a target.')).toBeDefined();
+		expect(screen.queryByRole('button', { name: 'Add target' })).toBeNull();
 	});
 
 	it('explains that an empty list keeps the phase on coded defaults', () => {

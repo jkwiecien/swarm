@@ -31,6 +31,25 @@ export interface WorkItemLabel {
 	color?: string;
 }
 
+/**
+ * Who a work item is assigned to, in provider-neutral terms. `handle` is the
+ * provider's login/handle for the person (a GitHub login, a Jira account
+ * identifier); SWARM resolves it to one of its own users through the identity
+ * link (`src/identity/assignee-resolver.ts`) rather than pattern-matching a
+ * GitHub identity shape anywhere in shared code (ai/RULES.md §2).
+ *
+ * `providerId` is the provider's own stable id for the account when it exposes
+ * one. A handle can be renamed by its owner, so it is the field to re-link
+ * against when a link goes stale — nothing routes on it today.
+ */
+export interface WorkItemAssignee {
+	handle: string;
+	/** Human-friendly display name when the provider exposes one. */
+	displayName?: string;
+	/** Provider-native account id, when available. Informational. */
+	providerId?: string;
+}
+
 export interface WorkItem {
 	/** The provider-native item ID — a GitHub Projects v2 item node ID. */
 	id: string;
@@ -47,6 +66,12 @@ export interface WorkItem {
 	 */
 	statusId?: string;
 	labels: WorkItemLabel[];
+	/**
+	 * Who the item is assigned to — always present, `[]` when nobody is assigned
+	 * or the provider has no assignee concept ({@link PMProvider.supportsAssignees}
+	 * is `false`), same non-optional-array convention as {@link labels}.
+	 */
+	assignees: WorkItemAssignee[];
 	/** ISO 8601 creation timestamp as reported by the provider, when available. */
 	createdAt?: string;
 	/** ISO 8601 last-update timestamp as reported by the provider, when available. */
@@ -185,6 +210,16 @@ export interface PMProvider {
 	 * becomes after a split — the split "can even change [its] name".
 	 */
 	updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void>;
+
+	/**
+	 * Whether this provider models work-item assignees at all. `false` for a
+	 * provider with no assignee concept: it returns `assignees: []` on every item,
+	 * so a caller treats that item as unassigned instead of branching on the
+	 * provider (ai/RULES.md §2). A capability flag rather than an optional field
+	 * for the same reason as {@link supportsDependencies} — a second provider opts
+	 * out explicitly.
+	 */
+	readonly supportsAssignees: boolean;
 
 	/**
 	 * Whether this provider models cross-item "blocked by" dependencies at all.

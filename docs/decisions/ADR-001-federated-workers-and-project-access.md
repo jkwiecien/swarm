@@ -145,5 +145,16 @@ process; worker participation does not grant merge or administrator rights.
    enrollment policies decide automatically?
 4. Which project configuration fields may a worker override, and which are
    always enforced as shared project policy?
-5. How is a PM-provider assignee reliably mapped to a SWARM user when their
-   provider identity is missing, ambiguous, or not linked yet?
+5. ~~How is a PM-provider assignee reliably mapped to a SWARM user when their
+   provider identity is missing, ambiguous, or not linked yet?~~ **Resolved
+   (#130 Phase 1):** through an explicit **identity link**, not inference. A
+   work item's assignees are read provider-neutrally
+   (`WorkItem.assignees`/`PMProvider.supportsAssignees`, `src/pm/types.ts`), and
+   a `(provider, handle)` pair is linked to at most one SWARM user in
+   `user_identities` — a unique index, with keys normalized (trimmed +
+   lowercased), so **ambiguity is impossible by construction**. A missing or
+   unlinked handle resolves to nothing (`src/identity/assignee-resolver.ts`
+   returns `undefined`) rather than to a guess, which the routing gate treats as
+   the unassigned path. Links are seeded by an operator (`swarm identities
+   link`); automatic linking (OAuth / SCM account discovery) remains open, but
+   the resolution seam does not change when it arrives.
