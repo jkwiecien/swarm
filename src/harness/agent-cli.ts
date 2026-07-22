@@ -304,6 +304,14 @@ export interface AgentCliResult {
 	 * exact instant instead of parsing a human "resets …" hint.
 	 */
 	rateLimitResetAt?: Date;
+	/**
+	 * For Claude: structural terminal failure info if the run failed structurally
+	 * (i.e. with a failed terminal `result` event).
+	 */
+	claudeFailure?: {
+		subtype?: string;
+		message?: string;
+	};
 }
 
 /**
@@ -634,6 +642,9 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				usage: parsed.usage,
 				sessionId,
 				...(cli === 'claude' ? { rateLimitResetAt: findClaudeRateLimitReset(captured) } : {}),
+				...(cli === 'claude' && parsed.claudeFailure
+					? { claudeFailure: parsed.claudeFailure }
+					: {}),
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,

@@ -18,7 +18,6 @@
  */
 
 import type { AgentCliResult } from './agent-cli.js';
-import { CLAUDE_ERROR_PREFIX } from './claude-stream.js';
 
 /** Why an agent run failed, from the worker's point of view. */
 export type AgentFailureKind =
@@ -112,14 +111,6 @@ const TERMINAL_TAIL_LINES = 15;
 // A clock time optionally followed by a parenthesised IANA timezone, e.g.
 // `1:40pm (Europe/Warsaw)` or `13:40 (Europe/Warsaw)`.
 const RESET_TIME_RE = /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b(?:[^\n(]*\(([^)]+)\))?/i;
-
-/** The last rendered Claude terminal-failure line in the terminal-output window. */
-function claudeTerminalError(tail: string): string | undefined {
-	return tail
-		.split('\n')
-		.filter((line) => line.startsWith(CLAUDE_ERROR_PREFIX))
-		.at(-1);
-}
 
 function terminalTail(output: string): string {
 	return output
@@ -286,11 +277,15 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 		return { kind: 'capacity' };
 	if (result.cli === 'claude' && CLAUDE_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
-	const claudeError = result.cli === 'claude' ? claudeTerminalError(tail) : undefined;
+	const hasClaudeRateLimit =
+		result.cli === 'claude' &&
+		result.claudeFailure !== undefined &&
+		(CLAUDE_RATE_LIMIT_ERROR_RE.test(result.claudeFailure.subtype ?? '') ||
+			CLAUDE_RATE_LIMIT_ERROR_RE.test(result.claudeFailure.message ?? ''));
 	const resetMatch = RESET_RE.exec(tail);
 	const isRateLimited =
 		LIMIT_BANNER_RE.test(tail) ||
-		(claudeError !== undefined && CLAUDE_RATE_LIMIT_ERROR_RE.test(claudeError)) ||
+		hasClaudeRateLimit ||
 		((USAGE_LIMIT_RE.test(tail) || RATE_HTTP_RE.test(tail)) && resetMatch !== null);
 
 	if (!isRateLimited) return { kind: 'error' };

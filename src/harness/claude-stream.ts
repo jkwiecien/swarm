@@ -102,7 +102,7 @@ export function isClaudeErrorResult(event: ClaudeResultEvent): boolean {
 	return event.is_error === true || (event.subtype !== undefined && event.subtype !== 'success');
 }
 
-function errorDetail(error: unknown): string | undefined {
+export function errorDetail(error: unknown): string | undefined {
 	if (typeof error === 'string') return error;
 	const message = asRecord(error)?.message;
 	return typeof message === 'string' ? message : undefined;

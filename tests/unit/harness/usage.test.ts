@@ -89,6 +89,10 @@ describe('parseAgentOutput', () => {
 				logText:
 					'Claude run failed (error_during_execution): API Error: 429 rate limit; resets 1:40pm (Europe/Warsaw)',
 				sessionId: 'sess-9',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate limit; resets 1:40pm (Europe/Warsaw)',
+				},
 			});
 		});
 

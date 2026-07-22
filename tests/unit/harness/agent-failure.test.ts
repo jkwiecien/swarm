@@ -244,6 +244,10 @@ describe('classifyAgentFailure', () => {
 				cli: 'claude',
 				stdout:
 					'Claude run failed (error_during_execution): API Error: 429 rate_limit_error; resets 1:40pm (Europe/Warsaw)',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error; resets 1:40pm (Europe/Warsaw)',
+				},
 			}),
 			NOW,
 		);
@@ -260,6 +264,10 @@ describe('classifyAgentFailure', () => {
 				cli: 'claude',
 				stdout: 'Claude run failed (error_during_execution): 429; resets 1:40pm (Europe/Warsaw)',
 				rateLimitResetAt: new Date('2026-07-07T13:00:00Z'),
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: '429; resets 1:40pm (Europe/Warsaw)',
+				},
 			}),
 			NOW,
 		);
@@ -273,13 +281,27 @@ describe('classifyAgentFailure', () => {
 			result({
 				cli: 'claude',
 				stdout: 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error',
+				},
 			}),
 			NOW,
 		);
 		expect(failure.kind).toBe('rate-limit');
 		expect(failure.retryAfter).toBeUndefined();
 		expect(
-			agentRunError(result({ cli: 'claude', stdout: 'Claude run failed (x): 429' }), 'Run').message,
+			agentRunError(
+				result({
+					cli: 'claude',
+					stdout: 'Claude run failed (x): 429',
+					claudeFailure: {
+						subtype: 'x',
+						message: '429',
+					},
+				}),
+				'Run',
+			).message,
 		).toBe('Run (rate limited)');
 	});
 
@@ -307,12 +329,48 @@ describe('classifyAgentFailure', () => {
 		expect(failure.kind).toBe('error');
 	});
 
+	it('does not classify assistant text matching display prefix and containing 429 as rate-limit', () => {
+		// An assistant text event starts with "Claude run failed" and mentions "429",
+		// but there is no terminal failure result. It must be classified as a plain error.
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (analysis): HTTP 429 is covered by this test',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
+	});
+
+	it('retains rate-limit classification for an actual failed terminal result', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error',
+				},
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('rate-limit');
+	});
+
 	it('keeps timeout and abort ahead of a streamed Claude rate limit', () => {
 		const stdout = 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error';
-		expect(classifyAgentFailure(result({ cli: 'claude', stdout, timedOut: true }), NOW)).toEqual({
+		const claudeFailure = {
+			subtype: 'error_during_execution',
+			message: 'API Error: 429 rate_limit_error',
+		};
+		expect(
+			classifyAgentFailure(result({ cli: 'claude', stdout, claudeFailure, timedOut: true }), NOW),
+		).toEqual({
 			kind: 'timeout',
 		});
-		expect(classifyAgentFailure(result({ cli: 'claude', stdout, aborted: true }), NOW)).toEqual({
+		expect(
+			classifyAgentFailure(result({ cli: 'claude', stdout, claudeFailure, aborted: true }), NOW),
+		).toEqual({
 			kind: 'aborted',
 		});
 	});

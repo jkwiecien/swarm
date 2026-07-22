@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import type { AgentCli } from './agent-cli.js';
 import {
+	errorDetail,
 	findClaudeResultEvent,
 	formatClaudeResultError,
 	isClaudeErrorResult,
@@ -97,6 +98,14 @@ export interface ParsedAgentOutput {
 	 * `./antigravity-session.ts`), so this is absent for it.
 	 */
 	sessionId?: string;
+	/**
+	 * For Claude: structural terminal failure info if the run failed structurally
+	 * (i.e. with a failed terminal `result` event).
+	 */
+	claudeFailure?: {
+		subtype?: string;
+		message?: string;
+	};
 }
 
 /**
@@ -116,15 +125,27 @@ function parseClaudeOutput(stdout: string): ParsedAgentOutput {
 	const event = findClaudeResultEvent(stdout);
 	if (!event) return {};
 
-	const logText = isClaudeErrorResult(event)
+	const isError = isClaudeErrorResult(event);
+	const logText = isError
 		? formatClaudeResultError(event)
 		: event.result?.trim()
 			? event.result
 			: undefined;
 	const sessionId = event.session_id;
-	const base = {
+	const base: ParsedAgentOutput = {
 		...(logText === undefined ? {} : { logText }),
 		...(sessionId === undefined ? {} : { sessionId }),
+		...(isError
+			? {
+					claudeFailure: {
+						subtype: event.subtype,
+						message: [event.result, errorDetail(event.error)]
+							.map((part) => part?.replace(/\s+/g, ' ').trim())
+							.filter(Boolean)
+							.join(' '),
+					},
+				}
+			: {}),
 	};
 	if (!event.usage) return base;
 
