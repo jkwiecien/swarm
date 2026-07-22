@@ -17,6 +17,10 @@
  *   busy/current-run state.
  * - `listOwnerWorkers(ownerUserId)` — an owner's self-service view of their own
  *   workers and each worker's enrollments across projects.
+ * - `listProjectDispatchCandidates(projectId)` — the same project scope in the
+ *   shape the #130 dispatch gate judges (`src/worker/eligibility-gate.ts`):
+ *   worker + enrollment + resolved availability, in the deterministic
+ *   enrollment-creation order the scheduler selects by.
  *
  * **No secrets** leave this surface. The assembled views are built by explicitly
  * naming the safe fields (never spreading a row), so a repo path, PAT, local
@@ -31,6 +35,7 @@
  * `current_run_id` left over from a completed/failed run reads as idle.
  */
 
+import { getWorkerDispatchClaimState } from '../db/repositories/dispatchesRepository.js';
 import { getRunByIdFromDb } from '../db/repositories/runsRepository.js';
 import { getUserById } from '../db/repositories/usersRepository.js';
 import {
@@ -45,6 +50,7 @@ import {
 import { getWorkerById, listWorkersForOwner } from '../db/repositories/workersRepository.js';
 import type { AgentCli } from '../harness/agent-cli.js';
 import type { Worker } from './worker.js';
+import type { WorkerAvailability } from './worker-eligibility.js';
 import {
 	AllowedClisNotCapableError,
 	ConcurrencyAllocationSchema,
@@ -67,9 +73,10 @@ export {
 } from './worker-enrollment.js';
 
 /**
- * Derived run state for a worker — never client-supplied. `busy` is `true` only
- * while the worker's live session points at a run that is actually `running`;
- * `currentRunId` is that run's id, or `null` when idle.
+ * Derived run state for a worker — never client-supplied. `busy` is `true` when
+ * its live session has at least one active durable dispatch claim;
+ * `currentRunId` is one representative run id, or `null` when idle. The legacy
+ * session pointer remains a fallback for rows created before dispatch claims.
  */
 export interface WorkerRunState {
 	busy: boolean;
@@ -120,6 +127,33 @@ export interface OwnerWorkerView {
 }
 
 /**
+ * Read a worker's live-session state once: whether it holds a live lease
+ * (connection/health) and, when that session points at a run, whether that run
+ * is *actually* `running` in `runs`. Both derived read models below need the
+ * same two facts, so they share one pass rather than each re-reading the
+ * session.
+ */
+async function readWorkerExecutionState(
+	workerId: string,
+	projectId?: string,
+): Promise<{ connected: boolean; activeRuns: number; runningRunId: string | null }> {
+	const session = await getLiveSessionForWorker(workerId);
+	if (!session) return { connected: false, activeRuns: 0, runningRunId: null };
+	const claims = await getWorkerDispatchClaimState(workerId, projectId);
+	if (claims.activeRuns > 0) {
+		return {
+			connected: true,
+			activeRuns: claims.activeRuns,
+			runningRunId: claims.currentRunId,
+		};
+	}
+	if (!session.currentRunId) return { connected: true, activeRuns: 0, runningRunId: null };
+	const run = await getRunByIdFromDb(session.currentRunId);
+	const runningRunId = run?.status === 'running' ? run.id : null;
+	return { connected: true, activeRuns: runningRunId ? 1 : 0, runningRunId };
+}
+
+/**
  * Derive a worker's busy/current-run state from the run lifecycle. Reads the
  * worker's *live* Phase-2 session; a worker with no live session (never
  * acquired, expired, or released) is idle. When the live session points at a
@@ -129,13 +163,8 @@ export interface OwnerWorkerView {
  * trusted from a caller.
  */
 export async function deriveWorkerRunState(workerId: string): Promise<WorkerRunState> {
-	const session = await getLiveSessionForWorker(workerId);
-	if (!session?.currentRunId) return { busy: false, currentRunId: null };
-	const run = await getRunByIdFromDb(session.currentRunId);
-	if (run && run.status === 'running') {
-		return { busy: true, currentRunId: run.id };
-	}
-	return { busy: false, currentRunId: null };
+	const { activeRuns, runningRunId } = await readWorkerExecutionState(workerId);
+	return { busy: activeRuns > 0, currentRunId: runningRunId };
 }
 
 /** Assemble one roster entry from an enrollment + its worker + owner + derived run state. */
@@ -200,6 +229,51 @@ export async function listProjectRoster(projectId: string): Promise<WorkerRoster
 		entries.push(assembleRosterEntry(enrollment, worker, owner, runState));
 	}
 	return entries;
+}
+
+/**
+ * One worker the dispatch gate may consider for a project (#130 Phase 3) — the
+ * exact triple `evaluateWorkerEligibility` (`./worker-eligibility.ts`) judges. Unlike
+ * {@link WorkerRosterEntry} (a human-facing roster row) this keeps the domain
+ * shapes intact, including the worker's `ownerUserId`, which assignee affinity
+ * routes on. Still secret-free: `Worker` never carries the credential hash.
+ */
+export interface WorkerDispatchCandidate {
+	worker: Worker;
+	enrollment: WorkerEnrollment;
+	availability: WorkerAvailability;
+}
+
+/**
+ * Every worker enrolled in `projectId`, in the scheduler's **deterministic
+ * order**: enrollment creation time, then enrollment id as the tie-break
+ * (`listEnrollmentsForProject`). That order is the documented "first free
+ * eligible worker" sequence — stable across dispatches, so two re-checks of the
+ * same roster select the same worker.
+ *
+ * Ineligible workers are **not** filtered here: judging them is
+ * `evaluateWorkerEligibility`'s job (it needs the enrollment and
+ * availability to name *why*), so this read model stays a plain project-scoped
+ * listing. Project isolation falls out of the query being keyed on `projectId`.
+ * An enrollment whose worker vanished is skipped defensively, exactly as
+ * {@link listProjectRoster} does.
+ */
+export async function listProjectDispatchCandidates(
+	projectId: string,
+): Promise<WorkerDispatchCandidate[]> {
+	const enrollments = await listEnrollmentsForProject(projectId);
+	const candidates: WorkerDispatchCandidate[] = [];
+	for (const enrollment of enrollments) {
+		const worker = await getWorkerById(enrollment.workerId);
+		if (!worker) continue;
+		const { connected, activeRuns } = await readWorkerExecutionState(worker.id, projectId);
+		candidates.push({
+			worker,
+			enrollment,
+			availability: { connected, activeRuns },
+		});
+	}
+	return candidates;
 }
 
 /**

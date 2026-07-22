@@ -29,6 +29,36 @@ export interface DeferredRetryIntent {
 	 * prerequisite without exhausting its retry budget.
 	 */
 	dependencyRecheck?: boolean;
+	/**
+	 * This is a worker-eligibility re-check deferral (issue #339), not an agent
+	 * failure: no eligible worker could take the dispatch, so it consumes the
+	 * separate {@link SwarmJob.workerEligibilityRecheckAttempt} budget while it
+	 * waits for a worker to free up (or for consent/enrollment to be granted).
+	 */
+	workerEligibilityRecheck?: boolean;
+}
+
+/**
+ * Which attempt counter this deferral spends. The two token-free re-checks
+ * (dependency, worker eligibility) each have their own budget so a long wait on
+ * one can't exhaust the other or the small rate-limit budget; every other
+ * deferral is a failure retry and consumes the rate-limit one as before.
+ */
+function attemptCounterPatch(
+	job: SwarmJob,
+	intent: DeferredRetryIntent,
+): {
+	dependencyRecheckAttempt?: number;
+	workerEligibilityRecheckAttempt?: number;
+	rateLimitRetryAttempt?: number;
+} {
+	if (intent.dependencyRecheck) {
+		return { dependencyRecheckAttempt: (job.dependencyRecheckAttempt ?? 0) + 1 };
+	}
+	if (intent.workerEligibilityRecheck) {
+		return { workerEligibilityRecheckAttempt: (job.workerEligibilityRecheckAttempt ?? 0) + 1 };
+	}
+	return { rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1 };
 }
 
 /**
@@ -47,12 +77,10 @@ export function deriveRetryJobPayload(parsed: SwarmJob, intent: DeferredRetryInt
 	} = parsed;
 	return {
 		...job,
-		// A dependency re-check waits on an external condition, not a failure, so it
-		// spends its own budget and leaves the rate-limit one untouched; every other
-		// deferral consumes a rate-limit attempt as before.
-		...(intent.dependencyRecheck
-			? { dependencyRecheckAttempt: (job.dependencyRecheckAttempt ?? 0) + 1 }
-			: { rateLimitRetryAttempt: (job.rateLimitRetryAttempt ?? 0) + 1 }),
+		// A re-check waits on an external condition, not a failure, so it spends its
+		// own budget and leaves the rate-limit one untouched; every other deferral
+		// consumes a rate-limit attempt as before.
+		...attemptCounterPatch(parsed, intent),
 		// Carry the originating run row forward (issue #136) so the retry resets
 		// that same row instead of inserting a second one. `intent.runId` wins
 		// over any stale value on `parsed`.

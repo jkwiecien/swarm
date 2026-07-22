@@ -1,4 +1,5 @@
 import {
+	bigint,
 	bigserial,
 	boolean,
 	index,
@@ -13,6 +14,7 @@ import type { AgentUsage } from '../../harness/usage.js';
 import type { CancellationOrigin } from '../../queue/cancellation.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import { projects } from './projects.js';
+import { workers } from './workers.js';
 
 export const runs = pgTable(
 	'runs',
@@ -34,6 +36,10 @@ export const runs = pgTable(
 		 */
 		prTitle: text('pr_title'),
 		phase: text('phase').notNull(),
+		/** Registered worker that was authenticated and capacity-claimed for this attempt. */
+		workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+		/** Session fencing token used to bind this attempt to that worker host. */
+		workerFencingToken: bigint('worker_fencing_token', { mode: 'number' }),
 		engine: text('engine'),
 		model: text('model'),
 		/**
@@ -150,6 +156,7 @@ export const runs = pgTable(
 		index('idx_runs_project_id').on(table.projectId),
 		index('idx_runs_status').on(table.status),
 		index('idx_runs_started_at').on(table.startedAt),
+		index('idx_runs_worker_id').on(table.workerId),
 	],
 );
 
