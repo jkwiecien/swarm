@@ -74,6 +74,20 @@ export async function getWorkerById(id: string): Promise<Worker | undefined> {
 	return row ? rowToWorker(row) : undefined;
 }
 
+/**
+ * List every registered worker, oldest first — the installation-wide read the
+ * dashboard roster builds on (an `instanceAdmin` sees machines with no
+ * enrollment at all). Rows still map through `rowToWorker`, so the credential
+ * hash never leaves the repository. Empty if nothing is registered.
+ */
+export async function listAllWorkers(): Promise<Worker[]> {
+	const rows = await getDb()
+		.select()
+		.from(workers)
+		.orderBy(asc(workers.createdAt), asc(workers.id));
+	return rows.map(rowToWorker);
+}
+
 /** List every worker an owner operates, oldest first. Empty if they operate none. */
 export async function listWorkersForOwner(ownerUserId: string): Promise<Worker[]> {
 	const rows = await getDb()

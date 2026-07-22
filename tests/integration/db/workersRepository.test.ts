@@ -7,6 +7,7 @@ import {
 	createWorker,
 	findWorkerByCredentialHash,
 	getWorkerById,
+	listAllWorkers,
 	listWorkersForOwner,
 	removeWorker,
 	updateWorkerCapabilities,
@@ -295,6 +296,34 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('workersRepository (integr
 
 		it('returns an empty array for an owner with no workers', async () => {
 			expect(await listWorkersForOwner(adaId)).toEqual([]);
+		});
+	});
+
+	describe('listAllWorkers', () => {
+		it('returns every owner’s workers oldest first, still without a credential hash', async () => {
+			const first = await createWorker({
+				ownerUserId: adaId,
+				displayName: 'ada-laptop',
+				capabilities: ['claude'],
+				credentialHash: 'hash-a',
+			});
+			const second = await createWorker({
+				ownerUserId: graceId,
+				displayName: 'grace-laptop',
+				capabilities: ['codex'],
+				credentialHash: 'hash-b',
+			});
+
+			const all = await listAllWorkers();
+
+			expect(all.map((w) => w.id)).toEqual([first.id, second.id]);
+			for (const worker of all) {
+				expect(worker).not.toHaveProperty('credentialHash');
+			}
+		});
+
+		it('returns an empty array when nothing is registered', async () => {
+			expect(await listAllWorkers()).toEqual([]);
 		});
 	});
 

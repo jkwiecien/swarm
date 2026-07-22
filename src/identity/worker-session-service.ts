@@ -24,6 +24,7 @@
 import {
 	acquireLease,
 	getLiveSession,
+	getRetainedSession,
 	heartbeat as heartbeatLease,
 	releaseLease,
 	setCurrentRun as setCurrentRunRow,
@@ -160,4 +161,18 @@ export async function getLiveSessionForWorker(
 	ttlMs = resolveHeartbeatTtlMs(),
 ): Promise<WorkerSession | undefined> {
 	return getLiveSession(workerId, ttlMs);
+}
+
+/**
+ * The worker's retained session whatever its state — live, expired, or released.
+ * A server-side read seam (like {@link validateFencingToken}, it takes a
+ * `workerId` and holds no raw credential) for callers that need *last seen* for
+ * an offline worker: `lastHeartbeatAt` is when it was last heard from. It says
+ * nothing about liveness — {@link getLiveSessionForWorker} remains the single
+ * TTL-based online/offline check. `undefined` if the worker never connected.
+ */
+export async function getRetainedSessionForWorker(
+	workerId: string,
+): Promise<WorkerSession | undefined> {
+	return getRetainedSession(workerId);
 }

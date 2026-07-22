@@ -17,13 +17,17 @@ const {
 	updateEnrollmentConstraintsRow: vi.fn(),
 	updateEnrollmentStatus: vi.fn(),
 }));
-const { getWorkerById, listWorkersForOwner } = vi.hoisted(() => ({
+const { getWorkerById, listAllWorkers, listWorkersForOwner } = vi.hoisted(() => ({
 	getWorkerById: vi.fn(),
+	listAllWorkers: vi.fn(),
 	listWorkersForOwner: vi.fn(),
 }));
 const { getUserById } = vi.hoisted(() => ({ getUserById: vi.fn() }));
 const { getRunByIdFromDb } = vi.hoisted(() => ({ getRunByIdFromDb: vi.fn() }));
-const { getLiveSessionForWorker } = vi.hoisted(() => ({ getLiveSessionForWorker: vi.fn() }));
+const { getLiveSessionForWorker, getRetainedSessionForWorker } = vi.hoisted(() => ({
+	getLiveSessionForWorker: vi.fn(),
+	getRetainedSessionForWorker: vi.fn(),
+}));
 
 vi.mock('@/db/repositories/workerEnrollmentsRepository.js', () => ({
 	createEnrollment,
@@ -34,10 +38,17 @@ vi.mock('@/db/repositories/workerEnrollmentsRepository.js', () => ({
 	updateEnrollmentConstraints: updateEnrollmentConstraintsRow,
 	updateEnrollmentStatus,
 }));
-vi.mock('@/db/repositories/workersRepository.js', () => ({ getWorkerById, listWorkersForOwner }));
+vi.mock('@/db/repositories/workersRepository.js', () => ({
+	getWorkerById,
+	listAllWorkers,
+	listWorkersForOwner,
+}));
 vi.mock('@/db/repositories/usersRepository.js', () => ({ getUserById }));
 vi.mock('@/db/repositories/runsRepository.js', () => ({ getRunByIdFromDb }));
-vi.mock('@/identity/worker-session-service.js', () => ({ getLiveSessionForWorker }));
+vi.mock('@/identity/worker-session-service.js', () => ({
+	getLiveSessionForWorker,
+	getRetainedSessionForWorker,
+}));
 
 import type { SwarmUser } from '@/identity/schema.js';
 import type { Worker } from '@/identity/worker.js';
@@ -47,6 +58,7 @@ import {
 	approveEnrollment,
 	deriveWorkerRunState,
 	enrollWorker,
+	listDashboardWorkers,
 	listOwnerWorkers,
 	listProjectRoster,
 	setSharingConsent,
@@ -107,10 +119,12 @@ beforeEach(() => {
 		updateEnrollmentConstraintsRow,
 		updateEnrollmentStatus,
 		getWorkerById,
+		listAllWorkers,
 		listWorkersForOwner,
 		getUserById,
 		getRunByIdFromDb,
 		getLiveSessionForWorker,
+		getRetainedSessionForWorker,
 	]) {
 		m.mockReset();
 	}
@@ -238,6 +252,213 @@ describe('listOwnerWorkers', () => {
 	it('returns nothing for an owner with no workers', async () => {
 		listWorkersForOwner.mockResolvedValue([]);
 		expect(await listOwnerWorkers(OWNER_ID)).toEqual([]);
+	});
+});
+
+describe('listDashboardWorkers (issue #133)', () => {
+	const OTHER_WORKER_ID = '55555555-5555-4555-8555-555555555555';
+
+	/** A live session heartbeating now — the online case. */
+	function liveSession(currentRunId: string | null = null) {
+		return { currentRunId, lastHeartbeatAt: new Date('2026-07-01T12:00:00Z') };
+	}
+
+	describe('connectivity and last-seen', () => {
+		it('reports a worker with a live session online, with its live heartbeat as last seen', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession());
+
+			const [view] = await listDashboardWorkers(null);
+
+			expect(view.connection).toBe('online');
+			expect(view.lastSeenAt).toEqual(new Date('2026-07-01T12:00:00Z'));
+			// A live session already carries the freshest heartbeat.
+			expect(getRetainedSessionForWorker).not.toHaveBeenCalled();
+		});
+
+		it('reports an expired/released worker offline but keeps its retained last heartbeat', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue({
+				currentRunId: RUN_ID,
+				lastHeartbeatAt: new Date('2026-06-30T09:00:00Z'),
+			});
+
+			const [view] = await listDashboardWorkers(null);
+
+			expect(view.connection).toBe('offline');
+			expect(view.lastSeenAt).toEqual(new Date('2026-06-30T09:00:00Z'));
+			// An offline worker is running nothing, whatever its stale row still points at.
+			expect(view.currentRunId).toBeNull();
+			expect(getRunByIdFromDb).not.toHaveBeenCalled();
+		});
+
+		it('reports a never-connected worker offline with no last-seen value', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue(undefined);
+
+			const [view] = await listDashboardWorkers(null);
+
+			expect(view).toMatchObject({ connection: 'offline', lastSeenAt: null, currentRunId: null });
+		});
+	});
+
+	describe('active run', () => {
+		it('exposes the run id only while that run is actually running', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(RUN_ID));
+			getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'running', projectId: 'proj-a' });
+
+			const [view] = await listDashboardWorkers(null);
+			expect(view.currentRunId).toBe(RUN_ID);
+		});
+
+		it('reads a stale pointer to a completed run as idle', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(RUN_ID));
+			getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'completed', projectId: 'proj-a' });
+
+			const [view] = await listDashboardWorkers(null);
+			expect(view.currentRunId).toBeNull();
+		});
+	});
+
+	describe('authorization scope', () => {
+		it('gives an administrator every registered worker, including an un-enrolled one', async () => {
+			listAllWorkers.mockResolvedValue([
+				makeWorker(),
+				makeWorker({ id: OTHER_WORKER_ID, displayName: 'unenrolled-box' }),
+			]);
+			listEnrollmentsForWorker.mockImplementation(async (workerId: string) =>
+				workerId === WORKER_ID ? [makeEnrollment({ projectId: 'proj-a' })] : [],
+			);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue(undefined);
+
+			const views = await listDashboardWorkers(null);
+
+			expect(views.map((v) => v.displayName)).toEqual(['ada-laptop', 'unenrolled-box']);
+			expect(views[1].enrollments).toEqual([]);
+		});
+
+		it('hides a worker an ordinary viewer shares no accessible project with', async () => {
+			listAllWorkers.mockResolvedValue([
+				makeWorker(),
+				makeWorker({ id: OTHER_WORKER_ID, displayName: 'stranger-box' }),
+			]);
+			listEnrollmentsForWorker.mockImplementation(async (workerId: string) =>
+				workerId === WORKER_ID
+					? [makeEnrollment({ projectId: 'proj-a' })]
+					: [makeEnrollment({ id: 'e-other', projectId: 'proj-secret' })],
+			);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue(undefined);
+
+			const views = await listDashboardWorkers(['proj-a']);
+
+			expect(views.map((v) => v.displayName)).toEqual(['ada-laptop']);
+		});
+
+		it('lists a worker enrolled in several visible projects once, showing both enrollments', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([
+				makeEnrollment({ projectId: 'proj-a', status: 'active' }),
+				makeEnrollment({ id: 'e2', projectId: 'proj-b', status: 'pending' }),
+			]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue(undefined);
+
+			const views = await listDashboardWorkers(['proj-a', 'proj-b']);
+
+			expect(views).toHaveLength(1);
+			expect(views[0].enrollments).toEqual([
+				{ projectId: 'proj-a', status: 'active' },
+				{ projectId: 'proj-b', status: 'pending' },
+			]);
+		});
+
+		it('strips an inaccessible project’s enrollment from a visible worker’s row', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([
+				makeEnrollment({ projectId: 'proj-a' }),
+				makeEnrollment({ id: 'e2', projectId: 'proj-secret', status: 'suspended' }),
+			]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(undefined);
+			getRetainedSessionForWorker.mockResolvedValue(undefined);
+
+			const [view] = await listDashboardWorkers(['proj-a']);
+
+			expect(view.enrollments).toEqual([{ projectId: 'proj-a', status: 'active' }]);
+		});
+
+		it('withholds an in-flight run belonging to a project outside the viewer’s scope', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([
+				makeEnrollment({ projectId: 'proj-a' }),
+				makeEnrollment({ id: 'e2', projectId: 'proj-secret' }),
+			]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(RUN_ID));
+			getRunByIdFromDb.mockResolvedValue({
+				id: RUN_ID,
+				status: 'running',
+				projectId: 'proj-secret',
+			});
+
+			const [view] = await listDashboardWorkers(['proj-a']);
+
+			// The worker is visible (shared project) but its run is not.
+			expect(view.connection).toBe('online');
+			expect(view.currentRunId).toBeNull();
+		});
+
+		it('returns nothing — and reads no workers — for a viewer with no accessible project', async () => {
+			expect(await listDashboardWorkers([])).toEqual([]);
+			expect(listAllWorkers).not.toHaveBeenCalled();
+		});
+	});
+
+	it('exposes exactly the roster fields — no credential, path, constraint, or approval control', async () => {
+		listAllWorkers.mockResolvedValue([makeWorker()]);
+		listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+		getUserById.mockResolvedValue(makeOwner());
+		getLiveSessionForWorker.mockResolvedValue(liveSession(RUN_ID));
+		getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'running', projectId: 'proj-a' });
+
+		const [view] = await listDashboardWorkers(null);
+
+		expect(Object.keys(view).sort()).toEqual(
+			[
+				'capabilities',
+				'connection',
+				'currentRunId',
+				'displayName',
+				'enrollments',
+				'lastSeenAt',
+				'owner',
+				'workerId',
+			].sort(),
+		);
+		expect(Object.keys(view.owner ?? {}).sort()).toEqual(['displayName', 'identifier', 'userId']);
+		// Enrollment summaries carry approval state only — no consent/allowed-CLI/
+		// concurrency knob the screen could turn into a control.
+		expect(Object.keys(view.enrollments[0]).sort()).toEqual(['projectId', 'status']);
+		expect(JSON.stringify(view)).not.toMatch(/credential|password|token|repoRoot|worktree/i);
 	});
 });
 
