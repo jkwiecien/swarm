@@ -12,6 +12,7 @@ describe('registerBuiltInTriggers', () => {
 			'pr-review',
 			'resolve-conflicts',
 			'pr-review-submitted',
+			'preplan-invalidated',
 			'pm-status-changed',
 		]);
 	});

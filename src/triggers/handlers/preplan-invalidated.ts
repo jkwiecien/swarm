@@ -1,0 +1,75 @@
+/**
+ * Re-enter Planning when a preplanned split child is invalidated while its card
+ * already sits in Planning. Issue body/label changes do not produce a Projects
+ * status event, so the normal PM status trigger cannot observe these changes.
+ */
+
+import type { ProjectConfig } from '../../config/schema.js';
+import { createGitHubProjectsProvider } from '../../integrations/pm/github-projects/provider.js';
+import { logger } from '../../lib/logger.js';
+import {
+	evaluatePreplan,
+	isPreplanSkip,
+	REPLAN_LABEL,
+	SPLIT_CHILD_LABEL,
+} from '../../pipeline/preplan.js';
+import type { PMProvider, WorkItem } from '../../pm/types.js';
+import type { GitHubParsedEvent } from '../../router/adapters/github.js';
+import type { TriggerContext, TriggerHandler, TriggerResult } from '../types.js';
+
+function isInvalidationEvent(event: GitHubParsedEvent): boolean {
+	if (event.eventType !== 'issues') return false;
+	if (event.action === 'edited') return event.workItemBodyChanged === true;
+	if (event.action === 'labeled') return event.labelName === REPLAN_LABEL;
+	return event.action === 'unlabeled' && event.labelName === SPLIT_CHILD_LABEL;
+}
+
+function shouldReplan(workItem: WorkItem, event: GitHubParsedEvent): boolean {
+	const isSplitChild = workItem.labels.some((label) => label.name === SPLIT_CHILD_LABEL);
+	const preplan = evaluatePreplan(workItem);
+	if (isSplitChild && isPreplanSkip(preplan)) return false;
+
+	// An authoritative split-child label proves body/replan invalidation. For
+	// label removal, the webhook itself is the proof because the current item no
+	// longer carries the label by definition.
+	return isSplitChild || (event.action === 'unlabeled' && event.labelName === SPLIT_CHILD_LABEL);
+}
+
+export interface PreplanInvalidatedTriggerDeps {
+	/** Injectable PM-provider factory; overridden by unit tests. */
+	createProvider?: (project: ProjectConfig) => PMProvider;
+}
+
+export function createPreplanInvalidatedTrigger(
+	deps: PreplanInvalidatedTriggerDeps = {},
+): TriggerHandler {
+	const createProvider = deps.createProvider ?? createGitHubProjectsProvider;
+
+	return {
+		name: 'preplan-invalidated',
+		description: 'Restarts Planning when a preplanned child is explicitly invalidated',
+
+		matches(ctx: TriggerContext): boolean {
+			return ctx.source === 'github' && isInvalidationEvent(ctx.event);
+		},
+
+		async handle(ctx: TriggerContext): Promise<TriggerResult | null> {
+			if (ctx.source !== 'github' || !isInvalidationEvent(ctx.event)) return null;
+			const { event, project } = ctx;
+			if (!event.workItemId || !event.workItemUrl) return null;
+
+			const pm = createProvider(project);
+			const planningItems = await pm.listWorkItems({ status: 'planning' });
+			const workItem = planningItems.find((item) => item.url === event.workItemUrl);
+			if (!workItem || !shouldReplan(workItem, event)) return null;
+
+			logger.info('preplan-invalidated: dispatching fallback Planning', {
+				itemId: workItem.id,
+				taskId: event.workItemId,
+				action: event.action,
+				labelName: event.labelName,
+			});
+			return { phase: 'planning', taskId: event.workItemId, workItem };
+		},
+	};
+}

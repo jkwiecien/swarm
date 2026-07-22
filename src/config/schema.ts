@@ -345,8 +345,8 @@ export const PipelineConfigSchema = z
 		 * `autoSplit` (default `true`) lets the planning agent decompose a task it
 		 * judges too large for a single PR: the original item becomes the smaller
 		 * first task (re-scoped, possibly renamed), and the remaining work is spawned
-		 * as sibling items that are each planned automatically but never auto-advance
-		 * to "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
+		 * as sibling items that are preplanned by the parent and never auto-advance to
+		 * "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
 		 *
 		 * `maxConcerns` (default `1`, only used when `autoSplit` is on) is the
 		 * single-task budget the deterministic post-plan guard enforces: the largest

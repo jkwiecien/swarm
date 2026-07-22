@@ -180,10 +180,13 @@ const DEFAULT_AUTO_SPLIT = true;
 const DEFAULT_MAX_CONCERNS = 1;
 
 /**
- * Status a spawned sibling starts in: Backlog. Its parent already supplied the
- * child-specific plan, so the sibling waits for a human to deliberately start it.
+ * A sibling is first created in Backlog, so its validated preplan marker can be
+ * written before its subsequent move to Planning emits a status event.
  */
-const SIBLING_START_STATUS: PmStatusKey = 'backlog';
+const SIBLING_CREATION_STATUS: PmStatusKey = 'backlog';
+
+/** Final board status for a preplanned split child. */
+const SIBLING_START_STATUS: PmStatusKey = 'planning';
 
 /**
  * Cap on captured agent output, so a chatty/runaway Antigravity run can't grow the
@@ -368,11 +371,11 @@ function enforceSingleTaskBudget(
 
 /**
  * Comment posted on a spawned sibling so the board shows what happened: which
- * ordered phase it is, that it came from splitting the parent, that it will be
- * planned automatically but will NOT move to "ToDo" on its own, and — the first
- * of the two dependency guards (issue #330) — the exact earlier phases that block
- * it. The second guard is the native `blocked by` relationship {@link applySplit}
- * records; this human-readable list stands in for it on a provider that can't.
+ * ordered phase it is, that it came from splitting the parent, whether automatic
+ * preparation reached Planning or left it in Backlog, and — the first of the two
+ * dependency guards (issue #330) — the exact earlier phases that block it. The
+ * second guard is the native `blocked by` relationship {@link applySplit} records;
+ * this human-readable list stands in for it on a provider that can't.
  *
  * `predecessors` are every phase that must land before this one, in order (phase 1
  * first) — for phase N that is phases 1..N-1. Empty only for the first task, which
@@ -383,6 +386,7 @@ export function splitChildCommentBody(
 	predecessors: readonly WorkItem[],
 	phaseNumber: number,
 	totalPhases: number,
+	prepared: boolean,
 ): string {
 	const lines = [
 		`## 🧩 Phase ${phaseNumber} of ${totalPhases} — split from a larger task`,
@@ -398,11 +402,20 @@ export function splitChildCommentBody(
 			'',
 		);
 	}
-	lines.push(
-		'SWARM plans this task automatically, but it will **not** move to **ToDo** on its own,',
-		'and its implementation stays blocked until the phases above are done — move it to',
-		'**ToDo** when you are ready and its prerequisites have landed.',
-	);
+	if (prepared) {
+		lines.push(
+			"SWARM has already prepared this task's plan and placed it in **Planning**. Its valid",
+			'preplan marker prevents a second Planning-agent run, and it will **not** move to',
+			'**ToDo** on its own. Its implementation stays blocked until the phases above are done —',
+			'move it to **ToDo** when you are ready and its prerequisites have landed.',
+		);
+	} else {
+		lines.push(
+			'SWARM could not finish preparing this task automatically, so it remains in **Backlog**.',
+			'Move it to **Planning** when you are ready; SWARM will validate any saved preplan and',
+			'run a Planning agent normally if that preplan is missing or invalid.',
+		);
+	}
 	return lines.join('\n');
 }
 
@@ -490,24 +503,26 @@ function readPlanOrThrow(
 
 /**
  * Apply a split: re-scope/rename the original item into the smaller first task
- * (when the agent asked), then spawn each sibling task in Backlog — tagged as a
+ * (when the agent asked), then spawn each sibling task in Planning — tagged as a
  * split child, with a comment explaining the split, and with the parent-written
- * plan embedded as a validated preplanned marker in
- * its issue body ({@link embedPreplanMarker}) so the trigger can skip a redundant
- * Planning dispatch instead of launching a fresh agent (docs/OPTIMIZATION.md §3).
+ * plan embedded as a validated preplanned marker in its issue body
+ * ({@link embedPreplanMarker}) before it enters Planning. It is created in Backlog
+ * solely for that ordering: the marker exists before either its Planning move or
+ * delayed creation webhook is handled, so the trigger can safely skip a redundant
+ * Planning dispatch (docs/OPTIMIZATION.md §3).
  * Returns the spawned siblings' IDs (in order) and whether the original was
  * patched. Split out of {@link runPlanningPhase} for the same complexity-budget
  * reason as {@link readPlanOrThrow}.
  *
  * The marker is embedded via a follow-up `updateWorkItem` (not at creation)
  * because it binds the sibling's own backing-issue URL, which only exists once
- * the item is created. That embed (contract build + marker update) is wrapped in
- * a try/catch: a failure there is logged and swallowed so the sibling is still
- * created (and its split comment posted) — it simply stays unmarked and falls
- * back to a normal Planning run for that child, rather than failing the whole
- * parent run mid-loop (which a retry would then duplicate). The `createWorkItem`
- * and split comment are deliberately outside the catch — those are the split
- * itself, not the optimization, so their failures must still surface.
+ * the item is created. Marker creation/update and the subsequent Planning move
+ * are wrapped in a try/catch: a failure is logged and swallowed so the sibling is
+ * still created, remains in Backlog, and receives an honest fallback comment,
+ * rather than failing the whole parent run mid-loop (which a retry would then
+ * duplicate it). The `createWorkItem` and split comment are deliberately outside
+ * the catch — those are the split itself, not the optimization, so their failures
+ * must still surface.
  */
 async function applySplit(
 	pm: PMProvider,
@@ -533,9 +548,10 @@ async function applySplit(
 		const sibling = await pm.createWorkItem({
 			title: sub.title,
 			description: sub.description,
-			status: SIBLING_START_STATUS,
+			status: SIBLING_CREATION_STATUS,
 			labels: ['swarm', SPLIT_CHILD_LABEL],
 		});
+		let prepared = false;
 		try {
 			const contract = buildPreplanContract({
 				splitId,
@@ -549,8 +565,10 @@ async function applySplit(
 			await pm.updateWorkItem(sibling.id, {
 				description: embedPreplanMarker(sub.description, contract),
 			});
+			await pm.moveWorkItem(sibling.id, SIBLING_START_STATUS);
+			prepared = true;
 		} catch (error) {
-			logger.warn('Planning — failed to embed preplan marker; child will re-plan normally', {
+			logger.warn('Planning — failed to prepare split child; leaving it in Backlog', {
 				parentId: parent.id,
 				siblingId: sibling.id,
 				splitId,
@@ -566,7 +584,7 @@ async function applySplit(
 		await linkBlockedBy(pm, sibling, predecessors, splitId, childIndex);
 		await pm.addComment(
 			sibling.id,
-			splitChildCommentBody(firstTask, predecessors, childIndex + 2, totalPhases),
+			splitChildCommentBody(firstTask, predecessors, childIndex + 2, totalPhases, prepared),
 		);
 		subTaskItemIds.push(sibling.id);
 		predecessors.push(sibling);
@@ -614,9 +632,10 @@ async function linkBlockedBy(
  * When `autoSplit` (default `true`) is on and the agent judged the item too large,
  * it also writes `proposed_split.json`: the original item is re-scoped into the
  * smaller first task (`proposed_plan.md` is that task's plan) and the remaining
- * work is spawned as sibling items. Each sibling starts in Backlog, is tagged with
- * {@link SPLIT_CHILD_LABEL}, and gets a comment explaining the split — the human
- * then starts each sibling in order. The original
+ * work is spawned as sibling items. Each sibling enters Planning only after its
+ * validated preplan marker is written, is tagged with {@link SPLIT_CHILD_LABEL},
+ * and gets a comment explaining the split. Its marker suppresses a second Planning
+ * agent run; the human then starts implementation by moving it to ToDo in order. The original
  * (first task) still honors `autoAdvance` as usual, unless it is itself a
  * split-child.
  *

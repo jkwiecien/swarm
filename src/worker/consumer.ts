@@ -1629,50 +1629,6 @@ async function selfEnqueueNextPhase(
 }
 
 /**
- * A split child is created in Planning by the worker's own persona, so its
- * GitHub Projects webhook is intentionally dropped by the self-authored-event
- * guard. Queue a synthetic status event here to start its detailed Planning
- * phase without reopening that feedback loop at the router boundary.
- */
-async function selfEnqueueSplitChildPlanning(
-	project: ProjectConfig,
-	itemNodeIds: string[],
-): Promise<void> {
-	for (const itemNodeId of itemNodeIds) {
-		try {
-			const job: SwarmJob = {
-				type: 'github-projects',
-				projectId: project.id,
-				event: {
-					eventType: 'projects_v2_item',
-					action: 'edited',
-					itemNodeId,
-					projectNodeId: project.githubProjects.projectId,
-					changedFieldNodeId: project.githubProjects.statusFieldId,
-					changedFieldType: 'single_select',
-				},
-			};
-			await createAndPublishDispatch({
-				projectId: project.id,
-				jobPayload: job,
-				priority: priorityFor(job) ?? 0,
-				source: 'synthetic',
-			});
-			logger.debug('pm-status: self-enqueued Planning for split child', {
-				projectId: project.id,
-				itemNodeId,
-			});
-		} catch (err) {
-			logger.error('Failed to self-enqueue Planning for split child', {
-				projectId: project.id,
-				itemNodeId,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	}
-}
-
-/**
  * Persist a durable merge dispatch after an eligible Review approval (issue
  * #292). The eligibility gate lives here, at the composition root, so pipeline
  * code neither merges nor schedules queue work (`ai/RULES.md` §2): only a
@@ -2327,9 +2283,6 @@ export async function processJob(
 		await tryCompleteDispatch(dispatch.id, 'phase-succeeded');
 		if (trigger.phase === 'planning' || trigger.phase === 'implementation') {
 			await selfEnqueueNextPhase(project, trigger.workItem, result.movedTo);
-		}
-		if (trigger.phase === 'planning' && result.split) {
-			await selfEnqueueSplitChildPlanning(project, result.split.subTaskItemIds);
 		}
 		// Ordering matters: this must run *after* `tryCompleteDispatch` above. The
 		// merge dispatch it persists is linked to this same `runId`, and the
