@@ -19,7 +19,9 @@ import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import {
 	createDispatch,
+	type DispatchRow,
 	failExpiredDispatchLeases,
+	failSupersededWorkerDispatchClaims,
 	listDeferredRunsWithoutActiveDispatch,
 	listProjectsWithCapacityPending,
 	listWakeablePendingDispatches,
@@ -48,26 +50,49 @@ const LEGACY_MERGE_FOLLOW_UP_QUEUE = 'swarm-merge-follow-ups';
 
 const DEAD_LEASE_REASON =
 	'Worker lease expired without the dispatch settling — reconciled as failed (dead worker or crashed phase)';
+const SUPERSEDED_WORKER_SESSION_REASON =
+	'Worker session was superseded before the dispatch settled — reconciled as failed';
 
-/**
- * Fail leased/running dispatches abandoned by a dead process, and settle their
- * still-`running` run rows the same way so the two records never disagree.
- * With `asOf` unset (startup) every claim is reclaimed — a fresh single worker
- * owns no in-flight dispatch; with `asOf` set (periodic) only expired leases
- * are touched, so a live run is never reaped.
- */
-async function reclaimDeadLeases(asOf?: Date): Promise<number> {
-	const failed = await failExpiredDispatchLeases(DEAD_LEASE_REASON, asOf);
+async function settleFailedDispatchRuns(failed: DispatchRow[]): Promise<void> {
 	for (const dispatch of failed) {
 		if (dispatch.runId) {
-			await failRunFromStatus(dispatch.runId, DEAD_LEASE_REASON, 'running').catch((err) =>
-				logger.error('dispatch-reconciler: failed to settle run for dead lease', {
+			await failRunFromStatus(
+				dispatch.runId,
+				dispatch.lastError ?? DEAD_LEASE_REASON,
+				'running',
+			).catch((err) =>
+				logger.error('dispatch-reconciler: failed to settle run for dead worker claim', {
 					runId: dispatch.runId,
 					error: describeError(err),
 				}),
 			);
 		}
 	}
+}
+
+/**
+ * Fail leased/running dispatches abandoned by a dead process, and settle their
+ * still-`running` run rows the same way so the two records never disagree.
+ * Only leases expired by `asOf` are reclaimed. A newly started federated worker
+ * must not fail another host's still-live dispatch.
+ */
+async function reclaimDeadLeases(asOf: Date): Promise<number> {
+	const failed = await failExpiredDispatchLeases(DEAD_LEASE_REASON, asOf);
+	await settleFailedDispatchRuns(failed);
+	return failed.length;
+}
+
+/** Reap claims left by this worker's older fenced session after re-acquisition. */
+export async function reconcileSupersededWorkerClaims(
+	workerId: string,
+	activeFencingToken: number,
+): Promise<number> {
+	const failed = await failSupersededWorkerDispatchClaims(
+		workerId,
+		activeFencingToken,
+		SUPERSEDED_WORKER_SESSION_REASON,
+	);
+	await settleFailedDispatchRuns(failed);
 	return failed.length;
 }
 
@@ -339,7 +364,7 @@ async function drainLegacyMergeFollowUpQueue(): Promise<void> {
  */
 export async function reconcileDispatchesAtStartup(): Promise<void> {
 	try {
-		const reclaimed = await reclaimDeadLeases();
+		const reclaimed = await reclaimDeadLeases(new Date());
 		const legacy = await backfillLegacyPendingContinuations();
 		const orphans = await backfillOrphanedDeferredRuns();
 		const merges = await backfillLegacyMergeFollowUps();

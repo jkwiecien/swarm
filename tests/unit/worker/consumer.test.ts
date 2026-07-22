@@ -133,6 +133,7 @@ const createAndPublishDispatch = vi.fn(async (_input: unknown) => ({
 const promoteNextCapacityDispatch = vi.fn(async (_projectId: string, _prioritize?: boolean) => {});
 const publishDispatchWakeUp = vi.fn(async (_dispatch: unknown) => {});
 vi.mock('@/dispatch/dispatcher.js', () => ({
+	DISPATCH_LEASE_OWNER: 'test-host:1',
 	claimDispatchForJob: (job: Record<string, unknown>, leaseMs: number) =>
 		claimDispatchForJob(job, leaseMs),
 	createAndPublishDispatch: (input: unknown) => createAndPublishDispatch(input),
@@ -160,7 +161,18 @@ const scheduleDispatchRetry = vi.fn(
 		state: 'retry-scheduled',
 	}),
 );
+const claimWorkerForDispatch = vi.fn(
+	async (
+		_input: unknown,
+	): Promise<
+		{ claimed: true; dispatch: MockDispatchRow } | { claimed: false; reason: 'wrong-worker-host' }
+	> => ({
+		claimed: true,
+		dispatch: mockDispatchRow({}),
+	}),
+);
 vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
+	claimWorkerForDispatch: (input: unknown) => claimWorkerForDispatch(input),
 	completeDispatch: (id: string, outcome: string) => completeDispatch(id, outcome),
 	failDispatch: (id: string, error: string) => failDispatch(id, error),
 	cancelClaimedDispatch: (id: string, reason: string) => cancelClaimedDispatch(id, reason),
@@ -444,6 +456,11 @@ describe('processJob', () => {
 		recordDispatchResolution.mockClear();
 		deferDispatchToPending.mockClear();
 		scheduleDispatchRetry.mockClear();
+		claimWorkerForDispatch.mockClear();
+		claimWorkerForDispatch.mockResolvedValue({
+			claimed: true,
+			dispatch: mockDispatchRow({}),
+		});
 		refreshConflictResolutionClaim.mockClear();
 		refreshReviewDispatchClaim.mockClear();
 		releaseReviewDispatch.mockClear();
@@ -1743,6 +1760,12 @@ describe('processJob', () => {
 			taskId: '10',
 			workItem,
 		});
+		const executionIdentity = (workerId: string) => ({
+			workerId,
+			sessionId: `session-${workerId}`,
+			fencingToken: 7,
+			heartbeatTtlMs: 60_000,
+		});
 
 		it('runs the phase locally for an unfederated project (no enrolled workers)', async () => {
 			// The single-local-worker MVP is untouched by the gate: with nothing
@@ -1825,11 +1848,39 @@ describe('processJob', () => {
 			expect(phaseCalls).toEqual([]);
 		});
 
+		it('refuses execution when a different authenticated worker host dequeues the job', async () => {
+			listProjectDispatchCandidates.mockResolvedValue([candidate('w-alice')]);
+			claimWorkerForDispatch.mockResolvedValue({
+				claimed: false,
+				reason: 'wrong-worker-host',
+			});
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-bob'),
+			);
+
+			expect(outcome).toMatchObject({ status: 'phase-deferred', workerEligibilityRecheck: true });
+			expect(claimWorkerForDispatch).toHaveBeenCalledWith(
+				expect.objectContaining({
+					selectedWorkerId: 'w-alice',
+					executionWorkerId: 'w-bob',
+				}),
+			);
+			expect(phaseCalls).toEqual([]);
+			expect(createRun).not.toHaveBeenCalled();
+			expect(markDispatchRunning).not.toHaveBeenCalled();
+		});
+
 		it('re-checks on every dispatch, so a revocation blocks the next attempt only', async () => {
 			listProjectDispatchCandidates.mockResolvedValue([candidate('w-1')]);
 			const first = await processJob(
 				createMockGitHubProjectsWebhookJob(),
 				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-1'),
 			);
 			expect(first.status).toBe('phase-succeeded');
 
@@ -1866,7 +1917,12 @@ describe('processJob', () => {
 				candidate('w-claude', { capabilities: ['claude'] }),
 			]);
 
-			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(planningTrigger()));
+			await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(planningTrigger()),
+				undefined,
+				executionIdentity('w-claude'),
+			);
 
 			expect(phaseCalls[0].args).toMatchObject({
 				cli: 'claude',
@@ -1874,7 +1930,13 @@ describe('processJob', () => {
 				reasoning: 'high',
 			});
 			expect(createRun).toHaveBeenCalledWith(
-				expect.objectContaining({ engine: 'claude', model: 'opus', reasoning: 'high' }),
+				expect.objectContaining({
+					workerId: 'w-claude',
+					workerFencingToken: 7,
+					engine: 'claude',
+					model: 'opus',
+					reasoning: 'high',
+				}),
 			);
 		});
 	});

@@ -22,6 +22,7 @@ import { cancelDispatchAndWake, promoteNextCapacityDispatch } from '../dispatch/
 import {
 	reconcileDispatchesAtStartup,
 	reconcileDispatchesPeriodically,
+	reconcileSupersededWorkerClaims,
 } from '../dispatch/reconciler.js';
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { optionalEnv, requireEnv } from '../lib/env.js';
@@ -38,6 +39,10 @@ import {
 	reportInterruptedJobToBoard,
 	resolveAgentTimeoutMs,
 } from './consumer.js';
+import {
+	acquireWorkerExecutionSession,
+	type WorkerExecutionSession,
+} from './execution-identity.js';
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
@@ -122,14 +127,58 @@ try {
 	process.exit(1);
 }
 
+const rawWorkerCredential = optionalEnv('SWARM_WORKER_CREDENTIAL', '').trim();
+let executionSession: WorkerExecutionSession | undefined;
+if (rawWorkerCredential) {
+	try {
+		executionSession = await acquireWorkerExecutionSession(rawWorkerCredential);
+		logger.info('Authenticated worker execution session acquired', {
+			workerId: executionSession.identity.workerId,
+			sessionId: executionSession.identity.sessionId,
+		});
+	} catch (err) {
+		logger.error('Failed to acquire configured worker execution session — refusing to start', {
+			error: describeError(err),
+		});
+		process.exit(1);
+	}
+} else {
+	logger.warn(
+		'SWARM_WORKER_CREDENTIAL is unset — this process may serve unfederated projects only',
+	);
+}
+
+// A newly fenced session supersedes every older claim for the same registered
+// worker. Reap those claims immediately rather than waiting for their longer
+// agent-timeout dispatch leases; other hosts' claims remain untouched.
+if (executionSession) {
+	try {
+		const reconciled = await reconcileSupersededWorkerClaims(
+			executionSession.identity.workerId,
+			executionSession.identity.fencingToken,
+		);
+		if (reconciled > 0) {
+			logger.warn('Reconciled claims from a superseded worker session at startup', {
+				count: reconciled,
+				workerId: executionSession.identity.workerId,
+			});
+		}
+	} catch (err) {
+		logger.error('Failed to reconcile superseded worker-session claims at startup', {
+			error: describeError(err),
+		});
+	}
+}
+
 // Reconcile zombie runs left `running` by a prior crash or watch restart that
 // killed the process before it wrote a terminal status — otherwise they show as
-// "running" in the dashboard forever. Safe here (before the Worker pulls any
-// job) because a fresh worker owns no in-flight run. Best-effort: a hiccup must
-// not stop the worker from serving jobs.
+// "running" in the dashboard forever. Federated startup scopes this cleanup to
+// the authenticated worker, so another live host's runs are never reaped.
+// Best-effort: a hiccup must not stop the worker from serving jobs.
 try {
 	const reconciled = await failOrphanedRunningRuns(
 		'Worker restarted while this run was in progress',
+		executionSession?.identity.workerId,
 	);
 	if (reconciled > 0) {
 		logger.debug('Reconciled orphaned running runs at startup', { count: reconciled });
@@ -154,9 +203,9 @@ const shutdown = new AbortController();
 async function resetProjectSlots(): Promise<void> {
 	try {
 		const projects = await listAllProjectsFromDb();
-		// Slot counters are per-worker leases and must be reset after a crash. Pending
-		// dispatches are durable work, however, so retain them and wake one per
-		// project now that the reset made a slot available.
+		// These Redis slot counters serve only unfederated execution and must be reset
+		// after a crash. Federated capacity lives in durable dispatch claims. Pending
+		// dispatches remain durable work, so retain them and wake one per project.
 		await Promise.all(projects.map((project) => resetProjectSlot(project.id)));
 		await Promise.all(
 			projects.map((project) =>
@@ -223,7 +272,12 @@ const worker = new Worker(
 			}
 			return { status: 'no-trigger' } as const;
 		}
-		return await processJob(SwarmJobSchema.parse(job.data), registry, shutdown.signal);
+		return await processJob(
+			SwarmJobSchema.parse(job.data),
+			registry,
+			shutdown.signal,
+			executionSession?.identity,
+		);
 	},
 	{
 		connection: parseRedisUrl(requireEnv('REDIS_URL')),
@@ -241,6 +295,45 @@ const worker = new Worker(
 		maxStalledCount: 0,
 	},
 );
+
+let stoppingForLostSession = false;
+async function stopForLostWorkerSession(): Promise<void> {
+	if (stoppingForLostSession) return;
+	stoppingForLostSession = true;
+	shutdown.abort();
+	try {
+		await worker.close();
+	} catch (err) {
+		logger.error('Worker close after execution-session loss failed', {
+			error: describeError(err),
+		});
+	}
+	process.exit(1);
+}
+
+const workerSessionHeartbeatInterval = executionSession
+	? setInterval(
+			() => {
+				void executionSession?.heartbeat().then(
+					(refreshed) => {
+						if (refreshed) return;
+						logger.error('Worker execution session was lost — aborting in-flight work', {
+							workerId: executionSession?.identity.workerId,
+						});
+						void stopForLostWorkerSession();
+					},
+					(err) => {
+						logger.error('Worker execution-session heartbeat failed — aborting in-flight work', {
+							error: describeError(err),
+						});
+						void stopForLostWorkerSession();
+					},
+				);
+			},
+			Math.max(1_000, Math.floor(executionSession.identity.heartbeatTtlMs / 3)),
+		)
+	: undefined;
+workerSessionHeartbeatInterval?.unref();
 
 worker.on('completed', (job, outcome: JobOutcome) => {
 	// A `phase-deferred` outcome needs no action here (issue #284): `processJob`
@@ -387,11 +480,19 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		clearInterval(staleRunSweepInterval);
 		clearInterval(dispatchReconcileInterval);
 		clearInterval(quotaDiscoveryInterval);
+		if (workerSessionHeartbeatInterval) clearInterval(workerSessionHeartbeatInterval);
 		shutdown.abort();
 		void cancellationSubscription.close();
 		void closeRunCancellationRedis();
 		void worker.close().then(
-			() => process.exit(0),
+			async () => {
+				await executionSession?.release().catch((err) =>
+					logger.warn('Failed to release worker execution session during shutdown', {
+						error: describeError(err),
+					}),
+				);
+				process.exit(0);
+			},
 			(err) => {
 				logger.error('Worker close failed', {
 					error: err instanceof Error ? err.message : String(err),

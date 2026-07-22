@@ -22,8 +22,8 @@ import { users } from './users.js';
  * `user_sessions.token_hash` / `users.password_hash` get. It is unique so a
  * credential resolves to at most one worker (the authentication seam).
  *
- * Like the rest of the multi-user foundation this is inert for now: nothing reads
- * it yet — worker sessions (Phase 2) and enrollment/routing (Phase 3, #130) do.
+ * Worker sessions, enrollment, and the eligibility gate consume this identity
+ * when selecting and claiming an execution host.
  */
 export const workers = pgTable(
 	'workers',

@@ -15,7 +15,8 @@
  * (`validateFencingToken`, the seam #130 calls). `lastHeartbeatAt` drives
  * expiry: a session is *live* only while its last heartbeat is within the
  * heartbeat TTL, and an expired session may be re-acquired with a bumped token.
- * `currentRunId` is the run the session is executing, or `null` when idle.
+ * `currentRunId` is a legacy single-run pointer. Federated capacity is tracked
+ * by durable dispatch claims because one worker may have multiple allocations.
  *
  * This is the persisted-row read model; `src/db/schema/workerSessions.ts` is its
  * table and `src/db/repositories/workerSessionsRepository.ts` owns the atomic
@@ -34,7 +35,7 @@ export const INITIAL_FENCING_TOKEN = 1;
  * session row's own generated `uuid`. `fencingToken` is a per-worker monotonic
  * counter (starts at {@link INITIAL_FENCING_TOKEN}, bumped on each re-acquire);
  * `lastHeartbeatAt` is the instant expiry is measured from; `currentRunId` is a
- * nullable `runs.id` — the run this session is executing, or `null` when idle.
+ * nullable compatibility pointer into `runs`.
  */
 export const WorkerSessionSchema = z.object({
 	id: z.string().uuid(),

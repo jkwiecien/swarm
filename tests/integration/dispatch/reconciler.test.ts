@@ -98,7 +98,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE || !process.env.SWARM_TEST_
 				source: 'webhook',
 				runId,
 			});
-			await claimDispatch(dispatch.id, 'dead-worker:1', 60_000);
+			await claimDispatch(dispatch.id, 'dead-worker:1', -1_000);
 
 			await reconcileDispatchesAtStartup();
 

@@ -12,12 +12,18 @@
  * durable record.
  */
 
-import { and, asc, desc, eq, inArray, lte, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lte, ne, notInArray, sql } from 'drizzle-orm';
+import type { AgentCli } from '../../harness/agent-cli.js';
+import { isSessionLive } from '../../identity/worker-session.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
 import { getDb } from '../client.js';
 import { dispatches } from '../schema/dispatches.js';
+import { projects } from '../schema/projects.js';
 import { runs } from '../schema/runs.js';
+import { workerProjectEnrollments } from '../schema/workerProjectEnrollments.js';
+import { workerSessions } from '../schema/workerSessions.js';
+import { workers } from '../schema/workers.js';
 
 export type DispatchRow = typeof dispatches.$inferSelect;
 
@@ -171,6 +177,9 @@ export async function claimDispatch(
 			leaseOwner: owner,
 			leaseExpiresAt: new Date(now.getTime() + leaseMs),
 			waitReason: null,
+			selectedWorkerId: sql`CASE WHEN ${dispatches.state} IN ('pending', 'retry-scheduled') THEN NULL ELSE ${dispatches.selectedWorkerId} END`,
+			workerSessionId: sql`CASE WHEN ${dispatches.state} IN ('pending', 'retry-scheduled') THEN NULL ELSE ${dispatches.workerSessionId} END`,
+			workerFencingToken: sql`CASE WHEN ${dispatches.state} IN ('pending', 'retry-scheduled') THEN NULL ELSE ${dispatches.workerFencingToken} END`,
 			updatedAt: now,
 		})
 		.where(
@@ -220,6 +229,205 @@ export async function recordDispatchResolution(
 		.update(dispatches)
 		.set({ taskId, phase, updatedAt: new Date() })
 		.where(eq(dispatches.id, id));
+}
+
+export type WorkerDispatchClaimRefusal =
+	| 'not-claimable'
+	| 'wrong-worker-host'
+	| 'project-capacity'
+	| 'worker-unavailable'
+	| 'missing-enrollment'
+	| 'missing-consent'
+	| 'missing-cli-capability';
+
+export type WorkerDispatchClaimResult =
+	| { claimed: true; dispatch: DispatchRow }
+	| { claimed: false; reason: WorkerDispatchClaimRefusal };
+
+export interface ClaimWorkerForDispatchInput {
+	dispatchId: string;
+	dispatchLeaseOwner: string;
+	projectId: string;
+	selectedWorkerId: string;
+	executionWorkerId: string;
+	workerSessionId: string;
+	workerFencingToken: number;
+	cli: AgentCli;
+	heartbeatTtlMs: number;
+}
+
+function dispatchClaimRefusal(
+	dispatch: DispatchRow | undefined,
+	input: ClaimWorkerForDispatchInput,
+): WorkerDispatchClaimRefusal | undefined {
+	if (!dispatch) return 'not-claimable';
+	if (dispatch.state !== 'leased') return 'not-claimable';
+	if (dispatch.leaseOwner !== input.dispatchLeaseOwner) return 'not-claimable';
+	if (dispatch.projectId !== input.projectId) return 'not-claimable';
+	return undefined;
+}
+
+function sessionClaimRefusal(
+	session: typeof workerSessions.$inferSelect | undefined,
+	input: ClaimWorkerForDispatchInput,
+	now: Date,
+): WorkerDispatchClaimRefusal | undefined {
+	if (!session) return 'worker-unavailable';
+	if (session.workerId !== input.selectedWorkerId) return 'worker-unavailable';
+	if (session.fencingToken !== input.workerFencingToken) return 'worker-unavailable';
+	if (session.released) return 'worker-unavailable';
+	if (!isSessionLive(session.lastHeartbeatAt, input.heartbeatTtlMs, now)) {
+		return 'worker-unavailable';
+	}
+	return undefined;
+}
+
+function eligibilityClaimRefusal(
+	worker: typeof workers.$inferSelect | undefined,
+	enrollment: typeof workerProjectEnrollments.$inferSelect | undefined,
+	cli: AgentCli,
+): WorkerDispatchClaimRefusal | undefined {
+	if (!worker || !enrollment || enrollment.status !== 'active') return 'missing-enrollment';
+	if (!enrollment.sharingConsent) return 'missing-consent';
+	if (!worker.capabilities.includes(cli) || !enrollment.allowedClis.includes(cli)) {
+		return 'missing-cli-capability';
+	}
+	return undefined;
+}
+
+/**
+ * Bind a leased dispatch to the selected worker's authenticated live session and
+ * atomically reserve one project allocation slot. The worker-session row is the
+ * serialization lock: every claim for the same worker queues behind it, so the
+ * active-claim count and insert/update form one capacity decision.
+ */
+export async function claimWorkerForDispatch(
+	input: ClaimWorkerForDispatchInput,
+): Promise<WorkerDispatchClaimResult> {
+	if (input.selectedWorkerId !== input.executionWorkerId) {
+		return { claimed: false, reason: 'wrong-worker-host' };
+	}
+
+	return getDb().transaction(async (tx) => {
+		const now = new Date();
+		const [dispatch] = await tx
+			.select()
+			.from(dispatches)
+			.where(eq(dispatches.id, input.dispatchId))
+			.for('update')
+			.limit(1);
+		const dispatchRefusal = dispatchClaimRefusal(dispatch, input);
+		if (dispatchRefusal) return { claimed: false, reason: dispatchRefusal };
+		const [project] = await tx
+			.select({ maxConcurrentJobs: projects.maxConcurrentJobs })
+			.from(projects)
+			.where(eq(projects.id, input.projectId))
+			.for('update')
+			.limit(1);
+
+		const [session] = await tx
+			.select()
+			.from(workerSessions)
+			.where(eq(workerSessions.id, input.workerSessionId))
+			.for('update')
+			.limit(1);
+		const sessionRefusal = sessionClaimRefusal(session, input, now);
+		if (sessionRefusal) return { claimed: false, reason: sessionRefusal };
+
+		const [worker] = await tx
+			.select()
+			.from(workers)
+			.where(eq(workers.id, input.selectedWorkerId))
+			.limit(1);
+		const [enrollment] = await tx
+			.select()
+			.from(workerProjectEnrollments)
+			.where(
+				and(
+					eq(workerProjectEnrollments.workerId, input.selectedWorkerId),
+					eq(workerProjectEnrollments.projectId, input.projectId),
+				),
+			)
+			.for('update')
+			.limit(1);
+		const eligibilityRefusal = eligibilityClaimRefusal(worker, enrollment, input.cli);
+		if (eligibilityRefusal) return { claimed: false, reason: eligibilityRefusal };
+
+		const activeClaimPredicate = and(
+			ne(dispatches.id, input.dispatchId),
+			inArray(dispatches.state, ['leased', 'running']),
+			gt(dispatches.leaseExpiresAt, now),
+		);
+		const [projectCapacity] = await tx
+			.select({ activeRuns: sql<number>`count(*)::int` })
+			.from(dispatches)
+			.where(
+				and(
+					eq(dispatches.projectId, input.projectId),
+					sql`${dispatches.selectedWorkerId} IS NOT NULL`,
+					activeClaimPredicate,
+				),
+			);
+		if ((projectCapacity?.activeRuns ?? 0) >= (project?.maxConcurrentJobs ?? 0)) {
+			return { claimed: false, reason: 'project-capacity' };
+		}
+
+		const [workerCapacity] = await tx
+			.select({ activeRuns: sql<number>`count(*)::int` })
+			.from(dispatches)
+			.where(
+				and(
+					eq(dispatches.projectId, input.projectId),
+					eq(dispatches.selectedWorkerId, input.selectedWorkerId),
+					activeClaimPredicate,
+				),
+			);
+		if ((workerCapacity?.activeRuns ?? 0) >= (enrollment?.concurrencyAllocation ?? 0)) {
+			return { claimed: false, reason: 'worker-unavailable' };
+		}
+
+		const [claimed] = await tx
+			.update(dispatches)
+			.set({
+				selectedWorkerId: input.selectedWorkerId,
+				workerSessionId: input.workerSessionId,
+				workerFencingToken: input.workerFencingToken,
+				updatedAt: now,
+			})
+			.where(
+				and(
+					eq(dispatches.id, input.dispatchId),
+					eq(dispatches.state, 'leased'),
+					eq(dispatches.leaseOwner, input.dispatchLeaseOwner),
+				),
+			)
+			.returning();
+		return { claimed: true, dispatch: claimed as DispatchRow };
+	});
+}
+
+/** Active, unexpired execution claims for a worker, optionally within one project. */
+export async function getWorkerDispatchClaimState(
+	workerId: string,
+	projectId?: string,
+): Promise<{ activeRuns: number; currentRunId: string | null }> {
+	const predicates = [
+		eq(dispatches.selectedWorkerId, workerId),
+		inArray(dispatches.state, ['leased', 'running']),
+		gt(dispatches.leaseExpiresAt, new Date()),
+	];
+	if (projectId) predicates.push(eq(dispatches.projectId, projectId));
+	const [summary] = await getDb()
+		.select({
+			activeRuns: sql<number>`count(*)::int`,
+			currentRunId: sql<string | null>`min(${dispatches.runId}::text)`,
+		})
+		.from(dispatches)
+		.where(and(...predicates));
+	return {
+		activeRuns: summary?.activeRuns ?? 0,
+		currentRunId: summary?.currentRunId ?? null,
+	};
 }
 
 /** Settle a leased/running dispatch as `completed` with a terminal outcome. */
@@ -336,6 +544,9 @@ export async function scheduleDispatchRetry(
 			wakeSeq: sql`${dispatches.wakeSeq} + 1`,
 			leaseOwner: null,
 			leaseExpiresAt: null,
+			selectedWorkerId: null,
+			workerSessionId: null,
+			workerFencingToken: null,
 			...(input.runId !== undefined ? { runId: input.runId } : {}),
 			updatedAt: now,
 		})
@@ -370,6 +581,9 @@ export async function deferDispatchToPending(
 			wakeSeq: sql`${dispatches.wakeSeq} + 1`,
 			leaseOwner: null,
 			leaseExpiresAt: null,
+			selectedWorkerId: null,
+			workerSessionId: null,
+			workerFencingToken: null,
 			...(input.continuation !== undefined ? { continuation: input.continuation } : {}),
 			...(input.runId !== undefined ? { runId: input.runId } : {}),
 			updatedAt: now,
@@ -499,13 +713,40 @@ export async function supersedeDispatchesByCoalesceKey(
 
 /**
  * Fail every leased/running dispatch whose lease expired before `asOf` — the
- * reconciler's dead-worker reclaim. Pass `asOf = undefined` at startup to fail
- * *all* leased/running dispatches (single-worker MVP: a fresh worker owns no
- * in-flight dispatch, so any claim found at boot belongs to a dead process).
+ * reconciler's dead-worker reclaim. The cutoff is required so no caller can
+ * accidentally reap another worker host's still-live lease.
  */
 export async function failExpiredDispatchLeases(
 	reason: string,
-	asOf?: Date,
+	asOf: Date,
+): Promise<DispatchRow[]> {
+	const now = new Date();
+	return getDb()
+		.update(dispatches)
+		.set({
+			state: 'failed',
+			lastError: reason,
+			leaseOwner: null,
+			leaseExpiresAt: null,
+			waitReason: null,
+			completedAt: now,
+			updatedAt: now,
+		})
+		.where(
+			and(inArray(dispatches.state, ['leased', 'running']), lte(dispatches.leaseExpiresAt, asOf)),
+		)
+		.returning();
+}
+
+/**
+ * Fail this worker's claims from an older fenced session. A newly acquired
+ * session proves every different token for the same worker is stale even when
+ * its dispatch lease has not reached its longer agent-timeout expiry yet.
+ */
+export async function failSupersededWorkerDispatchClaims(
+	workerId: string,
+	activeFencingToken: number,
+	reason: string,
 ): Promise<DispatchRow[]> {
 	const now = new Date();
 	return getDb()
@@ -521,8 +762,9 @@ export async function failExpiredDispatchLeases(
 		})
 		.where(
 			and(
+				eq(dispatches.selectedWorkerId, workerId),
 				inArray(dispatches.state, ['leased', 'running']),
-				...(asOf ? [lte(dispatches.leaseExpiresAt, asOf)] : []),
+				sql`${dispatches.workerFencingToken} IS DISTINCT FROM ${activeFencingToken}`,
 			),
 		)
 		.returning();

@@ -43,9 +43,8 @@
  * `unfederated` and the local worker runs the phase exactly as before — there is
  * no other user's machine involved, so there is nothing to consent to. Federated
  * routing therefore switches on the moment a project enrolls its first worker.
- * Selection is advisory in-process today (the single local worker executes the
- * selected target itself); the ordering, affinity, and refusal semantics are
- * the durable part, and hold unchanged for N > 1 workers.
+ * `consumer.ts` turns a selected result into an authenticated, fenced,
+ * atomic-capacity claim before it may create a run or enter a phase.
  *
  * Provider-neutral by construction (ai/RULES.md §2): the gate speaks
  * `WorkItemAssignee` + `SwarmUser` + worker/enrollment domain types, and reads

@@ -21,6 +21,7 @@ import { getAppSettings } from '../db/repositories/appSettingsRepository.js';
 import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
 import {
 	cancelClaimedDispatch,
+	claimWorkerForDispatch,
 	completeDispatch,
 	type DispatchRow,
 	type DispatchWaitReason,
@@ -47,6 +48,7 @@ import {
 import {
 	claimDispatchForJob,
 	createAndPublishDispatch,
+	DISPATCH_LEASE_OWNER,
 	parseDispatchPayload,
 	promoteNextCapacityDispatch,
 	publishDispatchWakeUp,
@@ -117,17 +119,23 @@ import {
 	resolveDependencyRecheckIntervalMs,
 } from './dependency-recheck.js';
 import {
+	type DispatchSelection,
 	evaluateDispatchEligibility,
 	type GateDecision,
 	WorkerIneligibleError,
 } from './eligibility-gate.js';
+import type { WorkerExecutionIdentity } from './execution-identity.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import {
 	type MergeAutomationSettledOutcome,
 	processMergeAutomationDispatch,
 	requestMergeAutomation,
 } from './merge-automation.js';
-import { acquireProjectSlot, releaseProjectSlot } from './project-concurrency.js';
+import {
+	acquireProjectSlot,
+	releaseProjectSlot,
+	type SlotAcquisition,
+} from './project-concurrency.js';
 import {
 	beginRunCancellationTracking,
 	linkRunAbortController,
@@ -957,7 +965,20 @@ interface PhaseResolution {
 	 * (issue #339). Absent for an unfederated project, where local routing picks
 	 * the target instead.
 	 */
-	selection?: TargetSelection;
+	selection?: DispatchSelection;
+	/** Authenticated session that claimed `selection`; present exactly when selection is bound. */
+	executionIdentity?: WorkerExecutionIdentity;
+}
+
+/** Adapt the federated worker+target selection to the shared target-routing shape. */
+function targetSelectionFor(selection: DispatchSelection | undefined): TargetSelection | undefined {
+	if (!selection) return undefined;
+	return {
+		target: selection.target,
+		index: selection.targetIndex,
+		skipped: selection.skippedClis,
+		fallback: false,
+	};
 }
 
 /**
@@ -1265,7 +1286,8 @@ function agentOverrideFor(
 	const policy = resolveTargetPolicy(phaseConfig, job);
 	const routing = policy.pinned
 		? undefined
-		: (resolution.selection ?? selectTarget(phaseConfig.targets, resolution.availableClis));
+		: (targetSelectionFor(resolution.selection) ??
+			selectTarget(phaseConfig.targets, resolution.availableClis));
 	// With no routing decision the policy's own first entry applies: the pinned
 	// target, or the phase's coded defaults when it configured no list at all.
 	const target = routing?.target ?? policy.targets[0];
@@ -1340,6 +1362,8 @@ async function tryReuseLatestRun(
 		overrides.engine,
 		job.resumeSession ? undefined : null,
 		recoveryVal,
+		resolution.selection?.workerId,
+		resolution.executionIdentity?.fencingToken,
 	);
 	if (!claimed) return undefined;
 	job.runId = prior.id;
@@ -1376,6 +1400,8 @@ async function tryResetCarriedRun(
 			overrides.engine,
 			job.resumeSession ? undefined : null,
 			recoveryVal,
+			resolution.selection?.workerId,
+			resolution.executionIdentity?.fencingToken,
 		))
 			? runId
 			: undefined;
@@ -1491,6 +1517,8 @@ async function tryCreateRun(
 			projectId: project.id,
 			taskId: trigger.taskId,
 			phase: trigger.phase,
+			workerId: resolution.selection?.workerId,
+			workerFencingToken: resolution.executionIdentity?.fencingToken,
 			workItemId: 'workItem' in trigger ? trigger.workItem.id : undefined,
 			workItemTitle: 'workItem' in trigger ? trigger.workItem.title : undefined,
 			workItemUrl: 'workItem' in trigger && trigger.workItem.url ? trigger.workItem.url : undefined,
@@ -2157,7 +2185,7 @@ async function gateDispatch(
 	trigger: TriggerResult,
 	job: SwarmJob,
 	implementationUnplanned: boolean,
-): Promise<TargetSelection | undefined> {
+): Promise<DispatchSelection | undefined> {
 	const phaseConfig = phaseAgentConfig(project, trigger.phase, implementationUnplanned);
 	// PR-driven phases carry no board item, so they take the unassigned path.
 	const workItem = 'workItem' in trigger ? trigger.workItem : undefined;
@@ -2196,18 +2224,77 @@ async function gateDispatch(
 		targetIndex: selection.targetIndex,
 		unavailable: selection.skippedClis,
 	});
-	return {
-		target: selection.target,
-		index: selection.targetIndex,
-		skipped: selection.skippedClis,
-		fallback: false,
-	};
+	return selection;
+}
+
+/**
+ * Convert the gate's read-side selection into a fenced, atomic execution claim.
+ * The claim re-checks the session, enrollment, consent, CLI, and capacity under
+ * one worker-session row lock, closing the observation-to-execution race.
+ */
+async function bindSelectedWorker(
+	dispatch: DispatchRow,
+	selection: DispatchSelection,
+	executionIdentity: WorkerExecutionIdentity | undefined,
+): Promise<void> {
+	if (!executionIdentity) {
+		throw new WorkerIneligibleError(
+			selection.assignedUserId ? 'assignee-worker-unavailable' : 'worker-unavailable',
+			`Worker '${selection.workerName}' was selected, but this process has no authenticated SWARM_WORKER_CREDENTIAL and may not execute that worker's dispatch. Waiting for the selected worker host.`,
+		);
+	}
+	const claim = await claimWorkerForDispatch({
+		dispatchId: dispatch.id,
+		dispatchLeaseOwner: DISPATCH_LEASE_OWNER,
+		projectId: dispatch.projectId,
+		selectedWorkerId: selection.workerId,
+		executionWorkerId: executionIdentity.workerId,
+		workerSessionId: executionIdentity.sessionId,
+		workerFencingToken: executionIdentity.fencingToken,
+		cli: selection.cli,
+		heartbeatTtlMs: executionIdentity.heartbeatTtlMs,
+	});
+	if (claim.claimed) return;
+
+	const assignedUnavailable = selection.assignedUserId
+		? 'assignee-worker-unavailable'
+		: 'worker-unavailable';
+	switch (claim.reason) {
+		case 'wrong-worker-host':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				`Worker '${selection.workerName}' was selected, but this queue job was claimed by a different authenticated worker host. Waiting for the selected worker host; cross-worker execution is forbidden.`,
+			);
+		case 'worker-unavailable':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				`Worker '${selection.workerName}' lost its live session or available capacity before execution could be claimed. Waiting and re-checking eligibility.`,
+			);
+		case 'project-capacity':
+			throw new WorkerIneligibleError(
+				'worker-unavailable',
+				`Project '${dispatch.projectId}' reached its configured concurrent-job limit before worker execution could be claimed. Waiting for an active dispatch to settle.`,
+			);
+		case 'missing-enrollment':
+		case 'missing-consent':
+		case 'missing-cli-capability':
+			throw new WorkerIneligibleError(
+				claim.reason,
+				`Worker '${selection.workerName}' became ineligible (${claim.reason}) before execution could be claimed. Re-checking the project worker roster before retry.`,
+			);
+		case 'not-claimable':
+			throw new WorkerIneligibleError(
+				assignedUnavailable,
+				'The durable dispatch changed state before its selected-worker claim could be persisted. Re-checking before retry.',
+			);
+	}
 }
 
 export async function processJob(
 	job: SwarmJob,
 	registry: TriggerRegistry,
 	signal?: AbortSignal,
+	executionIdentity?: WorkerExecutionIdentity,
 ): Promise<JobOutcome> {
 	// Claim the durable dispatch behind this wake-up before acting on anything
 	// (issue #284): a cancelled/completed/superseded dispatch refuses the claim,
@@ -2307,14 +2394,7 @@ export async function processJob(
 		return { status: 'skipped-in-flight', phase: trigger.phase, taskId: trigger.taskId };
 	}
 	inFlightTaskIds.add(trigger.taskId);
-	const slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
-	if (!slot.acquired) {
-		inFlightTaskIds.delete(trigger.taskId);
-		// Pre-run deferral (concurrency limit): the dispatch returns to `pending`
-		// (wait reason `project-capacity`) and is woken by a freed slot — it sits
-		// outside the try/catch below and finalizes its own row.
-		return handleConcurrencyDeferral(dispatch, job, trigger, project);
-	}
+	let slot: SlotAcquisition = { acquired: true, tracked: false };
 
 	let runId: string | undefined;
 	// A deferred outcome hands the run to `reenqueueDeferred`, which relies on
@@ -2343,11 +2423,18 @@ export async function processJob(
 		// take this phase — and on which configured target — *before* anything is
 		// provisioned or invoked. Runs on every (re)dispatch, so a revocation between
 		// attempts blocks the next one; it never touches a run already in flight.
+		const selection = await gateDispatch(project, trigger, job, implementationUnplanned);
 		const resolution: PhaseResolution = {
 			globalDefaults,
 			availableClis,
-			selection: await gateDispatch(project, trigger, job, implementationUnplanned),
+			selection,
+			executionIdentity: selection ? executionIdentity : undefined,
 		};
+		if (selection) await bindSelectedWorker(dispatch, selection, executionIdentity);
+		if (!selection) {
+			slot = await acquireProjectSlot(project.id, project.maxConcurrentJobs);
+			if (!slot.acquired) return handleConcurrencyDeferral(dispatch, job, trigger, project);
+		}
 
 		// Record a run-history row for this agent-CLI invocation. Everything here is
 		// best-effort (own try/catch inside the helpers, logged not thrown): the
@@ -2484,7 +2571,7 @@ export async function processJob(
 		// a later legitimate dispatch for the same task — a genuine retry, or a
 		// re-run after this one finished — isn't blocked. A deferred job is
 		// re-enqueued and re-enters `processJob` fresh, past this release.
-		if (slot.tracked) {
+		if (slot.acquired && slot.tracked) {
 			await releaseProjectSlot(project.id);
 			// A slot just freed — wake the next capacity-blocked dispatch for this
 			// project (issues #214/#219, #284) so SCM work blocked only by concurrency

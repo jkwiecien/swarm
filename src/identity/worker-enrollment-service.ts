@@ -35,6 +35,7 @@
  * `current_run_id` left over from a completed/failed run reads as idle.
  */
 
+import { getWorkerDispatchClaimState } from '../db/repositories/dispatchesRepository.js';
 import { getRunByIdFromDb } from '../db/repositories/runsRepository.js';
 import { getUserById } from '../db/repositories/usersRepository.js';
 import {
@@ -72,9 +73,10 @@ export {
 } from './worker-enrollment.js';
 
 /**
- * Derived run state for a worker — never client-supplied. `busy` is `true` only
- * while the worker's live session points at a run that is actually `running`;
- * `currentRunId` is that run's id, or `null` when idle.
+ * Derived run state for a worker — never client-supplied. `busy` is `true` when
+ * its live session has at least one active durable dispatch claim;
+ * `currentRunId` is one representative run id, or `null` when idle. The legacy
+ * session pointer remains a fallback for rows created before dispatch claims.
  */
 export interface WorkerRunState {
 	busy: boolean;
@@ -133,12 +135,22 @@ export interface OwnerWorkerView {
  */
 async function readWorkerExecutionState(
 	workerId: string,
-): Promise<{ connected: boolean; runningRunId: string | null }> {
+	projectId?: string,
+): Promise<{ connected: boolean; activeRuns: number; runningRunId: string | null }> {
 	const session = await getLiveSessionForWorker(workerId);
-	if (!session) return { connected: false, runningRunId: null };
-	if (!session.currentRunId) return { connected: true, runningRunId: null };
+	if (!session) return { connected: false, activeRuns: 0, runningRunId: null };
+	const claims = await getWorkerDispatchClaimState(workerId, projectId);
+	if (claims.activeRuns > 0) {
+		return {
+			connected: true,
+			activeRuns: claims.activeRuns,
+			runningRunId: claims.currentRunId,
+		};
+	}
+	if (!session.currentRunId) return { connected: true, activeRuns: 0, runningRunId: null };
 	const run = await getRunByIdFromDb(session.currentRunId);
-	return { connected: true, runningRunId: run?.status === 'running' ? run.id : null };
+	const runningRunId = run?.status === 'running' ? run.id : null;
+	return { connected: true, activeRuns: runningRunId ? 1 : 0, runningRunId };
 }
 
 /**
@@ -151,8 +163,8 @@ async function readWorkerExecutionState(
  * trusted from a caller.
  */
 export async function deriveWorkerRunState(workerId: string): Promise<WorkerRunState> {
-	const { runningRunId } = await readWorkerExecutionState(workerId);
-	return { busy: runningRunId !== null, currentRunId: runningRunId };
+	const { activeRuns, runningRunId } = await readWorkerExecutionState(workerId);
+	return { busy: activeRuns > 0, currentRunId: runningRunId };
 }
 
 /** Assemble one roster entry from an enrollment + its worker + owner + derived run state. */
@@ -254,14 +266,11 @@ export async function listProjectDispatchCandidates(
 	for (const enrollment of enrollments) {
 		const worker = await getWorkerById(enrollment.workerId);
 		if (!worker) continue;
-		const { connected, runningRunId } = await readWorkerExecutionState(worker.id);
+		const { connected, activeRuns } = await readWorkerExecutionState(worker.id, projectId);
 		candidates.push({
 			worker,
 			enrollment,
-			// A worker session tracks at most one current run, so the derived count is
-			// 0 or 1 today; the predicate compares it against the enrollment's
-			// `concurrencyAllocation`, which a richer session model can then exceed.
-			availability: { connected, activeRuns: runningRunId ? 1 : 0 },
+			availability: { connected, activeRuns },
 		});
 	}
 	return candidates;
