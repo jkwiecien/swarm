@@ -621,22 +621,25 @@ export async function getRunOutputEvents(
 }
 
 /**
- * Fail every run still marked `running` — called once at worker startup. A
- * freshly-booted unfederated worker owns no in-flight run. Federated callers
- * scope the update to their authenticated worker id so another host's live
- * runs stay untouched. Any matched row is a zombie: a phase whose process died
- * before writing its terminal status. Flip it to `failed` with an explanatory
- * `error` and `completedAt`, and return the count reconciled. Best-effort like
- * the rest of run tracking: callers log and continue on error.
+ * Fail runs still marked `running` for one startup owner. An authenticated
+ * worker passes its id; an unfederated worker passes `null` and may reconcile
+ * only legacy/local rows with no worker id. Any matched row is a zombie: a
+ * phase whose process died before writing its terminal status. Flip it to
+ * `failed` with an explanatory `error` and `completedAt`, and return the count
+ * reconciled. Best-effort like the rest of run tracking: callers log and
+ * continue on error.
  */
-export async function failOrphanedRunningRuns(reason: string, workerId?: string): Promise<number> {
+export async function failOrphanedRunningRuns(
+	reason: string,
+	workerId: string | null,
+): Promise<number> {
 	const rows = await getDb()
 		.update(runs)
 		.set({ status: 'failed', error: reason, completedAt: new Date() })
 		.where(
-			workerId
+			workerId !== null
 				? and(eq(runs.status, 'running'), eq(runs.workerId, workerId))
-				: eq(runs.status, 'running'),
+				: and(eq(runs.status, 'running'), isNull(runs.workerId)),
 		)
 		.returning({ id: runs.id });
 	return rows.length;

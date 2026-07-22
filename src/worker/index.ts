@@ -172,13 +172,14 @@ if (executionSession) {
 
 // Reconcile zombie runs left `running` by a prior crash or watch restart that
 // killed the process before it wrote a terminal status — otherwise they show as
-// "running" in the dashboard forever. Federated startup scopes this cleanup to
-// the authenticated worker, so another live host's runs are never reaped.
+// "running" in the dashboard forever. Startup scopes this cleanup to either the
+// authenticated worker or worker-less local runs, so another live host's runs
+// are never reaped.
 // Best-effort: a hiccup must not stop the worker from serving jobs.
 try {
 	const reconciled = await failOrphanedRunningRuns(
 		'Worker restarted while this run was in progress',
-		executionSession?.identity.workerId,
+		executionSession?.identity.workerId ?? null,
 	);
 	if (reconciled > 0) {
 		logger.debug('Reconciled orphaned running runs at startup', { count: reconciled });
