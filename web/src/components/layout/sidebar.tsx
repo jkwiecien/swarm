@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router';
-import { FolderGit2, Gauge, LogOut, Play, Plus, Settings } from 'lucide-react';
+import { FolderGit2, Gauge, LogOut, Play, Plus, Server, Settings } from 'lucide-react';
 import { useState } from 'react';
 import { ProjectCreateDialog } from '@/components/projects/project-create-dialog.js';
 import { logout } from '@/lib/auth.js';
@@ -44,6 +44,18 @@ export function Sidebar() {
 					>
 						<Play className="h-4 w-4" />
 						Runs
+					</Link>
+
+					<Link
+						to="/workers"
+						className={
+							currentPath.startsWith('/workers')
+								? 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium bg-zinc-800/40 text-zinc-100'
+								: 'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800/40'
+						}
+					>
+						<Server className="h-4 w-4" />
+						Workers
 					</Link>
 
 					<div className="flex items-center justify-between px-3 pt-4 pb-1">

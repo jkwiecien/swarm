@@ -5,6 +5,7 @@ const {
 	approveEnrollment,
 	enrollWorker,
 	getEnrollment,
+	listDashboardWorkers,
 	listOwnerWorkers,
 	listProjectRoster,
 	setEnrollmentStatus,
@@ -25,6 +26,7 @@ const {
 		approveEnrollment: vi.fn(),
 		enrollWorker: vi.fn(),
 		getEnrollment: vi.fn(),
+		listDashboardWorkers: vi.fn(),
 		listOwnerWorkers: vi.fn(),
 		listProjectRoster: vi.fn(),
 		setEnrollmentStatus: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock('@/identity/worker-enrollment-service.js', () => ({
 	approveEnrollment,
 	enrollWorker,
 	getEnrollment,
+	listDashboardWorkers,
 	listOwnerWorkers,
 	listProjectRoster,
 	setEnrollmentStatus,
@@ -112,6 +115,7 @@ beforeEach(() => {
 		approveEnrollment,
 		enrollWorker,
 		getEnrollment,
+		listDashboardWorkers,
 		listOwnerWorkers,
 		listProjectRoster,
 		setEnrollmentStatus,
@@ -123,6 +127,50 @@ beforeEach(() => {
 	]) {
 		m.mockReset();
 	}
+});
+
+describe('workers.list (installation roster, issue #133)', () => {
+	it('passes unrestricted scope for an instanceAdmin', async () => {
+		const admin = workersRouter.createCaller({ user: ADMIN_USER });
+		listDashboardWorkers.mockResolvedValue([]);
+
+		await admin.list();
+
+		expect(listDashboardWorkers).toHaveBeenCalledWith(null);
+		// Layer-1 override: an admin's scope never needs a membership lookup.
+		expect(listAccessibleProjectIds).not.toHaveBeenCalled();
+	});
+
+	it('passes only the caller’s membership project ids for an ordinary user', async () => {
+		listAccessibleProjectIds.mockResolvedValue(['proj-a', 'proj-b']);
+		listDashboardWorkers.mockResolvedValue([]);
+
+		await owner.list();
+
+		expect(listAccessibleProjectIds).toHaveBeenCalledWith(OWNER_ID);
+		expect(listDashboardWorkers).toHaveBeenCalledWith(['proj-a', 'proj-b']);
+	});
+
+	it('returns an empty roster for a user with no accessible project', async () => {
+		listAccessibleProjectIds.mockResolvedValue([]);
+		listDashboardWorkers.mockResolvedValue([]);
+
+		await expect(owner.list()).resolves.toEqual([]);
+		expect(listDashboardWorkers).toHaveBeenCalledWith([]);
+	});
+
+	it('serializes last-seen to an ISO string (and keeps null for a never-connected worker)', async () => {
+		listAccessibleProjectIds.mockResolvedValue(['proj-a']);
+		listDashboardWorkers.mockResolvedValue([
+			{ workerId: WORKER_ID, lastSeenAt: new Date('2026-07-01T12:00:00.000Z') },
+			{ workerId: 'w2', lastSeenAt: null },
+		]);
+
+		const rows = await owner.list();
+
+		expect(rows[0].lastSeenAt).toBe('2026-07-01T12:00:00.000Z');
+		expect(rows[1].lastSeenAt).toBeNull();
+	});
 });
 
 describe('workers.listMine (owner self-service)', () => {

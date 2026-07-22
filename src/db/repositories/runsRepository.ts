@@ -58,6 +58,8 @@ export interface CreateRunInput {
 	projectId: string;
 	taskId: string;
 	phase: TriggerPhase;
+	workerId?: string;
+	workerFencingToken?: number;
 	workItemId?: string;
 	workItemTitle?: string;
 	workItemUrl?: string;
@@ -87,6 +89,8 @@ export async function createRun(input: CreateRunInput): Promise<string> {
 			projectId: input.projectId,
 			taskId: input.taskId,
 			phase: input.phase,
+			workerId: input.workerId,
+			workerFencingToken: input.workerFencingToken,
 			workItemId: input.workItemId,
 			workItemTitle: input.workItemTitle,
 			workItemUrl: input.workItemUrl,
@@ -229,11 +233,15 @@ export async function resetRunToRunning(
 	engine?: AgentCli,
 	agentSessionId?: string | null,
 	recovery?: typeof runs.$inferSelect.recovery | null,
+	workerId?: string,
+	workerFencingToken?: number,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
 		.set({
 			status: 'running',
+			workerId: workerId ?? null,
+			workerFencingToken: workerFencingToken ?? null,
 			startedAt: new Date(),
 			completedAt: null,
 			error: null,
@@ -613,21 +621,26 @@ export async function getRunOutputEvents(
 }
 
 /**
- * Fail every run still marked `running` — called once at worker startup. A
- * freshly-booted worker owns no in-flight run (the MVP runs a single worker,
- * and this runs before it starts pulling jobs), so any `running` row is a
- * zombie: a phase whose process died — a crash, or an opt-in `tsx --watch`
- * restart — before it wrote its terminal status. Left alone those rows show as
- * "running" in the dashboard forever though nothing is running. Flip them to
- * `failed` with an explanatory `error` and a `completedAt`, and return the
- * count reconciled. Best-effort like the rest of run tracking: callers log and
+ * Fail runs still marked `running` for one startup owner. An authenticated
+ * worker passes its id; an unfederated worker passes `null` and may reconcile
+ * only legacy/local rows with no worker id. Any matched row is a zombie: a
+ * phase whose process died before writing its terminal status. Flip it to
+ * `failed` with an explanatory `error` and `completedAt`, and return the count
+ * reconciled. Best-effort like the rest of run tracking: callers log and
  * continue on error.
  */
-export async function failOrphanedRunningRuns(reason: string): Promise<number> {
+export async function failOrphanedRunningRuns(
+	reason: string,
+	workerId: string | null,
+): Promise<number> {
 	const rows = await getDb()
 		.update(runs)
 		.set({ status: 'failed', error: reason, completedAt: new Date() })
-		.where(eq(runs.status, 'running'))
+		.where(
+			workerId !== null
+				? and(eq(runs.status, 'running'), eq(runs.workerId, workerId))
+				: and(eq(runs.status, 'running'), isNull(runs.workerId)),
+		)
 		.returning({ id: runs.id });
 	return rows.length;
 }

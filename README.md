@@ -27,6 +27,15 @@ GitHub → HTTPS webhook → Router → durable Postgres dispatch → Redis wake
 - Respond-to-review and Respond-to-CI start from pull-request lifecycle events.
 - The worker runs `claude`, `agy` (Antigravity), or `codex` in an isolated
   worktree and performs deterministic GitHub delivery after the agent exits.
+- Before any worktree or agent, a dispatch gate confirms an *eligible* worker may
+  take the phase — active enrollment, the owner's sharing consent, a live
+  connection, free capacity, and the configured CLI. An assigned item runs only
+  on a worker owned by its assignee (never someone else's); an unassigned one
+  takes the first free eligible worker. A project with no enrolled workers is
+  unfederated and runs locally as before. Each federated host authenticates with
+  the credential printed once by `swarm workers register`
+  (`SWARM_WORKER_CREDENTIAL`); the selected host atomically reserves capacity
+  before the phase can start.
 - Pending work is durable in Postgres; Redis carries wake-ups, not the source
   of truth. See [`docs/pipeline.md`](./docs/pipeline.md) for lifecycle details.
 
