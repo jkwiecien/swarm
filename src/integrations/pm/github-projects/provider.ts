@@ -81,7 +81,13 @@ interface ResolvedItem {
 	contentNumber?: number;
 }
 
-/** Read one item, its Status option, and its backing Issue/PR in one round-trip. */
+/**
+ * Read one item, its Status option, and its backing Issue/PR in one round-trip.
+ *
+ * The label page size is deliberately generous: `WorkItem.labels` now drives the
+ * automation gate (issue #131), so a label truncated off the end of the page
+ * would read as "not opted in" and silently halt the pipeline on a busy issue.
+ */
 const GET_ITEM_QUERY = /* GraphQL */ `
 	query($itemId: ID!) {
 		node(id: $itemId) {
@@ -94,13 +100,13 @@ const GET_ITEM_QUERY = /* GraphQL */ `
 					... on Issue {
 						number title body url
 						repository { nameWithOwner }
-						labels(first: 20) { nodes { id name color } }
+						labels(first: 50) { nodes { id name color } }
 						assignees(first: 10) { nodes { id login name } }
 					}
 					... on PullRequest {
 						number title body url
 						repository { nameWithOwner }
-						labels(first: 20) { nodes { id name color } }
+						labels(first: 50) { nodes { id name color } }
 						assignees(first: 10) { nodes { id login name } }
 					}
 				}
@@ -127,13 +133,13 @@ const LIST_ITEMS_QUERY = /* GraphQL */ `
 							... on Issue {
 								number title body url
 								repository { nameWithOwner }
-								labels(first: 20) { nodes { id name color } }
+								labels(first: 50) { nodes { id name color } }
 								assignees(first: 10) { nodes { id login name } }
 							}
 							... on PullRequest {
 								number title body url
 								repository { nameWithOwner }
-								labels(first: 20) { nodes { id name color } }
+								labels(first: 50) { nodes { id name color } }
 								assignees(first: 10) { nodes { id login name } }
 							}
 						}

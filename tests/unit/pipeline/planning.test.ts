@@ -308,6 +308,38 @@ describe('runPlanningPhase', () => {
 		});
 	});
 
+	it('labels split children with the project-configured automation label (issue #131)', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			subTasks: [{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Do it.' }],
+		});
+		const deps = makeDeps();
+		deps.project = createMockProjectConfig({ pipeline: { automationLabel: 'automate' } });
+
+		await runPlanningPhase(deps);
+
+		// Without this the sibling SWARM just created would be gated out of SWARM's
+		// own pipeline by the very label the project configured.
+		expect(deps.pm.createWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({ labels: ['automate', SPLIT_CHILD_LABEL] }),
+		);
+	});
+
+	it('labels split children with only the split-child label when the gate is disabled', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			subTasks: [{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Do it.' }],
+		});
+		const deps = makeDeps();
+		deps.project = createMockProjectConfig({ pipeline: { automationLabel: '' } });
+
+		await runPlanningPhase(deps);
+
+		expect(deps.pm.createWorkItem).toHaveBeenCalledWith(
+			expect.objectContaining({ labels: [SPLIT_CHILD_LABEL] }),
+		);
+	});
+
 	it('does not split when autoSplit is off, even if a split file exists', async () => {
 		splitExists = true;
 		splitContents = JSON.stringify({ subTasks: [{ title: 'X', description: 'Y' }] });

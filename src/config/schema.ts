@@ -328,7 +328,8 @@ export const ReviewChecksPolicySchema = z.enum(['required', 'if-present']);
 export type ReviewChecksPolicy = z.infer<typeof ReviewChecksPolicySchema>;
 
 /**
- * Per-phase pipeline controls. Planning can optionally move the board item to
+ * Per-phase pipeline controls, plus the project-wide automation opt-in
+ * (`automationLabel`). Planning can optionally move the board item to
  * "ToDo" after posting its plan. The SCM-event-driven Review,
  * Respond-to-review, and Respond-to-CI phases can each be disabled.
  * Implementation always reports pickup by moving to "In progress", then moves
@@ -389,6 +390,20 @@ export const PipelineConfigSchema = z
 		 * Resolve-conflicts; Planning and Implementation remain new board work.
 		 */
 		prioritizeContinuations: z.boolean().optional(),
+		/**
+		 * Label a work item must carry before SWARM starts a board-driven agent
+		 * phase (Planning, Implementation) for it — the explicit, human-controlled
+		 * automation opt-in (issue #131). Provider-neutral: it is a work-item label
+		 * name resolved through `WorkItem.labels`, not a GitHub-specific concept
+		 * (`src/pm/automation-label.ts`). Unset defaults to
+		 * `DEFAULT_AUTOMATION_LABEL` (`swarm`); an explicitly empty string turns the
+		 * gate off for the project.
+		 *
+		 * This is an opt-in marker, never an access-control mechanism: it cannot
+		 * grant a user or a worker access to a project (ADR-001's authorization
+		 * layers are separate and unaffected).
+		 */
+		automationLabel: z.string().trim().optional(),
 	})
 	.refine(
 		(pipeline) => pipeline.review?.enabled !== false || pipeline.respondToReview?.enabled === false,

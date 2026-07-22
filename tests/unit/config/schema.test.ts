@@ -528,6 +528,24 @@ describe('PipelineConfigSchema', () => {
 	it('rejects a non-boolean prioritizeContinuations', () => {
 		expect(PipelineConfigSchema.safeParse({ prioritizeContinuations: 'yes' }).success).toBe(false);
 	});
+
+	it('leaves automationLabel unset by default (read as the coded default)', () => {
+		// Absent → undefined; `resolveAutomationLabel` supplies `swarm`, since the
+		// whole `pipeline` block is optional and a Zod default would never be seen.
+		expect(PipelineConfigSchema.parse({}).automationLabel).toBeUndefined();
+	});
+
+	it('accepts and trims an automationLabel', () => {
+		expect(PipelineConfigSchema.parse({ automationLabel: '  automate  ' })).toMatchObject({
+			automationLabel: 'automate',
+		});
+	});
+
+	it('accepts an empty automationLabel as the explicit opt-out', () => {
+		expect(PipelineConfigSchema.parse({ automationLabel: '' })).toMatchObject({
+			automationLabel: '',
+		});
+	});
 });
 
 describe('validateConfig', () => {

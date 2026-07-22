@@ -58,6 +58,7 @@ import {
 	sessionRunArgs,
 	shouldPreserveForResume,
 } from '@/pipeline/resume.js';
+import { resolveAutomationLabel } from '@/pm/automation-label.js';
 import type { PmStatusKey } from '@/pm/pipeline.js';
 import type { PMProvider, WorkItem } from '@/pm/types.js';
 import { GitWorktreeManager, type WorktreeHandle } from '@/worker/git-worktree-manager.js';
@@ -504,7 +505,8 @@ function readPlanOrThrow(
 /**
  * Apply a split: re-scope/rename the original item into the smaller first task
  * (when the agent asked), then spawn each sibling task in Planning — tagged as a
- * split child, with a comment explaining the split, and with the parent-written
+ * split child and with the project's `automationLabel` (issue #131) so SWARM's own
+ * siblings pass the dispatch gate, with a comment explaining the split, and with the parent-written
  * plan embedded as a validated preplanned marker in its issue body
  * ({@link embedPreplanMarker}) before it enters Planning. It is created in Backlog
  * solely for that ordering: the marker exists before either its Planning move or
@@ -528,6 +530,7 @@ async function applySplit(
 	pm: PMProvider,
 	parent: WorkItem,
 	split: ProposedSplit,
+	automationLabel: string | undefined,
 ): Promise<{ subTaskItemIds: string[]; mainTaskUpdated: boolean }> {
 	const mainPatch = split.mainTask ? buildMainTaskPatch(parent, split.mainTask) : undefined;
 	if (mainPatch) {
@@ -549,7 +552,10 @@ async function applySplit(
 			title: sub.title,
 			description: sub.description,
 			status: SIBLING_CREATION_STATUS,
-			labels: ['swarm', SPLIT_CHILD_LABEL],
+			// The configured automation label, not a hard-coded `swarm` (issue #131):
+			// a sibling SWARM created must be opted into SWARM's own pipeline, whatever
+			// label this project gates on. Omitted entirely when the gate is disabled.
+			labels: [...(automationLabel ? [automationLabel] : []), SPLIT_CHILD_LABEL],
 		});
 		let prepared = false;
 		try {
@@ -875,7 +881,9 @@ export async function runPlanningPhase(
 
 		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
 
-		const splitResult = split ? await applySplit(pm, workItem, split) : undefined;
+		const splitResult = split
+			? await applySplit(pm, workItem, split, resolveAutomationLabel(project.pipeline))
+			: undefined;
 
 		const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
 		if (movedTo) {
