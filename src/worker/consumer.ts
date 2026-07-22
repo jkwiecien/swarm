@@ -78,6 +78,11 @@ import {
 	type ReviewVerdict,
 	runReviewPhase,
 } from '../pipeline/review.js';
+import {
+	hasAutomationLabel,
+	missingAutomationLabelMessage,
+	resolveAutomationLabel,
+} from '../pm/automation-label.js';
 import { type PmStatusKey, resolvePipelinePhaseForStatusKey } from '../pm/pipeline.js';
 import type { WorkItem } from '../pm/types.js';
 import {
@@ -162,6 +167,18 @@ export type JobOutcome =
 			reason: string;
 	  }
 	| { status: 'skipped-in-flight'; phase: TriggerPhase; taskId: string }
+	| {
+			/**
+			 * The dispatch resolved a phase, but the work item is not eligible for
+			 * automation — today only "it lacks the project's automation label"
+			 * (issue #131); #339's worker-authorization gate settles the same way
+			 * with a different `reason`. No slot, no worktree, no tokens spent.
+			 */
+			status: 'skipped-not-eligible';
+			phase: TriggerPhase;
+			taskId: string;
+			reason: string;
+	  }
 	// A merge-automation dispatch settled (merged, refused, retry-scheduled, or
 	// failed) — the agent-less dispatch kind (issue #292).
 	| MergeAutomationSettledOutcome
@@ -2321,6 +2338,46 @@ export async function processJob(
 			dispatchId: dispatch.id,
 			error: describeError(err),
 		});
+	}
+
+	// Explicit automation opt-in (issue #131): a work item must carry the project's
+	// configured automation label before SWARM starts an agent phase for it. Checked
+	// here, at the composition root, on *every* dispatch — a fresh webhook, a delayed
+	// retry, a self-enqueued next phase, a capacity promotion, a reconciler
+	// republish, a manual "Retry now" — so removing the label stops all later
+	// dispatches (it never terminates a run already in flight). It runs before the
+	// in-flight guard and `acquireProjectSlot`, so a skip costs no slot, no worktree,
+	// and no tokens. This is also where #339's worker-eligibility check belongs: a
+	// dispatch is eligible only when the worker is authorized *and* the item is
+	// opted in. Only the board-driven phases carry a work item today; the SCM
+	// continuation phases are gated in the follow-up task (phase 2/2).
+	const automationLabel = resolveAutomationLabel(project.pipeline);
+	if (
+		automationLabel &&
+		'workItem' in trigger &&
+		!hasAutomationLabel(trigger.workItem, automationLabel)
+	) {
+		const reason = missingAutomationLabelMessage(automationLabel);
+		logger.info('Phase skipped — work item is missing the automation label', {
+			projectId: project.id,
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			workItemId: trigger.workItem.id,
+			label: automationLabel,
+		});
+		// A deferred run being retried after the label was pulled must not sit in
+		// `deferred` forever — finalize it with the same honest reason, exactly as
+		// the `no-trigger` branch above does.
+		if (job.runId) {
+			await finalizeRun(job.runId, { status: 'failed', error: reason });
+		}
+		await tryCompleteDispatch(dispatch.id, 'skipped-not-eligible');
+		return {
+			status: 'skipped-not-eligible',
+			phase: trigger.phase,
+			taskId: trigger.taskId,
+			reason,
+		};
 	}
 
 	// A duplicate webhook (or a delayed retry) that resolved to a phase whose

@@ -14,6 +14,7 @@ import {
 	type GitHubProjectsIntegrationConfig,
 	githubProjectsConfigSchema,
 } from '@/integrations/pm/github-projects/config-schema.js';
+import { DEFAULT_AUTOMATION_LABEL } from '@/pm/automation-label.js';
 import type { WorkItem } from '@/pm/types.js';
 import {
 	type GitHubProjectsWebhookJob,
@@ -68,6 +69,10 @@ export function createMockGitHubProjectsConfig(
  * A `WorkItem` fixture. Unlike the config factories above there's no Zod schema
  * to parse through — `WorkItem` is a provider-agnostic interface (`src/pm/types.ts`),
  * not a boundary-crossing config shape — so this returns a plain object.
+ *
+ * It carries the default automation label (issue #131) because the real board
+ * does: every item SWARM works on is opted in, so a fixture without it would be
+ * the unusual case, and every dispatch-level test would be gated out.
  */
 export function createMockWorkItem(overrides: Partial<WorkItem> = {}): WorkItem {
 	return {
@@ -77,7 +82,7 @@ export function createMockWorkItem(overrides: Partial<WorkItem> = {}): WorkItem 
 		url: 'https://github.com/jkwiecien/swarm/issues/10',
 		status: 'In progress',
 		statusId: '47fc9ee4',
-		labels: [],
+		labels: [{ id: 'LA_swarm', name: DEFAULT_AUTOMATION_LABEL }],
 		assignees: [],
 		...overrides,
 	};

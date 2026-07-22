@@ -2406,6 +2406,152 @@ describe('processJob', () => {
 		expect(addComment.mock.calls[0][1]).toContain("Worktree for task '100' already exists");
 	});
 
+	describe('automation-label gate (issue #131)', () => {
+		// A board-driven phase only starts for a work item a human opted in by
+		// labelling it. The gate sits at this single dispatch choke point, so it is
+		// re-evaluated on every fresh webhook, retry, self-enqueued next phase, and
+		// capacity promotion — but never terminates a run already in flight.
+
+		function implementationTrigger(labels: { id: string; name: string }[]): TriggerResult {
+			return {
+				phase: 'implementation',
+				taskId: '216',
+				workItem: createMockWorkItem({ statusId: '61e4505c', labels }),
+			};
+		}
+
+		it('runs the phase when the item carries the label', async () => {
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([{ id: 'LA_1', name: 'swarm' }])),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(1);
+		});
+
+		it('runs the phase when the configured label appears beyond the former 50-item boundary', async () => {
+			const dummyLabels = Array.from({ length: 50 }, (_, i) => ({
+				id: `DUMMY_${i}`,
+				name: `dummy-label-${i}`,
+			}));
+			const labels = [...dummyLabels, { id: 'LA_1', name: 'swarm' }];
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger(labels)),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(1);
+		});
+
+		it('skips an unlabeled item without spending a slot, a worktree, or tokens', async () => {
+			const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([])),
+			);
+
+			expect(outcome).toMatchObject({
+				status: 'skipped-not-eligible',
+				phase: 'implementation',
+				taskId: '216',
+			});
+			expect(phaseCalls).toEqual([]);
+			expect(acquireProjectSlot).not.toHaveBeenCalled();
+			expect(createRun).not.toHaveBeenCalled();
+			expect(completeDispatch).toHaveBeenCalledWith('dispatch-1', 'skipped-not-eligible');
+			// Still resolved on the dispatch first, so the Queue UI can name what was skipped.
+			expect(recordDispatchResolution).toHaveBeenCalledWith('dispatch-1', '216', 'implementation');
+			expect(info).toHaveBeenCalledWith(
+				expect.stringContaining('missing the automation label'),
+				expect.objectContaining({ label: 'swarm', taskId: '216' }),
+			);
+			info.mockRestore();
+		});
+
+		it('skips the next phase when the label is removed between phases, leaving the earlier run alone', async () => {
+			const planned = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning({
+					phase: 'planning',
+					taskId: '216',
+					workItem: createMockWorkItem({ statusId: '3fe662f4' }),
+				}),
+			);
+			expect(planned.status).toBe('phase-succeeded');
+
+			// The self-enqueued Implementation dispatch re-reads the item — the label
+			// is gone by then.
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([])),
+			);
+
+			expect(outcome.status).toBe('skipped-not-eligible');
+			// The Planning run that was already dispatched is untouched — the gate is
+			// dispatch-time only.
+			expect(phaseCalls).toEqual([expect.objectContaining({ phase: 'planning' })]);
+		});
+
+		it('finalizes a retried run row instead of leaving it deferred', async () => {
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob({ runId: 'run-7' }),
+				registryReturning(implementationTrigger([])),
+			);
+
+			expect(outcome.status).toBe('skipped-not-eligible');
+			expect(completeRun).toHaveBeenCalledWith(
+				'run-7',
+				expect.objectContaining({
+					status: 'failed',
+					error: expect.stringContaining('automation label'),
+				}),
+			);
+		});
+
+		it('dispatches an unlabeled item when the project disables the gate', async () => {
+			projectLookup = () =>
+				createMockProjectConfig({ pipeline: { automationLabel: '' } }) as ProjectConfig;
+
+			const outcome = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([])),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+			expect(phaseCalls).toHaveLength(1);
+		});
+
+		it('honors a project-configured label instead of the default', async () => {
+			projectLookup = () =>
+				createMockProjectConfig({ pipeline: { automationLabel: 'automate' } }) as ProjectConfig;
+
+			const skipped = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([{ id: 'LA_1', name: 'swarm' }])),
+			);
+			expect(skipped.status).toBe('skipped-not-eligible');
+
+			const dispatched = await processJob(
+				createMockGitHubProjectsWebhookJob(),
+				registryReturning(implementationTrigger([{ id: 'LA_2', name: 'automate' }])),
+			);
+			expect(dispatched.status).toBe('phase-succeeded');
+		});
+
+		it('leaves the SCM continuation phases ungated (phase 2/2)', async () => {
+			const outcome = await processJob(
+				createMockGitHubWebhookJob(),
+				registryReturning(REVIEW_TRIGGER),
+			);
+
+			expect(outcome.status).toBe('phase-succeeded');
+		});
+	});
+
 	describe('in-flight guard (duplicate-dispatch collision)', () => {
 		// The bug: a duplicate `reordered`/`edited` webhook for the same card can be
 		// dequeued after the pm-status dedup's TTL expired (having waited in the

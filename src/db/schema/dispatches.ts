@@ -51,7 +51,9 @@ export const dispatches = pgTable(
 		waitReason: text('wait_reason'),
 		/**
 		 * Terminal detail for `completed`: `phase-succeeded`, `no-trigger`,
-		 * `skipped-duplicate`, or `superseded` (a coalesced recheck replaced it).
+		 * `skipped-duplicate`, `skipped-not-eligible` (the work item is not opted
+		 * into automation — issue #131), or `superseded` (a coalesced recheck
+		 * replaced it).
 		 */
 		outcome: text('outcome'),
 		/**

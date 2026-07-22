@@ -99,6 +99,38 @@ describe('GitHubProjectsPMProvider', () => {
 			});
 		});
 
+		it('requests the complete label set using first: 100 in the query', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+
+			await provider.getWorkItem('PVTI_x');
+
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('labels(first: 100)'), {
+				itemId: 'PVTI_x',
+			});
+		});
+
+		it('correctly maps more than 50 labels returned by the GraphQL API', async () => {
+			const dummyLabels = Array.from({ length: 55 }, (_, i) => ({
+				id: `L_${i}`,
+				name: `label-${i}`,
+				color: 'grey',
+			}));
+			graphql.mockResolvedValue({
+				node: {
+					...ITEM_NODE,
+					content: {
+						...ITEM_NODE.content,
+						labels: { nodes: dummyLabels },
+					},
+				},
+			});
+
+			const item = await provider.getWorkItem('PVTI_x');
+
+			expect(item.labels).toHaveLength(55);
+			expect(item.labels[54]).toEqual({ id: 'L_54', name: 'label-54', color: 'grey' });
+		});
+
 		it('throws when the item does not resolve', async () => {
 			graphql.mockResolvedValue({ node: null });
 			await expect(provider.getWorkItem('PVTI_missing')).rejects.toThrow('did not resolve');
@@ -182,6 +214,17 @@ describe('GitHubProjectsPMProvider', () => {
 			expect(items.map((i) => i.id)).toEqual(['PVTI_x', 'PVTI_y']);
 			expect(graphql).toHaveBeenCalledTimes(1);
 			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('ProjectV2'), {
+				projectId: PROJECT.githubProjects.projectId,
+				cursor: undefined,
+			});
+		});
+
+		it('requests the complete label set using first: 100 in the query', async () => {
+			graphql.mockResolvedValue({ node: { items: { nodes: [ITEM_NODE] } } });
+
+			await provider.listWorkItems();
+
+			expect(graphql).toHaveBeenCalledWith(expect.stringContaining('labels(first: 100)'), {
 				projectId: PROJECT.githubProjects.projectId,
 				cursor: undefined,
 			});

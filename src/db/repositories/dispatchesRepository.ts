@@ -76,11 +76,17 @@ export type DispatchPhase = TriggerPhase | 'merge-automation';
  * `merged`) settle merge-automation dispatches (issue #292): every functional
  * refusal the provider reports is a normal, visible completion — only an
  * unexpected provider failure marks the dispatch `failed`.
+ *
+ * `skipped-not-eligible` is the one eligibility outcome: the dispatch resolved a
+ * phase, but the work item is not opted into automation (it lacks the project's
+ * `pipeline.automationLabel` — issue #131). The worker-authorization gate will
+ * settle through the same value with its own reason (issue #339).
  */
 export type DispatchOutcome =
 	| 'phase-succeeded'
 	| 'no-trigger'
 	| 'skipped-duplicate'
+	| 'skipped-not-eligible'
 	| 'superseded'
 	| 'merged'
 	| 'merge-not-eligible'
