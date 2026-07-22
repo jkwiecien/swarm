@@ -171,7 +171,7 @@ that path, e.g. `https://swarm.example.com/github/webhook`.
 > end-to-end (the request reached your machine). Wire up the webhook now if you want the
 > plumbing ready; expect real processing once SWARM-9 merges.
 
-### Repo-level events (`pull_request`, `pull_request_review`, `issue_comment`, `check_suite`)
+### Repo-level events (`pull_request`, `pull_request_review`, `issue_comment`, `issues`, `check_suite`)
 
 Repo Settings → **Webhooks** → **Add webhook**:
 
@@ -183,8 +183,8 @@ Repo Settings → **Webhooks** → **Add webhook**:
   Store it wherever the router reads its config (e.g. an env var / Postgres project row),
   never commit it.
 - **Which events**: "Let me select individual events" → tick **Pull requests**, **Pull
-  request reviews**, **Issue comments**, and **Check suites**. These are the four repo
-  events the router adapter parses (`ai/ARCHITECTURE.md`, SCM section).
+  request reviews**, **Issue comments**, **Issues**, and **Check suites**. These are the five
+  repo events the router adapter parses (`ai/ARCHITECTURE.md`, SCM section).
 
 ### Projects v2 board event (`projects_v2_item`)
 
