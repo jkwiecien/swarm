@@ -141,6 +141,25 @@ describe('enqueueJob', () => {
 		expect(opts).not.toHaveProperty('priority');
 	});
 
+	it('demotes an issue invalidation job because it dispatches Planning', async () => {
+		const { enqueueJob } = await import('@/queue/producer.js');
+		const job = createMockGitHubWebhookJob({
+			event: {
+				...createMockGitHubWebhookJob().event,
+				eventType: 'issues',
+				action: 'edited',
+				workItemBodyChanged: true,
+			},
+		});
+
+		await enqueueJob(job);
+
+		expect(add).toHaveBeenCalledWith('github', job, {
+			jobId: job.deliveryId,
+			priority: 10,
+		});
+	});
+
 	it('omits the job id when the event carries no deliveryId', async () => {
 		const { enqueueJob } = await import('@/queue/producer.js');
 		const { deliveryId: _dropped, ...job } = createMockGitHubWebhookJob();

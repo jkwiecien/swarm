@@ -75,6 +75,11 @@ marker **and** `swarm:split-child` label and avoid launching another agent run. 
 materially changes the child's scope, a missing or invalid plan, an explicit replan action, or
 removal of the split-child label should run Planning normally.
 
+Because those issue-body and label changes do not emit a Projects Status event, the repo webhook
+also subscribes to **Issues**. The `preplan-invalidated` trigger handles only body edits, adding
+`swarm:replan`, and removing `swarm:split-child`; it re-reads the authoritative Planning card and
+dispatches fallback Planning only when the current marker/label state is invalid.
+
 This converts one repository analysis into plans for the entire split rather than paying for
 one parent analysis plus one full analysis per child.
 
@@ -98,6 +103,10 @@ when the marker is missing, malformed, fails schema validation, binds a differen
 (`itemUrl` ≠ the child's URL), was written against a since-edited scope (`descriptionHash`
 mismatch), an operator applied `swarm:replan`, or the split-child label was removed. The marker is
 intentionally *not* inferred from a label or free-form comment alone.
+
+If either the marker write or the move to Planning fails, the child stays in Backlog and its split
+comment says so. A human can move it to Planning later; a saved valid marker is reused, while a
+missing or invalid one falls back to the normal Planning agent.
 
 ## 4. Move deterministic delivery mechanics out of Implementation
 

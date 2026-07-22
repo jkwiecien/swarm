@@ -278,6 +278,7 @@ describe('runPlanningPhase', () => {
 		expect(secondComment).toMatch(/Blocked by/);
 		expect(secondComment).toContain('Phase 1: First slice');
 		expect(secondComment).not.toContain('Phase 2: Second slice');
+		expect(secondComment).toContain('placed it in **Planning**');
 
 		const thirdComment = deps.pm.addComment.mock.calls.find(
 			(c) => c[0] === 'PVTI_Third slice',
@@ -386,8 +387,37 @@ describe('runPlanningPhase', () => {
 
 		expect(deps.pm.createWorkItem).toHaveBeenCalledTimes(1);
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalledWith('PVTI_Second slice', 'planning');
-		expect(deps.pm.addComment).toHaveBeenCalledWith('PVTI_Second slice', expect.any(String));
+		expect(deps.pm.addComment).toHaveBeenCalledWith(
+			'PVTI_Second slice',
+			expect.stringContaining('remains in **Backlog**'),
+		);
+		expect(
+			deps.pm.addComment.mock.calls.find((call) => call[0] === 'PVTI_Second slice')?.[1],
+		).not.toContain('placed it in **Planning**');
 		expect(result.split).toMatchObject({ subTaskItemIds: ['PVTI_Second slice'] });
+	});
+
+	it('posts a Backlog fallback comment when moving a prepared sibling to Planning throws', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			subTasks: [
+				{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Build it.' },
+			],
+		});
+		const deps = makeDeps();
+		deps.pm.moveWorkItem = vi.fn<(id: string, status: string) => Promise<void>>(async (id) => {
+			if (id === 'PVTI_Second slice') throw new Error('board rejected the move');
+		});
+
+		await runPlanningPhase({ ...deps, autoAdvance: true });
+
+		expect(deps.pm.addComment).toHaveBeenCalledWith(
+			'PVTI_Second slice',
+			expect.stringContaining('remains in **Backlog**'),
+		);
+		expect(
+			deps.pm.addComment.mock.calls.find((call) => call[0] === 'PVTI_Second slice')?.[1],
+		).not.toContain('placed it in **Planning**');
 	});
 
 	it('reuses a preplanned split-child plan: skips the worktree and agent, posts the plan, never advances', async () => {

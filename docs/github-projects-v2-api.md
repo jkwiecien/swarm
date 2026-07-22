@@ -231,8 +231,8 @@ So for SWARM's **user-owned board** (project `3`, owner `jkwiecien`) the realist
 - **(b) Recreate the board under an organization and use an org webhook** — **Org Settings →
   Webhooks** is the only place a plain (non-App) `projects_v2_item` webhook can live.
 
-Either way this is a **second, non-repo** subscription: the four repo events (`pull_request`,
-`pull_request_review`, `issue_comment`, `check_suite`) stay on the repo webhook, while
+Either way this is a **second, non-repo** subscription: the five repo events (`pull_request`,
+`pull_request_review`, `issue_comment`, `issues`, `check_suite`) stay on the repo webhook, while
 `projects_v2_item` arrives via the App installation (a) or the org webhook (b) — both pointed
 at the same router URL and sharing the same secret. `docs/cloudflare-tunnel.md` → "Projects v2
 board event" covers the click-path.

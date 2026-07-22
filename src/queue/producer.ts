@@ -20,12 +20,12 @@ import { QUEUE_NAME, type SwarmJob } from './jobs.js';
 let queue: Queue<SwarmJob> | null = null;
 
 /**
- * PM-board events (`github-projects`: card status changes that dispatch
- * planning/implementation, which can run for minutes) are demoted below
+ * PM-driven events (`github-projects` card status changes, plus `github` issue
+ * invalidations that dispatch fallback Planning) are demoted below
  * BullMQ's implicit default priority so PR review-lifecycle events (`github`:
  * opened / checks / reviews) never sit queued behind one. BullMQ ranks 0
- * (unset) as highest, so `github` jobs need no override — only
- * `github-projects` jobs get pushed down. Without this, a card dragged into
+ * (unset) as highest, so review-lifecycle jobs need no override — only
+ * PM-driven jobs get pushed down. Without this, a card dragged into
  * Planning/In progress right as a PR opens can leave that PR's review waiting
  * out the whole implementation run under `SWARM_WORKER_CONCURRENCY=1`, and
  * even at 2 it still competes for the same limited slots.
@@ -33,7 +33,10 @@ let queue: Queue<SwarmJob> | null = null;
 export const PM_BOARD_JOB_PRIORITY = 10;
 
 export function priorityFor(job: SwarmJob): number | undefined {
-	return job.type === 'github-projects' ? PM_BOARD_JOB_PRIORITY : undefined;
+	return job.type === 'github-projects' ||
+		(job.type === 'github' && job.event.eventType === 'issues')
+		? PM_BOARD_JOB_PRIORITY
+		: undefined;
 }
 
 /**
