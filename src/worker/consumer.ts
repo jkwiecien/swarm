@@ -32,14 +32,12 @@ import {
 } from '../db/repositories/dispatchesRepository.js';
 import { findProjectByIdFromDb } from '../db/repositories/projectsRepository.js';
 import {
-	appendRunOutputEvents,
 	type CompleteRunInput,
 	completeRun,
 	createRun,
 	getLatestRunForTask,
 	getRunByIdFromDb,
 	hasCompletedRunForTask,
-	MAX_RUN_OUTPUT_BYTES,
 	resetRunToRunning,
 	storeRunLogs,
 	updateRunJobPayload,
@@ -52,7 +50,7 @@ import {
 	publishDispatchWakeUp,
 } from '../dispatch/dispatcher.js';
 import { deriveCapacityPendingPayload, deriveRetryJobPayload } from '../dispatch/retry-payload.js';
-import { type AgentCli, type AgentCliResult, runAgentCli } from '../harness/agent-cli.js';
+import type { AgentCli, AgentCliResult } from '../harness/agent-cli.js';
 import {
 	type AgentFailure,
 	type AgentFailureKind,
@@ -122,6 +120,7 @@ import {
 	resolveDependencyRecheckIntervalMs,
 } from './dependency-recheck.js';
 import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
+import { createLiveOutputRunner } from './live-output.js';
 import {
 	type MergeAutomationSettledOutcome,
 	processMergeAutomationDispatch,
@@ -1045,63 +1044,6 @@ function runPhase(
 				runAgent,
 			});
 	}
-}
-
-function createLiveOutputRunner(runId: string | undefined): typeof runAgentCli {
-	if (!runId) {
-		return runAgentCli;
-	}
-	return async (options) => {
-		let pending = Promise.resolve();
-		let queuedBytes = 0;
-		let reachedOutputLimit = false;
-		let timer: NodeJS.Timeout | undefined;
-		let queue: Array<{ stream: 'stdout' | 'stderr'; content: string; emittedAt: Date }> = [];
-		const flush = (): void => {
-			if (timer) clearTimeout(timer);
-			timer = undefined;
-			const batch = queue;
-			queue = [];
-			if (batch.length === 0) return;
-			pending = pending
-				.then(() => appendRunOutputEvents(runId, batch))
-				.catch((err) =>
-					logger.error('Failed to persist live run output (continuing)', {
-						runId,
-						error: describeError(err),
-					}),
-				);
-		};
-		const append = (stream: 'stdout' | 'stderr', line: string): void => {
-			if (reachedOutputLimit) return;
-			const content = `${line}\n`;
-			queuedBytes += Buffer.byteLength(content);
-			queue.push({ stream, content, emittedAt: new Date() });
-			// Keep the boundary event: the repository clips it and records that
-			// retention was truncated. Dropping it here leaves the UI unaware.
-			if (queuedBytes > MAX_RUN_OUTPUT_BYTES) {
-				reachedOutputLimit = true;
-				flush();
-				return;
-			}
-			if (queue.length >= 100) flush();
-			else timer ??= setTimeout(flush, 100);
-		};
-		const result = await runAgentCli({
-			...options,
-			onStdout: (line) => {
-				options.onStdout?.(line);
-				append('stdout', line);
-			},
-			onStderr: (line) => {
-				options.onStderr?.(line);
-				append('stderr', line);
-			},
-		});
-		flush();
-		await pending;
-		return result;
-	};
 }
 
 /**

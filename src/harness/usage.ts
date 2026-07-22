@@ -13,6 +13,11 @@
 
 import { z } from 'zod';
 import type { AgentCli } from './agent-cli.js';
+import {
+	findClaudeResultEvent,
+	formatClaudeResultError,
+	isClaudeErrorResult,
+} from './claude-stream.js';
 
 export const AgentUsageSchema = z.object({
 	inputTokens: z.number().int().nonnegative(),
@@ -23,29 +28,6 @@ export const AgentUsageSchema = z.object({
 	totalTokens: z.number().int().nonnegative().optional(),
 });
 export type AgentUsage = z.infer<typeof AgentUsageSchema>;
-
-/**
- * The shape `claude -p --output-format json` prints on stdout: a single JSON
- * object whose `result` is the same final-assistant-text `-p` alone would have
- * printed, plus a `usage` object. `usage` is required in this schema — a
- * response missing it doesn't match Claude's documented JSON output closely
- * enough to trust, so it's treated the same as malformed JSON (see
- * {@link parseClaudeOutput}).
- */
-const ClaudeJsonResultSchema = z.object({
-	result: z.string(),
-	// The session UUID this run used — the same value SWARM assigned via
-	// `--session-id`, echoed back so a resume can reuse it even if the assignment
-	// path ever changes. Optional: an older `claude` build that omits it still
-	// parses (SWARM falls back to the id it assigned).
-	session_id: z.string().optional(),
-	usage: z.object({
-		input_tokens: z.number(),
-		output_tokens: z.number(),
-		cache_read_input_tokens: z.number().optional(),
-		cache_creation_input_tokens: z.number().optional(),
-	}),
-});
 
 const CodexUsageSchema = z.object({
 	input_tokens: z.number(),
@@ -118,32 +100,43 @@ export interface ParsedAgentOutput {
 }
 
 /**
- * Parse `claude -p --output-format json`'s stdout. On any failure — malformed
- * JSON, a truncated stream, or a response missing the `usage` field — returns
- * `{}` (usage unavailable, log text falls back to raw stdout); a parse
+ * Parse `claude -p --output-format stream-json`'s stdout: newline-delimited
+ * protocol events whose last `result` record carries the run's final text,
+ * session id, and usage ({@link ./claude-stream.ts}). On any failure — no
+ * terminal record, malformed lines, a stream cut off mid-record — returns `{}`
+ * (usage unavailable, log text falls back to what the caller captured); a parse
  * failure must never turn a successful agent run into a failed one.
+ *
+ * A *failed* terminal record still yields `logText`: the readable error line,
+ * so the reason a run died (a rate limit and its reset hint, an overloaded
+ * model) survives into the stored log even when the stream around it was
+ * truncated — that text is what failure classification reads.
  */
 function parseClaudeOutput(stdout: string): ParsedAgentOutput {
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(stdout);
-	} catch {
-		return {};
-	}
+	const event = findClaudeResultEvent(stdout);
+	if (!event) return {};
 
-	const outer = ClaudeJsonResultSchema.safeParse(parsed);
-	if (!outer.success) return {};
+	const logText = isClaudeErrorResult(event)
+		? formatClaudeResultError(event)
+		: event.result?.trim()
+			? event.result
+			: undefined;
+	const sessionId = event.session_id;
+	const base = {
+		...(logText === undefined ? {} : { logText }),
+		...(sessionId === undefined ? {} : { sessionId }),
+	};
+	if (!event.usage) return base;
 
-	const { result: logText, session_id: sessionId, usage: rawUsage } = outer.data;
 	const usage = AgentUsageSchema.safeParse({
-		inputTokens: rawUsage.input_tokens,
-		outputTokens: rawUsage.output_tokens,
-		cacheReadTokens: rawUsage.cache_read_input_tokens,
-		cacheCreationTokens: rawUsage.cache_creation_input_tokens,
+		inputTokens: event.usage.input_tokens,
+		outputTokens: event.usage.output_tokens,
+		cacheReadTokens: event.usage.cache_read_input_tokens,
+		cacheCreationTokens: event.usage.cache_creation_input_tokens,
 	});
-	if (!usage.success) return { logText, sessionId };
+	if (!usage.success) return base;
 
-	return { usage: usage.data, logText, sessionId };
+	return { usage: usage.data, ...base };
 }
 
 /** Parse the JSONL event stream emitted by `codex exec --json`. */

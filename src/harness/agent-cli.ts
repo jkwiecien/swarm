@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import { logger } from '@/lib/logger.js';
 import { detectNewConversationId, snapshotConversationIds } from './antigravity-session.js';
+import { createClaudeStreamNormalizer, findClaudeRateLimitReset } from './claude-stream.js';
 import { type ReasoningLevel, resolveModelLaunch } from './models.js';
 import { type AgentUsage, parseAgentOutput } from './usage.js';
 
@@ -116,13 +117,15 @@ const PRINT_FLAG: Record<AgentCli, string> = {
  * and the prompt, which is the only position load-bearing for agy (see
  * PRINT_FLAG above), so this map is safe to extend without disturbing that.
  *
- * `claude --help`: combined with `-p`, `--output-format json` emits a single
- * JSON object on stdout — `{ result: <final text>, usage: {...}, ... }` —
- * instead of the plain final-text stdout `-p` alone produces. The harness
- * parses that JSON (`./usage.js`) to recover both the same human-readable
- * text the log viewer showed before this feature (`.result`) and per-run
- * token usage (`.usage`), so switching Claude to JSON output is invisible to
- * the log viewer.
+ * `claude --help`: combined with `-p`, `--output-format stream-json` emits one
+ * NDJSON protocol record per event as it happens, and requires `--verbose`.
+ * SWARM used `json` here originally, but that format is defined as a single
+ * final result: Claude buffers it until the process exits, so a run's live log
+ * stayed empty for its entire duration and got exactly one output event, at
+ * termination (issue #356). Streaming lets `./claude-stream.js` forward
+ * readable progress while the run is alive, and its terminal `result` record
+ * still carries everything the single document did — final text, session id,
+ * usage — which `./usage.js` extracts unchanged.
  *
  * `codex exec --json` emits JSONL events; `./usage.js` extracts the final
  * `turn.completed` usage and readable agent-message text. Antigravity has no
@@ -131,7 +134,7 @@ const PRINT_FLAG: Record<AgentCli, string> = {
  * the load-bearing `-p`-immediately-before-prompt order described above.
  */
 const OUTPUT_FORMAT_ARGS: Record<AgentCli, string[]> = {
-	claude: ['--output-format', 'json'],
+	claude: ['--output-format', 'stream-json', '--verbose'],
 	antigravity: [],
 	codex: ['--json'],
 };
@@ -187,7 +190,12 @@ export interface RunAgentCliOptions {
 	env?: Record<string, string>;
 	/** Override the binary to launch — mainly for tests/deployment. Defaults per `cli`. */
 	command?: string;
-	/** Called once per complete stdout line as it streams in. */
+	/**
+	 * Called once per complete stdout line as it streams in. For `claude` the
+	 * lines are the decoded, human-readable form of its stream-json protocol
+	 * (assistant progress, tool starts/outcomes, terminal errors) rather than the
+	 * raw protocol records — see `./claude-stream.ts`.
+	 */
 	onStdout?: (line: string) => void;
 	/** Called once per complete stderr line as it streams in. */
 	onStderr?: (line: string) => void;
@@ -232,7 +240,8 @@ export interface AgentCliResult {
 	signal: NodeJS.Signals | null;
 	/**
 	 * Captured stdout/stderr for logs (stdout is human-readable when a CLI emits
-	 * structured output and the harness can normalize it).
+	 * structured output and the harness can normalize it — for `claude` that is
+	 * the run's final text, or the decoded transcript when it produced none).
 	 */
 	stdout: string;
 	stderr: string;
@@ -288,6 +297,13 @@ export interface AgentCliResult {
 	 * tail of stdout, unless it too was cut off.
 	 */
 	usage?: AgentUsage;
+	/**
+	 * When the CLI last reported its own usage window resets. Only `claude`
+	 * reports one (its `rate_limit_event` records — see `./claude-stream.ts`),
+	 * and only failure classification reads it, to defer a rate-limited run to an
+	 * exact instant instead of parsing a human "resets …" hint.
+	 */
+	rateLimitResetAt?: Date;
 }
 
 /**
@@ -348,27 +364,51 @@ function tailBuffer(maxBytes: number | undefined) {
 }
 
 /**
+ * Cap on a single *unterminated* line held in {@link lineForwarder}'s buffer.
+ * Claude's stream-json records can be enormous (a tool result echoing a large
+ * file), and one that never terminates would grow the buffer without bound. An
+ * over-long line is dropped from the forwarded stream only — the capped capture
+ * buffers above still see every chunk, so usage parsing is unaffected.
+ */
+const MAX_FORWARDED_LINE_CHARS = 1_000_000;
+
+/**
  * Split an incoming stream of chunks into complete lines, invoking `onLine` for
  * each. Partial lines are buffered until the next chunk (or `flush()` at close),
- * and a trailing `\r` (CRLF) is stripped so callers see clean lines.
+ * and a trailing `\r` (CRLF) is stripped so callers see clean lines. A line that
+ * grows past {@link MAX_FORWARDED_LINE_CHARS} without terminating is discarded
+ * along with the rest of that line, including when a single chunk exceeds the
+ * cap on its own.
  */
 function lineForwarder(onLine: (line: string) => void) {
 	let buffer = '';
+	let overflowed = false;
+	const emit = (line: string): void => {
+		if (overflowed) {
+			overflowed = false;
+			return;
+		}
+		onLine(line.replace(/\r$/, ''));
+	};
 	return {
 		push(chunk: string): void {
 			buffer += chunk;
 			let idx = buffer.indexOf('\n');
 			while (idx !== -1) {
-				onLine(buffer.slice(0, idx).replace(/\r$/, ''));
+				emit(buffer.slice(0, idx));
 				buffer = buffer.slice(idx + 1);
 				idx = buffer.indexOf('\n');
 			}
-		},
-		flush(): void {
-			if (buffer.length > 0) {
-				onLine(buffer.replace(/\r$/, ''));
+			if (buffer.length > MAX_FORWARDED_LINE_CHARS) {
+				overflowed = true;
 				buffer = '';
 			}
+		},
+		flush(): void {
+			if (buffer.length === 0 && !overflowed) return;
+			const line = buffer;
+			buffer = '';
+			emit(line);
 		},
 	};
 }
@@ -478,6 +518,13 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		// Retains the tail of stdout so a trailing usage summary survives even when
 		// the head-capped `stdout` buffer truncates (see {@link tailBuffer}).
 		const stdoutTail = tailBuffer(options.maxOutputBytes);
+		// Claude's stdout is NDJSON protocol, not text: it is decoded into readable
+		// lines as it streams (issue #356), kept separately from the raw capture
+		// above so the run's stored log never contains protocol records — and so a
+		// raw stream flooding its cap doesn't drag the far smaller readable
+		// transcript down with it.
+		const claudeStream = cli === 'claude' ? createClaudeStreamNormalizer() : undefined;
+		const display = cappedBuffer(options.maxOutputBytes);
 		let timedOut = false;
 		let aborted = false;
 		let killRequested = false;
@@ -485,9 +532,12 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 		let timeoutTimer: NodeJS.Timeout | undefined;
 		let graceTimer: NodeJS.Timeout | undefined;
 
-		const forwardStdout = lineForwarder((line) => {
-			if (options.logLines) logger.debug('agent stdout', { cli, line });
-			options.onStdout?.(line);
+		const forwardStdout = lineForwarder((raw) => {
+			for (const line of claudeStream ? claudeStream.translate(raw) : [raw]) {
+				if (claudeStream) display.add(`${line}\n`);
+				if (options.logLines) logger.debug('agent stdout', { cli, line });
+				options.onStdout?.(line);
+			}
 		});
 		const forwardStderr = lineForwarder((line) => {
 			if (options.logLines) logger.debug('agent stderr', { cli, line });
@@ -555,12 +605,12 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			// dropped from `stdout.text` — but the rolling `stdoutTail` still holds
 			// it, so parse usage from the tail in that case (a big test suite exiting
 			// 0 would otherwise lose its usage). `stdoutTail.text` is the last
-			// `maxOutputBytes`, so it starts mid-line/mid-JSON; only usage is trusted
-			// from it — the run's log stays the (truncated) head text. A
-			// non-truncated run parses the full text as before.
-			const parsed = stdout.truncated
-				? parseAgentOutput(cli, stdoutTail.text)
-				: parseAgentOutput(cli, stdout.text);
+			// `maxOutputBytes`, so it starts mid-line/mid-JSON; for codex/agy only
+			// usage is trusted from it and the log stays the (truncated) head text,
+			// while claude's log comes from the decoder either way (see
+			// {@link resolveLogText}). A non-truncated run parses the full text.
+			const captured = stdout.truncated ? stdoutTail.text : stdout.text;
+			const parsed = parseAgentOutput(cli, captured);
 			// Resolve the resumable session id per CLI. claude/codex emit it in
 			// their output (`parsed.sessionId`); claude also falls back to the id
 			// SWARM assigned/resumed with, in case an older build omits it.
@@ -571,15 +621,19 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 				cli,
 				exitCode: code,
 				signal,
-				stdout: stdout.truncated ? stdout.text : (parsed.logText ?? stdout.text),
+				stdout: resolveLogText(parsed.logText),
 				stderr: stderr.text,
 				...(cli === 'codex' ? { rawStdout: stdout.text } : {}),
 				durationMs: Date.now() - start,
 				timedOut,
 				aborted,
-				outputTruncated: stdout.truncated || stderr.truncated,
+				// Claude's visible log is the decoded transcript, so its truncation —
+				// not the raw protocol stream's — is what a reader lost.
+				outputTruncated:
+					(cli === 'claude' ? display.truncated : stdout.truncated) || stderr.truncated,
 				usage: parsed.usage,
 				sessionId,
+				...(cli === 'claude' ? { rateLimitResetAt: findClaudeRateLimitReset(captured) } : {}),
 			};
 			logger.debug('agent run finished', {
 				...options.logContext,
@@ -594,6 +648,18 @@ export async function runAgentCli(options: RunAgentCliOptions): Promise<AgentCli
 			});
 			resolve(result);
 		});
+
+		/**
+		 * The human-readable text to store as this run's log. Claude never falls
+		 * back to its raw stdout — that is NDJSON protocol — so it keeps the
+		 * decoded transcript when the terminal record carried no final text (a
+		 * killed or errored run). The other CLIs keep today's behavior: a
+		 * truncated head stays the log, since their tail-parsed text is partial.
+		 */
+		function resolveLogText(logText: string | undefined): string {
+			if (cli === 'claude') return logText ?? display.text;
+			return stdout.truncated ? stdout.text : (logText ?? stdout.text);
+		}
 
 		/** Per-CLI resolution of the id to resume this run with (see close handler). */
 		function resolveSessionId(parsedSessionId?: string): string | undefined {

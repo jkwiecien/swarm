@@ -1,10 +1,23 @@
 import { describe, expect, it } from 'vitest';
 import { parseAgentOutput } from '@/harness/usage.js';
 
+/** One `claude -p --output-format stream-json` transcript. */
+const claudeStream = (...events: unknown[]): string =>
+	`${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+
+const claudeInit = { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'opus' };
+const claudeText = (text: string) => ({
+	type: 'assistant',
+	message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
 describe('parseAgentOutput', () => {
 	describe('claude', () => {
 		it('normalizes a full usage block and extracts the readable result text', () => {
-			const stdout = JSON.stringify({
+			const stdout = claudeStream(claudeInit, claudeText('Here is the final answer.'), {
+				type: 'result',
+				subtype: 'success',
+				is_error: false,
 				result: 'Here is the final answer.',
 				usage: {
 					input_tokens: 1234,
@@ -26,7 +39,9 @@ describe('parseAgentOutput', () => {
 		});
 
 		it('validates with only input/output tokens, leaving optional fields absent', () => {
-			const stdout = JSON.stringify({
+			const stdout = claudeStream({
+				type: 'result',
+				subtype: 'success',
 				result: 'done',
 				usage: { input_tokens: 10, output_tokens: 5 },
 			});
@@ -37,8 +52,10 @@ describe('parseAgentOutput', () => {
 			});
 		});
 
-		it('captures session_id from the JSON output as sessionId', () => {
-			const stdout = JSON.stringify({
+		it('captures session_id from the terminal result event as sessionId', () => {
+			const stdout = claudeStream({
+				type: 'result',
+				subtype: 'success',
 				result: 'done',
 				session_id: '11111111-2222-3333-4444-555555555555',
 				usage: { input_tokens: 10, output_tokens: 5 },
@@ -48,17 +65,73 @@ describe('parseAgentOutput', () => {
 			);
 		});
 
-		it('returns {} for malformed JSON', () => {
-			expect(parseAgentOutput('claude', 'not json at all')).toEqual({});
+		it('keeps the readable text when the terminal event reports no usage', () => {
+			const stdout = claudeStream({
+				type: 'result',
+				subtype: 'success',
+				result: 'done, no usage reported',
+			});
+			expect(parseAgentOutput('claude', stdout)).toEqual({ logText: 'done, no usage reported' });
 		});
 
-		it('returns {} for a response missing the usage field', () => {
-			const stdout = JSON.stringify({ result: 'done, no usage reported' });
-			expect(parseAgentOutput('claude', stdout)).toEqual({});
+		it('renders a failed terminal event as the log text, keeping usage and session', () => {
+			const stdout = claudeStream(claudeText('Working on it.'), {
+				type: 'result',
+				subtype: 'error_during_execution',
+				is_error: true,
+				result: 'API Error: 429 rate limit; resets 1:40pm (Europe/Warsaw)',
+				session_id: 'sess-9',
+				usage: { input_tokens: 10, output_tokens: 5 },
+			});
+
+			expect(parseAgentOutput('claude', stdout)).toEqual({
+				usage: { inputTokens: 10, outputTokens: 5 },
+				logText:
+					'Claude run failed (error_during_execution): API Error: 429 rate limit; resets 1:40pm (Europe/Warsaw)',
+				sessionId: 'sess-9',
+			});
 		});
 
-		it('returns {} for a truncated JSON string', () => {
+		it('skips malformed and unknown stream lines without losing the terminal event', () => {
+			const stdout = [
+				'not json at all',
+				'{"type":"assistant","message":{"content":[{"type":"text"',
+				JSON.stringify({ type: 'stream_event', event: { type: 'ping' } }),
+				JSON.stringify({
+					type: 'result',
+					subtype: 'success',
+					result: 'done',
+					usage: { input_tokens: 1, output_tokens: 2 },
+				}),
+			].join('\n');
+
+			expect(parseAgentOutput('claude', stdout)).toEqual({
+				usage: { inputTokens: 1, outputTokens: 2 },
+				logText: 'done',
+			});
+		});
+
+		it('parses a bounded tail that starts mid-record but still holds the terminal event', () => {
+			const full = claudeStream(claudeText('hello'), {
+				type: 'result',
+				subtype: 'success',
+				result: 'done',
+				usage: { input_tokens: 1, output_tokens: 2 },
+			});
+			// The rolling tail the harness keeps begins wherever the byte budget fell.
+			expect(parseAgentOutput('claude', full.slice(20))).toEqual({
+				usage: { inputTokens: 1, outputTokens: 2 },
+				logText: 'done',
+			});
+		});
+
+		it('returns {} when the stream carries no terminal result event', () => {
+			expect(parseAgentOutput('claude', claudeStream(claudeInit, claudeText('hi')))).toEqual({});
+		});
+
+		it('returns {} for a truncated terminal event', () => {
 			const truncated = JSON.stringify({
+				type: 'result',
 				result: 'partial',
 				usage: { input_tokens: 1, output_tokens: 2 },
 			}).slice(0, 20);

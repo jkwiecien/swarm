@@ -39,7 +39,8 @@ export function LiveOutputViewer({
 		<div className="border border-zinc-800 rounded-lg bg-zinc-950 overflow-hidden shadow-sm">
 			<div className="flex items-center justify-between border-b border-zinc-850 bg-zinc-900/40 px-4 py-3 text-xs">
 				<span className="text-zinc-400">
-					Raw CLI stdout and stderr · retained up to {(retentionBytes / 1_000_000).toFixed(0)} MB
+					Agent activity and CLI output · retained up to {(retentionBytes / 1_000_000).toFixed(0)}{' '}
+					MB
 				</span>
 				<span className={isRunning ? 'text-emerald-400' : 'text-zinc-500'}>
 					{isRunning ? '● Live' : 'Run ended'}
