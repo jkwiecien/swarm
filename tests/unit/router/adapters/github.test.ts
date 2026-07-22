@@ -89,6 +89,41 @@ describe('GitHubRouterAdapter', () => {
 			expect(parsed?.actorLogin).toBe('swarm-rev');
 		});
 
+		it('parses an issue body edit used to invalidate a preplan', () => {
+			const parsed = adapter.parseWebhook('issues', {
+				action: 'edited',
+				repository: repo(),
+				issue: {
+					number: 7,
+					html_url: 'https://github.com/jkwiecien/swarm/issues/7',
+				},
+				changes: { body: { from: 'old scope' } },
+				sender: { login: 'a-human' },
+			});
+			expect(parsed).toMatchObject({
+				eventType: 'issues',
+				action: 'edited',
+				workItemId: '7',
+				workItemUrl: 'https://github.com/jkwiecien/swarm/issues/7',
+				workItemBodyChanged: true,
+				isCommentEvent: false,
+			});
+		});
+
+		it('parses the label changed by an issues event', () => {
+			const parsed = adapter.parseWebhook('issues', {
+				action: 'labeled',
+				repository: repo(),
+				issue: { number: 7 },
+				label: { name: 'swarm:replan' },
+			});
+			expect(parsed).toMatchObject({
+				eventType: 'issues',
+				labelName: 'swarm:replan',
+				workItemBodyChanged: false,
+			});
+		});
+
 		it('extracts the PR number from a check_suite event', () => {
 			const parsed = adapter.parseWebhook('check_suite', {
 				action: 'completed',

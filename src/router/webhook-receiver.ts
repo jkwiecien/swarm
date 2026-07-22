@@ -167,7 +167,7 @@ async function authenticateWebhook(
 	return null;
 }
 
-/** Handle the four repo-scoped SCM events (`pull_request`, …). */
+/** Handle the five repo-scoped events (`pull_request`, `issues`, …). */
 async function handleScmEvent(
 	c: Context,
 	deps: WebhookReceiverDeps,

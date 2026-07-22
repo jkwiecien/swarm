@@ -2,9 +2,9 @@
  * GitHubRouterAdapter — the router-side GitHub logic, ported (and trimmed to
  * SWARM's MVP) from Cascade's `src/router/adapters/github.ts`.
  *
- * Its job for the four inbound event types (`pull_request`,
- * `pull_request_review`, `issue_comment`, `check_suite`) is: parse the raw
- * webhook into a normalized event, resolve which SWARM project owns the repo,
+ * Its job for the five inbound event types (`pull_request`,
+ * `pull_request_review`, `issue_comment`, `issues`, `check_suite`) is: parse the
+ * raw webhook into a normalized event, resolve which SWARM project owns the repo,
  * decide whether the event was one SWARM produced itself (loop prevention), and
  * run a handler under the right persona's credentials. The actual trigger →
  * agent-type routing that decides *what* to do with an event lands with the
@@ -30,6 +30,7 @@ export const PROCESSABLE_EVENTS = [
 	'pull_request',
 	'pull_request_review',
 	'issue_comment',
+	'issues',
 	'check_suite',
 ] as const;
 
@@ -50,6 +51,8 @@ export const GitHubParsedEventSchema = z.object({
 	repoFullName: z.string(),
 	/** PR/issue number as a string, when the event carries one. */
 	workItemId: z.string().optional(),
+	/** Web URL of the backing issue/PR, when the event carries one. */
+	workItemUrl: z.string().optional(),
 	/** Login of the account that produced the event (`sender.login`). */
 	actorLogin: z.string().optional(),
 	/** Comment-carrying events (`issue_comment`) — the ones a persona can author in reply. */
@@ -126,6 +129,10 @@ export const GitHubParsedEventSchema = z.object({
 	baseBranch: z.string().optional(),
 	/** Whether a closed pull request was actually merged. */
 	merged: z.boolean().optional(),
+	/** Whether an `issues.edited` event changed the issue body. */
+	workItemBodyChanged: z.boolean().optional(),
+	/** Label added/removed by an `issues` event, when present. */
+	labelName: z.string().optional(),
 	/** Candidate PR number on a synthetic conflict-mergeability recheck job. */
 	conflictPrNumber: z.string().optional(),
 });
@@ -149,7 +156,7 @@ function extractWorkItemId(
 	const pr = asRecord(p.pull_request);
 	if (pr?.number != null) return String(pr.number);
 
-	if (eventType === 'issue_comment') {
+	if (eventType === 'issue_comment' || eventType === 'issues') {
 		const issue = asRecord(p.issue);
 		if (issue?.number != null) return String(issue.number);
 	}
@@ -175,6 +182,16 @@ interface LifecycleFields {
 	prAuthorLogin?: string;
 	baseBranch?: string;
 	merged?: boolean;
+	workItemBodyChanged?: boolean;
+	labelName?: string;
+}
+
+function issueFields(p: Record<string, unknown>): LifecycleFields {
+	const changes = asRecord(p.changes);
+	return {
+		workItemBodyChanged: changes ? Object.hasOwn(changes, 'body') : false,
+		labelName: (asRecord(p.label)?.name as string) ?? undefined,
+	};
 }
 
 function pullRequestFields(p: Record<string, unknown>): LifecycleFields {
@@ -239,6 +256,8 @@ function extractLifecycleFields(
 			return reviewFields(p);
 		case 'check_suite':
 			return checkSuiteFields(p);
+		case 'issues':
+			return issueFields(p);
 		default:
 			return {};
 	}
@@ -261,12 +280,15 @@ export class GitHubRouterAdapter {
 		const repo = asRecord(p.repository);
 		const repoFullName = (repo?.full_name as string) ?? 'unknown';
 		const actorLogin = (asRecord(p.sender)?.login as string) ?? undefined;
+		const issue = asRecord(p.issue);
+		const pullRequest = asRecord(p.pull_request);
 
 		return {
 			eventType,
 			action: (p.action as string) ?? undefined,
 			repoFullName,
 			workItemId: extractWorkItemId(eventType, p),
+			workItemUrl: ((issue?.html_url as string) ?? (pullRequest?.html_url as string)) || undefined,
 			actorLogin,
 			isCommentEvent: eventType === 'issue_comment',
 			...extractLifecycleFields(eventType, p),
