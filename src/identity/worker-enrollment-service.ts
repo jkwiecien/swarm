@@ -38,7 +38,10 @@
  * `current_run_id` left over from a completed/failed run reads as idle.
  */
 
-import { getWorkerDispatchClaimState } from '../db/repositories/dispatchesRepository.js';
+import {
+	getActiveWorkerClaims,
+	getWorkerDispatchClaimState,
+} from '../db/repositories/dispatchesRepository.js';
 import { getRunByIdFromDb } from '../db/repositories/runsRepository.js';
 import { getUserById } from '../db/repositories/usersRepository.js';
 import {
@@ -403,7 +406,11 @@ async function assembleDashboardWorker(
 		capabilities: worker.capabilities,
 		connection: liveSession ? 'online' : 'offline',
 		lastSeenAt: lastSeenSession?.lastHeartbeatAt ?? null,
-		currentRunId: await resolveVisibleRunId(liveSession?.currentRunId ?? null, accessible),
+		currentRunId: await resolveVisibleRunId(
+			worker.id,
+			liveSession?.currentRunId ?? null,
+			accessible,
+		),
 		enrollments: enrollments.map((enrollment) => ({
 			projectId: enrollment.projectId,
 			status: enrollment.status,
@@ -411,21 +418,43 @@ async function assembleDashboardWorker(
 	};
 }
 
+async function getIfRunningAndAccessible(
+	runId: string,
+	accessible: Set<string> | null,
+): Promise<string | null> {
+	const run = await getRunByIdFromDb(runId);
+	if (run && run.status === 'running' && (!accessible || accessible.has(run.projectId))) {
+		return run.id;
+	}
+	return null;
+}
+
 /**
- * The run id a viewer may see for a live session's `current_run_id`, or `null`.
+ * The run id a viewer may see for a worker's active work, or `null`.
+ * Derives the candidate run from active, unexpired durable dispatch claims,
+ * falling back to the legacy session pointer.
  * Validates the pointer against run lifecycle exactly as {@link deriveWorkerRunState}
  * does — a stale pointer to a completed/failed/deleted run reads as idle — and
  * additionally withholds a run whose project is outside a restricted viewer's scope.
  */
 async function resolveVisibleRunId(
-	currentRunId: string | null,
+	workerId: string,
+	legacyRunId: string | null,
 	accessible: Set<string> | null,
 ): Promise<string | null> {
-	if (!currentRunId) return null;
-	const run = await getRunByIdFromDb(currentRunId);
-	if (!run || run.status !== 'running') return null;
-	if (accessible && !accessible.has(run.projectId)) return null;
-	return run.id;
+	const activeClaims = await getActiveWorkerClaims(workerId);
+	for (const claim of activeClaims) {
+		if (claim.runId) {
+			const runId = await getIfRunningAndAccessible(claim.runId, accessible);
+			if (runId) return runId;
+		}
+	}
+
+	if (legacyRunId) {
+		return getIfRunningAndAccessible(legacyRunId, accessible);
+	}
+
+	return null;
 }
 
 /** The fields a caller supplies to enroll a (already-resolved) worker into a project. */

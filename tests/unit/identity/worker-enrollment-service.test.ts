@@ -28,7 +28,8 @@ const { getLiveSessionForWorker, getRetainedSessionForWorker } = vi.hoisted(() =
 	getLiveSessionForWorker: vi.fn(),
 	getRetainedSessionForWorker: vi.fn(),
 }));
-const { getWorkerDispatchClaimState } = vi.hoisted(() => ({
+const { getActiveWorkerClaims, getWorkerDispatchClaimState } = vi.hoisted(() => ({
+	getActiveWorkerClaims: vi.fn(),
 	getWorkerDispatchClaimState: vi.fn(),
 }));
 
@@ -52,7 +53,10 @@ vi.mock('@/identity/worker-session-service.js', () => ({
 	getLiveSessionForWorker,
 	getRetainedSessionForWorker,
 }));
-vi.mock('@/db/repositories/dispatchesRepository.js', () => ({ getWorkerDispatchClaimState }));
+vi.mock('@/db/repositories/dispatchesRepository.js', () => ({
+	getActiveWorkerClaims,
+	getWorkerDispatchClaimState,
+}));
 
 import type { SwarmUser } from '@/identity/schema.js';
 import type { Worker } from '@/identity/worker.js';
@@ -128,12 +132,14 @@ beforeEach(() => {
 		getUserById,
 		getRunByIdFromDb,
 		getWorkerDispatchClaimState,
+		getActiveWorkerClaims,
 		getLiveSessionForWorker,
 		getRetainedSessionForWorker,
 	]) {
 		m.mockReset();
 	}
 	getWorkerDispatchClaimState.mockResolvedValue({ activeRuns: 0, currentRunId: null });
+	getActiveWorkerClaims.mockResolvedValue([]);
 });
 
 describe('deriveWorkerRunState (busy/current-run from run lifecycle)', () => {
@@ -337,6 +343,86 @@ describe('listDashboardWorkers (issue #133)', () => {
 
 			const [view] = await listDashboardWorkers(null);
 			expect(view.currentRunId).toBeNull();
+		});
+
+		it('derives candidate current run from active, unexpired durable dispatch claims when currentRunId is null', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(null));
+			getActiveWorkerClaims.mockResolvedValue([{ runId: RUN_ID, projectId: 'proj-a' }]);
+			getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'running', projectId: 'proj-a' });
+
+			const [view] = await listDashboardWorkers(null);
+			expect(view.currentRunId).toBe(RUN_ID);
+			expect(getActiveWorkerClaims).toHaveBeenCalledWith(WORKER_ID);
+		});
+
+		it('withholds the claim run id if the run is not running', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(null));
+			getActiveWorkerClaims.mockResolvedValue([{ runId: RUN_ID, projectId: 'proj-a' }]);
+			getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'completed', projectId: 'proj-a' });
+
+			const [view] = await listDashboardWorkers(null);
+			expect(view.currentRunId).toBeNull();
+		});
+
+		it('withholds the claim run id if its project is outside the accessible scope for a restricted viewer', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([
+				makeEnrollment({ projectId: 'proj-a' }),
+				makeEnrollment({ id: 'e2', projectId: 'proj-secret' }),
+			]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(null));
+			getActiveWorkerClaims.mockResolvedValue([{ runId: RUN_ID, projectId: 'proj-secret' }]);
+			getRunByIdFromDb.mockResolvedValue({
+				id: RUN_ID,
+				status: 'running',
+				projectId: 'proj-secret',
+			});
+
+			const [view] = await listDashboardWorkers(['proj-a']);
+			expect(view.currentRunId).toBeNull();
+		});
+
+		it('chooses only the claim/run whose project is in the accessible scope when the worker has concurrent work', async () => {
+			const OTHER_RUN_ID = '66666666-6666-4666-8666-666666666666';
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([
+				makeEnrollment({ projectId: 'proj-a' }),
+				makeEnrollment({ id: 'e2', projectId: 'proj-secret' }),
+			]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(null));
+			getActiveWorkerClaims.mockResolvedValue([
+				{ runId: RUN_ID, projectId: 'proj-secret' },
+				{ runId: OTHER_RUN_ID, projectId: 'proj-a' },
+			]);
+			getRunByIdFromDb.mockImplementation(async (id: string) => {
+				if (id === RUN_ID) return { id: RUN_ID, status: 'running', projectId: 'proj-secret' };
+				if (id === OTHER_RUN_ID)
+					return { id: OTHER_RUN_ID, status: 'running', projectId: 'proj-a' };
+				return null;
+			});
+
+			const [view] = await listDashboardWorkers(['proj-a']);
+			expect(view.currentRunId).toBe(OTHER_RUN_ID);
+		});
+
+		it('falls back to the legacy session pointer if there are no active claims', async () => {
+			listAllWorkers.mockResolvedValue([makeWorker()]);
+			listEnrollmentsForWorker.mockResolvedValue([makeEnrollment()]);
+			getUserById.mockResolvedValue(makeOwner());
+			getLiveSessionForWorker.mockResolvedValue(liveSession(RUN_ID));
+			getActiveWorkerClaims.mockResolvedValue([]);
+			getRunByIdFromDb.mockResolvedValue({ id: RUN_ID, status: 'running', projectId: 'proj-a' });
+
+			const [view] = await listDashboardWorkers(null);
+			expect(view.currentRunId).toBe(RUN_ID);
 		});
 	});
 

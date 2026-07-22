@@ -430,6 +430,28 @@ export async function getWorkerDispatchClaimState(
 	};
 }
 
+/**
+ * Retrieve active, unexpired durable dispatch claims for a worker.
+ */
+export async function getActiveWorkerClaims(
+	workerId: string,
+): Promise<{ runId: string | null; projectId: string }[]> {
+	return getDb()
+		.select({
+			runId: dispatches.runId,
+			projectId: dispatches.projectId,
+		})
+		.from(dispatches)
+		.where(
+			and(
+				eq(dispatches.selectedWorkerId, workerId),
+				inArray(dispatches.state, ['leased', 'running']),
+				gt(dispatches.leaseExpiresAt, new Date()),
+			),
+		)
+		.orderBy(asc(dispatches.runId));
+}
+
 /** Settle a leased/running dispatch as `completed` with a terminal outcome. */
 export async function completeDispatch(id: string, outcome: DispatchOutcome): Promise<boolean> {
 	const now = new Date();
