@@ -17,6 +17,9 @@
  *   busy/current-run state.
  * - `listOwnerWorkers(ownerUserId)` — an owner's self-service view of their own
  *   workers and each worker's enrollments across projects.
+ * - `listDashboardWorkers(projectScope)` — the cross-project connectivity roster
+ *   the dashboard's Workers screen renders (#133), scoped to what the viewer may
+ *   see.
  * - `listProjectDispatchCandidates(projectId)` — the same project scope in the
  *   shape the #130 dispatch gate judges (`src/worker/eligibility-gate.ts`):
  *   worker + enrollment + resolved availability, in the deterministic
@@ -35,7 +38,10 @@
  * `current_run_id` left over from a completed/failed run reads as idle.
  */
 
-import { getWorkerDispatchClaimState } from '../db/repositories/dispatchesRepository.js';
+import {
+	getActiveWorkerClaims,
+	getWorkerDispatchClaimState,
+} from '../db/repositories/dispatchesRepository.js';
 import { getRunByIdFromDb } from '../db/repositories/runsRepository.js';
 import { getUserById } from '../db/repositories/usersRepository.js';
 import {
@@ -47,7 +53,11 @@ import {
 	updateEnrollmentConstraints as updateEnrollmentConstraintsRow,
 	updateEnrollmentStatus,
 } from '../db/repositories/workerEnrollmentsRepository.js';
-import { getWorkerById, listWorkersForOwner } from '../db/repositories/workersRepository.js';
+import {
+	getWorkerById,
+	listAllWorkers,
+	listWorkersForOwner,
+} from '../db/repositories/workersRepository.js';
 import type { AgentCli } from '../harness/agent-cli.js';
 import type { Worker } from './worker.js';
 import type { WorkerAvailability } from './worker-eligibility.js';
@@ -59,7 +69,7 @@ import {
 	isRoutable,
 	type WorkerEnrollment,
 } from './worker-enrollment.js';
-import { getLiveSessionForWorker } from './worker-session-service.js';
+import { getLiveSessionForWorker, getRetainedSessionForWorker } from './worker-session-service.js';
 
 export {
 	AllowedClisNotCapableError,
@@ -296,6 +306,155 @@ export async function listOwnerWorkers(ownerUserId: string): Promise<OwnerWorker
 		});
 	}
 	return views;
+}
+
+/**
+ * Whether a worker's lease is live under the heartbeat TTL right now. Derived
+ * only from {@link getLiveSessionForWorker}, so the dashboard and the dispatch
+ * gate share one definition of "connected" and there is no second TTL.
+ */
+export type WorkerConnectionState = 'online' | 'offline';
+
+/** One enrollment as the dashboard roster shows it — project + approval state, nothing operable. */
+export interface DashboardEnrollmentView {
+	projectId: string;
+	status: EnrollmentStatus;
+}
+
+/**
+ * One row of the cross-project dashboard roster (#133) — secret-free by
+ * construction, and read-only: it carries no machine path, credential, allowed-CLI
+ * constraint, or consent/approval affordance, only what the Workers screen renders.
+ */
+export interface DashboardWorkerView {
+	workerId: string;
+	displayName: string;
+	owner: RosterOwner | null;
+	capabilities: AgentCli[];
+	connection: WorkerConnectionState;
+	/** When the worker was last heard from, or `null` if it never connected. */
+	lastSeenAt: Date | null;
+	/** The run it is executing right now, or `null` when idle or the run is out of the viewer's scope. */
+	currentRunId: string | null;
+	enrollments: DashboardEnrollmentView[];
+}
+
+/**
+ * The project ids a dashboard viewer may see: `null` for an installation
+ * administrator (no restriction at all), otherwise the exact set of projects
+ * they are a member of. Mirrors `accessibleProjectScope` (`src/api/authz.ts`),
+ * whose result callers pass straight through — this layer never re-derives
+ * roles or membership.
+ */
+export type DashboardProjectScope = string[] | null;
+
+/**
+ * The dashboard's cross-project worker roster (#133). An administrator
+ * (`projectScope === null`) sees **every registered worker**, including one with
+ * no enrollment at all; anyone else sees only workers enrolled in a project they
+ * may access, with the inaccessible enrollments stripped from the row. A viewer
+ * with no accessible project sees nothing. Workers come back oldest-first and
+ * de-duplicated regardless of how many visible projects they are enrolled in.
+ *
+ * Connectivity is derived, never client-supplied: `connection` comes from the
+ * live-session TTL, `lastSeenAt` from the retained session row (so an expired or
+ * released worker keeps its last heartbeat), and `currentRunId` is exposed only
+ * while that run is actually `running` **and** belongs to a project in scope —
+ * an in-flight run from an inaccessible project never leaks through a worker the
+ * viewer happens to share another project with.
+ */
+export async function listDashboardWorkers(
+	projectScope: DashboardProjectScope,
+): Promise<DashboardWorkerView[]> {
+	if (projectScope !== null && projectScope.length === 0) return [];
+	const accessible = projectScope === null ? null : new Set(projectScope);
+	const views: DashboardWorkerView[] = [];
+	for (const worker of await listAllWorkers()) {
+		const enrollments = await listEnrollmentsForWorker(worker.id);
+		const visible = accessible
+			? enrollments.filter((enrollment) => accessible.has(enrollment.projectId))
+			: enrollments;
+		// A restricted viewer only sees a machine they share a project with; an
+		// administrator also sees a registered-but-never-enrolled one.
+		if (accessible && visible.length === 0) continue;
+		views.push(await assembleDashboardWorker(worker, visible, accessible));
+	}
+	return views;
+}
+
+/** Assemble one dashboard row by naming each safe field explicitly (never spreading a row). */
+async function assembleDashboardWorker(
+	worker: Worker,
+	enrollments: WorkerEnrollment[],
+	accessible: Set<string> | null,
+): Promise<DashboardWorkerView> {
+	const ownerUser = await getUserById(worker.ownerUserId);
+	const liveSession = await getLiveSessionForWorker(worker.id);
+	// The retained row outlives expiry/release, so it is the last-seen source for
+	// an offline worker; a live session already carries the freshest heartbeat.
+	const lastSeenSession = liveSession ?? (await getRetainedSessionForWorker(worker.id));
+	return {
+		workerId: worker.id,
+		displayName: worker.displayName,
+		owner: ownerUser
+			? {
+					userId: ownerUser.id,
+					identifier: ownerUser.identifier,
+					displayName: ownerUser.displayName,
+				}
+			: null,
+		capabilities: worker.capabilities,
+		connection: liveSession ? 'online' : 'offline',
+		lastSeenAt: lastSeenSession?.lastHeartbeatAt ?? null,
+		currentRunId: await resolveVisibleRunId(
+			worker.id,
+			liveSession?.currentRunId ?? null,
+			accessible,
+		),
+		enrollments: enrollments.map((enrollment) => ({
+			projectId: enrollment.projectId,
+			status: enrollment.status,
+		})),
+	};
+}
+
+async function getIfRunningAndAccessible(
+	runId: string,
+	accessible: Set<string> | null,
+): Promise<string | null> {
+	const run = await getRunByIdFromDb(runId);
+	if (run && run.status === 'running' && (!accessible || accessible.has(run.projectId))) {
+		return run.id;
+	}
+	return null;
+}
+
+/**
+ * The run id a viewer may see for a worker's active work, or `null`.
+ * Derives the candidate run from active, unexpired durable dispatch claims,
+ * falling back to the legacy session pointer.
+ * Validates the pointer against run lifecycle exactly as {@link deriveWorkerRunState}
+ * does — a stale pointer to a completed/failed/deleted run reads as idle — and
+ * additionally withholds a run whose project is outside a restricted viewer's scope.
+ */
+async function resolveVisibleRunId(
+	workerId: string,
+	legacyRunId: string | null,
+	accessible: Set<string> | null,
+): Promise<string | null> {
+	const activeClaims = await getActiveWorkerClaims(workerId);
+	for (const claim of activeClaims) {
+		if (claim.runId) {
+			const runId = await getIfRunningAndAccessible(claim.runId, accessible);
+			if (runId) return runId;
+		}
+	}
+
+	if (legacyRunId) {
+		return getIfRunningAndAccessible(legacyRunId, accessible);
+	}
+
+	return null;
 }
 
 /** The fields a caller supplies to enroll a (already-resolved) worker into a project. */

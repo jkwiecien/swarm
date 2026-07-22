@@ -1,19 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { acquireLease, getLiveSession, heartbeatLease, releaseLease, setCurrentRunRow } = vi.hoisted(
-	() => ({
-		acquireLease: vi.fn(),
-		getLiveSession: vi.fn(),
-		heartbeatLease: vi.fn(),
-		releaseLease: vi.fn(),
-		setCurrentRunRow: vi.fn(),
-	}),
-);
+const {
+	acquireLease,
+	getLiveSession,
+	getRetainedSession,
+	heartbeatLease,
+	releaseLease,
+	setCurrentRunRow,
+} = vi.hoisted(() => ({
+	acquireLease: vi.fn(),
+	getLiveSession: vi.fn(),
+	getRetainedSession: vi.fn(),
+	heartbeatLease: vi.fn(),
+	releaseLease: vi.fn(),
+	setCurrentRunRow: vi.fn(),
+}));
 const { resolveWorkerByCredential } = vi.hoisted(() => ({ resolveWorkerByCredential: vi.fn() }));
 
 vi.mock('@/db/repositories/workerSessionsRepository.js', () => ({
 	acquireLease,
 	getLiveSession,
+	getRetainedSession,
 	heartbeat: heartbeatLease,
 	releaseLease,
 	setCurrentRun: setCurrentRunRow,
@@ -26,6 +33,7 @@ import {
 	acquireSession,
 	DEFAULT_WORKER_HEARTBEAT_TTL_MS,
 	getLiveSessionForWorker,
+	getRetainedSessionForWorker,
 	heartbeat,
 	releaseSession,
 	resolveHeartbeatTtlMs,
@@ -64,6 +72,7 @@ function makeSession(overrides: Partial<WorkerSession> = {}): WorkerSession {
 beforeEach(() => {
 	acquireLease.mockReset();
 	getLiveSession.mockReset();
+	getRetainedSession.mockReset();
 	heartbeatLease.mockReset();
 	releaseLease.mockReset();
 	setCurrentRunRow.mockReset();
@@ -152,5 +161,23 @@ describe('getLiveSessionForWorker', () => {
 		getLiveSession.mockResolvedValue(session);
 		expect(await getLiveSessionForWorker(WORKER_ID, 5000)).toBe(session);
 		expect(getLiveSession).toHaveBeenCalledWith(WORKER_ID, 5000);
+	});
+});
+
+describe('getRetainedSessionForWorker', () => {
+	it('delegates to the repository retained-session lookup, without a TTL', async () => {
+		const session = makeSession();
+		getRetainedSession.mockResolvedValue(session);
+
+		expect(await getRetainedSessionForWorker(WORKER_ID)).toBe(session);
+		// Deliberately un-gated: last-seen must survive expiry, so no TTL is passed
+		// and the liveness lookup is never consulted.
+		expect(getRetainedSession).toHaveBeenCalledWith(WORKER_ID);
+		expect(getLiveSession).not.toHaveBeenCalled();
+	});
+
+	it('is undefined for a worker that never connected', async () => {
+		getRetainedSession.mockResolvedValue(undefined);
+		expect(await getRetainedSessionForWorker(WORKER_ID)).toBeUndefined();
 	});
 });

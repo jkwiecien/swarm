@@ -8,6 +8,7 @@ import {
 	approveEnrollment,
 	enrollWorker,
 	getEnrollment,
+	listDashboardWorkers,
 	listOwnerWorkers,
 	listProjectRoster,
 	setEnrollmentStatus,
@@ -15,14 +16,18 @@ import {
 	updateEnrollmentConstraints,
 } from '../../identity/worker-enrollment-service.js';
 import { getWorker, type Worker } from '../../identity/worker-service.js';
-import { assertProjectAccess } from '../authz.js';
+import { accessibleProjectScope, assertProjectAccess } from '../authz.js';
 import { authedProcedure, router } from '../trpc.js';
 
 /**
  * The tRPC **workers** router (#337 Phase 3) — the enrollment-side companion to
- * `routers/projects.ts`. It exposes two clearly separated surfaces, both gated
+ * `routers/projects.ts`. It exposes three clearly separated surfaces, all gated
  * by the identity/authorization layers ADR-001 establishes:
  *
+ * - **Installation roster** (`list`, #133): the read-only cross-project
+ *   connectivity view the dashboard's Workers screen renders, bounded by
+ *   `accessibleProjectScope` — an `instanceAdmin` sees every registered worker,
+ *   anyone else only workers enrolled in projects they may access.
  * - **Owner self-service**, scoped to `ctx.user`: an owner lists *their own*
  *   workers and enrollments (`listMine`), offers a worker to a project
  *   (`enroll`), and controls the revocable sharing consent (`setConsent`) and
@@ -89,6 +94,25 @@ const AllowedClisInput = z.array(AgentCliSchema).min(1);
 const ConcurrencyInput = z.number().int().positive();
 
 export const workersRouter = router({
+	// --- Installation roster (cross-project, read-only) ---
+
+	// Every worker the caller may see, with connectivity, last-seen, capabilities,
+	// in-flight run, and enrollment states — the dashboard's Workers screen (#133).
+	// Scoping is delegated wholesale to `accessibleProjectScope`: an `instanceAdmin`
+	// passes `null` (every worker, including un-enrolled machines), anyone else
+	// passes exactly their membership project ids. Read-only — no mutation, no
+	// path/credential/token, and no routing or approval affordance.
+	list: authedProcedure.query(async ({ ctx }) => {
+		const scope = await accessibleProjectScope(ctx.user);
+		const workers = await listDashboardWorkers(scope);
+		// The service already assembled a secret-free view; the only wire-shape
+		// concern here is giving the browser an explicit ISO timestamp.
+		return workers.map((worker) => ({
+			...worker,
+			lastSeenAt: worker.lastSeenAt?.toISOString() ?? null,
+		}));
+	}),
+
 	// --- Owner self-service (scoped to ctx.user) ---
 
 	// The caller's own workers and their enrollments, with derived run state. A
