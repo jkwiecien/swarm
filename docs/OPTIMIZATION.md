@@ -57,7 +57,7 @@ decisions and override them.
 
 With automatic splitting enabled, the parent Planning run has already explored the
 repository and decided how the work decomposes. It should create the remaining children in
-Backlog with a plan from that same repository exploration, instead of sending each child through
+Planning with a plan from that same repository exploration, instead of sending each child through
 another complete Planning run.
 
 Instead, the original run should produce a concise implementation plan for every child while
@@ -70,10 +70,10 @@ its repository context is still available. Each child should receive:
 - focused verification guidance.
 
 SWARM should post or persist the child-specific plan with the newly created item and mark it
-as preplanned. The child remains in Backlog until deliberately started; its Planning trigger
-should recognize a valid marker **and** `swarm:split-child` label and avoid launching another
-agent run. A human edit that materially changes the child's scope, a missing or invalid plan,
-an explicit replan action, or removal of the split-child label should run Planning normally.
+as preplanned before moving the child to Planning. Its Planning trigger should recognize a valid
+marker **and** `swarm:split-child` label and avoid launching another agent run. A human edit that
+materially changes the child's scope, a missing or invalid plan, an explicit replan action, or
+removal of the split-child label should run Planning normally.
 
 This converts one repository analysis into plans for the entire split rather than paying for
 one parent analysis plus one full analysis per child.
@@ -87,11 +87,13 @@ exclusions, relevant files/symbols, dependencies on preceding siblings, an order
 verification guidance. When it spawns each child, it embeds that plan as a **structured,
 validated preplanned contract** (`PreplanContractSchema`, `src/pipeline/preplan.ts`) in a hidden
 `<!-- swarm-preplan:v1 … -->` marker in the child's issue body — the only state that durably
-travels with a child while it waits in Backlog.
+travels with a child while it enters Planning.
 
-When a child is moved to Planning, the trigger evaluates that marker before dispatching: a valid
-marker on a labelled split child suppresses the redundant phase, so no worktree or agent CLI is
-launched. Validity is deterministic — no classifier model. It falls back to a normal agent run
+SWARM creates the card in Backlog only long enough to write that marker, then moves it to Planning.
+That ordering means both the Planning-move webhook and a delayed creation webhook find the marker
+before the trigger evaluates the card: a valid marker on a labelled split child suppresses the
+redundant phase, so no worktree or agent CLI is launched. Validity is deterministic — no
+classifier model. It falls back to a normal agent run
 when the marker is missing, malformed, fails schema validation, binds a different item
 (`itemUrl` ≠ the child's URL), was written against a since-edited scope (`descriptionHash`
 mismatch), an operator applied `swarm:replan`, or the split-child label was removed. The marker is

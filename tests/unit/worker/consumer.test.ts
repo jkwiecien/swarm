@@ -975,7 +975,7 @@ describe('processJob', () => {
 	});
 
 	describe('self-enqueue after auto-advance', () => {
-		it('self-enqueues Planning for every newly created split child', async () => {
+		it('does not self-enqueue Planning for preplanned split children', async () => {
 			const trigger: TriggerResult = {
 				phase: 'planning',
 				taskId: '10',
@@ -991,26 +991,7 @@ describe('processJob', () => {
 
 			await processJob(createMockGitHubProjectsWebhookJob(), registryReturning(trigger));
 
-			expect(createAndPublishDispatch).toHaveBeenCalledTimes(2);
-			for (const itemNodeId of ['PVTI_child-one', 'PVTI_child-two']) {
-				expect(createAndPublishDispatch).toHaveBeenCalledWith({
-					projectId: PROJECT.id,
-					priority: 10,
-					source: 'synthetic',
-					jobPayload: {
-						type: 'github-projects',
-						projectId: PROJECT.id,
-						event: {
-							eventType: 'projects_v2_item',
-							action: 'edited',
-							itemNodeId,
-							projectNodeId: PROJECT.githubProjects.projectId,
-							changedFieldNodeId: PROJECT.githubProjects.statusFieldId,
-							changedFieldType: 'single_select',
-						},
-					},
-				});
-			}
+			expect(createAndPublishDispatch).not.toHaveBeenCalled();
 		});
 
 		it('self-enqueues a synthetic board job when Planning auto-advances to ToDo', async () => {
