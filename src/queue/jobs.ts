@@ -55,6 +55,20 @@ const jobBase = z.object({
 	 */
 	dependencyRecheckAttempt: z.number().int().nonnegative().optional(),
 	/**
+	 * How many times this job has been re-checked while no eligible worker could
+	 * take it (issue #339): the federated dispatch gate
+	 * (`src/worker/eligibility-gate.ts`) refused it — an assignee's worker is
+	 * busy, consent was revoked, an enrollment is not active, or no enrolled
+	 * worker can run any configured target — so it waits as a token-free
+	 * `worker-eligibility` dispatch (no worktree, no agent) and is re-evaluated on
+	 * the same cadence as a dependency re-check. Absent on a fresh webhook;
+	 * incremented on each re-check so the wait is bounded and finally surfaces the
+	 * actionable reason instead of polling forever. A separate budget from
+	 * {@link dependencyRecheckAttempt} — an item can wait on both, one after the
+	 * other, without either exhausting the other's.
+	 */
+	workerEligibilityRecheckAttempt: z.number().int().nonnegative().optional(),
+	/**
 	 * PM phase to resume after an agent failure. A retried implementation has
 	 * already moved its card to In progress, which normally is deliberately not
 	 * a phase-triggering status; this preserves the original dispatch intent.

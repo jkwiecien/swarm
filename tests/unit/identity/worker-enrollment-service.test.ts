@@ -28,6 +28,9 @@ const { getLiveSessionForWorker, getRetainedSessionForWorker } = vi.hoisted(() =
 	getLiveSessionForWorker: vi.fn(),
 	getRetainedSessionForWorker: vi.fn(),
 }));
+const { getWorkerDispatchClaimState } = vi.hoisted(() => ({
+	getWorkerDispatchClaimState: vi.fn(),
+}));
 
 vi.mock('@/db/repositories/workerEnrollmentsRepository.js', () => ({
 	createEnrollment,
@@ -49,6 +52,7 @@ vi.mock('@/identity/worker-session-service.js', () => ({
 	getLiveSessionForWorker,
 	getRetainedSessionForWorker,
 }));
+vi.mock('@/db/repositories/dispatchesRepository.js', () => ({ getWorkerDispatchClaimState }));
 
 import type { SwarmUser } from '@/identity/schema.js';
 import type { Worker } from '@/identity/worker.js';
@@ -123,11 +127,13 @@ beforeEach(() => {
 		listWorkersForOwner,
 		getUserById,
 		getRunByIdFromDb,
+		getWorkerDispatchClaimState,
 		getLiveSessionForWorker,
 		getRetainedSessionForWorker,
 	]) {
 		m.mockReset();
 	}
+	getWorkerDispatchClaimState.mockResolvedValue({ activeRuns: 0, currentRunId: null });
 });
 
 describe('deriveWorkerRunState (busy/current-run from run lifecycle)', () => {

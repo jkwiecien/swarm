@@ -23,8 +23,8 @@
  * `./worker-service.ts`, mirroring `createSession`/`MintedSession` in
  * `./auth.ts`).
  *
- * This slice is data + CLI only — inert until worker sessions (Phase 2) and
- * project enrollment/routing (Phase 3, #130) consume it.
+ * Worker sessions, project enrollment, and the eligibility gate consume this
+ * identity when selecting and claiming an execution host.
  */
 
 import { z } from 'zod';

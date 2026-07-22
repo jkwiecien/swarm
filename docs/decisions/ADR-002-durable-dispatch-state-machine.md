@@ -71,7 +71,7 @@ retry, a cancel and a slot release) resolve to exactly one winner.
 - **Leases.** A worker may mark work `running` only after it durably claimed the dispatch
   (`leased`, with `lease_owner` + `lease_expires_at` derived from the effective agent
   timeout plus margin). Startup and periodic reconciliation fail dispatches whose lease
-  expired (single-worker MVP: any lease found at startup is dead), alongside the existing
+  expired, alongside the existing
   `runs`-row sweeps.
 - **Project concurrency** is scheduling on a pending dispatch (`wait_reason =
   'project-capacity'`), not a separate Redis registry. A freed slot selects the next

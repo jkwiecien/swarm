@@ -60,6 +60,7 @@ const QUEUED_WAIT_REASON_LABELS: Record<QueuedWaitReason, string> = {
 	'worktree-exists': 'retrying after a worktree collision',
 	stalled: 'retrying after a stalled response',
 	recheck: 'waiting for checks to settle',
+	'worker-eligibility': 'waiting for an eligible worker',
 	'manual-retry': 'manual retry',
 	recovered: 'recovered after a restart',
 };
