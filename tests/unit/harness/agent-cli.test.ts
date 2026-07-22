@@ -31,6 +31,42 @@ const lastChild = (): FakeChild => {
 	return child;
 };
 
+/** One chunk of `claude -p --output-format stream-json` NDJSON. */
+const claudeStream = (...events: unknown[]): string =>
+	`${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+
+const claudeText = (text: string) => ({
+	type: 'assistant',
+	message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+const claudeToolUse = (id: string, name: string, input: Record<string, unknown>) => ({
+	type: 'assistant',
+	message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+});
+const claudeToolResult = (id: string, content: string, isError = false) => ({
+	type: 'user',
+	message: {
+		role: 'user',
+		content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }],
+	},
+});
+const claudeResult = (fields: Record<string, unknown>) => ({
+	type: 'result',
+	subtype: 'success',
+	is_error: false,
+	...fields,
+});
+
+/** Whether a run promise has settled yet — "did this happen before the process exited?". */
+function track(promise: Promise<unknown>): { settled: boolean } {
+	const state = { settled: false };
+	const mark = (): void => {
+		state.settled = true;
+	};
+	promise.then(mark, mark);
+	return state;
+}
+
 beforeEach(() => {
 	children = [];
 	spawnMock.mockReset();
@@ -54,7 +90,7 @@ describe('runAgentCli', () => {
 			cli: 'claude',
 			exitCode: 0,
 			signal: null,
-			// Not valid JSON, so it falls back to the raw captured text unchanged.
+			// Not protocol records, so the lines are kept verbatim.
 			stdout: 'hello\nworld\n',
 			stderr: 'a warning\n',
 			timedOut: false,
@@ -65,7 +101,7 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['--dangerously-skip-permissions', '--output-format', 'json', '-p'],
+			['--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose', '-p'],
 			{
 				cwd: '/wt',
 				env: process.env,
@@ -81,7 +117,14 @@ describe('runAgentCli', () => {
 
 		expect(spawnMock).toHaveBeenCalledWith(
 			'claude',
-			['--dangerously-skip-permissions', '--output-format', 'json', '-p', 'implement the thing'],
+			[
+				'--dangerously-skip-permissions',
+				'--output-format',
+				'stream-json',
+				'--verbose',
+				'-p',
+				'implement the thing',
+			],
 			expect.anything(),
 		);
 	});
@@ -101,7 +144,8 @@ describe('runAgentCli', () => {
 			'--provider-flag',
 			'value',
 			'--output-format',
-			'json',
+			'stream-json',
+			'--verbose',
 			'-p',
 			'implement the thing',
 		]);
@@ -119,7 +163,8 @@ describe('runAgentCli', () => {
 		expect(spawnMock.mock.calls[0][1]).toEqual([
 			'--dangerously-skip-permissions',
 			'--output-format',
-			'json',
+			'stream-json',
+			'--verbose',
 			'--session-id',
 			'11111111-1111-4111-8111-111111111111',
 			'-p',
@@ -283,7 +328,8 @@ describe('runAgentCli', () => {
 				'--model',
 				'sonnet',
 				'--output-format',
-				'json',
+				'stream-json',
+				'--verbose',
 				'-p',
 				'implement the thing',
 			],
@@ -343,7 +389,8 @@ describe('runAgentCli', () => {
 			'--effort',
 			'high',
 			'--output-format',
-			'json',
+			'stream-json',
+			'--verbose',
 			'-p',
 			'implement the thing',
 		]);
@@ -456,7 +503,8 @@ describe('runAgentCli', () => {
 		expect(args).toEqual([
 			'--dangerously-skip-permissions',
 			'--output-format',
-			'json',
+			'stream-json',
+			'--verbose',
 			'-p',
 			'--print',
 			'do the thing',
@@ -488,22 +536,260 @@ describe('runAgentCli', () => {
 		expect(lines).toEqual(['aaa', 'bbbbbb', 'ccc']);
 	});
 
-	describe('usage extraction', () => {
-		it('parses Claude JSON output into usage, and swaps stdout for the readable result text', async () => {
+	// Claude prints NDJSON protocol records (`--output-format stream-json`), which
+	// the harness decodes into readable lines *as they arrive* — the whole point of
+	// issue #356: with `--output-format json` nothing reached the run page until
+	// the process exited.
+	describe('claude stream decoding', () => {
+		it('forwards readable progress while the process is still running', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ onStdout: (line) => lines.push(line) }),
+			);
+			const state = track(promise);
+			const child = lastChild();
+
+			child.stdout.emit(
+				'data',
+				claudeStream({ type: 'system', subtype: 'init', session_id: 'sess-1' }),
+			);
+			child.stdout.emit('data', claudeStream(claudeText('Reading the failing test.')));
+			child.stdout.emit('data', claudeStream(claudeToolUse('t1', 'Bash', { command: 'npm test' })));
+			await Promise.resolve();
+
+			// Live output, long before the process exits.
+			expect(lines).toEqual(['Reading the failing test.', 'Tool started: Bash']);
+			expect(state.settled).toBe(false);
+
+			child.stdout.emit('data', claudeStream(claudeToolResult('t1', '12 tests passed')));
+			child.stdout.emit(
+				'data',
+				claudeStream(
+					claudeResult({ result: 'Done.', usage: { input_tokens: 1, output_tokens: 2 } }),
+				),
+			);
+			child.emit('close', 0, null);
+			await promise;
+
+			expect(lines).toEqual([
+				'Reading the failing test.',
+				'Tool started: Bash',
+				'Tool completed: Bash',
+				'Done.',
+			]);
+		});
+
+		it('reports a failed tool as failed, and never leaks tool payloads or raw protocol', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ onStdout: (line) => lines.push(line) }),
+			);
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				claudeStream(
+					claudeToolUse('t1', 'Bash', { command: 'curl -H "Authorization: Bearer s3cret"' }),
+					claudeToolResult('t1', 'token=s3cret leaked to stdout', true),
+					{ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'private' }] } },
+					claudeResult({ result: 'Recovered.', usage: { input_tokens: 1, output_tokens: 1 } }),
+				),
+			);
+			child.emit('close', 0, null);
+			await promise;
+
+			expect(lines).toEqual(['Tool started: Bash', 'Tool failed: Bash', 'Recovered.']);
+			expect(lines.join('\n')).not.toContain('s3cret');
+			expect(lines.join('\n')).not.toContain('private');
+			expect(lines.some((line) => line.includes('"type"'))).toBe(false);
+		});
+
+		it('does not repeat the final assistant text when the terminal record echoes it', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ onStdout: (line) => lines.push(line) }),
+			);
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				claudeStream(
+					claudeText('Implemented the feature.'),
+					claudeResult({
+						result: 'Implemented the feature.',
+						usage: { input_tokens: 1, output_tokens: 1 },
+					}),
+				),
+			);
+			child.emit('close', 0, null);
+			const result = await promise;
+
+			expect(lines).toEqual(['Implemented the feature.']);
+			expect(result.stdout).toBe('Implemented the feature.');
+		});
+
+		it('skips malformed and unknown records without dropping the valid ones around them', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ onStdout: (line) => lines.push(line) }),
+			);
+			const child = lastChild();
+			child.stdout.emit('data', '{"type":"assistant","message":{"content":[{"type":"tex\n');
+			child.stdout.emit('data', claudeStream({ type: 'stream_event', event: { type: 'ping' } }));
+			child.stdout.emit('data', claudeStream(claudeText('Still here.')));
+			child.emit('close', 0, null);
+			await promise;
+
+			expect(lines).toEqual(['Still here.']);
+		});
+
+		it('flushes a trailing partial record once, when the process is killed mid-stream', async () => {
+			const lines: string[] = [];
+			const controller = new AbortController();
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({
+					signal: controller.signal,
+					onStdout: (line) => lines.push(line),
+				}),
+			);
+			const child = lastChild();
+			// The record is split across chunks and the last one never gets its newline.
+			child.stdout.emit('data', `${JSON.stringify(claudeText('Half a thought')).slice(0, 40)}`);
+			controller.abort();
+			child.stdout.emit('data', `${JSON.stringify(claudeText('Half a thought')).slice(40)}`);
+			child.emit('close', null, 'SIGKILL');
+			const result = await promise;
+
+			expect(lines).toEqual(['Half a thought']);
+			expect(result.aborted).toBe(true);
+			expect(result.stdout).toBe('Half a thought\n');
+		});
+
+		it('drops a single record that grows past the forwarding cap, then resumes', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({ onStdout: (line) => lines.push(line) }),
+			);
+			const child = lastChild();
+			// One chunk larger than the cap on its own, with no newline to end it.
+			child.stdout.emit('data', 'x'.repeat(1_100_000));
+			child.stdout.emit('data', `tail of the giant record\n${claudeStream(claudeText('Back.'))}`);
+			child.emit('close', 0, null);
+			await promise;
+
+			expect(lines).toEqual(['Back.']);
+		});
+
+		it('classifies a streamed HTTP 429 as a resumable rate limit', async () => {
+			const lines: string[] = [];
+			const promise = runAgentCli(
+				createMockRunAgentCliOptions({
+					sessionId: '11111111-1111-4111-8111-111111111111',
+					onStdout: (line) => lines.push(line),
+				}),
+			);
+			const child = lastChild();
+			child.stdout.emit('data', claudeStream(claudeText('Starting work.')));
+			child.stdout.emit(
+				'data',
+				claudeStream({
+					type: 'result',
+					subtype: 'error_during_execution',
+					is_error: true,
+					result: 'API Error: 429 you have hit your session limit, resets 1:40pm (Europe/Warsaw)',
+					session_id: '11111111-1111-4111-8111-111111111111',
+					usage: { input_tokens: 10, output_tokens: 3 },
+				}),
+			);
+			child.emit('close', 1, null);
+			const result = await promise;
+
+			// The failure reaches the live log as it happens, not only in the result.
+			expect(lines.at(-1)).toContain('Claude run failed (error_during_execution)');
+			expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 3 });
+			// …and the run stays resumable, with the reset time the CLI reported.
+			expect(result.sessionId).toBe('11111111-1111-4111-8111-111111111111');
+			const failure = classifyAgentFailure(result, new Date('2026-01-01T09:00:00Z'));
+			expect(failure.kind).toBe('rate-limit');
+			expect(failure.resetHint).toBe('1:40pm (Europe/Warsaw)');
+			expect(failure.retryAfter?.toISOString()).toBe('2026-01-01T12:40:00.000Z');
+		});
+
+		it('defers a rate-limited run to the reset instant Claude reported', async () => {
+			// The shape confirmed against a live `claude --output-format stream-json`
+			// run: an exact epoch, where the human banner only offers a wall clock.
 			const promise = runAgentCli(createMockRunAgentCliOptions());
 			const child = lastChild();
 			child.stdout.emit(
 				'data',
-				JSON.stringify({
-					result: 'All done, implemented the feature.',
-					usage: { input_tokens: 100, output_tokens: 50 },
+				claudeStream(
+					{
+						type: 'rate_limit_event',
+						rate_limit_info: {
+							status: 'allowed',
+							resetsAt: 1_784_755_200,
+							rateLimitType: 'five_hour',
+						},
+					},
+					{
+						type: 'result',
+						subtype: 'error_during_execution',
+						is_error: true,
+						result: 'API Error: 429 rate_limit_error',
+					},
+				),
+			);
+			child.emit('close', 1, null);
+			const result = await promise;
+
+			expect(result.rateLimitResetAt?.toISOString()).toBe('2026-07-22T21:20:00.000Z');
+			expect(classifyAgentFailure(result).retryAfter?.toISOString()).toBe(
+				'2026-07-22T21:20:00.000Z',
+			);
+		});
+
+		it('keeps a failed terminal record in the log even when the stream around it was truncated', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ maxOutputBytes: 200 }));
+			const child = lastChild();
+			child.stdout.emit('data', claudeStream(claudeText('y'.repeat(400))));
+			child.stdout.emit(
+				'data',
+				claudeStream({
+					type: 'result',
+					subtype: 'error_during_execution',
+					is_error: true,
+					error: { message: 'API Error: 429 rate_limit_error' },
 				}),
+			);
+			child.emit('close', 1, null);
+			const result = await promise;
+
+			expect(result.stdout).toBe(
+				'Claude run failed (error_during_execution): API Error: 429 rate_limit_error',
+			);
+			expect(classifyAgentFailure(result).kind).toBe('rate-limit');
+		});
+	});
+
+	describe('usage extraction', () => {
+		it('parses the Claude stream into usage, and swaps stdout for the readable result text', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions());
+			const child = lastChild();
+			child.stdout.emit(
+				'data',
+				claudeStream(
+					claudeText('All done, implemented the feature.'),
+					claudeResult({
+						result: 'All done, implemented the feature.',
+						session_id: 'sess-7',
+						usage: { input_tokens: 100, output_tokens: 50 },
+					}),
+				),
 			);
 			child.emit('close', 0, null);
 
 			const result = await promise;
 			expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 50 });
 			expect(result.stdout).toBe('All done, implemented the feature.');
+			expect(result.sessionId).toBe('sess-7');
 		});
 
 		it('parses Codex JSONL usage and swaps stdout for the agent message', async () => {
@@ -546,7 +832,9 @@ describe('runAgentCli', () => {
 			expect(classifyAgentFailure(result)).toEqual({ kind: 'capacity' });
 		});
 
-		it('leaves usage undefined and stdout raw for non-JSON stdout', async () => {
+		it('leaves usage undefined and keeps plain, non-protocol stdout for Claude', async () => {
+			// A CLI message printed outside the stream protocol (a startup/auth
+			// failure) is the one thing worth keeping verbatim — it is not protocol.
 			const promise = runAgentCli(createMockRunAgentCliOptions());
 			const child = lastChild();
 			child.stdout.emit('data', 'plain text, not JSON\n');
@@ -557,18 +845,36 @@ describe('runAgentCli', () => {
 			expect(result.stdout).toBe('plain text, not JSON\n');
 		});
 
-		it('leaves usage undefined when the trailing summary itself was cut off by truncation', async () => {
+		it('leaves Claude usage undefined when its terminal record was cut off by truncation', async () => {
 			const promise = runAgentCli(createMockRunAgentCliOptions({ maxOutputBytes: 5 }));
 			const child = lastChild();
-			// The JSON blob arrives across chunks larger than the tail budget, so the
-			// tail retains only its final fragment — unparseable, so usage stays absent.
-			child.stdout.emit('data', '{"result":"x",'); // latches head truncation
-			child.stdout.emit('data', '"usage":{"input_tokens":1,"output_tokens":2}}');
+			// The terminal record arrives across chunks larger than the tail budget, so
+			// the tail retains only its final fragment — unparseable, so usage stays
+			// absent. The decoded line still reaches the log once the record completes.
+			child.stdout.emit('data', '{"type":"result","subtype":"success","result":"x",');
+			child.stdout.emit('data', '"usage":{"input_tokens":1,"output_tokens":2}}\n');
 			child.emit('close', 0, null);
 
 			const result = await promise;
-			expect(result.outputTruncated).toBe(true);
 			expect(result.usage).toBeUndefined();
+			expect(result.stdout).toBe('x\n');
+		});
+
+		it('recovers Claude usage from the tail when earlier output floods the cap', async () => {
+			const promise = runAgentCli(createMockRunAgentCliOptions({ maxOutputBytes: 200 }));
+			const child = lastChild();
+			child.stdout.emit('data', claudeStream(claudeText('x'.repeat(400)))); // floods the head cap
+			child.stdout.emit(
+				'data',
+				claudeStream(
+					claudeResult({ result: 'done', usage: { input_tokens: 1, output_tokens: 2 } }),
+				),
+			);
+			child.emit('close', 0, null);
+
+			const result = await promise;
+			expect(result.usage).toEqual({ inputTokens: 1, outputTokens: 2 });
+			expect(result.stdout).toBe('done');
 		});
 
 		it('leaves Codex usage undefined when its trailing event was cut off by truncation', async () => {

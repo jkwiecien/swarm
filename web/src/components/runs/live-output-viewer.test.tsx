@@ -42,6 +42,15 @@ describe('LiveOutputViewer', () => {
 		scrollHeight.mockRestore();
 	});
 
+	it('labels the stream as agent activity, not raw stdout', () => {
+		// Claude's protocol stream is decoded into readable progress before it is
+		// stored (issue #356), so "raw stdout" would misdescribe what is shown.
+		render(<LiveOutputViewer events={[event]} {...viewerProps} />);
+
+		expect(screen.getByText(/Agent activity and CLI output/)).toBeDefined();
+		expect(screen.getByText('Working…')).toBeDefined();
+	});
+
 	it('lets the user disable auto-scroll', () => {
 		const { rerender } = render(<LiveOutputViewer events={[event]} {...viewerProps} />);
 		const output = screen.getByTestId('live-output-scrollbox');

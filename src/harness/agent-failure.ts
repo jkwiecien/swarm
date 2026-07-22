@@ -38,9 +38,11 @@ export interface AgentFailure {
 	 */
 	resetHint?: string;
 	/**
-	 * Best-effort absolute instant the limit resets, parsed from {@link resetHint}.
-	 * Undefined when the hint carries no timezone or can't be parsed — the caller
-	 * falls back to a default backoff.
+	 * Best-effort absolute instant the limit resets: the reset the CLI reported
+	 * itself ({@link AgentCliResult.rateLimitResetAt}) when it has one, else
+	 * parsed from {@link resetHint}. Undefined when neither is available — the
+	 * hint carries no timezone, or can't be parsed — and the caller falls back to
+	 * a default backoff.
 	 */
 	retryAfter?: Date;
 }
@@ -94,6 +96,12 @@ const CODEX_CAPACITY_RE = /selected model is at capacity/i;
 // "overloaded", or the literal `overloaded_error` type token — never a bare 529,
 // which reviewed code, tool output, or an unrelated log can mention innocuously.
 const CLAUDE_CAPACITY_RE = /\b529\s+overloaded\b|\boverloaded_error\b/i;
+// Claude's terminal `result` stream event is rendered as a single
+// `Claude run failed (…)` line ({@link ./claude-stream.ts}). That line is a
+// structural signal — it exists only because the CLI itself reported the run
+// as failed — so a 429/`rate_limit_error` inside it is trusted on its own,
+// without the "resets …" co-occurrence the softer free-text signals need.
+const CLAUDE_RATE_LIMIT_ERROR_RE = /\b429\b|\brate_limit_error\b/i;
 // Unstructured provider errors are terminal output; borrowed task/code/CI text
 // lives earlier in the transcript. Fifteen non-empty lines comfortably contain
 // real banners while keeping those unrelated body matches out of classification.
@@ -242,7 +250,9 @@ function parseRetryAfter(hint: string, now: Date): Date | undefined {
  * structured `error` / `turn.failed` events anywhere in its output, or its
  * terminal `selected model is at capacity` banner; and Claude's terminal
  * `529 Overloaded` / `overloaded_error` banner. A recognisable terminal limit
- * banner is a `rate-limit`, and everything else is a plain `error`.
+ * banner is a `rate-limit` — as is a 429 reported by Claude's own terminal
+ * failure line, which needs no reset hint to be trusted — and everything else
+ * is a plain `error`.
  */
 export function classifyAgentFailure(result: AgentCliResult, now: Date = new Date()): AgentFailure {
 	if (result.timedOut) return { kind: 'timeout' };
@@ -267,9 +277,15 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 		return { kind: 'capacity' };
 	if (result.cli === 'claude' && CLAUDE_CAPACITY_RE.test(tail)) return { kind: 'capacity' };
 
+	const hasClaudeRateLimit =
+		result.cli === 'claude' &&
+		result.claudeFailure !== undefined &&
+		(CLAUDE_RATE_LIMIT_ERROR_RE.test(result.claudeFailure.subtype ?? '') ||
+			CLAUDE_RATE_LIMIT_ERROR_RE.test(result.claudeFailure.message ?? ''));
 	const resetMatch = RESET_RE.exec(tail);
 	const isRateLimited =
 		LIMIT_BANNER_RE.test(tail) ||
+		hasClaudeRateLimit ||
 		((USAGE_LIMIT_RE.test(tail) || RATE_HTTP_RE.test(tail)) && resetMatch !== null);
 
 	if (!isRateLimited) return { kind: 'error' };
@@ -278,7 +294,10 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	return {
 		kind: 'rate-limit',
 		resetHint,
-		retryAfter: resetHint ? parseRetryAfter(resetHint, now) : undefined,
+		// The CLI's own reported reset instant wins over the parsed hint: it is
+		// exact, where a hint without a timezone can't be resolved at all.
+		retryAfter:
+			result.rateLimitResetAt ?? (resetHint ? parseRetryAfter(resetHint, now) : undefined),
 	};
 }
 

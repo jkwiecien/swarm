@@ -235,6 +235,146 @@ describe('classifyAgentFailure', () => {
 		expect(failure).toEqual({ kind: 'capacity' });
 	});
 
+	// Claude's terminal `result` stream event reaches classification as one
+	// rendered `Claude run failed (…)` line (issue #356) — a structural signal,
+	// so it doesn't need the "resets …" co-occurrence free text does.
+	it('classifies a streamed Claude 429 as rate-limit, with its reset time', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout:
+					'Claude run failed (error_during_execution): API Error: 429 rate_limit_error; resets 1:40pm (Europe/Warsaw)',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error; resets 1:40pm (Europe/Warsaw)',
+				},
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('rate-limit');
+		expect(failure.resetHint).toBe('1:40pm (Europe/Warsaw)');
+		expect(failure.retryAfter?.toISOString()).toBe('2026-07-07T11:40:00.000Z');
+	});
+
+	it('prefers the reset instant the CLI reported over the parsed text hint', () => {
+		// Claude's `rate_limit_event` carries an exact epoch; the human hint needs a
+		// timezone to resolve at all, so the reported instant wins when both exist.
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (error_during_execution): 429; resets 1:40pm (Europe/Warsaw)',
+				rateLimitResetAt: new Date('2026-07-07T13:00:00Z'),
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: '429; resets 1:40pm (Europe/Warsaw)',
+				},
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('rate-limit');
+		expect(failure.resetHint).toBe('1:40pm (Europe/Warsaw)');
+		expect(failure.retryAfter?.toISOString()).toBe('2026-07-07T13:00:00.000Z');
+	});
+
+	it('classifies a streamed Claude 429 that reported no reset time as rate-limit', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error',
+				},
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('rate-limit');
+		expect(failure.retryAfter).toBeUndefined();
+		expect(
+			agentRunError(
+				result({
+					cli: 'claude',
+					stdout: 'Claude run failed (x): 429',
+					claudeFailure: {
+						subtype: 'x',
+						message: '429',
+					},
+				}),
+				'Run',
+			).message,
+		).toBe('Run (rate limited)');
+	});
+
+	it('classifies a streamed Claude 529 as capacity, not a rate limit', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (error_during_execution): API Error: 529 Overloaded',
+			}),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
+	it('does not read a 429 an agent merely mentioned as a streamed Claude rate limit', () => {
+		// Only the rendered terminal-failure line is trusted: assistant progress
+		// discussing HTTP 429 handling (this very change, say) stays a plain error.
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Tool completed: Read\nAdded a test for the HTTP 429 path.\nTool started: Bash',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
+	});
+
+	it('does not classify assistant text matching display prefix and containing 429 as rate-limit', () => {
+		// An assistant text event starts with "Claude run failed" and mentions "429",
+		// but there is no terminal failure result. It must be classified as a plain error.
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (analysis): HTTP 429 is covered by this test',
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('error');
+	});
+
+	it('retains rate-limit classification for an actual failed terminal result', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'claude',
+				stdout: 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error',
+				claudeFailure: {
+					subtype: 'error_during_execution',
+					message: 'API Error: 429 rate_limit_error',
+				},
+			}),
+			NOW,
+		);
+		expect(failure.kind).toBe('rate-limit');
+	});
+
+	it('keeps timeout and abort ahead of a streamed Claude rate limit', () => {
+		const stdout = 'Claude run failed (error_during_execution): API Error: 429 rate_limit_error';
+		const claudeFailure = {
+			subtype: 'error_during_execution',
+			message: 'API Error: 429 rate_limit_error',
+		};
+		expect(
+			classifyAgentFailure(result({ cli: 'claude', stdout, claudeFailure, timedOut: true }), NOW),
+		).toEqual({
+			kind: 'timeout',
+		});
+		expect(
+			classifyAgentFailure(result({ cli: 'claude', stdout, claudeFailure, aborted: true }), NOW),
+		).toEqual({
+			kind: 'aborted',
+		});
+	});
+
 	it('does not classify a bare 529 with no "overloaded" as Claude capacity', () => {
 		// The issue forbids a bare-status-code matcher: reviewed code, tool output,
 		// or a quoted HTTP number can mention 529 innocuously. Only 529 paired with
