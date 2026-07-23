@@ -32,11 +32,14 @@ GitHub → HTTPS webhook → Router → durable Postgres dispatch → Redis wake
   take the phase — active enrollment, the owner's sharing consent, a live
   connection, free capacity, and the configured CLI. An assigned item runs only
   on a worker owned by its assignee (never someone else's); an unassigned one
-  takes the first free eligible worker. A project with no enrolled workers is
-  unfederated and runs locally as before. Each federated host authenticates with
+  takes the first free eligible worker. (When single-user mode is enabled via
+  `SWARM_SINGLE_USER_MODE=true`, this entire federated dispatch gate is bypassed
+  and every phase executes locally on the host worker without a credential.)
+  When single-user mode is disabled, each federated host must authenticate with
   the credential printed once by `swarm workers register`
   (`SWARM_WORKER_CREDENTIAL`); the selected host atomically reserves capacity
-  before the phase can start.
+  before the phase can start. A project with no enrolled workers is
+  unfederated and runs locally as before.
 - Pending work is durable in Postgres; Redis carries wake-ups, not the source
   of truth. See [`docs/pipeline.md`](./docs/pipeline.md) for lifecycle details.
 
