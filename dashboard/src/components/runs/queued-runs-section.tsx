@@ -13,7 +13,7 @@ import {
 	REVIEW_GATE_GROUP_LABEL,
 	reviewGateSourceEventLabel,
 } from '@/lib/queued-runs.js';
-import { runTableColumnWidths } from '@/lib/run-table-layout.js';
+import { runTableColumnWidths, runTableResponsiveWidth } from '@/lib/run-table-layout.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { QueuedRun } from '@/types/runs.js';
 import { Modal, ModalFooter } from '../ui/modal.js';
@@ -100,8 +100,10 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 					{successMessage}
 				</div>
 			)}
-			<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
-				<table className="w-full table-fixed text-left border-collapse">
+			<div className="border border-zinc-800 rounded-md overflow-x-auto bg-panel/20 shadow-sm">
+				<table
+					className={`w-full ${runTableResponsiveWidth} table-fixed text-left border-collapse`}
+				>
 					<colgroup>
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}

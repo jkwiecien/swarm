@@ -90,6 +90,18 @@ describe('QueuedRunsSection', () => {
 		expect(within(section).getByText('Task / ID')).not.toBeNull();
 	});
 
+	it('shares the run-table responsive width contract inside a horizontal-scroll wrapper', () => {
+		const { container } = renderSection(<QueuedRunsSection items={[githubItem]} />);
+
+		const table = container.querySelector('table');
+		const wrapper = table?.parentElement;
+		expect(wrapper?.className).toContain('overflow-x-auto');
+		expect(wrapper?.className).not.toContain('overflow-hidden');
+		expect(table?.className).toContain('table-fixed');
+		expect(table?.className).toContain('min-w-[48rem]');
+		expect(table?.className).toContain('md:min-w-full');
+	});
+
 	it('preserves the server-provided order (no client-side re-sort)', () => {
 		// Passed github-first even though the board item was enqueued earlier; a
 		// client re-sort by enqueue time would swap them. Ordering is the server's.
