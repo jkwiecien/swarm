@@ -784,6 +784,130 @@ async function completePreplannedRun(
 	return { plan, commentId, agent: skippedAgentResult(cli), movedTo, preplanned: true };
 }
 
+/**
+ * Try to reuse a preplanned plan for split children, skipping the agent run.
+ */
+async function tryPreplannedPlanning(
+	workItem: WorkItem,
+	isSplitChild: boolean,
+	effectiveAutoAdvance: boolean,
+	pm: PMProvider,
+	cli: AgentCli,
+	taskId: string,
+): Promise<PlanningPhaseResult | undefined> {
+	const preplan = evaluatePreplan(workItem);
+	if (isPreplanSkip(preplan)) {
+		if (isSplitChild) {
+			logger.info('Phase started - Planning — reusing preplanned split-child plan', {
+				taskId,
+				workItemId: workItem.id,
+				splitId: preplan.contract.splitId,
+			});
+			return completePreplannedRun(
+				pm,
+				workItem,
+				preplan.contract.plan,
+				effectiveAutoAdvance,
+				cli,
+				taskId,
+			);
+		}
+		logger.warn('Planning — valid preplan marker on a non-split-child item; ignoring', {
+			taskId,
+			workItemId: workItem.id,
+			splitId: preplan.contract.splitId,
+		});
+	} else if (preplan.fallbackReason) {
+		logger.info('Planning — preplanned marker rejected, running agent normally', {
+			taskId,
+			workItemId: workItem.id,
+			reason: preplan.fallbackReason,
+		});
+	}
+	return undefined;
+}
+
+interface VerifyAndApplyPlanningResultOptions {
+	project: ProjectConfig;
+	workItem: WorkItem;
+	taskId: string;
+	pm: PMProvider;
+	autoSplit: boolean;
+	maxConcerns: number;
+	effectiveAutoAdvance: boolean;
+	plan: string;
+	agent: AgentCliResult;
+	handlePath: string;
+	cli: AgentCli;
+}
+
+/**
+ * Verify scope, process splits, post comments, advance status, and apply the planned label.
+ */
+async function verifyAndApplyPlanningResult(options: VerifyAndApplyPlanningResultOptions) {
+	const {
+		project,
+		workItem,
+		taskId,
+		pm,
+		autoSplit,
+		maxConcerns,
+		effectiveAutoAdvance,
+		plan,
+		agent,
+		handlePath,
+		cli,
+	} = options;
+
+	// Validate human-readable scope gate exists in the plan (issue #268)
+	if (autoSplit) {
+		if (!/##\s*scope\s*gate/i.test(plan)) {
+			logAgentFailure(taskId, workItem.id, agent);
+			throw new Error(
+				`Planning agent (${cli}) did not include the required "## Scope gate" section in ${PROPOSED_PLAN_FILENAME}. ` +
+					`Ensure the plan opens with this section describing the scope.`,
+			);
+		}
+	}
+
+	// The agent may have decided to split (only honored when autoSplit is on).
+	// The re-scope/rename and sibling spawns happen before the first task is
+	// greenlit below, so autoAdvance never fires ahead of the siblings existing.
+	const split = autoSplit ? readProposedSplit(handlePath) : undefined;
+
+	// Deterministic scope gate (issue #268), only when splitting is enabled: the
+	// planner must have recorded a validated scope declaration, and an unsplit
+	// single task that declares too many independent concerns is rejected here —
+	// before anything is posted or advanced — rather than reaching Implementation.
+	const planningScope = autoSplit ? readProposedScope(handlePath) : undefined;
+	if (planningScope && !split) {
+		enforceSingleTaskBudget(planningScope, maxConcerns, taskId, workItem);
+	}
+
+	const commentPrefix = '## 🗺️ Proposed implementation plan';
+	let commentId = await pm.findComment(workItem.id, commentPrefix);
+	let splitResult: Awaited<ReturnType<typeof applySplit>> | undefined;
+
+	if (!commentId) {
+		splitResult = split
+			? await applySplit(pm, workItem, split, resolveAutomationLabel(project.pipeline))
+			: undefined;
+		commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
+	}
+
+	const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
+	if (movedTo) {
+		await pm.moveWorkItem(workItem.id, movedTo);
+	}
+
+	// Make labeling the final required success action (issue #384):
+	// if labeling throws, the comment and status move have already occurred, but the phase
+	// remains marked as failed, and subsequent retries will find the existing comment.
+	await applyPlannedLabel(pm, workItem, taskId);
+
+	return { commentId, movedTo, split: splitResult, planningScope };
+}
+
 export async function runPlanningPhase(
 	options: RunPlanningPhaseOptions,
 ): Promise<PlanningPhaseResult> {
@@ -814,40 +938,16 @@ export async function runPlanningPhase(
 	const isSplitChild = workItem.labels.some((l) => l.name === SPLIT_CHILD_LABEL);
 	const effectiveAutoAdvance = autoAdvance && !isSplitChild;
 
-	// A split child whose parent already wrote its plan reuses it — no worktree,
-	// no agent CLI (docs/OPTIMIZATION.md §3). A missing/malformed/stale/mismatched
-	// or operator-invalidated marker falls back to a normal run below. The skip is
-	// gated on isSplitChild: the marker is only ever written on split children, so
-	// a valid marker on a non-split item (e.g. a human removed the label) is not
-	// trusted to auto-advance — it falls through to a normal run.
-	const preplan = evaluatePreplan(workItem);
-	if (isPreplanSkip(preplan)) {
-		if (isSplitChild) {
-			logger.info('Phase started - Planning — reusing preplanned split-child plan', {
-				taskId,
-				workItemId: workItem.id,
-				splitId: preplan.contract.splitId,
-			});
-			return completePreplannedRun(
-				pm,
-				workItem,
-				preplan.contract.plan,
-				effectiveAutoAdvance,
-				cli,
-				taskId,
-			);
-		}
-		logger.warn('Planning — valid preplan marker on a non-split-child item; ignoring', {
-			taskId,
-			workItemId: workItem.id,
-			splitId: preplan.contract.splitId,
-		});
-	} else if (preplan.fallbackReason) {
-		logger.info('Planning — preplanned marker rejected, running agent normally', {
-			taskId,
-			workItemId: workItem.id,
-			reason: preplan.fallbackReason,
-		});
+	const preplannedResult = await tryPreplannedPlanning(
+		workItem,
+		isSplitChild,
+		effectiveAutoAdvance,
+		pm,
+		cli,
+		taskId,
+	);
+	if (preplannedResult) {
+		return preplannedResult;
 	}
 
 	const worktrees = options.worktrees ?? new GitWorktreeManager(project);
@@ -901,61 +1001,36 @@ export async function runPlanningPhase(
 
 		const plan = readPlanOrThrow(handle.path, cli, taskId, workItem, agent);
 
-		// Validate human-readable scope gate exists in the plan (issue #268)
-		if (autoSplit) {
-			if (!/##\s*scope\s*gate/i.test(plan)) {
-				logAgentFailure(taskId, workItem.id, agent);
-				throw new Error(
-					`Planning agent (${cli}) did not include the required "## Scope gate" section in ${PROPOSED_PLAN_FILENAME}. ` +
-						`Ensure the plan opens with this section describing the scope.`,
-				);
-			}
-		}
-
-		// The agent may have decided to split (only honored when autoSplit is on).
-		// The re-scope/rename and sibling spawns happen before the first task is
-		// greenlit below, so autoAdvance never fires ahead of the siblings existing.
-		const split = autoSplit ? readProposedSplit(handle.path) : undefined;
-
-		// Deterministic scope gate (issue #268), only when splitting is enabled: the
-		// planner must have recorded a validated scope declaration, and an unsplit
-		// single task that declares too many independent concerns is rejected here —
-		// before anything is posted or advanced — rather than reaching Implementation.
-		const planningScope = autoSplit ? readProposedScope(handle.path) : undefined;
-		if (planningScope && !split) {
-			enforceSingleTaskBudget(planningScope, maxConcerns, taskId, workItem);
-		}
-
-		const commentPrefix = '## 🗺️ Proposed implementation plan';
-		let commentId = await pm.findComment(workItem.id, commentPrefix);
-		let splitResult: Awaited<ReturnType<typeof applySplit>> | undefined;
-
-		if (!commentId) {
-			splitResult = split
-				? await applySplit(pm, workItem, split, resolveAutomationLabel(project.pipeline))
-				: undefined;
-			commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
-		}
-
-		const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
-		if (movedTo) {
-			await pm.moveWorkItem(workItem.id, movedTo);
-		}
-
-		// Make labeling the final required success action (issue #384):
-		// if labeling throws, the comment and status move have already occurred, but the phase
-		// remains marked as failed, and subsequent retries will find the existing comment.
-		await applyPlannedLabel(pm, workItem, taskId);
+		const result = await verifyAndApplyPlanningResult({
+			project,
+			workItem,
+			taskId,
+			pm,
+			autoSplit,
+			maxConcerns,
+			effectiveAutoAdvance,
+			plan,
+			agent,
+			handlePath: handle.path,
+			cli,
+		});
 
 		logger.info('Phase finished - Planning', {
 			taskId,
 			workItemId: workItem.id,
-			commentId,
-			movedTo,
-			splitInto: splitResult?.subTaskItemIds.length,
+			commentId: result.commentId,
+			movedTo: result.movedTo,
+			splitInto: result.split?.subTaskItemIds.length,
 		});
 
-		return { plan, commentId, agent, movedTo, split: splitResult, planningScope };
+		return {
+			plan,
+			commentId: result.commentId,
+			agent,
+			movedTo: result.movedTo,
+			split: result.split,
+			planningScope: result.planningScope,
+		};
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'planning phase', runId);
 	}

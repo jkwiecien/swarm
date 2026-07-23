@@ -121,7 +121,9 @@ function makeDeps() {
 		getWorkItem: vi.fn(),
 		listWorkItems: vi.fn(),
 		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
-		findComment: vi.fn<(id: string, bodyPrefix: string) => Promise<string | undefined>>(async () => undefined),
+		findComment: vi.fn<(id: string, bodyPrefix: string) => Promise<string | undefined>>(
+			async () => undefined,
+		),
 		moveWorkItem: vi.fn(async () => {}),
 		createWorkItem: vi.fn(async (input) =>
 			createMockWorkItem({ id: `PVTI_${input.title}`, title: input.title, url: input.title }),
@@ -854,18 +856,22 @@ describe('runPlanningPhase', () => {
 		splitExists = true;
 		splitContents = JSON.stringify({
 			mainTask: { title: 'First slice', description: 'Desc 1' },
-			subTasks: [{ title: 'Second slice', description: 'Desc 2', plan: 'Plan 2' }]
+			subTasks: [{ title: 'Second slice', description: 'Desc 2', plan: 'Plan 2' }],
 		});
 		const deps = makeDeps();
 		deps.pm.createWorkItem.mockRejectedValue(new Error('createWorkItem failed'));
-		await expect(runPlanningPhase({ ...deps, autoSplit: true })).rejects.toThrow('createWorkItem failed');
+		await expect(runPlanningPhase({ ...deps, autoSplit: true })).rejects.toThrow(
+			'createWorkItem failed',
+		);
 		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 	});
 
 	it('does not apply the planned label when moveWorkItem rejects', async () => {
 		const deps = makeDeps();
 		deps.pm.moveWorkItem.mockRejectedValue(new Error('moveWorkItem failed'));
-		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow('moveWorkItem failed');
+		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow(
+			'moveWorkItem failed',
+		);
 		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 	});
 
@@ -873,7 +879,9 @@ describe('runPlanningPhase', () => {
 		const deps = makeDeps();
 		deps.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
 		deps.pm.addComment.mockRejectedValue(new Error('preplanned comment failed'));
-		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow('preplanned comment failed');
+		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow(
+			'preplanned comment failed',
+		);
 		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 	});
 });

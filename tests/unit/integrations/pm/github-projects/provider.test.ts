@@ -408,9 +408,7 @@ describe('GitHubProjectsPMProvider', () => {
 		it('returns undefined if no comment starts with the given prefix', async () => {
 			graphql.mockResolvedValue({ node: ITEM_NODE });
 			listComments.mockResolvedValue({
-				data: [
-					{ id: 111, body: 'some unrelated comment' },
-				],
+				data: [{ id: 111, body: 'some unrelated comment' }],
 			});
 
 			const id = await provider.findComment('PVTI_x', '## 🗺️ Proposed implementation plan');
