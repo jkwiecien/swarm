@@ -142,6 +142,8 @@ function makeRun(overrides: Partial<RunRow> = {}): RunRow {
 		usage: null,
 		delegations: null,
 		jobPayload: null,
+		planningScope: null,
+		failureDiagnosis: null,
 		agentSessionId: null,
 		recovery: null,
 		cancellation: null,

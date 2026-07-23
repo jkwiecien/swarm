@@ -68,7 +68,7 @@ describe('quota-discovery', () => {
 			mockStdout.emit(
 				'data',
 				Buffer.from(
-					JSON.stringify({
+					`${JSON.stringify({
 						jsonrpc: '2.0',
 						id: 1,
 						result: {
@@ -77,7 +77,7 @@ describe('quota-discovery', () => {
 							platformFamily: 'unix',
 							platformOs: 'macos',
 						},
-					}) + '\n',
+					})}\n`,
 				),
 			);
 
@@ -90,7 +90,7 @@ describe('quota-discovery', () => {
 			mockStdout.emit(
 				'data',
 				Buffer.from(
-					JSON.stringify({
+					`${JSON.stringify({
 						jsonrpc: '2.0',
 						id: 2,
 						result: {
@@ -110,7 +110,7 @@ describe('quota-discovery', () => {
 								availableCount: 2,
 							},
 						},
-					}) + '\n',
+					})}\n`,
 				),
 			);
 
@@ -144,11 +144,11 @@ describe('quota-discovery', () => {
 			mockStdout.emit(
 				'data',
 				Buffer.from(
-					JSON.stringify({
+					`${JSON.stringify({
 						jsonrpc: '2.0',
 						id: 1,
 						error: { code: -32600, message: 'Invalid request' },
-					}) + '\n',
+					})}\n`,
 				),
 			);
 

@@ -3,7 +3,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { RunRow } from '@/types/runs.js';
-import { ReviewCapCallout, ReviewMergeCallout } from './$runId.js';
+import { FailureDiagnosisCallout, ReviewCapCallout, ReviewMergeCallout } from './$runId.js';
 
 function makeReviewRun(overrides: Partial<RunRow> = {}): RunRow {
 	return {
@@ -35,9 +35,36 @@ function makeReviewRun(overrides: Partial<RunRow> = {}): RunRow {
 		usage: null,
 		jobPayload: null,
 		agentSessionId: null,
+		failureDiagnosis: null,
 		...overrides,
 	};
 }
+
+describe('FailureDiagnosisCallout (issue #269)', () => {
+	it('shows the confidence label, diagnosis, and recovery guidance', () => {
+		render(
+			<FailureDiagnosisCallout
+				diagnosis={{
+					kind: 'likely-scope-exceeded',
+					title: 'Likely scope exceeded',
+					message:
+						'The agent stalled after substantial progress. This task likely exceeds the single-task scope; narrow or split it before retrying.',
+					recovery: 'Narrow or split the task before retrying.',
+				}}
+			/>,
+		);
+
+		expect(screen.getByRole('heading', { name: 'Likely scope exceeded' })).toBeDefined();
+		expect(screen.getByText(/stalled after substantial progress/i)).toBeDefined();
+		expect(screen.getByText(/recommended recovery/i)).toBeDefined();
+	});
+
+	it('renders nothing for an existing run without a diagnosis', () => {
+		const { container } = render(<FailureDiagnosisCallout diagnosis={null} />);
+
+		expect(container.firstChild).toBeNull();
+	});
+});
 
 describe('ReviewCapCallout (issue #242)', () => {
 	it('explains the cap-stopping second verdict and cites its ordinal', () => {

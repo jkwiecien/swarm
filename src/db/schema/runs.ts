@@ -11,8 +11,10 @@ import {
 	uuid,
 } from 'drizzle-orm/pg-core';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { ProposedScope } from '../../pipeline/planning.js';
 import type { CancellationOrigin } from '../../queue/cancellation.js';
 import type { SwarmJob } from '../../queue/jobs.js';
+import type { FailureDiagnosis } from '../../worker/failure-diagnosis.js';
 import { projects } from './projects.js';
 import { workers } from './workers.js';
 
@@ -131,6 +133,16 @@ export const runs = pgTable(
 		 * failed runs. Nullable for backward compatibility.
 		 */
 		jobPayload: jsonb('job_payload').$type<SwarmJob>(),
+		/**
+		 * Structured scope declaration persisted from a completed normal Planning
+		 * run. Nullable for older rows, non-Planning runs, and preplanned children.
+		 */
+		planningScope: jsonb('planning_scope').$type<ProposedScope>(),
+		/**
+		 * Evidence-based explanation for a terminal failure. The raw `error` stays
+		 * separate so the dashboard can show both the recovery guidance and detail.
+		 */
+		failureDiagnosis: jsonb('failure_diagnosis').$type<FailureDiagnosis>(),
 		/** Claude Code session handle used to continue a deferred PM phase. */
 		agentSessionId: uuid('agent_session_id'),
 		outputBytes: integer('output_bytes').notNull().default(0),
