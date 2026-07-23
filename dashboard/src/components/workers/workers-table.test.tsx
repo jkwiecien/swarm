@@ -421,3 +421,75 @@ describe('WorkersTable read-only surface for non-owners', () => {
 		expect(within(table).getAllByRole('link')).toHaveLength(1);
 	});
 });
+
+describe('WorkersTable polling and delayed/error roster query behavior', () => {
+	it('polls supplemental queries and updates the UI on cadence', async () => {
+		listMineQueryFn.mockResolvedValue([makeOwnerWorker()]);
+		rosterQueryFn
+			.mockResolvedValueOnce([makeRosterEntry({ runState: { busy: false } })])
+			.mockResolvedValueOnce([makeRosterEntry({ runState: { busy: true } })]);
+
+		renderTable(<WorkersTable workers={[makeWorker()]} refetchInterval={100} />);
+
+		// Initial render shows "Idle"
+		expect(await screen.findByText('Idle')).toBeDefined();
+		expect(screen.queryByText('Busy')).toBeNull();
+
+		// findByText automatically waits and checks for the state update
+		expect(await screen.findByText('Busy')).toBeDefined();
+		expect(screen.queryByText('Idle')).toBeNull();
+		expect(listMineQueryFn.mock.calls.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it('withholds the switch and shows sharing state unavailable when roster query is delayed', async () => {
+		listMineQueryFn.mockResolvedValue([
+			makeOwnerWorker({
+				enrollments: [
+					{
+						enrollmentId: 'enr-1',
+						projectId: 'proj-a',
+						status: 'active',
+						allowedClis: ['claude'],
+						concurrencyAllocation: 1,
+						sharingConsent: true,
+						isRoutable: true,
+					},
+				],
+			}),
+		]);
+		let resolveRoster: (value: WorkerRosterEntry[]) => void;
+		const rosterPromise = new Promise<WorkerRosterEntry[]>((resolve) => {
+			resolveRoster = resolve;
+		});
+		rosterQueryFn.mockReturnValue(rosterPromise);
+
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		// Since listMine resolved, the row shows. But roster is pending.
+		// Control should be withheld, and "Sharing state unavailable" should be shown.
+		expect(await screen.findByText('Sharing state unavailable')).toBeDefined();
+		expect(screen.queryByRole('switch')).toBeNull();
+
+		// Now resolve the roster query
+		resolveRoster([makeRosterEntry({ sharingConsent: true, isRoutable: true })]);
+
+		// The switch should appear and be checked
+		const toggle = await screen.findByRole('switch', {
+			name: 'Share ada-laptop with proj-a',
+		});
+		expect(toggle.getAttribute('aria-checked')).toBe('true');
+		expect(screen.queryByText('Sharing state unavailable')).toBeNull();
+		expect(screen.getByText('Available to this project')).toBeDefined();
+	});
+
+	it('withholds the switch and shows sharing state unavailable when roster query fails', async () => {
+		listMineQueryFn.mockResolvedValue([makeOwnerWorker()]);
+		rosterQueryFn.mockRejectedValue(new Error('Roster query failed'));
+
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		// Should show sharing state unavailable and withhold control
+		expect(await screen.findByText('Sharing state unavailable')).toBeDefined();
+		expect(screen.queryByRole('switch')).toBeNull();
+	});
+});

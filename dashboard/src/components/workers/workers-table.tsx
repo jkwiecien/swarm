@@ -33,6 +33,7 @@ import type {
 
 interface WorkersTableProps {
 	workers: WorkerRow[];
+	refetchInterval?: number;
 }
 
 const ENROLLMENT_LABELS: Record<WorkerEnrollmentStatus, string> = {
@@ -81,15 +82,17 @@ function AvailabilityLabel({
 	status,
 	roster,
 	rosterUnavailable,
+	rosterLoading,
 }: {
 	status: WorkerEnrollmentStatus;
 	roster: WorkerRosterEntry | undefined;
 	rosterUnavailable: boolean;
+	rosterLoading: boolean;
 }) {
-	if (!roster) {
+	if (rosterUnavailable || rosterLoading || !roster) {
 		// Don't infer a sharing state from incomplete data: only note it when the
-		// roster query for this project actually failed, otherwise stay silent.
-		return rosterUnavailable ? (
+		// roster query for this project actually failed or is loading, otherwise stay silent.
+		return rosterUnavailable || rosterLoading ? (
 			<span className="text-[10px] text-zinc-500">Sharing state unavailable</span>
 		) : null;
 	}
@@ -143,6 +146,7 @@ interface EnrollmentItemProps {
 	worker: WorkerRow;
 	roster: WorkerRosterEntry | undefined;
 	rosterUnavailable: boolean;
+	rosterLoading: boolean;
 	ownedEnrollmentId: string | undefined;
 	pending: boolean;
 	error: string | null;
@@ -162,6 +166,7 @@ function EnrollmentItem({
 	worker,
 	roster,
 	rosterUnavailable,
+	rosterLoading,
 	ownedEnrollmentId,
 	pending,
 	error,
@@ -182,7 +187,7 @@ function EnrollmentItem({
 				) : roster ? (
 					<span className="text-[10px] text-zinc-500">Idle</span>
 				) : null}
-				{ownedEnrollmentId ? (
+				{ownedEnrollmentId && roster && !rosterUnavailable && !rosterLoading ? (
 					<ConsentSwitch
 						sharing={sharing}
 						pending={pending}
@@ -204,6 +209,7 @@ function EnrollmentItem({
 					status={enrollment.status}
 					roster={roster}
 					rosterUnavailable={rosterUnavailable}
+					rosterLoading={rosterLoading}
 				/>
 				{roster && roster.allowedClis.length > 0 ? (
 					<span className="flex flex-wrap gap-1" title="Effective allowed CLIs for this project">
@@ -230,7 +236,7 @@ interface ConfirmTarget {
 	projectName: string;
 }
 
-export function WorkersTable({ workers }: WorkersTableProps) {
+export function WorkersTable({ workers, refetchInterval }: WorkersTableProps) {
 	const queryClient = useQueryClient();
 
 	// Resolve project display names the same way RunsTable does; the roster falls
@@ -240,7 +246,10 @@ export function WorkersTable({ workers }: WorkersTableProps) {
 
 	// The signed-in operator's own workers — presence here is what authorizes a
 	// consent control for an enrollment.
-	const mineQuery = useQuery(trpc.workers.listMine.queryOptions());
+	const mineQuery = useQuery({
+		...trpc.workers.listMine.queryOptions(),
+		refetchInterval,
+	});
 
 	// Every project any visible worker is enrolled in is, by construction, one the
 	// viewer may access (the server strips inaccessible enrollments), so a roster
@@ -248,13 +257,19 @@ export function WorkersTable({ workers }: WorkersTableProps) {
 	// CLIs/busy for all viewers, including a project admin looking at others' workers.
 	const projectIds = [...new Set(workers.flatMap((w) => w.enrollments.map((e) => e.projectId)))];
 	const rosterQueries = useQueries({
-		queries: projectIds.map((projectId) => trpc.workers.roster.queryOptions({ projectId })),
+		queries: projectIds.map((projectId) => ({
+			...trpc.workers.roster.queryOptions({ projectId }),
+			refetchInterval,
+		})),
 	});
 
 	const rosterByKey = new Map<string, WorkerRosterEntry>();
+	const rosterLoadingProjects = new Set<string>();
 	const rosterErrorProjects = new Set<string>();
 	rosterQueries.forEach((query, index) => {
-		if (query.isError) rosterErrorProjects.add(projectIds[index]);
+		const projectId = projectIds[index];
+		if (query.isLoading) rosterLoadingProjects.add(projectId);
+		if (query.isError) rosterErrorProjects.add(projectId);
 		for (const entry of query.data ?? []) {
 			rosterByKey.set(enrollmentKey(entry.workerId, entry.projectId), entry);
 		}
@@ -457,6 +472,7 @@ export function WorkersTable({ workers }: WorkersTableProps) {
 													worker={worker}
 													roster={rosterByKey.get(key)}
 													rosterUnavailable={rosterErrorProjects.has(enrollment.projectId)}
+													rosterLoading={rosterLoadingProjects.has(enrollment.projectId)}
 													ownedEnrollmentId={ownedEnrollmentId}
 													pending={
 														ownedEnrollmentId !== undefined &&

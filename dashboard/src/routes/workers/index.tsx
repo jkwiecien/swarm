@@ -49,7 +49,10 @@ export function WorkersRouteComponent() {
 					{workersQuery.error.message}
 				</div>
 			) : workersQuery.data && workersQuery.data.length > 0 ? (
-				<WorkersTable workers={workersQuery.data as WorkerRow[]} />
+				<WorkersTable
+					workers={workersQuery.data as WorkerRow[]}
+					refetchInterval={WORKERS_REFETCH_MS}
+				/>
 			) : (
 				<div className="border border-zinc-800 rounded-lg bg-panel/20 p-8 text-center space-y-2">
 					<Server className="w-12 h-12 stroke-1 text-zinc-700 mx-auto" />
