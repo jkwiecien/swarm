@@ -252,7 +252,7 @@ export interface RunRow {
 	 */
 	recovery?: {
 		state: 'preserved' | 'recovered' | 'blocked';
-		blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
+		blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation' | 'resumable-owner';
 		agentSessionId?: string | null;
 	} | null;
 	/**

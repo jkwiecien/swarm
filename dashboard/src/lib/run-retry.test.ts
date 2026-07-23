@@ -31,6 +31,26 @@ describe('retryActionKind', () => {
 		expect(retryActionKind('failed', 'a1b2c3d4-0000-0000-0000-000000000000')).toBe('retry');
 	});
 
+	it('resumes a failed run whose worktree was preserved for its session', () => {
+		expect(retryActionKind('failed', null, { state: 'preserved' })).toBe('resume');
+	});
+
+	it('rechecks a failed run whose worktree stayed blocked (issue #368)', () => {
+		expect(retryActionKind('failed', null, { state: 'blocked' })).toBe('recheck');
+		// A lingering session id never turns a blocked run into a resume.
+		expect(
+			retryActionKind('failed', 'a1b2c3d4-0000-0000-0000-000000000000', { state: 'blocked' }),
+		).toBe('recheck');
+	});
+
+	it('is a fresh retry for a failed recovered run', () => {
+		expect(retryActionKind('failed', null, { state: 'recovered' })).toBe('retry');
+	});
+
+	it('does not recheck a non-failed status that carries a blocked recovery', () => {
+		expect(retryActionKind('deferred', null, { state: 'blocked' })).toBe('retry');
+	});
+
 	it('never resumes a non-retryable status that still holds a session', () => {
 		expect(retryActionKind('running', 'a1b2c3d4-0000-0000-0000-000000000000')).toBe('retry');
 		expect(retryActionKind('completed', 'a1b2c3d4-0000-0000-0000-000000000000')).toBe('retry');
@@ -41,6 +61,11 @@ describe('retryButtonLabel', () => {
 	it('labels a resume action', () => {
 		expect(retryButtonLabel('resume', false)).toBe('Resume');
 		expect(retryButtonLabel('resume', true)).toBe('Resuming…');
+	});
+
+	it('labels a recheck action (issue #368)', () => {
+		expect(retryButtonLabel('recheck', false)).toBe('Recheck and retry');
+		expect(retryButtonLabel('recheck', true)).toBe('Rechecking…');
 	});
 
 	it('labels a fresh retry action', () => {
