@@ -29,10 +29,13 @@ import { z } from 'zod';
 import {
 	createSession,
 	resolveSession,
+	resolveSingleUser,
 	revokeSession,
 	verifyCredentials,
 } from '../identity/auth.js';
+import type { SwarmUser } from '../identity/schema.js';
 import { buildCorsMiddleware } from '../lib/cors.js';
+import { isSingleUserMode } from '../lib/env.js';
 import { configureLogger, logger } from '../lib/logger.js';
 import { appRouter } from './router.js';
 import type { TrpcContext } from './trpc.js';
@@ -77,8 +80,18 @@ function sessionCookieOptions(c: Context): CookieOptions {
 	};
 }
 
-export function createApiApp(options: { staticRoot?: string; corsOrigin?: string } = {}): Hono {
+export function createApiApp(
+	options: { staticRoot?: string; corsOrigin?: string; singleUserMode?: boolean } = {},
+): Hono {
 	const app = new Hono();
+
+	// Resolve the single-user policy once per app instance (test override follows
+	// the `corsOrigin` pattern). When enabled, tRPC requests resolve the
+	// bootstrapped local admin instead of a session cookie (issue #298).
+	const singleUserMode = options.singleUserMode ?? isSingleUserMode();
+	// The bootstrapped admin, ensured lazily on the first tRPC request and cached
+	// for the app's lifetime so single-user requests don't hit the DB every call.
+	let singleUser: SwarmUser | undefined;
 
 	// Credentialed CORS for the documented separate-origin dev setup; inert for a
 	// same-origin deploy (which never pre-flights). Must run before every route so
@@ -141,6 +154,13 @@ export function createApiApp(options: { staticRoot?: string; corsOrigin?: string
 			endpoint: '/trpc',
 			router: appRouter,
 			createContext: async (_opts, c): Promise<TrpcContext> => {
+				// Single-user mode: supply the bootstrapped local admin as the caller
+				// even with no session cookie. The cookie flow below is never consulted,
+				// so a local install needs no /login, password, or swarm_session cookie.
+				if (singleUserMode) {
+					singleUser ??= await resolveSingleUser();
+					return { user: singleUser };
+				}
 				const token = getCookie(c, SESSION_COOKIE_NAME);
 				const user = token ? await resolveSession(token) : undefined;
 				return { user: user ?? null };

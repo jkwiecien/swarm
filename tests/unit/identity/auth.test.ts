@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('@/db/repositories/usersRepository.js', () => ({
 	findUserCredentialByIdentifier: vi.fn(),
 	getUserById: vi.fn(),
+	ensureLocalAdminUser: vi.fn(),
 }));
 
 vi.mock('@/db/repositories/userSessionsRepository.js', () => ({
@@ -19,11 +20,16 @@ import {
 	findUserIdBySessionToken,
 	insertSession,
 } from '@/db/repositories/userSessionsRepository.js';
-import { findUserCredentialByIdentifier, getUserById } from '@/db/repositories/usersRepository.js';
+import {
+	ensureLocalAdminUser,
+	findUserCredentialByIdentifier,
+	getUserById,
+} from '@/db/repositories/usersRepository.js';
 import {
 	createSession,
 	hashPassword,
 	resolveSession,
+	resolveSingleUser,
 	revokeSession,
 	verifyCredentials,
 	verifyPassword,
@@ -48,6 +54,7 @@ beforeEach(() => {
 	vi.mocked(findUserIdBySessionToken).mockReset();
 	vi.mocked(deleteSessionByToken).mockReset().mockResolvedValue(undefined);
 	vi.mocked(deleteExpiredSessions).mockReset().mockResolvedValue(0);
+	vi.mocked(ensureLocalAdminUser).mockReset();
 });
 
 describe('password hashing', () => {
@@ -136,5 +143,18 @@ describe('session lifecycle', () => {
 	it('revokes a session by its hashed token', async () => {
 		await revokeSession('raw-token');
 		expect(deleteSessionByToken).toHaveBeenCalledWith(sha256('raw-token'));
+	});
+});
+
+describe('resolveSingleUser', () => {
+	it('returns the ensured local admin without touching any session state', async () => {
+		const admin: SwarmUser = { ...user, displayName: 'Local Admin', instanceAdmin: true };
+		vi.mocked(ensureLocalAdminUser).mockResolvedValue(admin);
+
+		expect(await resolveSingleUser()).toEqual(admin);
+		expect(ensureLocalAdminUser).toHaveBeenCalledTimes(1);
+		// The single-user path is deliberately session-free.
+		expect(findUserIdBySessionToken).not.toHaveBeenCalled();
+		expect(insertSession).not.toHaveBeenCalled();
 	});
 });

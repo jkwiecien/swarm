@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { optionalEnv, requireEnv } from '@/lib/env.js';
+import { isSingleUserMode, optionalEnv, requireEnv } from '@/lib/env.js';
 
 describe('requireEnv', () => {
 	it('returns the value when the variable is set', () => {
@@ -22,5 +22,24 @@ describe('optionalEnv', () => {
 	it('returns the fallback when unset', () => {
 		vi.stubEnv('SWARM_TEST_VAR', '');
 		expect(optionalEnv('SWARM_TEST_VAR', 'fallback')).toBe('fallback');
+	});
+});
+
+describe('isSingleUserMode', () => {
+	it('is enabled only for the literal "true"', () => {
+		vi.stubEnv('SWARM_SINGLE_USER_MODE', 'true');
+		expect(isSingleUserMode()).toBe(true);
+	});
+
+	it('is disabled when unset (the coded default keeps multi-user auth)', () => {
+		vi.stubEnv('SWARM_SINGLE_USER_MODE', '');
+		expect(isSingleUserMode()).toBe(false);
+	});
+
+	it('is disabled for any other value', () => {
+		for (const value of ['false', '1', 'yes', 'TRUE', 'on']) {
+			vi.stubEnv('SWARM_SINGLE_USER_MODE', value);
+			expect(isSingleUserMode()).toBe(false);
+		}
 	});
 });
