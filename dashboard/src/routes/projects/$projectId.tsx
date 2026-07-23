@@ -16,7 +16,7 @@ import {
 	Trash2,
 } from 'lucide-react';
 import type React from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CredentialsPanel } from '@/components/projects/credentials-panel.js';
 import { GitHubProjectsMappingForm } from '@/components/projects/github-projects-mapping-form.js';
 import { ProjectRunsPanel } from '@/components/runs/project-runs-panel.js';
@@ -1631,8 +1631,6 @@ export function PipelineSettingsForm({
 
 interface UseToggleAutoSaveArgs {
 	projectId: string;
-	/** The stored pipeline config the toggle payload is layered over. */
-	existingPipeline: PipelineConfig | undefined;
 	pipelineEnabled: PipelineEnabledForm;
 	setPipelineEnabled: React.Dispatch<React.SetStateAction<PipelineEnabledForm>>;
 	pipelineAutoAdvance: PipelineAutoAdvanceForm;
@@ -1651,38 +1649,36 @@ interface UseToggleAutoSaveArgs {
  * that component keeps its cognitive-complexity budget and this contract lives in
  * one place.
  *
- * Deliberately does not invalidate the project query on success: a refetch would
- * re-run the route's form-sync effect and discard any unsaved target/timeout/prompt
- * edits the user has on this same tab. The optimistic local state is authoritative
- * for the toggle's display and the write is already persisted, so no refetch is
- * needed to stay correct.
+ * Keeps the query cache in sync directly using setQueryData on success, ensuring
+ * that concurrent saves have the latest persisted state.
  */
-function useToggleAutoSave({
+export function useToggleAutoSave({
 	projectId,
-	existingPipeline,
 	pipelineEnabled,
 	setPipelineEnabled,
 	pipelineAutoAdvance,
 	setPipelineAutoAdvance,
 }: UseToggleAutoSaveArgs) {
 	const [savingToggleKey, setSavingToggleKey] = useState<string>();
+	const queryClient = useQueryClient();
 	const mutation = useMutation({
 		mutationFn: (variables: { id: string; pipeline: PipelineConfig }) =>
 			trpcClient.projects.update.mutate(variables),
+		onSuccess: (data) => {
+			queryClient.setQueryData(
+				trpc.projects.getById.queryOptions({ id: projectId }).queryKey,
+				data,
+			);
+		},
 		onSettled: () => setSavingToggleKey(undefined),
 	});
 
-	const persist = (
-		key: string,
-		nextEnabled: PipelineEnabledForm,
-		nextAutoAdvance: PipelineAutoAdvanceForm,
-		rollback: () => void,
-	) => {
+	const persist = (key: string, pipelinePatch: PipelineConfig, rollback: () => void) => {
 		setSavingToggleKey(key);
 		mutation.mutate(
 			{
 				id: projectId,
-				pipeline: buildPipelineToggleUpdate(nextEnabled, nextAutoAdvance, existingPipeline),
+				pipeline: pipelinePatch,
 			},
 			{ onError: rollback },
 		);
@@ -1692,18 +1688,32 @@ function useToggleAutoSave({
 		const prev = pipelineEnabled;
 		const next = setPhaseEnabled(prev, phase, enabled);
 		setPipelineEnabled(next);
-		persist(toggleSaveKey(phase, 'enabled'), next, pipelineAutoAdvance, () =>
-			setPipelineEnabled(prev),
-		);
+
+		const patch: PipelineConfig = {};
+		if (phase === 'review') {
+			patch.review = { enabled };
+			if (!enabled) {
+				patch.respondToReview = { enabled: false };
+			}
+		} else if (phase === 'respondToReview') {
+			patch.respondToReview = { enabled };
+		} else if (phase === 'respondToCi') {
+			patch.respondToCi = { enabled };
+		}
+
+		persist(toggleSaveKey(phase, 'enabled'), patch, () => setPipelineEnabled(prev));
 	};
 
 	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
 		const prev = pipelineAutoAdvance;
 		const next = setAutoAdvanceEnabled(prev, phase, enabled);
 		setPipelineAutoAdvance(next);
-		persist(toggleSaveKey(phase, 'autoAdvance'), pipelineEnabled, next, () =>
-			setPipelineAutoAdvance(prev),
-		);
+
+		const patch: PipelineConfig = {
+			planning: { autoAdvance: enabled },
+		};
+
+		persist(toggleSaveKey(phase, 'autoAdvance'), patch, () => setPipelineAutoAdvance(prev));
 	};
 
 	return {
@@ -1749,6 +1759,8 @@ function ProjectDetailRouteComponent() {
 		...trpc.projects.getById.queryOptions({ id: projectId }),
 	});
 
+	const lastSyncedProjectRef = useRef<typeof project>(undefined);
+
 	const [name, setName] = useState('');
 	const [repo, setRepo] = useState('');
 	const [repoRoot, setRepoRoot] = useState('');
@@ -1785,21 +1797,53 @@ function ProjectDetailRouteComponent() {
 
 	useEffect(() => {
 		if (project) {
-			setName(project.name);
-			setRepo(project.repo);
-			setRepoRoot(project.repoRoot);
-			setWorktreeRoot(project.worktreeRoot ?? '');
-			setBaseBranch(project.baseBranch ?? '');
-			setBranchPrefix(project.branchPrefix ?? '');
-			setMaxConcurrentJobs(String(project.maxConcurrentJobs));
-			setMaxConcurrentJobsError(undefined);
-			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
-			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
-			setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
-			setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
-			setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
-			setReviewChecksPolicy(toReviewChecksPolicyForm(project.pipeline));
-			setBoardMapping(toBoardMappingForm(project.githubProjects));
+			const last = lastSyncedProjectRef.current;
+			const generalConfigChanged =
+				!last ||
+				project.name !== last.name ||
+				project.repo !== last.repo ||
+				project.repoRoot !== last.repoRoot ||
+				project.worktreeRoot !== last.worktreeRoot ||
+				project.baseBranch !== last.baseBranch ||
+				project.branchPrefix !== last.branchPrefix ||
+				project.maxConcurrentJobs !== last.maxConcurrentJobs;
+
+			const agentsChanged = !last || JSON.stringify(project.agents) !== JSON.stringify(last.agents);
+
+			const pipelineChanged =
+				!last || JSON.stringify(project.pipeline) !== JSON.stringify(last.pipeline);
+
+			const boardMappingChanged =
+				!last || JSON.stringify(project.githubProjects) !== JSON.stringify(last.githubProjects);
+
+			if (generalConfigChanged) {
+				setName(project.name);
+				setRepo(project.repo);
+				setRepoRoot(project.repoRoot);
+				setWorktreeRoot(project.worktreeRoot ?? '');
+				setBaseBranch(project.baseBranch ?? '');
+				setBranchPrefix(project.branchPrefix ?? '');
+				setMaxConcurrentJobs(String(project.maxConcurrentJobs));
+				setMaxConcurrentJobsError(undefined);
+			}
+
+			if (agentsChanged) {
+				setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
+			}
+
+			if (pipelineChanged) {
+				setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
+				setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
+				setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
+				setSkipRespondToReviewOnMinors(project.pipeline?.respondToReview?.skipOnMinors ?? true);
+				setReviewChecksPolicy(toReviewChecksPolicyForm(project.pipeline));
+			}
+
+			if (boardMappingChanged) {
+				setBoardMapping(toBoardMappingForm(project.githubProjects));
+			}
+
+			lastSyncedProjectRef.current = project;
 		}
 	}, [project]);
 
@@ -1833,7 +1877,6 @@ function ProjectDetailRouteComponent() {
 	const { savingToggleKey, toggleErrorMessage, handleEnabledChange, handleAutoAdvanceChange } =
 		useToggleAutoSave({
 			projectId,
-			existingPipeline: project?.pipeline,
 			pipelineEnabled,
 			setPipelineEnabled,
 			pipelineAutoAdvance,
@@ -1967,14 +2010,13 @@ function ProjectDetailRouteComponent() {
 		e.preventDefault();
 		updateMutation.mutate({
 			id: projectId,
-			pipeline: buildReviewChecksPolicyUpdate(reviewChecksPolicy, {
-				...project?.pipeline,
+			pipeline: {
+				review: { checks: reviewChecksPolicy },
 				respondToReview: {
-					...project?.pipeline?.respondToReview,
 					autoMerge,
 					skipOnMinors: skipRespondToReviewOnMinors,
 				},
-			}),
+			},
 		});
 	};
 

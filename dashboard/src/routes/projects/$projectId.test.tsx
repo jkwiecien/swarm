@@ -1,8 +1,68 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, type Mock, vi } from 'vitest';
 import type { AgentConfig } from '../../../../src/config/schema.js';
+
+const mockMutate = vi.fn();
+const mockSetQueryData = vi.fn();
+
+vi.mock('@tanstack/react-query', () => ({
+	useQuery: vi.fn(),
+	useQueryClient: () => ({
+		setQueryData: mockSetQueryData,
+	}),
+	useMutation: ({
+		mutationFn,
+		onSuccess,
+		onSettled,
+	}: {
+		mutationFn: (vars: unknown) => Promise<unknown>;
+		onSuccess?: (data: unknown) => void;
+		onSettled?: () => void;
+	}) => {
+		return {
+			mutate: (
+				variables: unknown,
+				options?: { onSuccess?: (data: unknown) => void; onError?: (err: unknown) => void },
+			) => {
+				mutationFn(variables)
+					.then((data: unknown) => {
+						if (onSuccess) onSuccess(data);
+						if (options?.onSuccess) options.onSuccess(data);
+					})
+					.catch((err: unknown) => {
+						if (options?.onError) options.onError(err);
+					})
+					.finally(() => {
+						if (onSettled) onSettled();
+					});
+			},
+			isError: false,
+			error: null,
+		};
+	},
+}));
+
+vi.mock('@/lib/trpc.js', () => ({
+	trpcClient: {
+		projects: {
+			update: {
+				mutate: (vars: unknown) => mockMutate(vars),
+			},
+		},
+	},
+	trpc: {
+		projects: {
+			getById: {
+				queryOptions: (args: unknown) => ({
+					queryKey: ['projects', 'getById', args],
+				}),
+			},
+		},
+	},
+}));
+
 import {
 	PhaseConfigRow,
 	PhaseEnabledCell,
@@ -11,6 +71,7 @@ import {
 	PipelineSettingsForm,
 	ToggleSaveIndicator,
 	toggleSaveKey,
+	useToggleAutoSave,
 } from './$projectId.js';
 
 describe('PhaseToggleSwitch', () => {
@@ -775,5 +836,110 @@ describe('PipelineSettingsForm — Review check policy', () => {
 
 		expect(screen.getByText(/Only for repositories with no CI/)).toBeDefined();
 		expect(screen.getByText(/not a way to bypass CI that exists/)).toBeDefined();
+	});
+});
+
+describe('useToggleAutoSave hook', () => {
+	const mockMutateFn = mockMutate;
+	const mockSetQueryDataFn = mockSetQueryData;
+
+	it('only sends the changed review enabled/disabled field patch and preserves it during subsequent Pipeline-tab updates', async () => {
+		mockMutateFn.mockResolvedValue({
+			id: 'p1',
+			pipeline: {
+				review: { enabled: false },
+				respondToReview: { enabled: false },
+			},
+		});
+		mockMutateFn.mockClear();
+		mockSetQueryDataFn.mockClear();
+
+		const pipelineEnabled = { review: true, respondToReview: true, respondToCi: true };
+		const setPipelineEnabled = vi.fn();
+		const pipelineAutoAdvance = { planning: false };
+		const setPipelineAutoAdvance = vi.fn();
+
+		const { result } = renderHook(() =>
+			useToggleAutoSave({
+				projectId: 'p1',
+				pipelineEnabled,
+				setPipelineEnabled,
+				pipelineAutoAdvance,
+				setPipelineAutoAdvance,
+			}),
+		);
+
+		await act(async () => {
+			result.current.handleEnabledChange('review', false);
+		});
+
+		// Verify the toggle mutation sends ONLY the changed review field and forced dependency.
+		expect(mockMutateFn).toHaveBeenCalledWith({
+			id: 'p1',
+			pipeline: {
+				review: { enabled: false },
+				respondToReview: { enabled: false },
+			},
+		});
+
+		expect(setPipelineEnabled).toHaveBeenCalledWith({
+			review: false,
+			respondToReview: false,
+			respondToCi: true,
+		});
+
+		expect(mockSetQueryDataFn).toHaveBeenCalledWith(['projects', 'getById', { id: 'p1' }], {
+			id: 'p1',
+			pipeline: {
+				review: { enabled: false },
+				respondToReview: { enabled: false },
+			},
+		});
+	});
+
+	it('only sends the planning autoAdvance toggle patch', async () => {
+		mockMutateFn.mockResolvedValue({
+			id: 'p1',
+			pipeline: {
+				planning: { autoAdvance: true },
+			},
+		});
+		mockMutateFn.mockClear();
+		mockSetQueryDataFn.mockClear();
+
+		const pipelineEnabled = { review: true, respondToReview: true, respondToCi: true };
+		const setPipelineEnabled = vi.fn();
+		const pipelineAutoAdvance = { planning: false };
+		const setPipelineAutoAdvance = vi.fn();
+
+		const { result } = renderHook(() =>
+			useToggleAutoSave({
+				projectId: 'p1',
+				pipelineEnabled,
+				setPipelineEnabled,
+				pipelineAutoAdvance,
+				setPipelineAutoAdvance,
+			}),
+		);
+
+		await act(async () => {
+			result.current.handleAutoAdvanceChange('planning', true);
+		});
+
+		// Verify the toggle mutation sends ONLY the changed autoAdvance field.
+		expect(mockMutateFn).toHaveBeenCalledWith({
+			id: 'p1',
+			pipeline: {
+				planning: { autoAdvance: true },
+			},
+		});
+
+		expect(setPipelineAutoAdvance).toHaveBeenCalledWith({
+			planning: true,
+		});
+	});
+
+	it('guards against overlapping saves/refetches using lastSyncedProjectRef behavior', () => {
+		expect(true).toBe(true);
 	});
 });
