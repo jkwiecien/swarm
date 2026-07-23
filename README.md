@@ -65,12 +65,17 @@ npm run db:seed                   # loads swarm.config.json into Postgres
 > **Local single-user mode is on by default.** The `.env.docker.example` template
 > sets `SWARM_SINGLE_USER_MODE=true`, so this local install needs **no dashboard
 > user, no password, no `/login`, and no session cookie**: the API bootstraps a
-> passwordless `localhost-admin` and signs you straight into the dashboard. Skip
-> the account commands below.
+> passwordless `localhost-admin` and signs you straight into the dashboard. It
+> also routes **every pipeline phase through this host worker**, so dispatch needs
+> **no worker credential, no worker-project enrollment, no admin approval, no
+> assignee linking, and no sharing consent** — the federated roster is skipped
+> even if worker/enrollment rows exist. Skip the account commands below.
 >
 > **Multi-user alternative.** Set `SWARM_SINGLE_USER_MODE=false` in `.env` (or
-> remove the line) to require per-user session auth instead, then create your
-> dashboard user and set its login password before signing in at `/login`:
+> remove the line) to restore the full federated policy — per-user session auth
+> *and* the complete enrollment/consent/affinity/capacity dispatch gate. Then
+> create your dashboard user and set its login password before signing in at
+> `/login`:
 >
 > ```bash
 > npm run swarm -- users add you@example.com --admin    # create your dashboard user, then
@@ -91,10 +96,13 @@ Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
 The worker is intentionally host-run: it needs local Git worktrees, agent CLI
 authentication, and the developer's PATH. With local single-user mode on (the
 Docker template default) the dashboard opens straight in as `localhost-admin`
-with no `/login` step. With it disabled the dashboard uses per-user session
-auth: sign in at `/login` with a user created via `swarm users` (above);
-`/health` is unauthenticated either way, while every API request in multi-user
-mode carries an HTTP-only session cookie. See
+with no `/login` step, and every pipeline phase runs on this host worker without
+consulting the federated roster — no enrollment, consent, or assignee affinity.
+With it disabled the dashboard uses per-user session auth (sign in at `/login`
+with a user created via `swarm users`, above) and dispatch enforces the full
+federated eligibility/fencing/affinity/capacity gate; `/health` is
+unauthenticated either way, while every API request in multi-user mode carries
+an HTTP-only session cookie. See
 [`docs/operations.md`](./docs/operations.md) for health
 checks, ports, webhook setup, and troubleshooting.
 

@@ -64,6 +64,7 @@ import { capabilityFor, DEFAULT_MODEL_PER_CLI, type ReasoningLevel } from '../ha
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
+import { isSingleUserMode } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { DependencyBlockedError } from '../pipeline/dependency-guard.js';
@@ -2203,6 +2204,15 @@ async function handlePhaseFailure(
  * the selected target, or `undefined` when the project is not federated (no
  * enrolled workers — the local worker runs it, exactly as before).
  *
+ * Local single-user mode (issue #373) short-circuits to that same `undefined`
+ * result *before* the roster or assignee link is read: an install running in
+ * single-user mode treats the host process as the implicit local executor for
+ * every project, so dispatch never consults enrollment, sharing consent,
+ * assignee affinity, live sessions, or worker capacity — even when worker and
+ * enrollment rows exist — and runs on the host worker exactly as an unfederated
+ * project does (local target selection, the project slot, a null worker
+ * identity). Disabling the mode restores the complete federated policy below.
+ *
  * Throws {@link WorkerIneligibleError} when no eligible worker may take the
  * phase: `handlePhaseFailure` turns that into a bounded, token-free
  * `worker-eligibility` deferral, and finally into an actionable board comment.
@@ -2216,6 +2226,12 @@ async function gateDispatch(
 	job: SwarmJob,
 	implementationUnplanned: boolean,
 ): Promise<DispatchSelection | undefined> {
+	// Single-user mode routes every phase through the implicit local host worker
+	// (issue #373): skip the federated roster/assignee evaluation entirely and
+	// take the same no-selection local path an unfederated project uses. This runs
+	// before `listProjectDispatchCandidates` or the assignee-provider construction
+	// so no enrollment, consent, or affinity is ever read in this mode.
+	if (isSingleUserMode()) return undefined;
 	const phaseConfig = phaseAgentConfig(project, trigger.phase, implementationUnplanned);
 	// PR-driven phases carry no board item, so they take the unassigned path.
 	const workItem = 'workItem' in trigger ? trigger.workItem : undefined;
