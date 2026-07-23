@@ -15,6 +15,7 @@ import {
 	getRunLogsFromDb,
 	getRunOutputEvents,
 	listRunsFromDb,
+	recordRunCleanupBlocked,
 } from '../../db/repositories/runsRepository.js';
 import {
 	cancelDispatchAndWake,
@@ -42,6 +43,8 @@ import {
 	toQueuedRuns,
 } from '../../queue/queued-runs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
+import { GitWorktreeManager } from '../../worker/git-worktree-manager.js';
+import { reconcileTerminatedWorktree } from '../../worktree/termination-cleanup.js';
 import { accessibleProjectScope, assertProjectAccess } from '../authz.js';
 import { authedProcedure, router } from '../trpc.js';
 
@@ -248,6 +251,41 @@ function alreadyRetrying(): TRPCError {
 		code: 'CONFLICT',
 		message: 'This run is already retrying. Refresh to see its current status.',
 	});
+}
+
+/**
+ * Settle a just-cancelled deferred run's checkout (issue #361). Best-effort: the
+ * dispatch and row are already terminally cancelled, so a filesystem/DB hiccup
+ * here must never fail the termination the user asked for — it is logged and the
+ * worktree is left for the retention sweep. When settlement retains protected
+ * work, its blocked reason is recorded on the run without touching the cancelled
+ * dispatch (`recordRunCleanupBlocked`).
+ */
+async function reconcileDeferredTermination(
+	runId: string,
+	projectId: string,
+	taskId: string,
+	preservedSession: string | null,
+): Promise<void> {
+	try {
+		const project = await getProjectByIdFromDb(projectId);
+		if (!project) return;
+		const result = await reconcileTerminatedWorktree(
+			new GitWorktreeManager(project),
+			projectId,
+			taskId,
+			preservedSession,
+			false,
+		);
+		if (result.outcome === 'blocked') {
+			await recordRunCleanupBlocked(runId, result.blockedReason);
+		}
+	} catch (error) {
+		logger.warn(
+			'runs.terminate: deferred worktree settlement failed (retention sweep will repair)',
+			{ projectId, taskId, error: describeError(error) },
+		);
+	}
 }
 
 export const runsRouter = router({
@@ -572,6 +610,19 @@ export const runsRouter = router({
 					if (res.dispatch) {
 						await removePendingJobById(wakeJobId(res.dispatch)).catch(() => false);
 					}
+					// The claim landed while still deferred, so no agent is (or can become)
+					// active for this run — reconcile its checkout now (issue #361). A
+					// deferred run never held the worktree lease itself, so a present lease
+					// means a *different* live run owns the checkout: keep it as
+					// `live-leased`. A preserved session keeps the checkout for resume
+					// (recorded by `cancelDeferredRunInDb`); with no session, a clean,
+					// pushed, unleased checkout is removed and anything else is retained.
+					await reconcileDeferredTermination(
+						run.id,
+						run.projectId,
+						run.taskId,
+						res.preservedSession,
+					);
 					return { runId: run.id, status: 'failed' as const };
 				}
 				// Report its current state — the flag we set drives the worker to

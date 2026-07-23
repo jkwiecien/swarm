@@ -117,6 +117,7 @@ import {
 	type TriggerPhase,
 	type TriggerResult,
 } from '../triggers/types.js';
+import { reconcileTerminatedWorktree } from '../worktree/termination-cleanup.js';
 import {
 	maxDependencyRechecks,
 	resolveDependencyMaxWaitMs,
@@ -134,7 +135,7 @@ import {
 	type FailureDiagnosis,
 	type KnownFailureCondition,
 } from './failure-diagnosis.js';
-import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
+import { GitWorktreeManager, WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import { createLiveOutputRunner } from './live-output.js';
 import {
 	type MergeAutomationSettledOutcome,
@@ -1548,6 +1549,12 @@ async function finalizeFailedRun(
 	runId: string | undefined,
 	outcome: JobOutcome,
 	err: unknown,
+	// Present only for the in-worker phase-failure path: lets a user-terminated
+	// run reconcile its checkout (`src/worktree/termination-cleanup.ts`) now that
+	// its agent has exited, so the persisted recovery record matches what was left
+	// on disk. Omitted for the pre-run concurrency deferral (a `phase-deferred`
+	// outcome that never provisioned a worktree).
+	reconcile?: { project: ProjectConfig; taskId: string; worktrees?: GitWorktreeManager },
 ): Promise<void> {
 	const agent = err instanceof AgentRunError ? err.agent : undefined;
 	if (outcome.status === 'phase-deferred') {
@@ -1586,13 +1593,32 @@ async function finalizeFailedRun(
 			if (isCancelled && runId) {
 				cancellationOrigin = await getRunCancellationOrigin(runId);
 				const run = await getRunByIdFromDb(runId);
-				const activeSessionId = agent?.sessionId ?? run?.agentSessionId;
-				if (activeSessionId) {
+				const activeSessionId = agent?.sessionId ?? run?.agentSessionId ?? null;
+				if (reconcile) {
+					// The run has stopped (its agent exited): reconcile the checkout it
+					// left behind. A running run owns its own worktree lease, so a present
+					// lease never blocks removal (`stoppedRunHeldLease: true`).
+					const worktrees = reconcile.worktrees ?? new GitWorktreeManager(reconcile.project);
+					const result = await reconcileTerminatedWorktree(
+						worktrees,
+						reconcile.project.id,
+						reconcile.taskId,
+						activeSessionId,
+						true,
+					);
+					if (result.outcome === 'preserved') {
+						sessionToRetain = result.agentSessionId;
+						recoveryVal = { state: 'preserved', agentSessionId: result.agentSessionId };
+					} else if (result.outcome === 'blocked') {
+						recoveryVal = { state: 'blocked', blockedReason: result.blockedReason };
+					}
+					// 'removed'/'absent': no recovery, no retained session — a session id
+					// must never outlive the checkout it would have resumed.
+				} else if (activeSessionId) {
+					// Defensive fallback (no reconcile context): preserve the session as
+					// before rather than silently dropping recoverable work.
 					sessionToRetain = activeSessionId;
-					recoveryVal = {
-						state: 'preserved',
-						agentSessionId: activeSessionId,
-					};
+					recoveryVal = { state: 'preserved', agentSessionId: activeSessionId };
 				}
 			}
 		}
@@ -2580,7 +2606,9 @@ export async function processJob(
 	} catch (err) {
 		const outcome = await handlePhaseFailure(err, job, trigger, project, runId);
 		preserveCancellationMarker = outcome.status === 'phase-deferred';
-		await finalizeFailedRun(runId, outcome, err);
+		// Reconcile the terminated run's checkout before the `finally` clears
+		// cancellation tracking and releases the project slot.
+		await finalizeFailedRun(runId, outcome, err, { project, taskId: trigger.taskId });
 		// Settle the durable dispatch to match: a deferral persists its derived
 		// retry intent *before* any wake-up is queued (crash-safe — issue #284); a
 		// user termination cancels rather than fails, so nothing resurrects it.

@@ -363,7 +363,17 @@ export async function cancelDeferredRunInDb(
 	runId: string,
 	reason: string,
 	cancellation: CancellationOrigin,
-): Promise<{ success: boolean; dispatch: { id: string; wakeSeq: number } | null }> {
+): Promise<{
+	success: boolean;
+	dispatch: { id: string; wakeSeq: number } | null;
+	/**
+	 * The session id this cancellation preserved as resumable recovery, or `null`
+	 * when the deferred run had none. The terminate mutation uses it to reconcile
+	 * the checkout: a preserved session keeps it, no session lets a clean checkout
+	 * be removed.
+	 */
+	preservedSession: string | null;
+}> {
 	const db = getDb();
 	return await db.transaction(async (tx) => {
 		const runRows = await tx
@@ -377,7 +387,7 @@ export async function cancelDeferredRunInDb(
 			.limit(1);
 		const run = runRows[0];
 		if (!run || run.status !== 'deferred') {
-			return { success: false, dispatch: null };
+			return { success: false, dispatch: null, preservedSession: null };
 		}
 
 		const dispatchRows = await tx
@@ -432,8 +442,27 @@ export async function cancelDeferredRunInDb(
 		return {
 			success: true,
 			dispatch: dispatch ? { id: dispatch.id, wakeSeq: dispatch.wakeSeq } : null,
+			preservedSession: hasSession ? run.agentSessionId : null,
 		};
 	});
+}
+
+/**
+ * Record that terminating a run left protected work behind that could not be
+ * safely removed (`src/worktree/termination-cleanup.ts`). A narrow update of the
+ * recovery record only: it never reopens or reschedules the already-cancelled
+ * dispatch, so a blocked cleanup on the deferred-termination path stays a
+ * terminal, non-resumable outcome. Idempotent and best-effort — a caller swallows
+ * a throw the same way the rest of run tracking does.
+ */
+export async function recordRunCleanupBlocked(
+	runId: string,
+	blockedReason: 'dirty' | 'unpushed' | 'live-leased',
+): Promise<void> {
+	await getDb()
+		.update(runs)
+		.set({ recovery: { state: 'blocked', blockedReason } })
+		.where(eq(runs.id, runId));
 }
 
 /**
