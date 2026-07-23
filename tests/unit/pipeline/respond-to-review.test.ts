@@ -255,6 +255,7 @@ describe('runRespondToReviewPhase', () => {
 				addComment: vi.fn(async () => 'c1'),
 				createWorkItem: vi.fn(async () => createMockWorkItem({ id: 'PVTI_sibling' })),
 				updateWorkItem: vi.fn(async () => {}),
+				addLabel: vi.fn(async () => {}),
 				supportsDependencies: false,
 				supportsAssignees: false,
 				listBlockers: vi.fn(async () => []),

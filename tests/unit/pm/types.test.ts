@@ -92,6 +92,14 @@ class InMemoryPMProvider implements PMProvider {
 		});
 	}
 
+	async addLabel(id: string, name: string): Promise<void> {
+		const item = await this.getWorkItem(id);
+		// De-duped by name, mirroring the real adapter's idempotent addLabels —
+		// re-applying an existing label neither duplicates it nor errors.
+		if (item.labels.some((l) => l.name === name)) return;
+		this.items.set(id, { ...item, labels: [...item.labels, { id: name, name }] });
+	}
+
 	readonly supportsDependencies = true;
 
 	readonly supportsAssignees = true;
@@ -203,6 +211,15 @@ describe('PMProvider contract', () => {
 			title: 'New',
 			description: 'Old body',
 		});
+	});
+
+	it('addLabel applies a label and is idempotent on re-application', async () => {
+		const item = createMockWorkItem({ labels: [] });
+		const provider = new InMemoryPMProvider([item]);
+		await provider.addLabel(item.id, 'planned');
+		await provider.addLabel(item.id, 'planned'); // re-applying must not duplicate or throw
+		const labels = (await provider.getWorkItem(item.id)).labels;
+		expect(labels.map((l) => l.name)).toEqual(['planned']);
 	});
 
 	it('carries provider-neutral assignees, and reports none as an empty array', async () => {

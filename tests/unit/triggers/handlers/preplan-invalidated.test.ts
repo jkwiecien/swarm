@@ -50,6 +50,7 @@ function providerReturning(items: WorkItem[]) {
 		addComment: async () => 'comment-1',
 		createWorkItem: async () => createMockWorkItem(),
 		updateWorkItem: async () => undefined,
+		addLabel: async () => undefined,
 		supportsDependencies: false,
 		supportsAssignees: false,
 		listBlockers: async () => [],

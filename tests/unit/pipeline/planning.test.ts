@@ -128,6 +128,7 @@ function makeDeps() {
 		updateWorkItem: vi.fn<(id: string, patch: UpdateWorkItemPatch) => Promise<void>>(
 			async () => {},
 		),
+		addLabel: vi.fn<(id: string, name: string) => Promise<void>>(async () => {}),
 		supportsDependencies: true,
 		supportsAssignees: true,
 		listBlockers: vi.fn(async () => []),
@@ -192,6 +193,15 @@ describe('runPlanningPhase', () => {
 		expect(deps.pm.addComment.mock.calls[0][1]).toContain('Do the thing.');
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 
+		// The item is marked `planned` on successful completion (issue #384),
+		// before the plan comment is posted (retry-safe), and independently of the
+		// board-Status move autoAdvance is off here.
+		expect(deps.pm.addLabel).toHaveBeenCalledTimes(1);
+		expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_item18', 'planned');
+		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeLessThan(
+			deps.pm.addComment.mock.invocationCallOrder[0],
+		);
+
 		// Worktree is always cleaned up.
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 
@@ -212,6 +222,8 @@ describe('runPlanningPhase', () => {
 
 		expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
 		expect(result).toMatchObject({ movedTo: 'todo' });
+		// The label is applied regardless of whether autoAdvance moves the Status.
+		expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_item18', 'planned');
 	});
 
 	it('splits a large task: marks each sibling before moving it to Planning, and re-scopes the original', async () => {
@@ -476,6 +488,14 @@ describe('runPlanningPhase', () => {
 		expect(result).toMatchObject({ preplanned: true, movedTo: undefined });
 		expect(result.agent).toMatchObject({ exitCode: 0, durationMs: 0 });
 		expect(result.agent.usage).toBeUndefined();
+
+		// A preplanned split child is still marked `planned` through its own
+		// completion — every issue that finishes a Planning run ends up labeled,
+		// even though its agent was skipped (issue #384).
+		expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_child', 'planned');
+		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeLessThan(
+			deps.pm.addComment.mock.invocationCallOrder[0],
+		);
 	});
 
 	it('falls back to a normal agent run when the preplan marker is malformed', async () => {
@@ -565,8 +585,9 @@ describe('runPlanningPhase', () => {
 		await expect(runPlanningPhase(deps)).rejects.toThrow(
 			/oversized single task|independent concerns/i,
 		);
-		// Nothing is posted or advanced when the guard rejects the plan.
+		// Nothing is posted, labeled, or advanced when the guard rejects the plan.
 		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
@@ -702,6 +723,8 @@ describe('runPlanningPhase', () => {
 		await expect(runPlanningPhase(deps)).rejects.toThrow(/exited with code 1/);
 		expect(deps.pm.addComment).not.toHaveBeenCalled();
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
+		// The `planned` label is never applied when the run fails (issue #384).
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 
@@ -718,6 +741,7 @@ describe('runPlanningPhase', () => {
 			new RegExp(`did not write ${PROPOSED_PLAN_FILENAME}`),
 		);
 		expect(deps.pm.addComment).not.toHaveBeenCalled();
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
 	});
 

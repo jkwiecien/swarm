@@ -162,6 +162,15 @@ const NEXT_STATUS: PmStatusKey = 'todo';
 const DEFAULT_AUTO_ADVANCE = false;
 
 /**
+ * Label applied to an item's backing issue when its Planning phase completes
+ * successfully (issue #384) — a lightweight, provider-visible marker that
+ * distinguishes planned, ready-for-implementation work from un-planned backlog,
+ * independent of the board Status move `autoAdvance` may make. A fixed constant,
+ * not a config option: the smallest durable change, with no speculative setting.
+ */
+export const PLANNED_LABEL = 'planned';
+
+/**
  * `autoSplit` default when `project.pipeline.planning.autoSplit` is unset. On by
  * default: evaluating task size and splitting a too-large item is the phase's
  * new baseline behavior (a task that fits one PR is never split, so this is
@@ -713,6 +722,31 @@ function skippedAgentResult(cli: AgentCli): AgentCliResult {
 }
 
 /**
+ * Mark the item `planned` — the enforced completion step of a successful Planning
+ * run (issue #384). Applied on every successful completion (the normal agent run
+ * and the preplanned split-child reuse alike), so every issue that finishes
+ * planning ends up labeled through its own run. Never reached on a failed or
+ * incomplete run, since every failure path throws before this. Not gated on
+ * `autoAdvance`: planning *completion* is the trigger, not the Status move. A
+ * hard step, not best-effort — the criteria require labeling to be enforced, so
+ * a failure propagates (the run is marked failed) rather than being swallowed.
+ * Idempotent at the provider, so re-running Planning on an already-labeled issue
+ * is safe.
+ */
+async function applyPlannedLabel(
+	pm: PMProvider,
+	workItem: WorkItem,
+	taskId: string,
+): Promise<void> {
+	await pm.addLabel(workItem.id, PLANNED_LABEL);
+	logger.debug('Planning — applied planned label', {
+		taskId,
+		workItemId: workItem.id,
+		label: PLANNED_LABEL,
+	});
+}
+
+/**
  * Complete a Planning run for a split child that already carries a valid
  * preplanned plan — post that plan as the plan comment (exactly what a normal
  * run would post) and honor the status behavior, without provisioning a worktree
@@ -728,6 +762,10 @@ async function completePreplannedRun(
 	cli: AgentCli,
 	taskId: string,
 ): Promise<PlanningPhaseResult> {
+	// Enforce the planned-completion marker before posting the plan (issue #384):
+	// if labeling throws, no plan comment has been posted yet, so the worker's
+	// retry re-runs cleanly (and the label write is idempotent regardless).
+	await applyPlannedLabel(pm, workItem, taskId);
 	const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
 	const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
 	if (movedTo) {
@@ -883,6 +921,13 @@ export async function runPlanningPhase(
 		if (planningScope && !split) {
 			enforceSingleTaskBudget(planningScope, maxConcerns, taskId, workItem);
 		}
+
+		// Enforce the planned-completion marker before posting the plan (issue #384):
+		// placed after every throw point (agent exit, missing/empty plan, scope gate)
+		// but before the comment, so a label failure retries cleanly with no plan
+		// comment yet posted. Not gated on effectiveAutoAdvance — planning completion
+		// is the trigger, not the Status move.
+		await applyPlannedLabel(pm, workItem, taskId);
 
 		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
 

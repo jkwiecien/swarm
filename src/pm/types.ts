@@ -212,6 +212,20 @@ export interface PMProvider {
 	updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void>;
 
 	/**
+	 * Apply a label (by name) to a work item's backing Issue/PR. Idempotent —
+	 * re-applying an existing label is a no-op, neither duplicating it nor
+	 * erroring — and the label is created if it does not yet exist. Provider-
+	 * agnostic: `name` is a label *name*, and both ensuring the label exists and
+	 * applying it are the adapter's job, so a future Jira/Linear provider
+	 * implements the same method (widen-the-interface, ai/RULES.md §2). Planning
+	 * completion uses this to mark an item `planned` (issue #384); labels are
+	 * otherwise read-only on {@link WorkItem} and settable only at creation
+	 * ({@link CreateWorkItemInput.labels}), so this is the missing post-creation
+	 * label-write capability.
+	 */
+	addLabel(id: string, name: string): Promise<void>;
+
+	/**
 	 * Whether this provider models work-item assignees at all. `false` for a
 	 * provider with no assignee concept: it returns `assignees: []` on every item,
 	 * so a caller treats that item as unassigned instead of branching on the

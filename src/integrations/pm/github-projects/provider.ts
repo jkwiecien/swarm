@@ -459,6 +459,26 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		logger.debug('pm: updated work item', { itemId: id });
 	}
 
+	async addLabel(id: string, name: string): Promise<void> {
+		// Labels live on the backing Issue, not the board card — resolve it first
+		// (its own scoped run), mirroring addComment/updateWorkItem's two-step shape.
+		const { owner, repo, contentNumber } = await this.resolveItem(id);
+		if (!owner || !repo || contentNumber == null) {
+			throw new Error(
+				`Cannot label item '${id}': it has no backing Issue to label (likely a draft item)`,
+			);
+		}
+		await this.run(async () => {
+			const client = getScopedClient();
+			// Create the label if missing (reusing the same helper createWorkItem uses),
+			// then apply it. issues.addLabels is additive and idempotent — re-adding an
+			// already-present label neither duplicates it nor errors.
+			await ensureLabel(owner, repo, name);
+			await client.issues.addLabels({ owner, repo, issue_number: contentNumber, labels: [name] });
+		});
+		logger.debug('pm: applied label', { itemId: id, label: name });
+	}
+
 	async listBlockers(id: string): Promise<WorkItemBlocker[]> {
 		const { workItem, owner, repo, contentNumber } = await this.resolveItem(id);
 		// A draft item (no backing Issue) can carry no dependencies — nothing to gate on.

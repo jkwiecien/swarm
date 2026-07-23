@@ -15,6 +15,7 @@ function pmWith(
 		addComment: vi.fn(async () => 'c1'),
 		createWorkItem: vi.fn(async () => createMockWorkItem()),
 		updateWorkItem: vi.fn(async () => {}),
+		addLabel: vi.fn(async () => {}),
 		supportsDependencies: overrides.supportsDependencies ?? true,
 		supportsAssignees: true,
 		listBlockers: overrides.listBlockers ?? vi.fn(async () => []),

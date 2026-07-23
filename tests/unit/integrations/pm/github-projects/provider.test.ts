@@ -6,6 +6,7 @@ const createIssue = vi.fn();
 const updateIssue = vi.fn();
 const getLabel = vi.fn();
 const createLabel = vi.fn();
+const addLabels = vi.fn();
 const getIssue = vi.fn();
 const listComments = vi.fn();
 const request = vi.fn();
@@ -21,6 +22,7 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 			listComments,
 			getLabel,
 			createLabel,
+			addLabels,
 		},
 	}),
 }));
@@ -66,6 +68,7 @@ describe('GitHubProjectsPMProvider', () => {
 		updateIssue.mockReset();
 		getLabel.mockReset();
 		createLabel.mockReset();
+		addLabels.mockReset();
 		getIssue.mockReset();
 		listComments.mockReset();
 		request.mockReset();
@@ -496,6 +499,48 @@ describe('GitHubProjectsPMProvider', () => {
 				'no backing Issue',
 			);
 			expect(updateIssue).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('addLabel', () => {
+		it('applies an existing label without recreating it', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			getLabel.mockResolvedValue({ data: {} }); // label already exists
+			addLabels.mockResolvedValue({ data: [] });
+
+			await provider.addLabel('PVTI_x', 'planned');
+
+			expect(createLabel).not.toHaveBeenCalled();
+			expect(addLabels).toHaveBeenCalledWith({
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				issue_number: 10,
+				labels: ['planned'],
+			});
+		});
+
+		it('creates the label when it does not yet exist, then applies it', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			getLabel.mockRejectedValue({ status: 404 });
+			createLabel.mockResolvedValue({ data: {} });
+			addLabels.mockResolvedValue({ data: [] });
+
+			await provider.addLabel('PVTI_x', 'planned');
+
+			expect(createLabel).toHaveBeenCalledWith(
+				expect.objectContaining({ owner: 'jkwiecien', repo: 'swarm', name: 'planned' }),
+			);
+			expect(addLabels).toHaveBeenCalledWith(
+				expect.objectContaining({ issue_number: 10, labels: ['planned'] }),
+			);
+		});
+
+		it('throws when the item has no backing Issue (draft)', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			await expect(provider.addLabel('PVTI_draft', 'planned')).rejects.toThrow('no backing Issue');
+			expect(addLabels).not.toHaveBeenCalled();
 		});
 	});
 
