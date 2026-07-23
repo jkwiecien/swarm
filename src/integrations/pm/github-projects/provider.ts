@@ -371,6 +371,26 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		});
 	}
 
+	async findComment(id: string, bodyPrefix: string): Promise<string | undefined> {
+		const resolved = await this.resolveItem(id);
+		const { owner, repo, contentNumber } = resolved;
+		if (!owner || !repo || contentNumber == null) {
+			return undefined;
+		}
+		return this.run(async () => {
+			const client = getScopedClient();
+			// Only the first page (100 comments) is scanned, consistent with listBlockers
+			const { data: comments } = await client.issues.listComments({
+				owner,
+				repo,
+				issue_number: contentNumber,
+				per_page: 100,
+			});
+			const found = comments.find((c) => c.body?.startsWith(bodyPrefix));
+			return found ? String(found.id) : undefined;
+		});
+	}
+
 	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
 		const [owner, repo] = this.project.repo.split('/');
 		const { projectId, statusFieldId, statusOptions } = this.project.githubProjects;

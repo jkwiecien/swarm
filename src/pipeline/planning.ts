@@ -762,15 +762,19 @@ async function completePreplannedRun(
 	cli: AgentCli,
 	taskId: string,
 ): Promise<PlanningPhaseResult> {
-	// Enforce the planned-completion marker before posting the plan (issue #384):
-	// if labeling throws, no plan comment has been posted yet, so the worker's
-	// retry re-runs cleanly (and the label write is idempotent regardless).
-	await applyPlannedLabel(pm, workItem, taskId);
-	const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
+	const commentPrefix = '## 🗺️ Proposed implementation plan';
+	let commentId = await pm.findComment(workItem.id, commentPrefix);
+	if (!commentId) {
+		commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
+	}
 	const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
 	if (movedTo) {
 		await pm.moveWorkItem(workItem.id, movedTo);
 	}
+	// Make labeling the final required success action (issue #384):
+	// if labeling throws, the comment and status move have already occurred, but the phase
+	// remains marked as failed, and subsequent retries will find the existing comment.
+	await applyPlannedLabel(pm, workItem, taskId);
 	logger.info('Phase finished - Planning (preplanned — agent skipped)', {
 		taskId,
 		workItemId: workItem.id,
@@ -922,23 +926,26 @@ export async function runPlanningPhase(
 			enforceSingleTaskBudget(planningScope, maxConcerns, taskId, workItem);
 		}
 
-		// Enforce the planned-completion marker before posting the plan (issue #384):
-		// placed after every throw point (agent exit, missing/empty plan, scope gate)
-		// but before the comment, so a label failure retries cleanly with no plan
-		// comment yet posted. Not gated on effectiveAutoAdvance — planning completion
-		// is the trigger, not the Status move.
-		await applyPlannedLabel(pm, workItem, taskId);
+		const commentPrefix = '## 🗺️ Proposed implementation plan';
+		let commentId = await pm.findComment(workItem.id, commentPrefix);
+		let splitResult: Awaited<ReturnType<typeof applySplit>> | undefined;
 
-		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
-
-		const splitResult = split
-			? await applySplit(pm, workItem, split, resolveAutomationLabel(project.pipeline))
-			: undefined;
+		if (!commentId) {
+			splitResult = split
+				? await applySplit(pm, workItem, split, resolveAutomationLabel(project.pipeline))
+				: undefined;
+			commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
+		}
 
 		const movedTo = effectiveAutoAdvance ? NEXT_STATUS : undefined;
 		if (movedTo) {
 			await pm.moveWorkItem(workItem.id, movedTo);
 		}
+
+		// Make labeling the final required success action (issue #384):
+		// if labeling throws, the comment and status move have already occurred, but the phase
+		// remains marked as failed, and subsequent retries will find the existing comment.
+		await applyPlannedLabel(pm, workItem, taskId);
 
 		logger.info('Phase finished - Planning', {
 			taskId,

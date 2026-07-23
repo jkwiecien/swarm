@@ -194,6 +194,12 @@ export interface PMProvider {
 	addComment(id: string, text: string): Promise<string>;
 
 	/**
+	 * Find an existing comment on the backing Issue/PR of a work item by its prefix.
+	 * Returns the comment's ID if found, else undefined.
+	 */
+	findComment(id: string, bodyPrefix: string): Promise<string | undefined>;
+
+	/**
 	 * Create a new work item on the board (a fresh backing Issue added to the
 	 * project) in the given status, and return it. Planning's task-splitting uses
 	 * this to spawn the sibling tasks a too-large item decomposes into.

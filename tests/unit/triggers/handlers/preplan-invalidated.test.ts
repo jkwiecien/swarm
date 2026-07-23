@@ -48,6 +48,7 @@ function providerReturning(items: WorkItem[]) {
 		listWorkItems,
 		moveWorkItem: async () => undefined,
 		addComment: async () => 'comment-1',
+		findComment: async () => undefined,
 		createWorkItem: async () => createMockWorkItem(),
 		updateWorkItem: async () => undefined,
 		addLabel: async () => undefined,

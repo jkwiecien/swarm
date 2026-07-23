@@ -121,6 +121,7 @@ function makeDeps() {
 		getWorkItem: vi.fn(),
 		listWorkItems: vi.fn(),
 		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
+		findComment: vi.fn<(id: string, bodyPrefix: string) => Promise<string | undefined>>(async () => undefined),
 		moveWorkItem: vi.fn(async () => {}),
 		createWorkItem: vi.fn(async (input) =>
 			createMockWorkItem({ id: `PVTI_${input.title}`, title: input.title, url: input.title }),
@@ -194,11 +195,11 @@ describe('runPlanningPhase', () => {
 		expect(deps.pm.moveWorkItem).not.toHaveBeenCalled();
 
 		// The item is marked `planned` on successful completion (issue #384),
-		// before the plan comment is posted (retry-safe), and independently of the
+		// after the plan comment is posted, and independently of the
 		// board-Status move autoAdvance is off here.
 		expect(deps.pm.addLabel).toHaveBeenCalledTimes(1);
 		expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_item18', 'planned');
-		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeLessThan(
+		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeGreaterThan(
 			deps.pm.addComment.mock.invocationCallOrder[0],
 		);
 
@@ -493,7 +494,7 @@ describe('runPlanningPhase', () => {
 		// completion — every issue that finishes a Planning run ends up labeled,
 		// even though its agent was skipped (issue #384).
 		expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_child', 'planned');
-		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeLessThan(
+		expect(deps.pm.addLabel.mock.invocationCallOrder[0]).toBeGreaterThan(
 			deps.pm.addComment.mock.invocationCallOrder[0],
 		);
 	});
@@ -840,6 +841,40 @@ describe('runPlanningPhase', () => {
 		);
 		await expect(runPlanningPhase(deps)).rejects.toThrow(/rate limited/);
 		expect(deps.worktrees.cleanup).toHaveBeenCalledWith('18');
+	});
+
+	it('does not apply the planned label when addComment rejects', async () => {
+		const deps = makeDeps();
+		deps.pm.addComment.mockRejectedValue(new Error('addComment failed'));
+		await expect(runPlanningPhase(deps)).rejects.toThrow('addComment failed');
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
+	});
+
+	it('does not apply the planned label when applySplit (e.g. createWorkItem) rejects', async () => {
+		splitExists = true;
+		splitContents = JSON.stringify({
+			mainTask: { title: 'First slice', description: 'Desc 1' },
+			subTasks: [{ title: 'Second slice', description: 'Desc 2', plan: 'Plan 2' }]
+		});
+		const deps = makeDeps();
+		deps.pm.createWorkItem.mockRejectedValue(new Error('createWorkItem failed'));
+		await expect(runPlanningPhase({ ...deps, autoSplit: true })).rejects.toThrow('createWorkItem failed');
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
+	});
+
+	it('does not apply the planned label when moveWorkItem rejects', async () => {
+		const deps = makeDeps();
+		deps.pm.moveWorkItem.mockRejectedValue(new Error('moveWorkItem failed'));
+		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow('moveWorkItem failed');
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
+	});
+
+	it('does not apply the planned label when preplanned-child comment posting rejects', async () => {
+		const deps = makeDeps();
+		deps.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
+		deps.pm.addComment.mockRejectedValue(new Error('preplanned comment failed'));
+		await expect(runPlanningPhase({ ...deps, autoAdvance: true })).rejects.toThrow('preplanned comment failed');
+		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 	});
 });
 

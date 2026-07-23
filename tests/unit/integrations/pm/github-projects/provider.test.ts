@@ -384,6 +384,49 @@ describe('GitHubProjectsPMProvider', () => {
 		});
 	});
 
+	describe('findComment', () => {
+		it('returns comment ID if a comment starts with the given prefix', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			listComments.mockResolvedValue({
+				data: [
+					{ id: 111, body: 'some unrelated comment' },
+					{ id: 222, body: '## 🗺️ Proposed implementation plan\n1. Do the thing' },
+				],
+			});
+
+			const id = await provider.findComment('PVTI_x', '## 🗺️ Proposed implementation plan');
+
+			expect(listComments).toHaveBeenCalledWith({
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				issue_number: 10,
+				per_page: 100,
+			});
+			expect(id).toBe('222');
+		});
+
+		it('returns undefined if no comment starts with the given prefix', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			listComments.mockResolvedValue({
+				data: [
+					{ id: 111, body: 'some unrelated comment' },
+				],
+			});
+
+			const id = await provider.findComment('PVTI_x', '## 🗺️ Proposed implementation plan');
+			expect(id).toBeUndefined();
+		});
+
+		it('returns undefined when the item has no backing Issue (draft)', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			const id = await provider.findComment('PVTI_draft', '## 🗺️ Proposed implementation plan');
+			expect(id).toBeUndefined();
+			expect(listComments).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('createWorkItem', () => {
 		it('creates the Issue, adds it to the board, sets its status, and applies labels', async () => {
 			getLabel.mockResolvedValue({ data: {} }); // label already exists

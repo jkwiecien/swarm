@@ -13,6 +13,7 @@ function pmWith(
 		listWorkItems: vi.fn(async () => []),
 		moveWorkItem: vi.fn(async () => {}),
 		addComment: vi.fn(async () => 'c1'),
+		findComment: vi.fn(async () => undefined),
 		createWorkItem: vi.fn(async () => createMockWorkItem()),
 		updateWorkItem: vi.fn(async () => {}),
 		addLabel: vi.fn(async () => {}),

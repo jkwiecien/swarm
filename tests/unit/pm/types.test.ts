@@ -33,6 +33,7 @@ class InMemoryPMProvider implements PMProvider {
 	private readonly items: Map<string, WorkItem>;
 	private readonly statusOptions: Record<string, string>;
 	private nextCommentId = 1;
+	private readonly comments = new Map<string, Array<{ id: string; body: string }>>();
 
 	constructor(items: WorkItem[], statusOptions: Record<string, string> = {}) {
 		this.items = new Map(items.map((item) => [item.id, item]));
@@ -62,10 +63,21 @@ class InMemoryPMProvider implements PMProvider {
 		this.items.set(id, { ...item, statusId: this.statusOptions[status] });
 	}
 
-	async addComment(id: string, _text: string): Promise<string> {
+	async addComment(id: string, text: string): Promise<string> {
 		// Presence check mirrors the real adapter resolving the backing Issue/PR.
 		await this.getWorkItem(id);
-		return `comment-${this.nextCommentId++}`;
+		const commentId = `comment-${this.nextCommentId++}`;
+		const list = this.comments.get(id) ?? [];
+		list.push({ id: commentId, body: text });
+		this.comments.set(id, list);
+		return commentId;
+	}
+
+	async findComment(id: string, bodyPrefix: string): Promise<string | undefined> {
+		await this.getWorkItem(id);
+		const list = this.comments.get(id) ?? [];
+		const found = list.find((c) => c.body.startsWith(bodyPrefix));
+		return found?.id;
 	}
 
 	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
