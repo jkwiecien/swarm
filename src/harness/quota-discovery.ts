@@ -111,7 +111,7 @@ export function queryCodexQuota(command = 'codex'): Promise<Partial<CliQuotaSnap
 		});
 
 		const sendJson = (obj: any) => {
-			child.stdin.write(JSON.stringify(obj) + '\n');
+			child.stdin.write(`${JSON.stringify(obj)}\n`);
 		};
 
 		child.stdout.on('data', (chunk) => {

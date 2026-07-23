@@ -8,6 +8,7 @@ import type { SwarmUser } from '@/identity/schema.js';
 import type { WorkerDispatchCandidate } from '@/identity/worker-enrollment-service.js';
 import { logger } from '@/lib/logger.js';
 import { DependencyBlockedError } from '@/pipeline/dependency-guard.js';
+import type { ProposedScope } from '@/pipeline/planning.js';
 import type { PMProvider, WorkItemAssignee } from '@/pm/types.js';
 import type { CancellationOrigin } from '@/queue/cancellation.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
@@ -219,6 +220,9 @@ const updateRunJobPayload = vi.fn(async (_id: string, _job: unknown) => {});
 const getLatestRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => undefined,
 );
+const getLatestCompletedPlanningScope = vi.fn<
+	(projectId: string, taskId: string) => Promise<ProposedScope | undefined>
+>(async (_projectId: string, _taskId: string) => undefined);
 const hasCompletedRunForTask = vi.fn(
 	async (_projectId: string, _taskId: string, _phase: string) => false,
 );
@@ -233,6 +237,8 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	updateRunJobPayload: (id: string, job: unknown) => updateRunJobPayload(id, job),
 	getLatestRunForTask: (projectId: string, taskId: string, phase: string) =>
 		getLatestRunForTask(projectId, taskId, phase),
+	getLatestCompletedPlanningScope: (projectId: string, taskId: string) =>
+		getLatestCompletedPlanningScope(projectId, taskId),
 	hasCompletedRunForTask: (projectId: string, taskId: string, phase: string) =>
 		hasCompletedRunForTask(projectId, taskId, phase),
 	resetRunToRunning: (id: string, job?: unknown, fromStatus?: string) =>
@@ -478,6 +484,8 @@ describe('processJob', () => {
 		getRunByIdFromDb.mockResolvedValue(undefined);
 		getLatestRunForTask.mockClear();
 		getLatestRunForTask.mockResolvedValue(undefined);
+		getLatestCompletedPlanningScope.mockClear();
+		getLatestCompletedPlanningScope.mockResolvedValue(undefined);
 		hasCompletedRunForTask.mockClear();
 		hasCompletedRunForTask.mockResolvedValue(false);
 		getAppSettings.mockClear();
@@ -1572,7 +1580,7 @@ describe('processJob', () => {
 		expect(body).not.toContain('splitting the issue');
 	});
 
-	it('posts a failure comment with splitting suggestion for stalled agent runs', async () => {
+	it('reports an early provider stall rather than claiming an unproven scope problem', async () => {
 		const workItem = createMockWorkItem({ statusId: '61e4505c' });
 		phaseImpl = async () => {
 			throw new AgentRunError('stalled', { kind: 'stalled' });
@@ -1586,7 +1594,53 @@ describe('processJob', () => {
 		expect(outcome.status).toBe('phase-failed');
 		expect(addComment).toHaveBeenCalledTimes(1);
 		const [, body] = addComment.mock.calls[0];
-		expect(body).toContain('splitting the issue');
+		expect(body).toContain('Provider stalled early');
+		expect(body).toContain(
+			'The agent provider stalled before meaningful work began; retry later or use another configured provider.',
+		);
+		expect(body).not.toContain('likely exceeds the single-task scope');
+	});
+
+	it('reports a terminal response stall as likely scope exceeded only with prior scope and progress evidence', async () => {
+		const workItem = createMockWorkItem({ statusId: '61e4505c' });
+		getLatestCompletedPlanningScope.mockResolvedValue({
+			whyOneTask: 'The changes need one coordinated delivery.',
+			independentConcerns: ['worker diagnosis', 'dashboard presentation'],
+			affectedAreas: ['worker', 'web'],
+			outOfScope: [],
+		});
+		phaseImpl = async () => {
+			throw new AgentRunError(
+				'stalled',
+				{ kind: 'stalled' },
+				agentResult({
+					durationMs: 10 * 60 * 1000,
+					stdout: `${'x'.repeat(1_000)}\nError: timeout waiting for response`,
+				}),
+			);
+		};
+
+		const outcome = await processJob(
+			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 6 }),
+			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
+		);
+
+		expect(outcome).toMatchObject({
+			status: 'phase-failed',
+			failureDiagnosis: { kind: 'likely-scope-exceeded' },
+		});
+		expect(getLatestCompletedPlanningScope).toHaveBeenCalledWith(PROJECT.id, '100');
+		const [, body] = addComment.mock.calls[0];
+		expect(body).toContain('Likely scope exceeded');
+		expect(body).toContain(
+			'The agent stalled after substantial progress. This task likely exceeds the single-task scope; narrow or split it before retrying.',
+		);
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				failureDiagnosis: expect.objectContaining({ kind: 'likely-scope-exceeded' }),
+			}),
+		);
 	});
 
 	it('defers a timeout agent run for a resume retry instead of failing it', async () => {
@@ -1972,8 +2026,15 @@ describe('processJob', () => {
 		expect(outcome.status).toBe('phase-failed');
 		expect(addComment).toHaveBeenCalledOnce();
 		const [, body] = addComment.mock.calls[0];
-		expect(body).toContain('**at capacity**');
+		expect(body).toContain('Known provider condition: model capacity');
+		expect(body).toContain('reported at capacity');
 		expect(body).toContain('different model');
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				failureDiagnosis: expect.objectContaining({ kind: 'provider-capacity' }),
+			}),
+		);
 	});
 
 	it('does not comment for a PR-driven phase failure (no backing work item)', async () => {
@@ -2094,11 +2155,12 @@ describe('processJob', () => {
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome).toEqual({
+		expect(outcome).toMatchObject({
 			status: 'phase-failed',
 			phase: 'review',
 			taskId: '17',
 			error: 'Review agent (claude) exited with code 1 (rate limited)',
+			failureDiagnosis: { kind: 'provider-rate-limit' },
 		});
 	});
 
@@ -2148,11 +2210,12 @@ describe('processJob', () => {
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome).toEqual({
+		expect(outcome).toMatchObject({
 			status: 'phase-failed',
 			phase: 'review',
 			taskId: '17',
 			error: 'Review agent (antigravity) exited with code 1 (stalled)',
+			failureDiagnosis: { kind: 'provider-stalled-early' },
 		});
 	});
 
@@ -2236,11 +2299,12 @@ describe('processJob', () => {
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome).toEqual({
+		expect(outcome).toMatchObject({
 			status: 'phase-failed',
 			phase: 'review',
 			taskId: '17',
 			error: 'Review agent (claude) exited with code 143 (aborted)',
+			failureDiagnosis: { kind: 'worker-shutdown' },
 		});
 	});
 
@@ -2276,11 +2340,12 @@ describe('processJob', () => {
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome).toEqual({
+		expect(outcome).toMatchObject({
 			status: 'phase-failed',
 			phase: 'review',
 			taskId: '17',
 			error: 'Run cancelled after a cancellation request.',
+			failureDiagnosis: { kind: 'user-terminated' },
 			cancelled: true,
 		});
 		// An intentional stop isn't a stall — no board/PR "failed" comment is posted.

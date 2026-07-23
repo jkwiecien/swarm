@@ -39,6 +39,27 @@ export const cancellationOriginSchema = z.object({
 export type CancellationOrigin = z.infer<typeof cancellationOriginSchema>;
 
 /**
+ * Mirrors `FailureDiagnosisSchema` (`src/worker/failure-diagnosis.ts`). The web
+ * package does not import worker modules, so it declares the persisted shape at
+ * this boundary and keeps the raw run error separate for technical detail.
+ */
+export const failureDiagnosisSchema = z.object({
+	kind: z.enum([
+		'likely-scope-exceeded',
+		'provider-stalled-early',
+		'provider-rate-limit',
+		'provider-capacity',
+		'launch-or-authentication',
+		'worker-shutdown',
+		'user-terminated',
+	]),
+	title: z.string(),
+	message: z.string(),
+	recovery: z.string(),
+});
+export type FailureDiagnosis = z.infer<typeof failureDiagnosisSchema>;
+
+/**
  * Mirrors the server `runs.queued` contract (`QueuedRunSchema`,
  * `src/queue/queued-runs.ts`) for a job enqueued in BullMQ but not yet picked up
  * by the worker (issue #234). The web package doesn't import server modules, so
@@ -240,4 +261,6 @@ export interface RunRow {
 	 * pre-existing row. Mirrors the `cancellation` column.
 	 */
 	cancellation?: CancellationOrigin | null;
+	/** Evidence-based terminal diagnosis; null for ordinary and historical runs. */
+	failureDiagnosis: FailureDiagnosis | null;
 }

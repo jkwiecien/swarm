@@ -82,6 +82,16 @@ auth: sign in at `/login` with a user created via `swarm users` (above);
 session cookie. See [`docs/operations.md`](./docs/operations.md) for health
 checks, ports, webhook setup, and troubleshooting.
 
+## Failure diagnosis
+
+For a terminal recognised response stall, SWARM labels a task as **likely scope
+exceeded** only when it also observed substantial progress and the most recent
+successful Planning run recorded multiple independent concerns. A timeout alone
+never proves task size: without all of that evidence, SWARM keeps a
+provider-oriented diagnosis. Quota, model-capacity, launch/authentication,
+worker-shutdown, and user-termination conditions take precedence and retain
+their specific recovery guidance in both the board comment and run detail.
+
 ## Common commands
 
 ```bash

@@ -239,6 +239,13 @@
       "when": 1784723930234,
       "tag": "0033_rare_union_jack",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784782595203,
+      "tag": "0034_wide_karma",
+      "breakpoints": true
     }
   ]
 }
