@@ -1,13 +1,13 @@
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 
-// Most web tests exercise pure helpers, so a node environment is the default;
-// component tests opt into jsdom + @testing-library per-file with a
-// `// @vitest-environment jsdom` pragma. Mirror the `@` → web/src alias so
+// Most dashboard tests exercise pure helpers, so a node environment is the
+// default; component tests opt into jsdom + @testing-library per-file with a
+// `// @vitest-environment jsdom` pragma. Mirror the `@` → dashboard/src alias so
 // imports resolve the same way tsc/vite do.
 export default defineConfig({
 	test: {
-		name: 'web',
+		name: 'dashboard',
 		globals: true,
 		environment: 'node',
 		// Match the root unit project's thread pool: the default `forks` pool uses

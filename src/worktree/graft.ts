@@ -59,8 +59,8 @@ export const DEFAULT_GRAFT_ENTRIES: readonly GraftEntry[] = [
 	// SWARM's dashboard is a separately-installed package rather than an npm
 	// workspace. Repository hooks run its tests from every task worktree, so the
 	// nested dependency tree is just as required there as the root one. Keep it
-	// optional for projects without a `web/` package.
-	{ path: 'web/node_modules' },
+	// optional for projects without a `dashboard/` package.
+	{ path: 'dashboard/node_modules' },
 	{ path: '.env' },
 	{ path: 'cascade' },
 ];

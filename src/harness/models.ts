@@ -2,7 +2,7 @@
  * Per-model capability metadata — the single source of truth for what
  * `AgentConfig.model` / `AgentConfig.reasoning` (`src/config/schema.ts`) accept,
  * and what the dashboard's per-phase Agent Configuration offers as choices
- * (the phase-6 web-dashboard backlog).
+ * (the phase-6 dashboard backlog).
  *
  * Each logical model is described by a {@link ModelCapability}: a stable
  * configured id (what config stores), a user-facing label, the normalized

@@ -3,7 +3,7 @@
  * dirty-checking, and the read-only summaries of each phase's fixed SWARM system
  * prompt shown alongside the editable Custom prompt input. Kept out of the route
  * component so they can be unit-tested (the owning route stays presentational,
- * mirroring `web/src/lib/pipeline-enabled.ts`).
+ * mirroring `dashboard/src/lib/pipeline-enabled.ts`).
  */
 
 import {

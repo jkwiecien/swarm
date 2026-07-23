@@ -6,12 +6,12 @@ import type { SwarmUser } from '../identity/schema.js';
  * The tRPC request context (#281 task 2). `user` is the authenticated
  * `SwarmUser` resolved from the request's session cookie, or `null` for an
  * unauthenticated request. It is built in the `@hono/trpc-server` `createContext`
- * (`src/dashboard.ts`) from `resolveSession`; procedures never touch the cookie
+ * (`src/api/server.ts`) from `resolveSession`; procedures never touch the cookie
  * directly.
  */
 // A `type` (not an `interface`) so it carries an implicit index signature and is
 // assignable to the `@hono/trpc-server` `createContext` return type
-// (`Record<string, unknown>`), which we build it from in `src/dashboard.ts`.
+// (`Record<string, unknown>`), which we build it from in `src/api/server.ts`.
 export type TrpcContext = {
 	user: SwarmUser | null;
 };

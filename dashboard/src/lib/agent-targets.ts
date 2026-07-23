@@ -4,7 +4,7 @@
  * reorder/patch mutations the phase-detail screen drives, the one-target-per-CLI
  * rule `AgentConfigSchema` enforces server-side, and the dirty-check/clean the
  * shared Save uses. Kept out of the route component so they can be unit-tested
- * (mirroring `web/src/lib/pipeline-enabled.ts`).
+ * (mirroring `dashboard/src/lib/pipeline-enabled.ts`).
  *
  * A target is `{ cli, model, reasoning }` and its **position is its priority** —
  * index 0 is the phase's preferred target. Only that one is dispatched today;

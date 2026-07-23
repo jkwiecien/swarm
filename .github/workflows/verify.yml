@@ -26,5 +26,5 @@ jobs:
 
       - run: npm ci
       - run: npm ci
-        working-directory: web
+        working-directory: dashboard
       - run: npm run verify

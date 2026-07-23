@@ -39,7 +39,7 @@ function isKnownModel(cli: AgentCli | undefined, model: string): boolean {
 }
 
 // The per-phase custom-prompt bound and normalizer live in a dependency-free
-// leaf (issue #135) so the web bundle can import them without pulling this
+// leaf (issue #135) so the dashboard bundle can import them without pulling this
 // schema's Node-only transitive deps; re-exported here for existing callers.
 export { CUSTOM_PROMPT_MAX_LENGTH, normalizeCustomPrompt };
 
