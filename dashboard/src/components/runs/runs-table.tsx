@@ -8,7 +8,7 @@ import {
 	formatTokensCompact,
 } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
-import { runTableColumnWidths } from '@/lib/run-table-layout.js';
+import { runTableColumnWidths, runTableResponsiveWidth } from '@/lib/run-table-layout.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -108,8 +108,10 @@ export function RunsTable({
 
 	return (
 		<div className="space-y-4">
-			<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
-				<table className="w-full table-fixed text-left border-collapse">
+			<div className="border border-zinc-800 rounded-md overflow-x-auto bg-panel/20 shadow-sm">
+				<table
+					className={`w-full ${runTableResponsiveWidth} table-fixed text-left border-collapse`}
+				>
 					<colgroup>
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}
@@ -202,13 +204,13 @@ export function RunsTable({
 			</div>
 
 			{totalCount > 0 && (
-				<div className="flex items-center justify-between text-xs text-zinc-400 py-2">
+				<div className="flex flex-col gap-3 text-xs text-zinc-400 py-2 sm:flex-row sm:items-center sm:justify-between">
 					<div>
 						Showing <span className="font-semibold text-zinc-200">{startIdx}</span> to{' '}
 						<span className="font-semibold text-zinc-200">{endIdx}</span> of{' '}
 						<span className="font-semibold text-zinc-200">{totalCount}</span> runs
 					</div>
-					<div className="flex items-center gap-2">
+					<div className="flex items-center justify-between gap-2 sm:justify-end">
 						<button
 							type="button"
 							onClick={() => onPageChange(currentPage - 1)}
