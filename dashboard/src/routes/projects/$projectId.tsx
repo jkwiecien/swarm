@@ -101,17 +101,45 @@ const DEFAULT_TIMEOUT_MINUTES = 30;
 /** Phases that expose an enable/disable toggle (the optional, SCM-driven ones). */
 const TOGGLEABLE_PHASES = new Set<string>(PIPELINE_TOGGLE_PHASES);
 
-const PHASE_LABELS: Record<(typeof PHASES)[number], { label: string; code: string }> = {
+const PHASE_LABELS: Record<
+	(typeof PHASES)[number],
+	{ label: string; code: string; description: string }
+> = {
 	implementationUnplanned: {
 		label: 'Implementation (unplanned)',
 		code: 'implementationUnplanned',
+		description: 'Implements an issue with no prior plan',
 	},
-	planning: { label: 'Planning', code: 'planning' },
-	implementation: { label: 'Implementation', code: 'implementation' },
-	review: { label: 'Review', code: 'review' },
-	respondToReview: { label: 'Respond to Review', code: 'respondToReview' },
-	respondToCi: { label: 'Respond to CI', code: 'respondToCi' },
-	resolveConflicts: { label: 'Resolve Conflicts', code: 'resolveConflicts' },
+	planning: {
+		label: 'Planning',
+		code: 'planning',
+		description: 'Drafts an implementation plan',
+	},
+	implementation: {
+		label: 'Implementation',
+		code: 'implementation',
+		description: 'Implements the approved plan',
+	},
+	review: {
+		label: 'Review',
+		code: 'review',
+		description: 'Reviews the pull request',
+	},
+	respondToReview: {
+		label: 'Respond to Review',
+		code: 'respondToReview',
+		description: 'Addresses reviewer suggestions',
+	},
+	respondToCi: {
+		label: 'Respond to CI',
+		code: 'respondToCi',
+		description: 'Fixes failing CI checks',
+	},
+	resolveConflicts: {
+		label: 'Resolve Conflicts',
+		code: 'resolveConflicts',
+		description: 'Resolves merge conflicts',
+	},
 };
 
 /**
@@ -509,16 +537,41 @@ const LABEL_CLASS = 'block text-xs font-medium text-zinc-400 mb-1.5';
 /** Card wrapper recipe shared by the phase-detail sections. */
 const CARD_CLASS = 'border border-zinc-800 rounded-lg bg-panel/40 p-6 shadow-sm';
 
-/** The first target's model — the preferred model shown in the phase summary. */
+/**
+ * The preferred target's "{CLI} • {Model}" line for the phase summary — the
+ * highest-priority target's CLI and model (its configured default when no model
+ * override is set). "Coded default" when the phase configures no CLI at all.
+ */
 function preferredModelSummary(
 	config: AgentConfig,
 	projectDefaults?: AgentsConfig['defaults'],
 ): string {
 	const preferredTarget = toTargetList(config)[0];
 	if (!preferredTarget?.cli) return 'Coded default';
-	return preferredTarget.model
+	const model = preferredTarget.model
 		? modelLabel(preferredTarget.cli, preferredTarget.model)
 		: getModelDefaultLabel(preferredTarget.cli, projectDefaults);
+	return `${CLI_LABELS[preferredTarget.cli]} • ${model}`;
+}
+
+/**
+ * The preferred target's reasoning level for the phase summary's second line —
+ * the explicit level when set, else the model's default (e.g. "Default (Medium)",
+ * "Fixed", or "N/A"). Empty when the phase configures no CLI, so the row shows
+ * only its "Coded default" first line with nothing beneath it.
+ */
+function preferredReasoningSummary(config: AgentConfig): string {
+	const preferredTarget = toTargetList(config)[0];
+	if (!preferredTarget?.cli) return '';
+	if (preferredTarget.reasoning) return capitalize(preferredTarget.reasoning);
+	const reasoningOptions = preferredTarget.model
+		? reasoningChoicesFor(preferredTarget.cli, preferredTarget.model)
+		: [];
+	return reasoningPlaceholderLabel(
+		preferredTarget.cli,
+		preferredTarget.model,
+		reasoningOptions.length,
+	);
 }
 
 interface PhaseConfigRowProps {
@@ -640,7 +693,7 @@ export function PhaseConfigRow({
 		>
 			<td className="px-4 py-3.5">
 				<div className="text-sm font-medium text-zinc-200">{phaseLabel.label}</div>
-				<div className="text-xs text-zinc-500 font-mono select-all">{phaseLabel.code}</div>
+				<div className="text-xs text-zinc-500">{phaseLabel.description}</div>
 			</td>
 			<td className="px-4 py-3.5">
 				<PhaseEnabledCell
@@ -668,9 +721,14 @@ export function PhaseConfigRow({
 			</td>
 			<td className="px-4 py-3.5">
 				<div className="flex flex-wrap items-center gap-2">
-					<span className="text-sm text-zinc-300">
-						{preferredModelSummary(config, projectDefaults)}
-					</span>
+					<div>
+						<div className="text-sm text-zinc-300">
+							{preferredModelSummary(config, projectDefaults)}
+						</div>
+						{preferredReasoningSummary(config) && (
+							<div className="text-xs text-zinc-500">{preferredReasoningSummary(config)}</div>
+						)}
+					</div>
 					{hasCustomPrompt && (
 						<span className="px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-300 bg-violet-950/40 border border-violet-900/40 rounded">
 							Custom prompt
@@ -1257,7 +1315,7 @@ function AgentConfigurationForm({
 										<th className="px-4 py-3">Phase</th>
 										<th className="px-4 py-3">Enabled</th>
 										<th className="px-4 py-3">Auto-advance</th>
-										<th className="px-4 py-3">Preffered model</th>
+										<th className="px-4 py-3">Preferred model</th>
 										<th className="px-4 py-3">
 											<span className="sr-only">Open</span>
 										</th>
