@@ -14,6 +14,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -149,20 +150,53 @@ export class GitWorktreeManager {
 		}
 
 		const path = this.worktreePath(taskId);
-		// True once we hold the task lease across a reclaim: any later provisioning
-		// failure must release it so the task isn't left permanently "in use".
-		let holdingReclaimLease = false;
-		if (existsSync(path)) {
-			await this.reclaimStaleCheckout(taskId, path);
-			holdingReclaimLease = true;
+		const leaseToken = randomUUID();
+		const acquired = await tryClaimWorktreeLease(this.project.id, taskId, leaseToken);
+		if (!acquired) {
+			throw new BlockedRecoveryError(
+				'live-leased',
+				collisionMessage(taskId, path, 'is leased by a live run'),
+			);
 		}
 
+		let reclaimedBranch: string | null = null;
 		try {
-			return await this.createFreshWorktree(taskId, path, options);
-		} catch (err) {
-			if (holdingReclaimLease) {
-				await releaseWorktreeLease(this.project.id, taskId);
+			if (existsSync(path)) {
+				try {
+					const branchName = (
+						await this.git(['symbolic-ref', '--short', '-q', 'HEAD'], path)
+					).trim();
+					if (branchName) {
+						reclaimedBranch = branchName;
+					}
+				} catch {
+					// detached HEAD or other error, leave it null
+				}
+
+				const decision = await evaluateWorktreeReclaim(this, this.project.id, taskId, {
+					isLeased: async () => false,
+				});
+				if (!decision.safe) {
+					throw new BlockedRecoveryError(
+						decision.reason,
+						collisionMessage(taskId, path, decision.detail),
+					);
+				}
+				logger.info('worktree collision: reclaiming safe stale checkout', { taskId, path });
+				await this.removeWorktreeCheckout(path);
 			}
+
+			if (reclaimedBranch) {
+				try {
+					await this.git(['branch', '-D', reclaimedBranch]);
+				} catch (_err) {
+					// Ignore failures to delete the branch (e.g. if it didn't exist or was already deleted)
+				}
+			}
+
+			return await this.createFreshWorktree(taskId, path, options, leaseToken);
+		} catch (err) {
+			await releaseWorktreeLease(this.project.id, taskId, leaseToken);
 			throw err;
 		}
 	}
@@ -177,6 +211,7 @@ export class GitWorktreeManager {
 		taskId: string,
 		path: string,
 		options: ProvisionOptions,
+		leaseToken: string,
 	): Promise<WorktreeHandle> {
 		const baseBranch = options.baseBranch ?? this.project.baseBranch;
 		const createBranch = options.createBranch ?? true;
@@ -208,51 +243,13 @@ export class GitWorktreeManager {
 		logger.debug('Provisioning worktree', { taskId, path, branch, createBranch, detached });
 		await this.git(args);
 
-		await claimWorktreeLease(this.project.id, taskId);
+		await claimWorktreeLease(this.project.id, taskId, leaseToken);
 
 		// SWARM-15 grafts untracked build state (node_modules, .env, caches) in here
 		// via symlinks before the agent runs; git-tracked files (incl. the committed
 		// `cascade` symlink) are already checked out by `git worktree add`.
 
 		return { taskId, path, branch, detached };
-	}
-
-	/**
-	 * Decide whether an existing checkout that collides with a fresh provision can
-	 * be safely reclaimed (issue #367). Acquires the task lease atomically first so
-	 * two concurrent provisioners can't both remove the checkout — the loser sees
-	 * the lease held and blocks. With the lease held, the remaining fail-closed
-	 * checks (resumable ownership, cleanliness, unpushed commits) run through the
-	 * shared {@link evaluateWorktreeReclaim} gate. On a protected result the lease
-	 * is released and a {@link BlockedRecoveryError} is thrown with actionable text,
-	 * leaving the checkout untouched; on a safe result the old checkout is removed
-	 * while the lease is still held, and `provision` re-creates it under that lease.
-	 */
-	private async reclaimStaleCheckout(taskId: string, path: string): Promise<void> {
-		const acquired = await tryClaimWorktreeLease(this.project.id, taskId);
-		if (!acquired) {
-			throw new BlockedRecoveryError(
-				'live-leased',
-				collisionMessage(taskId, path, 'is leased by a live run'),
-			);
-		}
-		try {
-			// The atomic acquire above already settled the lease check, so skip it here.
-			const decision = await evaluateWorktreeReclaim(this, this.project.id, taskId, {
-				isLeased: async () => false,
-			});
-			if (!decision.safe) {
-				throw new BlockedRecoveryError(
-					decision.reason,
-					collisionMessage(taskId, path, decision.detail),
-				);
-			}
-			logger.info('worktree collision: reclaiming safe stale checkout', { taskId, path });
-			await this.removeWorktreeCheckout(path);
-		} catch (err) {
-			await releaseWorktreeLease(this.project.id, taskId);
-			throw err;
-		}
 	}
 
 	/**
@@ -309,14 +306,33 @@ export class GitWorktreeManager {
 		}
 	}
 
-	/**
-	 * Whether the worktree has any local commits that have not been pushed to origin.
-	 */
 	async hasUnpushedWork(taskId: string): Promise<boolean> {
 		const path = this.worktreePath(taskId);
 		try {
-			const branchName = (await this.git(['symbolic-ref', '--short', '-q', 'HEAD'], path)).trim();
-			if (!branchName) return false;
+			let branchName = '';
+			try {
+				branchName = (await this.git(['symbolic-ref', '--short', '-q', 'HEAD'], path)).trim();
+			} catch {
+				// detached HEAD or other error in symbolic-ref
+			}
+
+			if (!branchName) {
+				// Detached HEAD state.
+				// Find if any remote tracking branch contains HEAD.
+				let containsOutput = '';
+				try {
+					containsOutput = await this.git(['branch', '-r', '--contains', 'HEAD'], path);
+				} catch {
+					// failing closed
+					return true;
+				}
+				const lines = containsOutput
+					.split('\n')
+					.map((l) => l.trim())
+					.filter((l) => l.length > 0);
+				const hasRemoteUpstream = lines.some((line) => line.startsWith('origin/'));
+				return !hasRemoteUpstream;
+			}
 
 			let upstream: string | null = null;
 			try {

@@ -31,14 +31,18 @@ export function buildLeaseKey(projectId: string, taskId: string): string {
 }
 
 /** Best-effort; never throws. Logs and no-ops on a Redis error — losing a lease claim just means a later sweep might (rarely) skip a worktree it didn't need to. */
-export async function claimWorktreeLease(projectId: string, taskId: string): Promise<void> {
+export async function claimWorktreeLease(
+	projectId: string,
+	taskId: string,
+	token: string = '1',
+): Promise<void> {
 	const key = buildLeaseKey(projectId, taskId);
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
-		await getRedis().set(namespacedKey, '1', 'EX', LEASE_TTL_SEC);
-		logger.debug('worktree lease: claimed lease for task', { projectId, taskId });
+		await getRedis().set(namespacedKey, token, 'EX', LEASE_TTL_SEC);
+		logger.debug('worktree lease: claimed lease for task', { projectId, taskId, token });
 	} catch (err) {
-		logger.error('worktree lease: claim failed', { projectId, taskId, error: String(err) });
+		logger.error('worktree lease: claim failed', { projectId, taskId, token, error: String(err) });
 	}
 }
 
@@ -50,18 +54,23 @@ export async function claimWorktreeLease(projectId: string, taskId: string): Pro
  * a Redis error returns `false` (treat as "could not acquire"), so an uncertain
  * gate never reclaims a checkout it isn't sure is free.
  */
-export async function tryClaimWorktreeLease(projectId: string, taskId: string): Promise<boolean> {
+export async function tryClaimWorktreeLease(
+	projectId: string,
+	taskId: string,
+	token: string = '1',
+): Promise<boolean> {
 	const key = buildLeaseKey(projectId, taskId);
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
-		const result = await getRedis().set(namespacedKey, '1', 'EX', LEASE_TTL_SEC, 'NX');
+		const result = await getRedis().set(namespacedKey, token, 'EX', LEASE_TTL_SEC, 'NX');
 		const acquired = result === 'OK';
-		logger.debug('worktree lease: conditional claim', { projectId, taskId, acquired });
+		logger.debug('worktree lease: conditional claim', { projectId, taskId, token, acquired });
 		return acquired;
 	} catch (err) {
 		logger.error('worktree lease: conditional claim failed — failing closed (not acquired)', {
 			projectId,
 			taskId,
+			token,
 			error: String(err),
 		});
 		return false;
@@ -69,16 +78,33 @@ export async function tryClaimWorktreeLease(projectId: string, taskId: string): 
 }
 
 /** Best-effort; never throws — same posture as releaseReviewDispatch (TTL is the backstop). */
-export async function releaseWorktreeLease(projectId: string, taskId: string): Promise<void> {
+export async function releaseWorktreeLease(
+	projectId: string,
+	taskId: string,
+	token?: string,
+): Promise<void> {
 	const key = buildLeaseKey(projectId, taskId);
 	const namespacedKey = `${KEY_NS}${key}`;
 	try {
-		await getRedis().del(namespacedKey);
-		logger.debug('worktree lease: released lease for task', { projectId, taskId });
+		const redis = getRedis();
+		if (token) {
+			const script = `
+				if redis.call('get', KEYS[1]) == ARGV[1] then
+					return redis.call('del', KEYS[1])
+				else
+					return 0
+				end
+			`;
+			await redis.eval(script, 1, namespacedKey, token);
+		} else {
+			await redis.del(namespacedKey);
+		}
+		logger.debug('worktree lease: released lease for task', { projectId, taskId, token });
 	} catch (err) {
 		logger.warn('worktree lease: release failed (TTL will reap)', {
 			projectId,
 			taskId,
+			token,
 			error: String(err),
 		});
 	}
