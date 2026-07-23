@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProjectConfig } from '@/config/schema.js';
 import type { AgentCli, AgentCliResult } from '@/harness/agent-cli.js';
 import { AgentRunError, agentRunError } from '@/harness/agent-failure.js';
@@ -528,6 +528,12 @@ describe('processJob', () => {
 		unregisterRunController.mockClear();
 		requestMergeAutomation.mockClear();
 		processMergeAutomationDispatch.mockClear();
+	});
+
+	// Restore any per-test environment stub (e.g. SWARM_SINGLE_USER_MODE) so a mode
+	// enabled by one case never leaks into the next (issue #373).
+	afterEach(() => {
+		vi.unstubAllEnvs();
 	});
 
 	it('runs under the project limit and releases the slot on success', async () => {
@@ -2012,6 +2018,61 @@ describe('processJob', () => {
 					reasoning: 'high',
 				}),
 			);
+		});
+
+		describe('local single-user mode (issue #373)', () => {
+			it('runs every phase on the host worker, ignoring an enrolled non-consenting worker', async () => {
+				// An install in single-user mode treats the host process as the implicit
+				// local executor for every project: dispatch skips the federated roster
+				// entirely, so an enrolled worker that would fail the gate (here, no
+				// sharing consent) never blocks — the phase just runs locally.
+				vi.stubEnv('SWARM_SINGLE_USER_MODE', 'true');
+				listProjectDispatchCandidates.mockResolvedValue([
+					candidate('w-1', { sharingConsent: false }),
+				]);
+
+				const outcome = await processJob(
+					createMockGitHubProjectsWebhookJob(),
+					registryReturning(planningTrigger()),
+				);
+
+				expect(outcome.status).toBe('phase-succeeded');
+				expect(phaseCalls).toHaveLength(1);
+				// No federated evaluation at all: neither the roster nor the assignee
+				// link is read, and no worker claim is ever attempted.
+				expect(listProjectDispatchCandidates).not.toHaveBeenCalled();
+				expect(resolveAssignedUser).not.toHaveBeenCalled();
+				expect(claimWorkerForDispatch).not.toHaveBeenCalled();
+				// The normal local project slot is used, exactly as an unfederated project.
+				expect(acquireProjectSlot).toHaveBeenCalledWith(PROJECT.id, PROJECT.maxConcurrentJobs);
+				// A local dispatch binds no worker identity onto its run row.
+				expect(createRun).toHaveBeenCalledWith(
+					expect.objectContaining({ workerId: undefined, workerFencingToken: undefined }),
+				);
+			});
+
+			it('restores the full federated gate for the same roster when the mode is disabled', async () => {
+				// The paired control: with the mode off (the safe default), the same
+				// enrolled-but-non-consenting worker still produces today's token-free
+				// worker-eligibility deferral, proving disabling the mode restores the
+				// complete federated policy.
+				listProjectDispatchCandidates.mockResolvedValue([
+					candidate('w-1', { sharingConsent: false }),
+				]);
+
+				const outcome = await processJob(
+					createMockGitHubProjectsWebhookJob(),
+					registryReturning(planningTrigger()),
+				);
+
+				expect(outcome).toMatchObject({
+					status: 'phase-deferred',
+					workerEligibilityRecheck: true,
+				});
+				expect(phaseCalls).toEqual([]);
+				// The gate ran — the roster *was* consulted, unlike enabled mode.
+				expect(listProjectDispatchCandidates).toHaveBeenCalledWith(PROJECT.id);
+			});
 		});
 	});
 
