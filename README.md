@@ -108,6 +108,9 @@ npm run db:migrate
 npm run db:seed
 npm run swarm -- config apply
 
+# After `git pull` — sync deps, rebuild the dashboard, apply migrations
+npm run reload
+
 # Queue and worktrees
 npm run queue:clear
 npm run worktrees:prune

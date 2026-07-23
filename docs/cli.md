@@ -257,6 +257,7 @@ repo root.
 | --- | --- |
 | `npm run dev:api` | Migrate the DB, free `API_PORT`, then start the API server (`:3101`) with `--watch`. In dev it serves the API only; it also serves the built dashboard SPA from `dashboard/dist` when that exists. |
 | `npm run start:api` | Build the dashboard, then run `dev:api` — the recommended **same-origin** mode where one process serves the SPA + API on `:3101` (used for public/tunnel access). |
+| `npm run reload` | After `git pull`: sync both dependency trees, rebuild the dashboard (`dist`, picked up live by a running `dev:api`/`start:api` since it serves `dist` from disk), and apply migrations. Does **not** restart the worker or rebuild the router — do those manually if their code changed (it prints the reminder). |
 | `npm run dev:worker` | Migrate the DB, then start the host worker (BullMQ consumer). This is how the worker runs — it is not in Docker Compose. |
 | `npm run dev:worker:watch` | Same as `dev:worker`, with `--watch` auto-restart. |
 | `npm run dev:worker:seed` | Apply `swarm.config.json` (`db:seed`) then start the worker. |
