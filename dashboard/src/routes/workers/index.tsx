@@ -7,13 +7,16 @@ import type { WorkerRow } from '@/types/workers.js';
 import { rootRoute } from '../__root.js';
 
 /**
- * The read-only **Workers** screen (issue #133): which machines are enrolled and
- * connected, what they can run, and what they are running right now.
+ * The **Workers** screen (issue #133): which machines are enrolled and
+ * connected, what they can run, and what they are running right now. Per project
+ * it also shows sharing/availability state, and lets the signed-in operator
+ * toggle sharing consent on the workers they own (issue #282).
  *
  * Polling, not realtime — {@link WORKERS_REFETCH_MS} is comfortably below the
  * default 60s heartbeat TTL, so a worker that stops heartbeating flips to
  * Offline within one poll without a websocket. Authorization lives entirely on
- * the server (`workers.list`); this screen renders whatever it is given.
+ * the server (`workers.list`/`roster`/`listMine`/`setConsent`); this screen
+ * renders and mutates only what those procedures allow.
  */
 
 /** Poll cadence, matching the dashboard's idle baseline (`runs-refresh.ts`). */
@@ -33,8 +36,9 @@ export function WorkersRouteComponent() {
 					Workers
 				</h1>
 				<p className="text-xs text-zinc-500 mt-1">
-					Registered machines you can see, their connection state, the agent CLIs they declare, and
-					the run each is currently executing.
+					Registered machines you can see, their connection state, the agent CLIs they declare, the
+					run each is currently executing, and — per project — whether it is shared for automatic
+					dispatch. Toggle sharing on the workers you own.
 				</p>
 			</div>
 

@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { WorkerRow } from '@/types/workers.js';
+import type { OwnerWorker, WorkerRosterEntry, WorkerRow } from '@/types/workers.js';
 
-const { projectsListQueryFn } = vi.hoisted(() => ({ projectsListQueryFn: vi.fn() }));
+const { projectsListQueryFn, listMineQueryFn, rosterQueryFn, setConsentMutate } = vi.hoisted(
+	() => ({
+		projectsListQueryFn: vi.fn(),
+		listMineQueryFn: vi.fn(),
+		rosterQueryFn: vi.fn(),
+		setConsentMutate: vi.fn(),
+	}),
+);
 
 vi.mock('@/lib/trpc.js', () => ({
 	trpc: {
@@ -15,6 +22,20 @@ vi.mock('@/lib/trpc.js', () => ({
 				queryOptions: () => ({ queryKey: ['projects.list'], queryFn: projectsListQueryFn }),
 			},
 		},
+		workers: {
+			listMine: {
+				queryOptions: () => ({ queryKey: ['workers.listMine'], queryFn: listMineQueryFn }),
+			},
+			roster: {
+				queryOptions: (input: { projectId: string }) => ({
+					queryKey: ['workers.roster', input],
+					queryFn: () => rosterQueryFn(input),
+				}),
+			},
+		},
+	},
+	trpcClient: {
+		workers: { setConsent: { mutate: setConsentMutate } },
 	},
 }));
 
@@ -36,9 +57,50 @@ function makeWorker(overrides: Partial<WorkerRow> = {}): WorkerRow {
 	};
 }
 
-// The table resolves project names via `projects.list`; that query has no server
-// here, so wrap in a QueryClient (retry off) and let it stay pending unless a
-// test resolves it — the component then falls back to the raw project id.
+function makeRosterEntry(overrides: Partial<WorkerRosterEntry> = {}): WorkerRosterEntry {
+	return {
+		enrollmentId: 'enr-1',
+		workerId: 'worker-1',
+		projectId: 'proj-a',
+		displayName: 'ada-laptop',
+		owner: { userId: 'u1', identifier: 'ada@example.com', displayName: 'Ada Lovelace' },
+		capabilities: ['claude', 'codex'],
+		status: 'active',
+		allowedClis: ['claude'],
+		concurrencyAllocation: 1,
+		sharingConsent: true,
+		isRoutable: true,
+		runState: { busy: false, currentRunId: null },
+		...overrides,
+	};
+}
+
+function makeOwnerWorker(overrides: Partial<OwnerWorker> = {}): OwnerWorker {
+	return {
+		workerId: 'worker-1',
+		displayName: 'ada-laptop',
+		capabilities: ['claude', 'codex'],
+		runState: { busy: false, currentRunId: null },
+		enrollments: [
+			{
+				enrollmentId: 'enr-1',
+				projectId: 'proj-a',
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: 1,
+				sharingConsent: true,
+				isRoutable: true,
+			},
+		],
+		...overrides,
+	};
+}
+
+// The table resolves project names via `projects.list`, its own enrollments via
+// `workers.listMine`, and per-project consent via `workers.roster`. Wrap in a
+// QueryClient (retry off). By default `projects.list` stays pending (raw id
+// fallback) and the owner/roster queries are empty so no control renders — each
+// test overrides only what it exercises.
 function renderTable(ui: ReactElement) {
 	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 	return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
@@ -46,8 +108,15 @@ function renderTable(ui: ReactElement) {
 
 beforeEach(() => {
 	projectsListQueryFn.mockReset();
+	listMineQueryFn.mockReset();
+	rosterQueryFn.mockReset();
+	setConsentMutate.mockReset();
 	projectsListQueryFn.mockReturnValue(new Promise(() => {}));
-	vi.useFakeTimers();
+	listMineQueryFn.mockResolvedValue([]);
+	rosterQueryFn.mockResolvedValue([]);
+	// Fake only `Date` (fixes `formatRelativeTime`'s "now") so setTimeout stays
+	// real and Testing Library's async `findBy*`/`waitFor` resolve normally.
+	vi.useFakeTimers({ toFake: ['Date'] });
 	vi.setSystemTime(NOW);
 });
 
@@ -148,14 +217,207 @@ describe('WorkersTable enrollment states', () => {
 	});
 });
 
-describe('WorkersTable is read-only', () => {
-	it('offers no buttons, forms, or inputs — only the run link', () => {
+describe('WorkersTable sharing consent (issue #282)', () => {
+	it('shows an owner an actionable switch and the available/routable state', async () => {
+		listMineQueryFn.mockResolvedValue([makeOwnerWorker()]);
+		rosterQueryFn.mockResolvedValue([makeRosterEntry()]);
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		expect(await screen.findByText('Available to this project')).toBeDefined();
+		const toggle = await screen.findByRole('switch', {
+			name: 'Share ada-laptop with proj-a',
+		});
+		expect(toggle.getAttribute('aria-checked')).toBe('true');
+		// Effective allowed CLIs for the project are shown nearby.
+		expect(screen.getByTitle('Effective allowed CLIs for this project')).toBeDefined();
+	});
+
+	it('enables sharing directly, with the exact payload and the resulting routable state', async () => {
+		listMineQueryFn.mockResolvedValue([
+			makeOwnerWorker({
+				enrollments: [
+					{
+						enrollmentId: 'enr-1',
+						projectId: 'proj-a',
+						status: 'active',
+						allowedClis: ['claude'],
+						concurrencyAllocation: 1,
+						sharingConsent: false,
+						isRoutable: false,
+					},
+				],
+			}),
+		]);
+		// Initial roster shows consent off; the post-mutation reconcile refetch is
+		// left pending so the assertion targets the immediately-effective optimistic
+		// cache update rather than a re-resolved mock.
+		rosterQueryFn
+			.mockResolvedValueOnce([makeRosterEntry({ sharingConsent: false, isRoutable: false })])
+			.mockReturnValue(new Promise(() => {}));
+		setConsentMutate.mockResolvedValue({
+			id: 'enr-1',
+			workerId: 'worker-1',
+			projectId: 'proj-a',
+			status: 'active',
+			allowedClis: ['claude'],
+			concurrencyAllocation: 1,
+			sharingConsent: true,
+			createdAt: NOW.toISOString(),
+			updatedAt: NOW.toISOString(),
+		});
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		expect(await screen.findByText('Not sharing')).toBeDefined();
+		const toggle = await screen.findByRole('switch', {
+			name: 'Share ada-laptop with proj-a',
+		});
+		expect(toggle.getAttribute('aria-checked')).toBe('false');
+
+		fireEvent.click(toggle);
+
+		// No confirmation for enabling — the mutation fires directly.
+		expect(screen.queryByText('Stop sharing this worker?')).toBeNull();
+		expect(await screen.findByText('Available to this project')).toBeDefined();
+		expect(setConsentMutate).toHaveBeenCalledWith({
+			enrollmentId: 'enr-1',
+			sharingConsent: true,
+		});
+	});
+
+	it('confirms before disabling and never mutates until confirmed', async () => {
+		listMineQueryFn.mockResolvedValue([makeOwnerWorker()]);
+		rosterQueryFn.mockResolvedValueOnce([makeRosterEntry()]).mockReturnValue(new Promise(() => {}));
+		setConsentMutate.mockResolvedValue({
+			id: 'enr-1',
+			workerId: 'worker-1',
+			projectId: 'proj-a',
+			status: 'active',
+			allowedClis: ['claude'],
+			concurrencyAllocation: 1,
+			sharingConsent: false,
+			createdAt: NOW.toISOString(),
+			updatedAt: NOW.toISOString(),
+		});
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		const toggle = await screen.findByRole('switch', {
+			name: 'Share ada-laptop with proj-a',
+		});
+		fireEvent.click(toggle);
+
+		// A confirmation opens explaining the consequence; no mutation yet.
+		const dialogCopy = await screen.findByText(/future automatic dispatch/i);
+		expect(dialogCopy).toBeDefined();
+		expect(screen.getByText(/does not stop a run already in progress/i)).toBeDefined();
+		expect(setConsentMutate).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+
+		// Immediately effective: the row flips to non-routable before reconciliation.
+		expect(await screen.findByText('Not sharing')).toBeDefined();
+		expect(setConsentMutate).toHaveBeenCalledWith({
+			enrollmentId: 'enr-1',
+			sharingConsent: false,
+		});
+	});
+
+	it('keeps an active run visible after sharing is disabled (routing state effective immediately, run untouched)', async () => {
+		listMineQueryFn.mockResolvedValue([
+			makeOwnerWorker({ runState: { busy: true, currentRunId: 'run-9' } }),
+		]);
+		rosterQueryFn
+			.mockResolvedValueOnce([makeRosterEntry({ runState: { busy: true, currentRunId: 'run-9' } })])
+			.mockReturnValue(new Promise(() => {}));
+		setConsentMutate.mockResolvedValue({
+			id: 'enr-1',
+			workerId: 'worker-1',
+			projectId: 'proj-a',
+			status: 'active',
+			allowedClis: ['claude'],
+			concurrencyAllocation: 1,
+			sharingConsent: false,
+			createdAt: NOW.toISOString(),
+			updatedAt: NOW.toISOString(),
+		});
+		renderTable(<WorkersTable workers={[makeWorker({ currentRunId: 'run-9' })]} />);
+
+		fireEvent.click(await screen.findByRole('switch', { name: 'Share ada-laptop with proj-a' }));
+		fireEvent.click(screen.getByRole('button', { name: 'Stop sharing' }));
+
+		expect(await screen.findByText('Not sharing')).toBeDefined();
+		// The in-flight run link is still shown — disabling sharing never kills it.
+		expect(screen.getByRole('link', { name: 'run-9' })).toBeDefined();
+		expect(screen.getAllByText('Busy').length).toBeGreaterThan(0);
+	});
+
+	it('shows a project admin another owner’s revoked-sharing state with no control', async () => {
+		// The viewer owns nothing (listMine empty) but can read the project roster,
+		// where the worker's owner has consent off.
+		listMineQueryFn.mockResolvedValue([]);
+		rosterQueryFn.mockResolvedValue([
+			makeRosterEntry({
+				owner: { userId: 'u2', identifier: 'grace@example.com', displayName: 'Grace Hopper' },
+				sharingConsent: false,
+				isRoutable: false,
+			}),
+		]);
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		expect(await screen.findByText('Not sharing')).toBeDefined();
+		expect(screen.queryByRole('switch')).toBeNull();
+		expect(screen.queryByRole('button', { name: 'Stop sharing' })).toBeNull();
+	});
+
+	it('leaves consent unchanged and surfaces the error inline when an enable is rejected', async () => {
+		listMineQueryFn.mockResolvedValue([
+			makeOwnerWorker({
+				enrollments: [
+					{
+						enrollmentId: 'enr-1',
+						projectId: 'proj-a',
+						status: 'active',
+						allowedClis: ['claude'],
+						concurrencyAllocation: 1,
+						sharingConsent: false,
+						isRoutable: false,
+					},
+				],
+			}),
+		]);
+		rosterQueryFn.mockResolvedValue([
+			makeRosterEntry({ sharingConsent: false, isRoutable: false }),
+		]);
+		setConsentMutate.mockRejectedValue(new Error('Enrollment with ID "enr-1" not found'));
+		renderTable(<WorkersTable workers={[makeWorker()]} />);
+
+		const toggle = await screen.findByRole('switch', {
+			name: 'Share ada-laptop with proj-a',
+		});
+		fireEvent.click(toggle);
+
+		expect(await screen.findByText('Enrollment with ID "enr-1" not found')).toBeDefined();
+		// The displayed state never falsely flipped to available.
+		expect(screen.getByText('Not sharing')).toBeDefined();
+		expect(
+			(await screen.findByRole('switch', { name: 'Share ada-laptop with proj-a' })).getAttribute(
+				'aria-checked',
+			),
+		).toBe('false');
+	});
+});
+
+describe('WorkersTable read-only surface for non-owners', () => {
+	it('offers no consent control when the viewer owns no worker', async () => {
+		listMineQueryFn.mockResolvedValue([]);
+		rosterQueryFn.mockResolvedValue([makeRosterEntry()]);
 		renderTable(<WorkersTable workers={[makeWorker({ currentRunId: 'run-7' })]} />);
 
-		expect(screen.queryAllByRole('button')).toHaveLength(0);
+		await screen.findByText('Available to this project');
+		expect(screen.queryAllByRole('switch')).toHaveLength(0);
 		expect(screen.queryAllByRole('textbox')).toHaveLength(0);
 		expect(screen.queryAllByRole('combobox')).toHaveLength(0);
-		expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
-		expect(screen.getAllByRole('link')).toHaveLength(1);
+		// Only the run link is interactive.
+		const table = screen.getAllByRole('row')[1];
+		expect(within(table).getAllByRole('link')).toHaveLength(1);
 	});
 });

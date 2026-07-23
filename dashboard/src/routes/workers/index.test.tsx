@@ -6,20 +6,42 @@ import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkerRow } from '@/types/workers.js';
 
-const { workersListQueryFn, projectsListQueryFn, workersQueryOptions } = vi.hoisted(() => ({
+const {
+	workersListQueryFn,
+	projectsListQueryFn,
+	listMineQueryFn,
+	rosterQueryFn,
+	workersQueryOptions,
+} = vi.hoisted(() => ({
 	workersListQueryFn: vi.fn(),
 	projectsListQueryFn: vi.fn(),
+	listMineQueryFn: vi.fn(),
+	rosterQueryFn: vi.fn(),
 	workersQueryOptions: vi.fn(),
 }));
 
 vi.mock('@/lib/trpc.js', () => ({
 	trpc: {
-		workers: { list: { queryOptions: workersQueryOptions } },
+		workers: {
+			list: { queryOptions: workersQueryOptions },
+			listMine: {
+				queryOptions: () => ({ queryKey: ['workers.listMine'], queryFn: listMineQueryFn }),
+			},
+			roster: {
+				queryOptions: (input: { projectId: string }) => ({
+					queryKey: ['workers.roster', input],
+					queryFn: () => rosterQueryFn(input),
+				}),
+			},
+		},
 		projects: {
 			list: {
 				queryOptions: () => ({ queryKey: ['projects.list'], queryFn: projectsListQueryFn }),
 			},
 		},
+	},
+	trpcClient: {
+		workers: { setConsent: { mutate: vi.fn() } },
 	},
 }));
 
@@ -48,11 +70,17 @@ beforeEach(() => {
 	workersListQueryFn.mockReset();
 	projectsListQueryFn.mockReset();
 	workersQueryOptions.mockReset();
+	listMineQueryFn.mockReset();
+	rosterQueryFn.mockReset();
 	workersQueryOptions.mockReturnValue({
 		queryKey: ['workers.list'],
 		queryFn: workersListQueryFn,
 	});
 	projectsListQueryFn.mockReturnValue(new Promise(() => {}));
+	// The screen also composes the owner/roster queries; default them to empty so
+	// no consent control renders unless a test opts in.
+	listMineQueryFn.mockResolvedValue([]);
+	rosterQueryFn.mockResolvedValue([]);
 });
 
 describe('/workers route registration', () => {
@@ -99,11 +127,50 @@ describe('Workers screen states', () => {
 		expect(screen.getByText('Online')).toBeDefined();
 	});
 
-	it('exposes no controls — the screen is read-only', async () => {
+	it('renders the base roster and gives an owned enrollment its sharing control', async () => {
 		workersListQueryFn.mockResolvedValue([makeWorker()]);
+		listMineQueryFn.mockResolvedValue([
+			{
+				workerId: 'worker-1',
+				displayName: 'ada-laptop',
+				capabilities: ['claude'],
+				runState: { busy: false, currentRunId: null },
+				enrollments: [
+					{
+						enrollmentId: 'enr-1',
+						projectId: 'proj-a',
+						status: 'active',
+						allowedClis: ['claude'],
+						concurrencyAllocation: 1,
+						sharingConsent: true,
+						isRoutable: true,
+					},
+				],
+			},
+		]);
+		rosterQueryFn.mockResolvedValue([
+			{
+				enrollmentId: 'enr-1',
+				workerId: 'worker-1',
+				projectId: 'proj-a',
+				displayName: 'ada-laptop',
+				owner: { userId: 'u1', identifier: 'ada@example.com', displayName: 'Ada Lovelace' },
+				capabilities: ['claude'],
+				status: 'active',
+				allowedClis: ['claude'],
+				concurrencyAllocation: 1,
+				sharingConsent: true,
+				isRoutable: true,
+				runState: { busy: false, currentRunId: null },
+			},
+		]);
 		renderScreen(<WorkersRouteComponent />);
 
-		await screen.findByText('ada-laptop');
-		expect(screen.queryAllByRole('button')).toHaveLength(0);
+		// Base connectivity roster still renders…
+		expect(await screen.findByText('ada-laptop')).toBeDefined();
+		// …and the owner gets an actionable switch for their enrollment.
+		expect(
+			await screen.findByRole('switch', { name: 'Share ada-laptop with proj-a' }),
+		).toBeDefined();
 	});
 });
