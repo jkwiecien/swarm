@@ -423,21 +423,48 @@ describe('WorkersTable read-only surface for non-owners', () => {
 });
 
 describe('WorkersTable polling and delayed/error roster query behavior', () => {
-	it('polls supplemental queries and updates the UI on cadence', async () => {
+	it('polls supplemental queries and updates both Busy/Idle and sharing availability on cadence', async () => {
 		listMineQueryFn.mockResolvedValue([makeOwnerWorker()]);
+		// The next roster response flips two independent server-derived facts at
+		// once: run state (Idle -> Busy) and routability (routable/"Available to
+		// this project" -> consent-off/"Not sharing"). Both must reflect on the
+		// polled cadence without the row remounting.
 		rosterQueryFn
-			.mockResolvedValueOnce([makeRosterEntry({ runState: { busy: false } })])
-			.mockResolvedValueOnce([makeRosterEntry({ runState: { busy: true } })]);
+			.mockResolvedValueOnce([
+				makeRosterEntry({
+					sharingConsent: true,
+					isRoutable: true,
+					runState: { busy: false, currentRunId: null },
+				}),
+			])
+			.mockResolvedValueOnce([
+				makeRosterEntry({
+					sharingConsent: false,
+					isRoutable: false,
+					runState: { busy: true, currentRunId: 'run-9' },
+				}),
+			]);
 
 		renderTable(<WorkersTable workers={[makeWorker()]} refetchInterval={100} />);
 
-		// Initial render shows "Idle"
+		// Initial roster response: idle and available to this project.
+		const initialRow = (await screen.findByText('ada-laptop')).closest('tr');
 		expect(await screen.findByText('Idle')).toBeDefined();
+		expect(screen.getByText('Available to this project')).toBeDefined();
 		expect(screen.queryByText('Busy')).toBeNull();
+		expect(screen.queryByText('Not sharing')).toBeNull();
 
-		// findByText automatically waits and checks for the state update
+		// After the poll interval, the second roster response updates both the
+		// Busy/Idle indicator and the sharing-availability label. findByText waits
+		// for the refetch-driven re-render.
 		expect(await screen.findByText('Busy')).toBeDefined();
+		expect(await screen.findByText('Not sharing')).toBeDefined();
 		expect(screen.queryByText('Idle')).toBeNull();
+		expect(screen.queryByText('Available to this project')).toBeNull();
+
+		// Same row element throughout — the update was a refetch, not a remount.
+		expect((await screen.findByText('ada-laptop')).closest('tr')).toBe(initialRow);
+		// The owner query (workers.listMine) refetches on the same cadence too.
 		expect(listMineQueryFn.mock.calls.length).toBeGreaterThanOrEqual(2);
 	});
 
@@ -457,7 +484,10 @@ describe('WorkersTable polling and delayed/error roster query behavior', () => {
 				],
 			}),
 		]);
-		let resolveRoster: (value: WorkerRosterEntry[]) => void;
+		// Definite-assignment assertion: the Promise executor runs synchronously,
+		// so `resolveRoster` is assigned before any code below invokes it — but
+		// TypeScript can't prove that through the closure, so assert it.
+		let resolveRoster!: (value: WorkerRosterEntry[]) => void;
 		const rosterPromise = new Promise<WorkerRosterEntry[]>((resolve) => {
 			resolveRoster = resolve;
 		});
