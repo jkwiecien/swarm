@@ -141,7 +141,7 @@ describe('PhaseConfigRow', () => {
 		expect(handleAutoAdvanceChange).toHaveBeenCalledWith('planning', false);
 	});
 
-	it('shows only the preferred model in the summary cell', () => {
+	it('shows the preferred target as CLI • Model with reasoning beneath it', () => {
 		render(
 			<table>
 				<tbody>
@@ -162,8 +162,10 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Sonnet')).toBeDefined();
-		expect(screen.queryByText('GPT-5.6 Terra')).toBeNull();
+		expect(screen.getByText('Claude • Sonnet')).toBeDefined();
+		expect(screen.getByText('High')).toBeDefined();
+		// Only the preferred (first) target is summarized, not the fallback.
+		expect(screen.queryByText(/GPT-5.6 Terra/)).toBeNull();
 		expect(screen.queryByText(/30m/)).toBeNull();
 	});
 
@@ -208,7 +210,7 @@ describe('PhaseConfigRow', () => {
 		);
 
 		expect(screen.getByText('Implementation (unplanned)')).toBeDefined();
-		expect(screen.getByText('implementationUnplanned')).toBeDefined();
+		expect(screen.getByText('Implements an issue with no prior plan')).toBeDefined();
 		expect(screen.getByText('Always on')).toBeDefined();
 		expect(screen.getByText('N/A')).toBeDefined();
 		expect(screen.queryByLabelText(/Implementation.*auto-advance/)).toBeNull();
@@ -261,7 +263,7 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Default (GPT-5.5)')).toBeDefined();
+		expect(screen.getByText('Codex • Default (GPT-5.5)')).toBeDefined();
 	});
 
 	it('shows the model from a config written before targets existed', () => {
@@ -278,7 +280,7 @@ describe('PhaseConfigRow', () => {
 			</table>,
 		);
 
-		expect(screen.getByText('Gemini 3.5 Flash')).toBeDefined();
+		expect(screen.getByText('Antigravity • Gemini 3.5 Flash')).toBeDefined();
 	});
 
 	it('falls back to "Coded default" when the phase overrides nothing', () => {
