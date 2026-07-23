@@ -6,7 +6,8 @@
 automates software work while keeping source code, compute, and local tooling
 on the developer's machine.
 
-The MVP runs a local router, Redis/Postgres stack, host worker, and dashboard.
+The MVP runs a local router, Redis/Postgres stack, host worker, and an API server
+that serves the dashboard SPA.
 GitHub reaches the router through a public HTTPS webhook endpoint, usually via a
 Cloudflare Tunnel. The long-term architecture and protocol are documented in
 [`PROJECT.md`](./PROJECT.md); this README is the shortest path to a working
@@ -55,7 +56,7 @@ Run the following from the repository root:
 ```bash
 npm install
 cp .env.docker.example .env       # set passwords
-cd web && npm install && cd ..
+cd dashboard && npm install && cd ..
 docker compose up -d --build      # Postgres, Redis, and router
 npm run db:migrate
 npm run db:seed                   # loads swarm.config.json into Postgres
@@ -66,13 +67,13 @@ npm run swarm -- users set-password you@example.com   # set its login password (
 Start these processes in separate terminals:
 
 ```bash
-npm run dev:dashboard             # dashboard API on 127.0.0.1:3101
-npm run dev:web                   # Vite dashboard on localhost:5173
+npm run dev:api                   # API server on 127.0.0.1:3101
+npm run dev:dashboard             # Vite dashboard on localhost:5173
 npm run dev:worker                # host worker
 ```
 
 Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
-`npm run start:dashboard` and open <http://localhost:3101> instead.
+`npm run start:api` and open <http://localhost:3101> instead.
 
 The worker is intentionally host-run: it needs local Git worktrees, agent CLI
 authentication, and the developer's PATH. The dashboard uses per-user session

@@ -40,7 +40,7 @@
 			"!**/*.json",
 			"!.claude/**/*.md",
 			"!cascade",
-			"!web/src/index.css"
+			"!dashboard/src/index.css"
 		]
 	}
 }

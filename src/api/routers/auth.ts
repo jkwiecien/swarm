@@ -8,7 +8,7 @@ import { authedProcedure, router } from '../trpc.js';
  *
  * It returns only the public `SwarmUser` read model — never the password hash,
  * the session token, or any other secret. Login/logout themselves are plain Hono
- * routes (`POST /auth/login`, `POST /auth/logout` in `src/dashboard.ts`), not
+ * routes (`POST /auth/login`, `POST /auth/logout` in `src/api/server.ts`), not
  * tRPC procedures, because they set and clear the HTTP-only session cookie.
  */
 export const authRouter = router({

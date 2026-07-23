@@ -1,12 +1,12 @@
 /**
- * CORS configuration for the dashboard API (`src/dashboard.ts`).
+ * CORS configuration for the dashboard API (`src/api/server.ts`).
  *
  * SWARM's recommended deployment is **same-origin**: one process serves the built
  * SPA and its API, so the browser never issues a cross-origin (pre-flighted)
  * request and CORS is inert. But the documented dev workflow runs the SPA on Vite
- * (`http://localhost:5173`) against the API on `DASHBOARD_PORT`
+ * (`http://localhost:5173`) against the API on `API_PORT`
  * (`http://127.0.0.1:3101`) — a different origin — and every request carries the
- * session cookie via `credentials: 'include'` (`web/src/lib/{auth,trpc}.ts`).
+ * session cookie via `credentials: 'include'` (`dashboard/src/lib/{auth,trpc}.ts`).
  * Browsers block credentialed cross-origin requests unless the server opts in, so
  * the dashboard must answer pre-flights with an explicit `Access-Control-Allow-
  * Origin` (never `*`, which is illegal alongside credentials) and
@@ -16,7 +16,7 @@
 
 import { cors } from 'hono/cors';
 
-/** The Vite dev-server origin the SPA is served from (see `web/vite.config.ts`). */
+/** The Vite dev-server origin the SPA is served from (see `dashboard/vite.config.ts`). */
 export const DEV_SPA_ORIGIN = 'http://localhost:5173';
 
 export interface CorsMiddlewareOptions {

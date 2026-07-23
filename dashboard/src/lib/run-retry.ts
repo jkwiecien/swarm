@@ -1,8 +1,8 @@
 /**
  * Pure view-logic for the deferred-run "Retry now" action (issue #136), split
  * out of the run-detail route so it can be unit-tested without a rendered
- * component (the web package tests helpers only — no jsdom; see
- * `web/vitest.config.ts`). The route wires these into the tRPC mutation.
+ * component (the dashboard package tests helpers only — no jsdom; see
+ * `dashboard/vitest.config.ts`). The route wires these into the tRPC mutation.
  */
 
 /**

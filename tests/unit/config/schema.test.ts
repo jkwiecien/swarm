@@ -419,7 +419,7 @@ describe('AgentConfigSchema targets (issue #342)', () => {
 
 	it('keeps targets optional on the inferred type (existing literals still compile)', () => {
 		// The dashboard builds `AgentConfig` literals with the mirror fields only
-		// (`cleanAgentConfig`, web/src/routes/projects/$projectId.tsx) — adding
+		// (`cleanAgentConfig`, dashboard/src/routes/projects/$projectId.tsx) — adding
 		// `targets` must not force the key onto them.
 		const legacyLiteral = { cli: 'claude', model: 'sonnet' } satisfies AgentConfig;
 		expect(AgentConfigSchema.parse(legacyLiteral).targets).toHaveLength(1);

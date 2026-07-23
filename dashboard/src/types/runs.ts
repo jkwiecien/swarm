@@ -24,7 +24,7 @@ export type RunPhaseFilter = z.infer<typeof runPhaseFilterSchema>;
 
 /**
  * Mirrors `CancellationOriginSchema` (`src/queue/cancellation.ts`, issue #308) —
- * the web package doesn't import server modules, so this re-declares the shape
+ * the dashboard package doesn't import server modules, so this re-declares the shape
  * here the same way `runStatusFilterSchema` mirrors the router's status enum.
  * A cancellation's recorded origin: at minimum distinguishes the supported
  * dashboard/API termination action from an unknown/external marker (which has
@@ -150,7 +150,7 @@ export const queuedRunSchema = z.object({
 export type QueuedRun = z.infer<typeof queuedRunSchema>;
 
 /**
- * Mirrors `AgentUsage` (`src/harness/usage.ts`) — the web package doesn't
+ * Mirrors `AgentUsage` (`src/harness/usage.ts`) — the dashboard package doesn't
  * import server modules, so this hand-mirrors the shape the same way `RunRow`
  * hand-mirrors the DB row.
  */

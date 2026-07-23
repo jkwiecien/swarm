@@ -3,7 +3,7 @@
  * label text and a stable key from an already-fetched {@link QueuedRun}; the
  * server owns the ordering (dispatch priority + FIFO), so nothing here re-sorts.
  * Kept side-effect-free so they can be unit-tested in the node environment,
- * matching the other `web/src/lib/*.test.ts` helpers.
+ * matching the other `dashboard/src/lib/*.test.ts` helpers.
  */
 
 import type {

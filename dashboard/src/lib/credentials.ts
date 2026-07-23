@@ -2,8 +2,8 @@
  * Pure helpers for the project Credentials screen (issue #85). The stateful
  * query/verify logic lives in the panel component; the display projections and
  * the loop-prevention comparison are factored out here so they can be unit
- * tested without a rendered-component harness (web tests run in a node env — see
- * `web/vitest.config.ts`), mirroring the `board-mapping.ts`/`.test.ts` split.
+ * tested without a rendered-component harness (dashboard tests run in a node env — see
+ * `dashboard/vitest.config.ts`), mirroring the `board-mapping.ts`/`.test.ts` split.
  */
 
 import type { Credentials } from '../../../src/config/schema.js';

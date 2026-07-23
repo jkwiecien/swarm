@@ -6,7 +6,7 @@
  *
  * This layer stores and looks up rows by the **token hash** only; the raw
  * session token never reaches it. Minting the token, hashing it, and setting the
- * cookie are the caller's job (`src/identity/auth.ts` + `src/dashboard.ts`) —
+ * cookie are the caller's job (`src/identity/auth.ts` + `src/api/server.ts`) —
  * this file is the dumb store, so a leaked row can't be replayed as a session.
  */
 

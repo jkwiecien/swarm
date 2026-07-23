@@ -23,7 +23,7 @@ vi.mock('@/identity/membership-service.js', () => ({
 	listAccessibleProjectIds: vi.fn(),
 }));
 
-import { createDashboardApp, SESSION_COOKIE_NAME } from '@/dashboard.js';
+import { createApiApp, SESSION_COOKIE_NAME } from '@/api/server.js';
 import { listAllProjectsFromDb } from '@/db/repositories/projectsRepository.js';
 import {
 	createSession,
@@ -45,7 +45,7 @@ const user: SwarmUser = {
 
 const RAW_TOKEN = 'raw-session-token';
 
-describe('swarm-dashboard API', () => {
+describe('swarm-api', () => {
 	beforeEach(() => {
 		// Keep the default-CORS assertions deterministic regardless of the ambient env.
 		delete process.env.CORS_ORIGIN;
@@ -59,19 +59,19 @@ describe('swarm-dashboard API', () => {
 
 	describe('public routes', () => {
 		it('serves /health without authentication', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('/health');
 
 			expect(res.status).toBe(200);
 			expect(await res.json()).toEqual({
 				status: 'ok',
-				service: 'swarm-dashboard',
+				service: 'swarm-api',
 				timestamp: expect.any(String),
 			});
 		});
 
 		it('serves the ping query without a session (it stays public)', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('/trpc/ping.ping');
 
 			expect(res.status).toBe(200);
@@ -83,7 +83,7 @@ describe('swarm-dashboard API', () => {
 
 	describe('authed procedures', () => {
 		it('returns 401 for an authed procedure with no session cookie', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('/trpc/projects.list');
 
 			expect(res.status).toBe(401);
@@ -95,7 +95,7 @@ describe('swarm-dashboard API', () => {
 			vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
 			vi.mocked(listAccessibleProjectIds).mockResolvedValue([]);
 
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('/trpc/projects.list', {
 				headers: { Cookie: `${SESSION_COOKIE_NAME}=${RAW_TOKEN}` },
 			});
@@ -109,7 +109,7 @@ describe('swarm-dashboard API', () => {
 		it('returns 401 when the session cookie no longer resolves to a user', async () => {
 			vi.mocked(resolveSession).mockResolvedValue(undefined);
 
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('/trpc/projects.list', {
 				headers: { Cookie: `${SESSION_COOKIE_NAME}=stale` },
 			});
@@ -127,7 +127,7 @@ describe('swarm-dashboard API', () => {
 				expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
 			});
 
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://example.com/auth/login', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -158,7 +158,7 @@ describe('swarm-dashboard API', () => {
 				expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
 			});
 
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const body = JSON.stringify({ identifier: 'ada@example.com', password: 'hunter2' });
 			const headers = { 'Content-Type': 'application/json' };
 
@@ -180,7 +180,7 @@ describe('swarm-dashboard API', () => {
 		it('returns 401 with no cookie for invalid credentials', async () => {
 			vi.mocked(verifyCredentials).mockResolvedValue(undefined);
 
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://example.com/auth/login', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -193,7 +193,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('returns 400 for a malformed body', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://example.com/auth/login', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
@@ -207,7 +207,7 @@ describe('swarm-dashboard API', () => {
 
 	describe('POST /auth/logout', () => {
 		it('revokes the session and clears the cookie', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://example.com/auth/logout', {
 				method: 'POST',
 				headers: { Cookie: `${SESSION_COOKIE_NAME}=${RAW_TOKEN}` },
@@ -223,7 +223,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('is a no-op (still 200) with no session cookie', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://example.com/auth/logout', { method: 'POST' });
 
 			expect(res.status).toBe(200);
@@ -234,8 +234,8 @@ describe('swarm-dashboard API', () => {
 	describe('CORS (credentialed, for the separate-origin dev setup)', () => {
 		it('answers a pre-flight from the Vite dev origin with credentialed CORS headers', async () => {
 			// Reproduces the reviewer's case: SPA on http://localhost:5173, API on
-			// DASHBOARD_PORT. The credentialed POST /auth/login is pre-flighted.
-			const app = createDashboardApp();
+			// API_PORT. The credentialed POST /auth/login is pre-flighted.
+			const app = createApiApp();
 			const res = await app.request('http://127.0.0.1:3101/auth/login', {
 				method: 'OPTIONS',
 				headers: {
@@ -253,7 +253,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('reflects the configured CORS_ORIGIN allow-list and rejects others', async () => {
-			const app = createDashboardApp({ corsOrigin: 'https://dash.example.com' });
+			const app = createApiApp({ corsOrigin: 'https://dash.example.com' });
 
 			const allowed = await app.request('http://api.example.com/auth/login', {
 				method: 'OPTIONS',
@@ -276,7 +276,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('exposes credentialed CORS on /trpc as well', async () => {
-			const app = createDashboardApp();
+			const app = createApiApp();
 			const res = await app.request('http://127.0.0.1:3101/trpc/projects.list', {
 				method: 'OPTIONS',
 				headers: {
@@ -292,7 +292,7 @@ describe('swarm-dashboard API', () => {
 
 	describe('static assets', () => {
 		it('serves static assets without authentication', async () => {
-			const app = createDashboardApp({ staticRoot: 'tests/fixtures/web-dist' });
+			const app = createApiApp({ staticRoot: 'tests/fixtures/dashboard-dist' });
 			const res = await app.request('/assets/app.js');
 
 			expect(res.status).toBe(200);
@@ -301,7 +301,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('falls back to index.html for client-side routes without authentication', async () => {
-			const app = createDashboardApp({ staticRoot: 'tests/fixtures/web-dist' });
+			const app = createApiApp({ staticRoot: 'tests/fixtures/dashboard-dist' });
 			const res = await app.request('/login');
 
 			expect(res.status).toBe(200);
@@ -310,7 +310,7 @@ describe('swarm-dashboard API', () => {
 		});
 
 		it('returns 404 for unknown routes when no static assets exist', async () => {
-			const app = createDashboardApp({ staticRoot: './non-existent-dist' });
+			const app = createApiApp({ staticRoot: './non-existent-dist' });
 			const res = await app.request('/nope');
 
 			expect(res.status).toBe(404);

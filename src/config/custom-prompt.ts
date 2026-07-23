@@ -2,7 +2,7 @@
  * The per-phase custom-prompt bound and its normalizer (issue #135), factored
  * into a dependency-free leaf so both the config schema (server) and the web
  * dashboard can import them. `src/config/schema.ts` pulls in Node-only modules
- * (via the agent-cli schema), so the web bundle must not reach the constant
+ * (via the agent-cli schema), so the dashboard bundle must not reach the constant
  * through it — this module carries no such dependency.
  */
 

@@ -45,16 +45,16 @@ Grouped by concern. "Required" means startup throws if it's unset; everything el
 | --- | --- | --- |
 | `CREDENTIAL_MASTER_KEY` | _(unset → plaintext)_ | 64-char (32-byte) hex AES-256-GCM key for encrypting `project_credentials`. If unset, secrets are stored **plaintext** (dev only). Validated for length and hex format. |
 
-**Dashboard API** — `src/dashboard.ts`
+**API server** — `src/api/server.ts`
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SWARM_SESSION_TTL_HOURS` | `168` (7 days) | Lifetime of a dashboard login session. After this, the session cookie is rejected and the user must sign in again. A non-positive or non-numeric value falls back to the default. |
-| `DASHBOARD_PORT` | `3101` | Port the dashboard listens on (bound to `127.0.0.1` only). |
+| `API_PORT` | `3101` | Port the API server listens on (bound to `127.0.0.1` only). |
 | `CORS_ORIGIN` | `http://localhost:5173` | Comma-separated allow-list of browser origins permitted to make **credentialed** cross-origin requests (the session cookie rides every request). Only needed for the separate-origin setup — SPA and API on different origins; the default already covers the documented Vite dev workflow. A same-origin deploy never pre-flights, so this is inert there. Never `*` (illegal alongside credentials). |
 
 The dashboard uses **per-user session auth** (issue #281 task 2), not a shared secret: a user set up with `swarm users add` + `swarm users set-password` signs in at `/login`, and the server issues an opaque session delivered as an HTTP-only, `SameSite=Strict` cookie (`Secure` off localhost). Every `/trpc/*` request except `ping` is authorized by that cookie; `/health` stays public. No API token is configured — `DASHBOARD_TOKEN` and its browser copy `VITE_DASHBOARD_TOKEN` have been **retired**. Only a hash of the session token is stored (`user_sessions`), never the raw token.
 
-For the recommended **same-origin** deploy (the dashboard serves the built SPA and its API from one process), no CORS config is needed. The separate-origin setup — running the SPA on the Vite dev server against the API on `DASHBOARD_PORT`, or `VITE_API_URL` pointing at a different host — is credentialed and therefore pre-flighted by the browser; the API allows it via `CORS_ORIGIN` (default `http://localhost:5173`, which matches `web/vite.config.ts`). `SameSite=Strict` still delivers the cookie for the localhost dev case (ports don't change the *site*); a genuine cross-*site* production origin would additionally need different cookie attributes and is out of scope for SWARM's local-first model.
+For the recommended **same-origin** deploy (the API server serves the built dashboard SPA and the API from one process), no CORS config is needed. The separate-origin setup — running the SPA on the Vite dev server against the API on `API_PORT`, or `VITE_API_URL` pointing at a different host — is credentialed and therefore pre-flighted by the browser; the API allows it via `CORS_ORIGIN` (default `http://localhost:5173`, which matches `dashboard/vite.config.ts`). `SameSite=Strict` still delivers the cookie for the localhost dev case (ports don't change the *site*); a genuine cross-*site* production origin would additionally need different cookie attributes and is out of scope for SWARM's local-first model.
 
 **Router** — `src/router/index.ts`
 | Variable | Default | Purpose |
@@ -80,7 +80,7 @@ For the recommended **same-origin** deploy (the dashboard serves the built SPA a
 
 **Credential secret values** (referenced by project config, not config themselves): the env vars a project's `credentials` block *points at* — by default `SCM_TOKEN_IMPLEMENTER`, `SCM_TOKEN_REVIEWER`, `SCM_WEBHOOK_SECRET` for a newly created project. These are opaque reference *names*, not ambient environment variables the running services read at request time: `swarm config apply` reads them from the environment once, at apply time, and stores the resolved values (encrypted) in Postgres — the router/worker resolve credentials from the DB thereafter. An unset reference is warned-and-skipped, not fatal. The default only changes what a *new* project is created with; a project already storing GitHub-named references (`GITHUB_TOKEN_IMPLEMENTER` and friends) keeps resolving them unchanged — there is no migration and no dual-read fallback to reconcile.
 
-**Web frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`web/.env`)
+**Dashboard frontend (Vite)** — only `VITE_`-prefixed vars reach the browser (`dashboard/.env`)
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `VITE_API_URL` | `` (same-origin) | Base URL for the dashboard API. The SPA sends the session cookie with every request (`credentials: 'include'`); there is no build-time API token (`VITE_DASHBOARD_TOKEN` was retired with session auth). When set to a different origin, the API must allow that origin via `CORS_ORIGIN` (above). |
@@ -160,7 +160,7 @@ App-wide settings that apply across **every** project, as opposed to the per-pro
 
 **`agents.defaults`** — the **global** per-CLI default model: a map of `cli` (`claude` / `antigravity` / `codex`) → default `model`, each validated for that CLI per `src/harness/models.ts` (same rules as the project-level `agents.defaults`).
 
-**`appearance.theme`** — the dashboard's theme choice (issue #250): `dark` (default), `light`, or `system` (follows the OS/browser `prefers-color-scheme` and updates live when it changes). Unlike `agents.defaults`, this key always materializes — `AppSettingsSchema` defaults it to `dark` even when parsing `{}` — so every `settings.get` response carries an effective theme rather than requiring callers to fall back manually. Applied dashboard-wide by `web/src/components/theme/theme-provider.tsx`, which sets a `data-theme` attribute the whole palette (`web/src/index.css`) responds to.
+**`appearance.theme`** — the dashboard's theme choice (issue #250): `dark` (default), `light`, or `system` (follows the OS/browser `prefers-color-scheme` and updates live when it changes). Unlike `agents.defaults`, this key always materializes — `AppSettingsSchema` defaults it to `dark` even when parsing `{}` — so every `settings.get` response carries an effective theme rather than requiring callers to fall back manually. Applied dashboard-wide by `dashboard/src/components/theme/theme-provider.tsx`, which sets a `data-theme` attribute the whole palette (`dashboard/src/index.css`) responds to.
 
 Before the four-tier chain runs, Implementation selects `agents.implementationUnplanned` for work items with no prior *completed* Planning run-history row (a failed or deferred attempt does not count), otherwise `agents.implementation`; an unset unplanned variant falls back to `implementation`. The worker then resolves the model for the selected config through a four-tier fallback chain, most specific first (`resolveModel`, `src/worker/consumer.ts`):
 
@@ -173,7 +173,7 @@ Reasoning (issue #180) is **not** part of this model chain: it is resolved separ
 
 ### Editable via the dashboard UI
 
-Today the web dashboard exposes a **subset** of settings:
+Today the dashboard exposes a **subset** of settings:
 
 - **Projects** — create a project (`id`, `name`, `repo`, `repoRoot`) and delete one, plus per-project **General Settings** (`repo`, `repoRoot`, `worktreeRoot`, `baseBranch`, `branchPrefix`), **Agent Configuration** (a per-phase summary table where each row opens a phase-details screen for that phase's ordered `targets` list — add/remove/reorder `cli`/`model`/`reasoning` rows, at most one per CLI — plus its timeout, enable toggle, an optional custom `prompt`, and Planning's auto-advance toggle — plus the project-level `agents.defaults`), and a **Pipeline** tab for the Respond-to-review merge-automation/minor-review controls and the Review check policy (`pipeline.review.checks`, a **Require CI checks** / **Review when no checks exist** choice defaulting to **Require CI checks**).
 - **Settings** — a top-level, app-wide **Settings** screen (sidebar → *Settings*) for [global settings](#global-settings-app_settings), with two tabs: **Agent Defaults** — the global per-CLI default model for Claude / Antigravity / Codex (writes `agents.defaults` via the `settings` tRPC router); leaving a CLI on its default option clears the global default so the coded default applies. **Appearance** — a Dark / Light / System default radio group (writes `appearance.theme`); selecting an option repaints the dashboard immediately and persists without a separate Save action.

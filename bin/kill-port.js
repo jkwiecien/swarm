@@ -14,8 +14,8 @@ if (!port || !/^\d+$/.test(port)) {
 	if (arg === 'ROUTER_PORT' || arg === 'PORT') {
 		port = process.env.ROUTER_PORT || process.env.PORT || '3100';
 	} else {
-		// Default to DASHBOARD_PORT or 3101
-		port = process.env.DASHBOARD_PORT || '3101';
+		// Default to API_PORT or 3101
+		port = process.env.API_PORT || '3101';
 	}
 }
 

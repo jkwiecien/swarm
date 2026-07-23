@@ -1,6 +1,6 @@
-# Design system — web dashboard
+# Design system — dashboard
 
-Visual and component conventions for SWARM's web dashboard (`web/`, ai/RULES.md §5 issues #75–87). Read this before building any dashboard screen, the same way `ai/CODING_STANDARDS.md` governs backend code.
+Visual and component conventions for SWARM's dashboard (`dashboard/`, ai/RULES.md §5 issues #75–87). Read this before building any dashboard screen, the same way `ai/CODING_STANDARDS.md` governs backend code.
 
 ## Origin
 
@@ -10,7 +10,7 @@ Stack it assumes: React + TypeScript + Vite + **Tailwind CSS v4** (CSS-first con
 
 ## 1. Color tokens
 
-**Dark by default, with Light and System-default alternatives** (issue #250) — this is still a local admin tool for one developer, not a public product, but it now respects the developer's own theme preference. Every color below is authored as a **dark-mode value at `:root`**; picking Light (directly, or via System default resolving to light) sets `data-theme="light"` on `<html>` (`web/src/components/theme/theme-provider.tsx`), and `web/src/index.css` overrides the *same* Tailwind v4 theme variables under a `[data-theme="light"]` selector. Because Tailwind v4 compiles every utility against its CSS variable (`.bg-zinc-900 { background-color: var(--color-zinc-900) }`, not a literal color), overriding the variable repaints every `zinc-*`/status-color utility already in use — component code never branches on theme.
+**Dark by default, with Light and System-default alternatives** (issue #250) — this is still a local admin tool for one developer, not a public product, but it now respects the developer's own theme preference. Every color below is authored as a **dark-mode value at `:root`**; picking Light (directly, or via System default resolving to light) sets `data-theme="light"` on `<html>` (`dashboard/src/components/theme/theme-provider.tsx`), and `dashboard/src/index.css` overrides the *same* Tailwind v4 theme variables under a `[data-theme="light"]` selector. Because Tailwind v4 compiles every utility against its CSS variable (`.bg-zinc-900 { background-color: var(--color-zinc-900) }`, not a literal color), overriding the variable repaints every `zinc-*`/status-color utility already in use — component code never branches on theme.
 
 | Role | Token | Dark value | Usage |
 |---|---|---|---|
@@ -28,7 +28,7 @@ Stack it assumes: React + TypeScript + Vite + **Tailwind CSS v4** (CSS-first con
 | Warning | `amber-500`/`amber-200`/`amber-900` | | Loop-prevention and similar caution banners |
 | Danger | `red-400`/`red-500`/`red-900` | | Validation errors, destructive-action affordances |
 
-**Fix required, don't copy verbatim**: `zinc-850` and `violet-650` are not real Tailwind shades (the prototype uses `zinc-850` ~10 times and the primary-button glow recipe below uses `violet-650`, but it ships zero-config Tailwind v4, so those classes are silently dead). Define both for real in `web/src/index.css` via Tailwind v4's `@theme`, alongside the semantic `canvas`/`panel` tokens (promoted from the literal `bg-[#0A0A0B]`/`bg-[#0F0F11]` the prototype hardcoded, so they can be overridden per-theme instead of staying frozen dark forever):
+**Fix required, don't copy verbatim**: `zinc-850` and `violet-650` are not real Tailwind shades (the prototype uses `zinc-850` ~10 times and the primary-button glow recipe below uses `violet-650`, but it ships zero-config Tailwind v4, so those classes are silently dead). Define both for real in `dashboard/src/index.css` via Tailwind v4's `@theme`, alongside the semantic `canvas`/`panel` tokens (promoted from the literal `bg-[#0A0A0B]`/`bg-[#0F0F11]` the prototype hardcoded, so they can be overridden per-theme instead of staying frozen dark forever):
 
 ```css
 @import "tailwindcss";
@@ -41,7 +41,7 @@ Stack it assumes: React + TypeScript + Vite + **Tailwind CSS v4** (CSS-first con
 }
 ```
 
-**The light-theme override rule.** `web/src/index.css`'s `[data-theme="light"]` block re-derives every neutral/status color it needs from the *other end* of that color's own Tailwind scale — it does not invent new hex values:
+**The light-theme override rule.** `dashboard/src/index.css`'s `[data-theme="light"]` block re-derives every neutral/status color it needs from the *other end* of that color's own Tailwind scale — it does not invent new hex values:
 
 - **`canvas`/`panel`/`zinc-850`** get hand-picked light equivalents (near-white canvas, a slightly-off-white panel).
 - **The full `zinc` neutral scale inverts shade-for-shade**: `100↔950`, `200↔900`, `300↔800`, `400↔700`, `500↔600` (e.g. light-theme `--color-zinc-900` takes dark-theme `zinc-200`'s value). A role authored for dark (light text on a dark panel, a dark input on a darker canvas) reads correctly once background and foreground swap ends of the scale — no per-component light/dark class list to maintain.

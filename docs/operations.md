@@ -15,12 +15,12 @@ npm run db:migrate            # apply the Postgres schema (uses DATABASE_URL fro
 npm run db:seed               # load swarm.config.json into Postgres (projects + credentials)
 npm run swarm -- users add you@example.com --admin   # create the first user, then:
 npm run swarm -- users set-password you@example.com   # set their dashboard login password (prompts, no echo)
-cd web && npm install && cd .. # install web dashboard dependencies
-npm run dev:dashboard         # start the dashboard API on the host (default port 3101)
-npm run dev:web               # start the Vite dev server (default port 5173)
+cd dashboard && npm install && cd .. # install dashboard (frontend) dependencies
+npm run dev:api               # start the API server on the host (default port 3101)
+npm run dev:dashboard         # start the Vite dev server (default port 5173)
 npm run dev:worker            # start the worker on the host (or: npm run build && npm run start:worker); SWARM_WORKER_CONCURRENCY in .env sets how many jobs run at once (default 1)
 ```
-`swarm start`, `npm run dev:dashboard`, `npm run dev:worker`, and their production
+`swarm start`, `npm run dev:api`, `npm run dev:worker`, and their production
 start variants apply pending committed migrations before serving requests or processing
 jobs. `dev:worker` is intentionally stable: source edits do not restart it and abort a
 live agent. Use `npm run dev:worker:watch` only while developing the worker itself and
@@ -34,17 +34,17 @@ The dashboard can be run in two modes:
 - **Development Mode (with Hot-Reloading)**:
   Run the backend API and the Vite development server side-by-side:
   ```bash
-  npm run dev:dashboard         # Starts the dashboard API on port 3101
-  npm run dev:web               # Starts the Vite dev server on port 5173
+  npm run dev:api               # Starts the API server on port 3101
+  npm run dev:dashboard         # Starts the Vite dev server on port 5173
   ```
   Open `http://localhost:5173` in your browser. Code changes will hot-reload automatically.
 
 - **Self-Hosted Mode (Production Build)**:
-  Because the compiled assets under `web/dist` are ignored in git, you must compile the frontend assets if you want the dashboard API server to serve the SPA statically. You can run both steps with a single command:
+  Because the compiled assets under `dashboard/dist` are ignored in git, you must compile the frontend assets if you want the API server to serve the SPA statically. You can run both steps with a single command:
   ```bash
-  npm run start:dashboard       # Compiles web assets and starts dashboard API on port 3101
+  npm run start:api             # Compiles the dashboard SPA and starts the API server on port 3101
   ```
-  Open `http://localhost:3101` in your browser. The dashboard API will serve the compiled files as a fallback for any non-API/non-health routes.
+  Open `http://localhost:3101` in your browser. The API server will serve the compiled files as a fallback for any non-API/non-health routes.
 
 The dashboard uses **per-user session auth** (issue #281 task 2). It binds to `127.0.0.1` and every dashboard API request except `/health` and the `ping` liveness probe is authorized by a session cookie, not a shared secret. A user signs in at `/login` (username/email + password); the server verifies the password, mints an opaque session, and returns it as an HTTP-only, `SameSite=Strict` cookie (`Secure` off localhost). Log out to revoke it. Set a user up first with `swarm users add` + `swarm users set-password` (below). There is no `DASHBOARD_TOKEN` anymore.
 
@@ -81,8 +81,8 @@ The worker isn't containerized because it provisions Git worktrees and spawns th
 
 The Postgres schema (project config + credentials at rest) is defined with **Drizzle** in `src/db/` — `npm run db:generate` regenerates migrations from the schema, `npm run db:migrate` applies them. Credentials are encrypted with AES-256-GCM before storage when `CREDENTIAL_MASTER_KEY` is set (plaintext otherwise, for local dev).
 
-SWARM's host ports are offset from Cascade's defaults (router `3100` vs `3000`, dashboard `3101` vs `3001`, Postgres `5433` vs `5432`, Redis `6380` vs `6379`) so both stacks can run in parallel without a host-port clash — the compose project name is fixed to `swarm`, giving it its own network and volumes. Override any of them via `ROUTER_PORT` / `DASHBOARD_PORT` / `POSTGRES_PORT` / `REDIS_PORT` in `.env`.
+SWARM's host ports are offset from Cascade's defaults (router `3100` vs `3000`, API server `3101` vs Cascade's dashboard `3001`, Postgres `5433` vs `5432`, Redis `6380` vs `6379`) so both stacks can run in parallel without a host-port clash — the compose project name is fixed to `swarm`, giving it its own network and volumes. Override any of them via `ROUTER_PORT` / `API_PORT` / `POSTGRES_PORT` / `REDIS_PORT` in `.env`.
 
-The router exposes a health check at `http://localhost:${ROUTER_PORT:-3100}/health`; the dashboard exposes one at `http://localhost:${DASHBOARD_PORT:-3101}/health` plus a tRPC endpoint at `/trpc`. The router's webhook receiver (`POST /github/webhook`) verifies HMAC signatures, resolves the project, and applies a loop-prevention drop gate (SWARM-9) for both repo-scoped SCM events and the GitHub Projects board event, then hands off to the job queue. From there, a trigger registry dispatches each event to the pipeline phase it names — see the [pipeline guide](./pipeline.md) and [status snapshot](./status.md) for implementation details.
+The router exposes a health check at `http://localhost:${ROUTER_PORT:-3100}/health`; the API server exposes one at `http://localhost:${API_PORT:-3101}/health` plus a tRPC endpoint at `/trpc`. The router's webhook receiver (`POST /github/webhook`) verifies HMAC signatures, resolves the project, and applies a loop-prevention drop gate (SWARM-9) for both repo-scoped SCM events and the GitHub Projects board event, then hands off to the job queue. From there, a trigger registry dispatches each event to the pipeline phase it names — see the [pipeline guide](./pipeline.md) and [status snapshot](./status.md) for implementation details.
 
 To let GitHub reach this local router with webhooks, expose it over a public HTTPS URL with a Cloudflare Tunnel — see **[`cloudflare-tunnel.md`](./cloudflare-tunnel.md)** for the setup (a quick ephemeral tunnel for dev, a CLI-managed named tunnel for a stable URL, or a dashboard-created tunnel run as an opt-in `cloudflared` service in `docker-compose.yml` so it starts with the rest of the stack) and the GitHub webhook configuration.

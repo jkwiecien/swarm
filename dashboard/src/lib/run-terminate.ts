@@ -1,7 +1,7 @@
 /**
  * Pure view-logic for the "Terminate" action (issue #166), split out of the
- * run-detail route so it can be unit-tested without a rendered component (the web
- * package tests helpers only — no jsdom; see `web/vitest.config.ts`). The route
+ * run-detail route so it can be unit-tested without a rendered component (the
+ * dashboard package tests helpers only — no jsdom; see `dashboard/vitest.config.ts`). The route
  * wires these into the tRPC mutation and confirmation modal.
  */
 

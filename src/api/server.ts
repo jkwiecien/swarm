@@ -1,9 +1,10 @@
 /**
- * Dashboard API entry point — a self-hosted single-process Hono app
+ * API server entry point — a self-hosted single-process Hono app
  * (ai/ARCHITECTURE.md). Exposes /health, the /auth/login + /auth/logout session
- * endpoints, and mounts tRPC at /trpc. Unlike Cascade's split cloud deployment
- * (separate API + Cloudflare Pages frontend), SWARM runs one process for its
- * local-first scope.
+ * endpoints, mounts tRPC at /trpc, and (in a same-origin deploy) serves the
+ * built dashboard SPA from `dashboard/dist`. Unlike Cascade's split cloud
+ * deployment (separate API + Cloudflare Pages frontend), SWARM runs one process
+ * for its local-first scope.
  *
  * Access control is per-user session auth (#281 task 2), not the old shared
  * `DASHBOARD_TOKEN` bearer secret: a user logs in with their password, gets an
@@ -13,7 +14,7 @@
  * hash is stored (`src/identity/auth.ts`).
  *
  * A credentialed CORS layer (`src/lib/cors.ts`) fronts every route so the
- * documented separate-origin dev workflow (SPA on Vite, API on `DASHBOARD_PORT`)
+ * documented separate-origin dev workflow (SPA on Vite, API on `API_PORT`)
  * can send the session cookie; a same-origin deploy never pre-flights, so it is
  * inert there. See `CORS_ORIGIN` in `docs/configuration.md`.
  */
@@ -25,17 +26,16 @@ import { type Context, Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { CookieOptions } from 'hono/utils/cookie';
 import { z } from 'zod';
-
-import { appRouter } from './api/router.js';
-import type { TrpcContext } from './api/trpc.js';
 import {
 	createSession,
 	resolveSession,
 	revokeSession,
 	verifyCredentials,
-} from './identity/auth.js';
-import { buildCorsMiddleware } from './lib/cors.js';
-import { configureLogger, logger } from './lib/logger.js';
+} from '../identity/auth.js';
+import { buildCorsMiddleware } from '../lib/cors.js';
+import { configureLogger, logger } from '../lib/logger.js';
+import { appRouter } from './router.js';
+import type { TrpcContext } from './trpc.js';
 
 /** Name of the HTTP-only cookie carrying the opaque session token. */
 export const SESSION_COOKIE_NAME = 'swarm_session';
@@ -77,9 +77,7 @@ function sessionCookieOptions(c: Context): CookieOptions {
 	};
 }
 
-export function createDashboardApp(
-	options: { staticRoot?: string; corsOrigin?: string } = {},
-): Hono {
+export function createApiApp(options: { staticRoot?: string; corsOrigin?: string } = {}): Hono {
 	const app = new Hono();
 
 	// Credentialed CORS for the documented separate-origin dev setup; inert for a
@@ -93,7 +91,7 @@ export function createDashboardApp(
 	app.get('/health', (c) =>
 		c.json({
 			status: 'ok',
-			service: 'swarm-dashboard',
+			service: 'swarm-api',
 			timestamp: new Date().toISOString(),
 		}),
 	);
@@ -150,7 +148,7 @@ export function createDashboardApp(
 		}),
 	);
 
-	const staticRoot = options.staticRoot ?? './web/dist';
+	const staticRoot = options.staticRoot ?? './dashboard/dist';
 	if (existsSync(`${staticRoot}/index.html`)) {
 		app.use('/assets/*', serveStatic({ root: staticRoot }));
 		app.get('*', serveStatic({ root: staticRoot, rewriteRequestPath: () => '/index.html' }));
@@ -162,11 +160,11 @@ export function createDashboardApp(
 // Entrypoint bootstrap — only when executed directly, so tests can import the
 // factory without binding a port (mirrors src/router/index.ts).
 if (import.meta.url === `file://${process.argv[1]}`) {
-	configureLogger({ component: 'dashboard' });
-	const port = Number(process.env.DASHBOARD_PORT ?? 3101);
-	const app = createDashboardApp();
+	configureLogger({ component: 'api' });
+	const port = Number(process.env.API_PORT ?? 3101);
+	const app = createApiApp();
 	const server = serve({ fetch: app.fetch, port, hostname: '127.0.0.1' }, () => {
-		logger.debug('swarm-dashboard: listening', { port, hostname: '127.0.0.1' });
+		logger.debug('swarm-api: listening', { port, hostname: '127.0.0.1' });
 	});
 	for (const signal of ['SIGTERM', 'SIGINT'] as const) {
 		process.on(signal, () => server.close(() => process.exit(0)));
