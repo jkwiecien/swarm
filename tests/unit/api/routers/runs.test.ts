@@ -344,7 +344,9 @@ describe('runsRouter', () => {
 				workItemNodeId: 'PVTI_item',
 				contentType: 'Issue',
 				priority: 10,
+				continuation: false,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
+				availableAt: '2026-07-17T10:00:00.000Z',
 			};
 			const workItem = createMockWorkItem({
 				title: 'Fix the widget',
@@ -390,7 +392,9 @@ describe('runsRouter', () => {
 				phaseHint: 'board' as const,
 				workItemNodeId: 'PVTI_missing',
 				priority: 10,
+				continuation: false,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
+				availableAt: '2026-07-17T10:00:00.000Z',
 			};
 			vi.mocked(toQueuedRuns).mockReturnValue([queuedItem]);
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
@@ -408,7 +412,9 @@ describe('runsRouter', () => {
 				repo: 'acme/widgets',
 				prNumber: '42',
 				priority: 0,
+				continuation: false,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
+				availableAt: '2026-07-17T10:00:00.000Z',
 				reviewGate: {
 					sourceEvent: 'check_suite' as const,
 					sourceAction: 'completed',

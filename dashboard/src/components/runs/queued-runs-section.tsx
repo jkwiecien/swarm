@@ -84,6 +84,25 @@ function QueuedWorkItemContent({
 	);
 }
 
+/**
+ * A compact badge marking a capacity-`blocked` row as a prioritized SCM
+ * continuation (Review / Respond-to-review / Respond-to-CI / Resolve-conflicts
+ * resumed after a capacity wait). Rendered only for `state === 'blocked' &&
+ * continuation`, alongside the Queued status, so an operator can see why such a
+ * row will win a freed project slot ahead of ordinary new work (issue #374).
+ */
+function ContinuationBadge({ item }: { item: QueuedRun }) {
+	if (item.state !== 'blocked' || !item.continuation) return null;
+	return (
+		<span
+			title="Prioritized continuation — takes the next freed project slot ahead of new work."
+			className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-semibold border bg-violet-500/10 text-violet-400 border-violet-500/20 shrink-0"
+		>
+			Continuation
+		</span>
+	);
+}
+
 /** Enqueued / delayed / wait-reason text for one queued row, shared by both presentations. */
 function QueuedEnqueuedContent({ item }: { item: QueuedRun }) {
 	return (
@@ -204,7 +223,10 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 								<div className="min-w-0 flex-1">
 									<QueuedWorkItemContent item={item} variant="card" />
 								</div>
-								<RunStatusBadge status="queued" className="shrink-0" />
+								<div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+									<ContinuationBadge item={item} />
+									<RunStatusBadge status="queued" />
+								</div>
 							</div>
 							<div className="flex flex-col gap-1 text-xs text-zinc-400">
 								<QueuedPhaseContent row={row} />
@@ -303,7 +325,10 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 										<QueuedWorkItemContent item={item} />
 									</td>
 									<td className="px-2 py-2 text-xs">
-										<RunStatusBadge status="queued" />
+										<div className="flex flex-wrap items-center gap-1.5">
+											<RunStatusBadge status="queued" />
+											<ContinuationBadge item={item} />
+										</div>
 									</td>
 									<td className="px-2 py-2 text-xs text-zinc-400">
 										<QueuedEnqueuedContent item={item} />

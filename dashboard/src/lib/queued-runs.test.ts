@@ -20,7 +20,9 @@ function githubRun(overrides: Partial<QueuedRun> = {}): QueuedRun {
 		repo: 'acme/widgets',
 		prNumber: '42',
 		priority: 0,
+		continuation: false,
 		enqueuedAt: '2026-07-17T10:00:00.000Z',
+		availableAt: '2026-07-17T10:00:00.000Z',
 		...overrides,
 	};
 }
@@ -37,7 +39,9 @@ function boardRun(overrides: Partial<QueuedRun> = {}): QueuedRun {
 		workItemTitle: 'Fix the widget',
 		workItemUrl: 'https://github.com/acme/widgets/issues/42',
 		priority: 5,
+		continuation: false,
 		enqueuedAt: '2026-07-17T09:00:00.000Z',
+		availableAt: '2026-07-17T12:00:00.000Z',
 		runsAt: '2026-07-17T12:00:00.000Z',
 		...overrides,
 	};
