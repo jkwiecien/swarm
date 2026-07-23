@@ -290,6 +290,11 @@ export interface PlanningPhaseResult {
 	 * spent.
 	 */
 	preplanned?: boolean;
+	/**
+	 * Validated structured scope metadata from a normal planning run. A
+	 * preplanned split child has no local scope artifact, so it leaves this absent.
+	 */
+	planningScope?: ProposedScope;
 }
 
 /**
@@ -874,9 +879,9 @@ export async function runPlanningPhase(
 		// planner must have recorded a validated scope declaration, and an unsplit
 		// single task that declares too many independent concerns is rejected here —
 		// before anything is posted or advanced — rather than reaching Implementation.
-		if (autoSplit) {
-			const scope = readProposedScope(handle.path);
-			if (!split) enforceSingleTaskBudget(scope, maxConcerns, taskId, workItem);
+		const planningScope = autoSplit ? readProposedScope(handle.path) : undefined;
+		if (planningScope && !split) {
+			enforceSingleTaskBudget(planningScope, maxConcerns, taskId, workItem);
 		}
 
 		const commentId = await pm.addComment(workItem.id, planCommentBody(plan, effectiveAutoAdvance));
@@ -898,7 +903,7 @@ export async function runPlanningPhase(
 			splitInto: splitResult?.subTaskItemIds.length,
 		});
 
-		return { plan, commentId, agent, movedTo, split: splitResult };
+		return { plan, commentId, agent, movedTo, split: splitResult, planningScope };
 	} finally {
 		await cleanupUnlessPreserved(worktrees, taskId, preserveForResume, 'planning phase', runId);
 	}

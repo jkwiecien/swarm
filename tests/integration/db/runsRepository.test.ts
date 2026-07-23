@@ -15,6 +15,7 @@ import {
 	createRun,
 	failOrphanedRunningRuns,
 	failStaleRunningRuns,
+	getLatestCompletedPlanningScope,
 	getLatestRunForTask,
 	getPendingReviewMergeFollowUps,
 	getRunByIdFromDb,
@@ -151,6 +152,25 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.status).toBe('failed');
 			expect(row?.error).toBe('boom');
 			expect(row?.exitCode).toBe(1);
+		});
+
+		it('round-trips a terminal diagnosis without replacing the raw error', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '2b', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'failed',
+				error: 'Implementation agent exited with code 1 (stalled)',
+				failureDiagnosis: {
+					kind: 'provider-stalled-early',
+					title: 'Provider stalled early',
+					message:
+						'The agent provider stalled before meaningful work began; retry later or use another configured provider.',
+					recovery: 'Retry later or use another configured provider.',
+				},
+			});
+
+			const row = await getRunByIdFromDb(id);
+			expect(row?.error).toBe('Implementation agent exited with code 1 (stalled)');
+			expect(row?.failureDiagnosis).toMatchObject({ kind: 'provider-stalled-early' });
 		});
 
 		it('persists a recorded cancellation origin on a failed run (issue #308)', async () => {
@@ -315,6 +335,12 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				durationMs: 4200,
 				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
 				usage: { inputTokens: 10, outputTokens: 5 },
+				failureDiagnosis: {
+					kind: 'provider-stalled-early',
+					title: 'Provider stalled early',
+					message: 'The provider stalled.',
+					recovery: 'Retry later.',
+				},
 			});
 
 			const reset = await resetRunToRunning(id);
@@ -330,6 +356,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.timedOut).toBe(false);
 			expect(row?.durationMs).toBeNull();
 			expect(row?.usage).toBeNull();
+			expect(row?.failureDiagnosis).toBeNull();
 		});
 
 		it('clears a prior Review verdict so a re-running row shows no stale verdict (issue #218)', async () => {
@@ -500,6 +527,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 			expect(row?.error).toBe('Run terminated by user');
 			expect(row?.nextRetryAt).toBeNull();
 			expect(row?.agentSessionId).toBeNull();
+			expect(row?.failureDiagnosis).toMatchObject({ kind: 'user-terminated' });
 			expect(row?.completedAt).toBeInstanceOf(Date);
 		});
 
@@ -543,6 +571,89 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 
 			expect((await getLatestRunForTask(PROJECT_ID, '42', 'review'))?.id).toBe(newest);
 			expect(await getLatestRunForTask(PROJECT_ID, 'missing', 'review')).toBeUndefined();
+		});
+	});
+
+	describe('getLatestCompletedPlanningScope', () => {
+		it('returns only the newest completed, scope-bearing Planning artifact for the same task', async () => {
+			const older = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'scope-1',
+				phase: 'planning',
+			});
+			const newest = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'scope-1',
+				phase: 'planning',
+			});
+			const failed = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'scope-1',
+				phase: 'planning',
+			});
+			const noScope = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'scope-1',
+				phase: 'planning',
+			});
+			const otherPhase = await createRun({
+				projectId: PROJECT_ID,
+				taskId: 'scope-1',
+				phase: 'implementation',
+			});
+
+			await completeRun(older, {
+				status: 'completed',
+				planningScope: {
+					whyOneTask: 'Older scope.',
+					independentConcerns: ['older concern'],
+					affectedAreas: ['older area'],
+					outOfScope: [],
+				},
+			});
+			await completeRun(newest, {
+				status: 'completed',
+				planningScope: {
+					whyOneTask: 'Newest scope.',
+					independentConcerns: ['worker change', 'dashboard change'],
+					affectedAreas: ['worker', 'dashboard'],
+					outOfScope: ['automatic splitting'],
+				},
+			});
+			await completeRun(failed, {
+				status: 'failed',
+				planningScope: {
+					whyOneTask: 'Failed scope.',
+					independentConcerns: ['ignored concern'],
+					affectedAreas: ['ignored area'],
+					outOfScope: [],
+				},
+			});
+			await completeRun(noScope, { status: 'completed' });
+			await completeRun(otherPhase, {
+				status: 'completed',
+				planningScope: {
+					whyOneTask: 'Wrong phase.',
+					independentConcerns: ['ignored concern'],
+					affectedAreas: ['ignored area'],
+					outOfScope: [],
+				},
+			});
+
+			await getDb()
+				.update(runs)
+				.set({ completedAt: new Date('2026-01-01T00:00:00.000Z') })
+				.where(eq(runs.id, older));
+			await getDb()
+				.update(runs)
+				.set({ completedAt: new Date('2026-01-02T00:00:00.000Z') })
+				.where(eq(runs.id, newest));
+
+			expect(await getLatestCompletedPlanningScope(PROJECT_ID, 'scope-1')).toMatchObject({
+				whyOneTask: 'Newest scope.',
+				independentConcerns: ['worker change', 'dashboard change'],
+			});
+			expect(await getLatestCompletedPlanningScope(PROJECT_ID, 'missing')).toBeUndefined();
 		});
 	});
 

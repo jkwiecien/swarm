@@ -199,6 +199,10 @@ describe('runPlanningPhase', () => {
 			commentId: 'comment-1',
 			plan: '## Scope gate\n- Why this is one task: cohesive change\n- Affected areas / files: planning.ts\n- Explicitly out of scope: none\n\n# Plan\n\n1. Do the thing.',
 			movedTo: undefined,
+			planningScope: {
+				whyOneTask: 'One cohesive lifecycle change plus its tests.',
+				independentConcerns: ['the planning phase'],
+			},
 		});
 	});
 

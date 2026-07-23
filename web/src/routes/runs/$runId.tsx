@@ -33,7 +33,7 @@ import {
 } from '@/lib/run-terminate.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
-import type { AgentUsage, RunRow } from '@/types/runs.js';
+import type { AgentUsage, FailureDiagnosis, RunRow } from '@/types/runs.js';
 // Shared model catalog — the single source of truth (`src/harness/models.ts`), so
 // the retry override dropdowns stay in lockstep with the config UI (issue #180).
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
@@ -512,6 +512,26 @@ interface ReviewCapCalloutProps {
 }
 
 /**
+ * Compact, confidence-labelled recovery guidance for a terminal failure. The
+ * technical error remains in the following callout, so operators can act on
+ * the diagnosis without losing the provider or harness detail.
+ */
+export function FailureDiagnosisCallout({ diagnosis }: { diagnosis: FailureDiagnosis | null }) {
+	if (!diagnosis) return null;
+
+	return (
+		<div className="p-4 bg-amber-950/20 border border-amber-900/30 rounded flex items-start gap-3">
+			<AlertTriangle className="h-5 w-5 text-amber-500 shrink-0 mt-0.5" />
+			<div>
+				<h3 className="text-xs font-semibold text-amber-200">{diagnosis.title}</h3>
+				<p className="text-xs text-amber-200/70 mt-1">{diagnosis.message}</p>
+				<p className="text-xs text-amber-200/70 mt-2">Recommended recovery: {diagnosis.recovery}</p>
+			</div>
+		</div>
+	);
+}
+
+/**
  * Run-detail warning for a completed Review run whose verdict was the second
  * `request-changes` the two-review safety cap allows (issue #242): SWARM
  * stopped the automatic Respond-to-review/re-review cycle, so this explains
@@ -716,6 +736,8 @@ export function RunDetailHeader({ run, project }: RunDetailHeaderProps) {
 					</div>
 				</div>
 			)}
+
+			{run.status === 'failed' && <FailureDiagnosisCallout diagnosis={run.failureDiagnosis} />}
 
 			{run.status === 'failed' && run.error && (
 				<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">

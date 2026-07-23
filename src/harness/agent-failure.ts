@@ -261,14 +261,6 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 	const output = `${result.stdout}\n${result.stderr}`;
 	const trimmed = output.trim();
 
-	// The CLI's own give-up-waiting phrasing (matched case-insensitively). Checked
-	// after timedOut and aborted (which take priority), and before rate limits.
-	// We match narrowly: only when the phrase is the entire output or its trailing line,
-	// to avoid false positives from borrowed text (e.g. CI logs in respond-to-ci).
-	if (/timeout waiting for response$/i.test(trimmed)) {
-		return { kind: 'stalled' };
-	}
-
 	const tail = terminalTail(output);
 	if (
 		result.cli === 'codex' &&
@@ -288,17 +280,26 @@ export function classifyAgentFailure(result: AgentCliResult, now: Date = new Dat
 		hasClaudeRateLimit ||
 		((USAGE_LIMIT_RE.test(tail) || RATE_HTTP_RE.test(tail)) && resetMatch !== null);
 
-	if (!isRateLimited) return { kind: 'error' };
+	if (isRateLimited) {
+		const resetHint = resetMatch?.[1]?.trim() || undefined;
+		return {
+			kind: 'rate-limit',
+			resetHint,
+			// The CLI's own reported reset instant wins over the parsed hint: it is
+			// exact, where a hint without a timezone can't be resolved at all.
+			retryAfter:
+				result.rateLimitResetAt ?? (resetHint ? parseRetryAfter(resetHint, now) : undefined),
+		};
+	}
 
-	const resetHint = resetMatch?.[1]?.trim() || undefined;
-	return {
-		kind: 'rate-limit',
-		resetHint,
-		// The CLI's own reported reset instant wins over the parsed hint: it is
-		// exact, where a hint without a timezone can't be resolved at all.
-		retryAfter:
-			result.rateLimitResetAt ?? (resetHint ? parseRetryAfter(resetHint, now) : undefined),
-	};
+	// The CLI's own give-up-waiting phrasing (matched case-insensitively). Checked
+	// after timeout/abort and recognised provider conditions, so a trailing stall
+	// marker cannot hide a rate-limit or capacity banner. We match narrowly: only
+	// when the phrase is the entire output or its trailing line, to avoid false
+	// positives from borrowed text (e.g. CI logs in respond-to-ci).
+	if (/timeout waiting for response$/i.test(trimmed)) return { kind: 'stalled' };
+
+	return { kind: 'error' };
 }
 
 /**

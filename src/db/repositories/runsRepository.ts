@@ -32,10 +32,12 @@ import {
 } from 'drizzle-orm';
 import type { AgentCli } from '../../harness/agent-cli.js';
 import type { AgentUsage } from '../../harness/usage.js';
+import type { ProposedScope } from '../../pipeline/planning.js';
 import type { ReviewAutomationOutcome, ReviewVerdict } from '../../pipeline/review.js';
 import type { CancellationOrigin } from '../../queue/cancellation.js';
 import type { SwarmJob } from '../../queue/jobs.js';
 import type { TriggerPhase } from '../../triggers/types.js';
+import { diagnoseFailure, type FailureDiagnosis } from '../../worker/failure-diagnosis.js';
 import { getDb } from '../client.js';
 import { dispatches } from '../schema/dispatches.js';
 import { runLogs, runOutputEvents, runs } from '../schema/runs.js';
@@ -166,6 +168,10 @@ export interface CompleteRunInput {
 	 * every non-cancellation finalize, which leaves the column untouched.
 	 */
 	cancellation?: CancellationOrigin | null;
+	/** Structured Planning scope persisted only after a successful normal Planning run. */
+	planningScope?: ProposedScope;
+	/** Evidence-based explanation for a terminal failure; raw `error` remains untouched. */
+	failureDiagnosis?: FailureDiagnosis;
 }
 
 /**
@@ -194,6 +200,8 @@ export async function completeRun(runId: string, input: CompleteRunInput): Promi
 			reviewAutomationOutcome: input.reviewAutomationOutcome,
 			recovery: input.recovery,
 			cancellation: input.cancellation,
+			planningScope: input.planningScope,
+			failureDiagnosis: input.failureDiagnosis,
 			completedAt: new Date(),
 		})
 		.where(eq(runs.id, runId));
@@ -269,6 +277,10 @@ export async function resetRunToRunning(
 			// recorded origin so a genuine failure this time never shows a stale
 			// "cancelled via dashboard" origin left over from before the retry.
 			cancellation: null,
+			// A retry must not carry forward an explanation from its prior terminal
+			// attempt. Planning scope remains as its last successful artifact until a
+			// new successful Planning attempt replaces it.
+			failureDiagnosis: null,
 			...(jobPayload !== undefined ? { jobPayload } : {}),
 			...(model !== undefined ? { model } : {}),
 			...(timeoutMs !== undefined ? { timeoutMs } : {}),
@@ -304,7 +316,12 @@ export async function markRunUserTerminated(
 	reason: string,
 	fromStatus?: RunStatus,
 ): Promise<boolean> {
-	return failRunFromStatus(runId, reason, fromStatus);
+	return failRunFromStatus(
+		runId,
+		reason,
+		fromStatus,
+		diagnoseFailure({ knownCondition: 'user-terminated' }),
+	);
 }
 
 /**
@@ -318,6 +335,7 @@ export async function failRunFromStatus(
 	runId: string,
 	reason: string,
 	fromStatus?: RunStatus,
+	failureDiagnosis?: FailureDiagnosis,
 ): Promise<boolean> {
 	const rows = await getDb()
 		.update(runs)
@@ -326,6 +344,7 @@ export async function failRunFromStatus(
 			error: reason,
 			nextRetryAt: null,
 			agentSessionId: null,
+			failureDiagnosis,
 			completedAt: new Date(),
 		})
 		.where(fromStatus ? and(eq(runs.id, runId), eq(runs.status, fromStatus)) : eq(runs.id, runId))
@@ -405,6 +424,7 @@ export async function cancelDeferredRunInDb(
 				agentSessionId: run.agentSessionId,
 				recovery: recoveryVal,
 				cancellation,
+				failureDiagnosis: diagnoseFailure({ knownCondition: 'user-terminated' }),
 				completedAt: new Date(),
 			})
 			.where(eq(runs.id, runId));
@@ -432,6 +452,32 @@ export async function getLatestRunForTask(
 		.orderBy(desc(runs.startedAt))
 		.limit(1);
 	return rows[0];
+}
+
+/**
+ * Resolve the newest successful Planning scope for this exact project/task.
+ * Failed, deferred, unrelated, and pre-scope historical runs are intentionally
+ * ignored: absence is evidence we do not have, never evidence of oversized work.
+ */
+export async function getLatestCompletedPlanningScope(
+	projectId: string,
+	taskId: string,
+): Promise<ProposedScope | undefined> {
+	const rows = await getDb()
+		.select({ planningScope: runs.planningScope })
+		.from(runs)
+		.where(
+			and(
+				eq(runs.projectId, projectId),
+				eq(runs.taskId, taskId),
+				eq(runs.phase, 'planning'),
+				eq(runs.status, 'completed'),
+				isNotNull(runs.planningScope),
+			),
+		)
+		.orderBy(desc(runs.completedAt), desc(runs.startedAt))
+		.limit(1);
+	return rows[0]?.planningScope ?? undefined;
 }
 
 /**

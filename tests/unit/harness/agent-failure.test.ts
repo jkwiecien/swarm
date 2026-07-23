@@ -171,6 +171,17 @@ describe('classifyAgentFailure', () => {
 		expect(failure).toEqual({ kind: 'capacity' });
 	});
 
+	it('prioritizes a capacity banner over a trailing response-stall marker', () => {
+		const failure = classifyAgentFailure(
+			result({
+				cli: 'codex',
+				stderr: 'Selected model is at capacity\nError: timeout waiting for response',
+			}),
+			NOW,
+		);
+		expect(failure).toEqual({ kind: 'capacity' });
+	});
+
 	it('does not classify a non-Codex run as capacity even when the phrase appears in output', () => {
 		// A Claude/Antigravity run can quote or discuss the Codex capacity phrase
 		// in code, test fixtures, or review text. Without the cli gate this would
