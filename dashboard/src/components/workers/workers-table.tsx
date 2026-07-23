@@ -1,33 +1,57 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { Modal, ModalFooter } from '@/components/ui/modal.js';
 import { formatRelativeTime } from '@/lib/format.js';
-import { trpc } from '@/lib/trpc.js';
-import type { WorkerEnrollmentSummary, WorkerRow } from '@/types/workers.js';
+import { trpc, trpcClient } from '@/lib/trpc.js';
+import type {
+	OwnerWorker,
+	WorkerEnrollmentStatus,
+	WorkerEnrollmentSummary,
+	WorkerRosterEntry,
+	WorkerRow,
+} from '@/types/workers.js';
 
 /**
- * The read-only worker roster (issue #133): one row per worker the viewer may
- * see, with connectivity, declared CLI capabilities, the run it is executing,
- * and its enrollment/approval state per visible project.
+ * The worker roster (issue #133): one row per worker the viewer may see, with
+ * connectivity, declared CLI capabilities, the run it is executing, and its
+ * enrollment/approval state per visible project.
  *
- * Deliberately actionless — no row menu, form, or control. Worker start/stop,
- * force-disconnect, enrollment approval, and assignment routing are out of scope
- * for this screen, so there is nothing here to click except the run link.
+ * The one operable affordance (issue #282) is the owner-controlled **sharing
+ * consent** switch: it renders only for an enrollment the signed-in operator
+ * *owns* — established by its presence in `workers.listMine`, never inferred from
+ * a client-supplied owner claim — and toggling it calls `workers.setConsent`,
+ * which re-checks ownership server-side. Disabling opens a confirmation because
+ * it blocks *future* automatic dispatch immediately; it never kills a running
+ * agent. Everything else here stays read-only — approval, routing, and machine
+ * lifecycle are out of scope for this screen.
+ *
+ * Availability/consent state, effective allowed CLIs, and per-project busy state
+ * come from `workers.roster` (readable by any project `contributor`), so a
+ * project administrator can see when an enrolled worker is unavailable because
+ * its owner revoked sharing — with no machine path, token, or credential.
  */
 
 interface WorkersTableProps {
 	workers: WorkerRow[];
+	refetchInterval?: number;
 }
 
-const ENROLLMENT_LABELS: Record<WorkerEnrollmentSummary['status'], string> = {
+const ENROLLMENT_LABELS: Record<WorkerEnrollmentStatus, string> = {
 	pending: 'Pending',
 	active: 'Active',
 	suspended: 'Suspended',
 };
 
-const ENROLLMENT_BADGE_CLASSES: Record<WorkerEnrollmentSummary['status'], string> = {
+const ENROLLMENT_BADGE_CLASSES: Record<WorkerEnrollmentStatus, string> = {
 	pending: 'text-amber-400 bg-amber-950/20 border-amber-900/30',
 	active: 'text-emerald-400 bg-emerald-950/20 border-emerald-900/30',
 	suspended: 'text-red-400 bg-red-950/20 border-red-900/30',
 };
+
+/** A stable key for one `(worker, project)` enrollment across the roster/owner read models. */
+function enrollmentKey(workerId: string, projectId: string): string {
+	return `${workerId}::${projectId}`;
+}
 
 /** Online is a live status dot; offline stays neutral with its last-seen time beside it. */
 function ConnectionCell({ worker }: { worker: WorkerRow }) {
@@ -53,11 +77,317 @@ function ConnectionCell({ worker }: { worker: WorkerRow }) {
 	);
 }
 
-export function WorkersTable({ workers }: WorkersTableProps) {
+/** The availability line derived from server-side `isRoutable` — never inferred client-side. */
+function AvailabilityLabel({
+	status,
+	roster,
+	rosterUnavailable,
+	rosterLoading,
+}: {
+	status: WorkerEnrollmentStatus;
+	roster: WorkerRosterEntry | undefined;
+	rosterUnavailable: boolean;
+	rosterLoading: boolean;
+}) {
+	if (rosterUnavailable || rosterLoading || !roster) {
+		// Don't infer a sharing state from incomplete data: only note it when the
+		// roster query for this project actually failed or is loading, otherwise stay silent.
+		return rosterUnavailable || rosterLoading ? (
+			<span className="text-[10px] text-zinc-500">Sharing state unavailable</span>
+		) : null;
+	}
+	if (roster.isRoutable) {
+		return (
+			<span className="text-[10px] font-medium text-emerald-400">Available to this project</span>
+		);
+	}
+	if (status === 'active' && !roster.sharingConsent) {
+		return <span className="text-[10px] font-medium text-zinc-400">Not sharing</span>;
+	}
+	return <span className="text-[10px] text-zinc-500">Not routable</span>;
+}
+
+/** An accessible on/off switch for owner-controlled sharing consent. */
+function ConsentSwitch({
+	sharing,
+	pending,
+	label,
+	onToggle,
+}: {
+	sharing: boolean;
+	pending: boolean;
+	label: string;
+	onToggle: (next: boolean) => void;
+}) {
+	return (
+		<button
+			type="button"
+			role="switch"
+			aria-checked={sharing}
+			aria-label={label}
+			disabled={pending}
+			onClick={() => onToggle(!sharing)}
+			className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-1 focus:ring-offset-panel disabled:opacity-50 disabled:cursor-not-allowed ${
+				sharing ? 'bg-emerald-600' : 'bg-zinc-700'
+			}`}
+		>
+			<span
+				className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${
+					sharing ? 'translate-x-3.5' : 'translate-x-0.5'
+				}`}
+			/>
+		</button>
+	);
+}
+
+interface EnrollmentItemProps {
+	enrollment: WorkerEnrollmentSummary;
+	projectName: string;
+	worker: WorkerRow;
+	roster: WorkerRosterEntry | undefined;
+	rosterUnavailable: boolean;
+	rosterLoading: boolean;
+	ownedEnrollmentId: string | undefined;
+	pending: boolean;
+	error: string | null;
+	onToggle: (args: {
+		enrollmentId: string;
+		projectId: string;
+		workerName: string;
+		projectName: string;
+		next: boolean;
+	}) => void;
+}
+
+/** One `(worker, project)` enrollment: name, approval state, availability, allowed CLIs, and — for an owned enrollment — the consent switch. */
+function EnrollmentItem({
+	enrollment,
+	projectName,
+	worker,
+	roster,
+	rosterUnavailable,
+	rosterLoading,
+	ownedEnrollmentId,
+	pending,
+	error,
+	onToggle,
+}: EnrollmentItemProps) {
+	const sharing = roster?.sharingConsent ?? false;
+	return (
+		<li className="space-y-1 text-xs text-zinc-300">
+			<div className="flex items-center gap-2">
+				<span className="font-mono">{projectName}</span>
+				<span
+					className={`px-2 py-0.5 text-[10px] font-semibold rounded-full border ${ENROLLMENT_BADGE_CLASSES[enrollment.status]}`}
+				>
+					{ENROLLMENT_LABELS[enrollment.status]}
+				</span>
+				{roster?.runState.busy ? (
+					<span className="text-[10px] font-medium text-amber-400">Busy</span>
+				) : roster ? (
+					<span className="text-[10px] text-zinc-500">Idle</span>
+				) : null}
+				{ownedEnrollmentId && roster && !rosterUnavailable && !rosterLoading ? (
+					<ConsentSwitch
+						sharing={sharing}
+						pending={pending}
+						label={`Share ${worker.displayName} with ${projectName}`}
+						onToggle={(next) =>
+							onToggle({
+								enrollmentId: ownedEnrollmentId,
+								projectId: enrollment.projectId,
+								workerName: worker.displayName,
+								projectName,
+								next,
+							})
+						}
+					/>
+				) : null}
+			</div>
+			<div className="flex flex-wrap items-center gap-1.5">
+				<AvailabilityLabel
+					status={enrollment.status}
+					roster={roster}
+					rosterUnavailable={rosterUnavailable}
+					rosterLoading={rosterLoading}
+				/>
+				{roster && roster.allowedClis.length > 0 ? (
+					<span className="flex flex-wrap gap-1" title="Effective allowed CLIs for this project">
+						{roster.allowedClis.map((cli) => (
+							<span
+								key={cli}
+								className="px-1.5 py-0.5 text-[9px] uppercase font-mono font-bold tracking-wider bg-violet-950/30 text-violet-300 rounded border border-violet-900/30"
+							>
+								{cli}
+							</span>
+						))}
+					</span>
+				) : null}
+			</div>
+			{error ? <div className="text-[10px] text-red-400">{error}</div> : null}
+		</li>
+	);
+}
+
+interface ConfirmTarget {
+	enrollmentId: string;
+	projectId: string;
+	workerName: string;
+	projectName: string;
+}
+
+export function WorkersTable({ workers, refetchInterval }: WorkersTableProps) {
+	const queryClient = useQueryClient();
+
 	// Resolve project display names the same way RunsTable does; the roster falls
 	// back to the raw project id when this auxiliary lookup is unavailable.
 	const projectsQuery = useQuery(trpc.projects.list.queryOptions());
 	const projectNames = new Map(projectsQuery.data?.map((p) => [p.id, p.name]) ?? []);
+
+	// The signed-in operator's own workers — presence here is what authorizes a
+	// consent control for an enrollment.
+	const mineQuery = useQuery({
+		...trpc.workers.listMine.queryOptions(),
+		refetchInterval,
+	});
+
+	// Every project any visible worker is enrolled in is, by construction, one the
+	// viewer may access (the server strips inaccessible enrollments), so a roster
+	// query per project is authorized. This supplies consent/routability/allowed
+	// CLIs/busy for all viewers, including a project admin looking at others' workers.
+	const projectIds = [...new Set(workers.flatMap((w) => w.enrollments.map((e) => e.projectId)))];
+	const rosterQueries = useQueries({
+		queries: projectIds.map((projectId) => ({
+			...trpc.workers.roster.queryOptions({ projectId }),
+			refetchInterval,
+		})),
+	});
+
+	const rosterByKey = new Map<string, WorkerRosterEntry>();
+	const rosterLoadingProjects = new Set<string>();
+	const rosterErrorProjects = new Set<string>();
+	rosterQueries.forEach((query, index) => {
+		const projectId = projectIds[index];
+		if (query.isLoading) rosterLoadingProjects.add(projectId);
+		if (query.isError) rosterErrorProjects.add(projectId);
+		for (const entry of query.data ?? []) {
+			rosterByKey.set(enrollmentKey(entry.workerId, entry.projectId), entry);
+		}
+	});
+
+	const ownedEnrollmentIdByKey = new Map<string, string>();
+	for (const owned of mineQuery.data ?? []) {
+		for (const enrollment of owned.enrollments) {
+			ownedEnrollmentIdByKey.set(
+				enrollmentKey(owned.workerId, enrollment.projectId),
+				enrollment.enrollmentId,
+			);
+		}
+	}
+
+	const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null);
+
+	const consentMutation = useMutation({
+		mutationFn: (variables: { enrollmentId: string; projectId: string; sharingConsent: boolean }) =>
+			trpcClient.workers.setConsent.mutate({
+				enrollmentId: variables.enrollmentId,
+				sharingConsent: variables.sharingConsent,
+			}),
+		onSuccess: (updated, variables) => {
+			// Reflect the new consent (and the derived routable state) immediately in
+			// both canonical caches so the row flips before the refetch lands…
+			// The write path returns the raw enrollment row, whose id is the
+			// enrollment id the read models expose as `enrollmentId`.
+			patchRosterCache(variables.projectId, updated.id, updated.sharingConsent, updated.status);
+			patchMineCache(updated.id, updated.sharingConsent, updated.status);
+			// …then invalidate both for authoritative reconciliation.
+			queryClient.invalidateQueries({
+				queryKey: trpc.workers.roster.queryOptions({ projectId: variables.projectId }).queryKey,
+			});
+			queryClient.invalidateQueries({
+				queryKey: trpc.workers.listMine.queryOptions().queryKey,
+			});
+			setConfirmTarget(null);
+		},
+	});
+
+	function patchRosterCache(
+		projectId: string,
+		enrollmentId: string,
+		sharingConsent: boolean,
+		status: WorkerEnrollmentStatus,
+	) {
+		queryClient.setQueryData<WorkerRosterEntry[]>(
+			trpc.workers.roster.queryOptions({ projectId }).queryKey,
+			(old) =>
+				old?.map((entry) =>
+					entry.enrollmentId === enrollmentId
+						? { ...entry, sharingConsent, isRoutable: status === 'active' && sharingConsent }
+						: entry,
+				),
+		);
+	}
+
+	function patchMineCache(
+		enrollmentId: string,
+		sharingConsent: boolean,
+		status: WorkerEnrollmentStatus,
+	) {
+		queryClient.setQueryData<OwnerWorker[]>(trpc.workers.listMine.queryOptions().queryKey, (old) =>
+			old?.map((owned) => ({
+				...owned,
+				enrollments: owned.enrollments.map((enrollment) =>
+					enrollment.enrollmentId === enrollmentId
+						? { ...enrollment, sharingConsent, isRoutable: status === 'active' && sharingConsent }
+						: enrollment,
+				),
+			})),
+		);
+	}
+
+	function handleToggle(args: {
+		enrollmentId: string;
+		projectId: string;
+		workerName: string;
+		projectName: string;
+		next: boolean;
+	}) {
+		if (args.next) {
+			// Enabling has no destructive consequence — apply it directly.
+			consentMutation.mutate({
+				enrollmentId: args.enrollmentId,
+				projectId: args.projectId,
+				sharingConsent: true,
+			});
+			return;
+		}
+		// Disabling blocks future dispatch — confirm first.
+		setConfirmTarget({
+			enrollmentId: args.enrollmentId,
+			projectId: args.projectId,
+			workerName: args.workerName,
+			projectName: args.projectName,
+		});
+	}
+
+	function confirmDisable() {
+		if (!confirmTarget) return;
+		consentMutation.mutate({
+			enrollmentId: confirmTarget.enrollmentId,
+			projectId: confirmTarget.projectId,
+			sharingConsent: false,
+		});
+	}
+
+	const pendingEnrollmentId = consentMutation.isPending
+		? consentMutation.variables?.enrollmentId
+		: undefined;
+	// Surface an inline (non-modal) error only for a failed *enable*; a failed
+	// disable is shown inside its confirmation dialog, which stays open.
+	const inlineErrorEnrollmentId =
+		consentMutation.isError && consentMutation.variables?.sharingConsent === true && !confirmTarget
+			? consentMutation.variables?.enrollmentId
+			: undefined;
 
 	return (
 		<div className="border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm">
@@ -128,22 +458,36 @@ export function WorkersTable({ workers }: WorkersTableProps) {
 							</td>
 							<td className="px-3 py-3">
 								{worker.enrollments.length > 0 ? (
-									<ul className="space-y-1">
-										{worker.enrollments.map((enrollment) => (
-											<li
-												key={enrollment.projectId}
-												className="flex items-center gap-2 text-xs text-zinc-300"
-											>
-												<span className="font-mono">
-													{projectNames.get(enrollment.projectId) ?? enrollment.projectId}
-												</span>
-												<span
-													className={`px-2 py-0.5 text-[10px] font-semibold rounded-full border ${ENROLLMENT_BADGE_CLASSES[enrollment.status]}`}
-												>
-													{ENROLLMENT_LABELS[enrollment.status]}
-												</span>
-											</li>
-										))}
+									<ul className="space-y-2">
+										{worker.enrollments.map((enrollment) => {
+											const key = enrollmentKey(worker.workerId, enrollment.projectId);
+											const ownedEnrollmentId = ownedEnrollmentIdByKey.get(key);
+											return (
+												<EnrollmentItem
+													key={enrollment.projectId}
+													enrollment={enrollment}
+													projectName={
+														projectNames.get(enrollment.projectId) ?? enrollment.projectId
+													}
+													worker={worker}
+													roster={rosterByKey.get(key)}
+													rosterUnavailable={rosterErrorProjects.has(enrollment.projectId)}
+													rosterLoading={rosterLoadingProjects.has(enrollment.projectId)}
+													ownedEnrollmentId={ownedEnrollmentId}
+													pending={
+														ownedEnrollmentId !== undefined &&
+														pendingEnrollmentId === ownedEnrollmentId
+													}
+													error={
+														ownedEnrollmentId !== undefined &&
+														inlineErrorEnrollmentId === ownedEnrollmentId
+															? (consentMutation.error?.message ?? null)
+															: null
+													}
+													onToggle={handleToggle}
+												/>
+											);
+										})}
 									</ul>
 								) : (
 									<span className="text-xs text-zinc-500">Not enrolled</span>
@@ -153,6 +497,54 @@ export function WorkersTable({ workers }: WorkersTableProps) {
 					))}
 				</tbody>
 			</table>
+
+			<Modal
+				open={!!confirmTarget}
+				onClose={() => {
+					if (!consentMutation.isPending) setConfirmTarget(null);
+				}}
+				title="Stop sharing this worker?"
+			>
+				<div className="space-y-4">
+					<p className="text-sm text-zinc-400 leading-relaxed">
+						Disabling sharing for{' '}
+						<span className="font-semibold text-zinc-200">{confirmTarget?.workerName}</span> on{' '}
+						<span className="font-mono text-zinc-300">{confirmTarget?.projectName}</span> blocks{' '}
+						<span className="text-zinc-200">future automatic dispatch</span> immediately. It{' '}
+						<span className="text-zinc-200">does not stop a run already in progress</span> — the
+						current run finishes normally.
+					</p>
+
+					{consentMutation.isError && confirmTarget ? (
+						<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+							{consentMutation.error.message}
+						</div>
+					) : null}
+
+					<ModalFooter
+						primary={
+							<button
+								type="button"
+								onClick={confirmDisable}
+								disabled={consentMutation.isPending}
+								className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-red-600 rounded-md hover:bg-red-500 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+							>
+								{consentMutation.isPending ? 'Stopping…' : 'Stop sharing'}
+							</button>
+						}
+						secondary={
+							<button
+								type="button"
+								onClick={() => setConfirmTarget(null)}
+								disabled={consentMutation.isPending}
+								className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-zinc-300 bg-zinc-900 border border-zinc-800 rounded-md hover:bg-zinc-800 hover:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-violet-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+							>
+								Cancel
+							</button>
+						}
+					/>
+				</div>
+			</Modal>
 		</div>
 	);
 }

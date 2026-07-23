@@ -1,13 +1,15 @@
 /**
- * Mirrors the server `workers.list` contract (`listDashboardWorkers`,
- * `src/identity/worker-enrollment-service.ts`, issue #133). The web package
- * doesn't import server modules, so this re-declares the shape here the same way
- * `RunRow` (`./runs.ts`) hand-mirrors the runs row — keep it in step with the
- * service's `DashboardWorkerView`.
+ * Mirrors the server worker read models (`src/identity/worker-enrollment-service.ts`).
+ * The web package doesn't import server modules, so this re-declares the shapes
+ * here the same way `RunRow` (`./runs.ts`) hand-mirrors the runs row — keep them
+ * in step with the service's `DashboardWorkerView`, `WorkerRosterEntry`, and
+ * `OwnerWorkerView`.
  *
- * Everything here is read-only and secret-free by construction on the server: no
- * machine path, credential, token, allowed-CLI constraint, or approval control
- * crosses the wire, so the screen has nothing operable to render.
+ * Everything here is secret-free by construction on the server: no machine path,
+ * credential, token, or credential hash crosses the wire. The one operable field
+ * the Workers screen exposes is the owner-controlled `sharingConsent` toggle
+ * (#282) — wired to `workers.setConsent`, which enforces ownership server-side;
+ * everything else (approval, routing, machine lifecycle) stays read-only.
  */
 
 /** Whether the worker's lease is live under the heartbeat TTL right now. */
@@ -41,4 +43,61 @@ export interface WorkerRow {
 	currentRunId: string | null;
 	/** Only enrollments in projects the viewer may access; empty for an un-enrolled machine. */
 	enrollments: WorkerEnrollmentSummary[];
+}
+
+/**
+ * Derived busy/current-run state for a worker (server-derived from run
+ * lifecycle, never client-supplied). Mirrors the service `WorkerRunState`.
+ */
+export interface WorkerRunState {
+	busy: boolean;
+	currentRunId: string | null;
+}
+
+/**
+ * One entry of a project's worker roster (`workers.roster`, mirroring the
+ * service `WorkerRosterEntry`). Read by any project `contributor`, so a project
+ * administrator can see why an enrolled worker is unavailable (`sharingConsent`
+ * off → not `isRoutable`) without any private machine detail. Secret-free.
+ */
+export interface WorkerRosterEntry {
+	enrollmentId: string;
+	workerId: string;
+	projectId: string;
+	displayName: string;
+	owner: WorkerOwner | null;
+	capabilities: string[];
+	status: WorkerEnrollmentStatus;
+	/** Effective CLIs this project may run on the worker — a subset of its capabilities. */
+	allowedClis: string[];
+	concurrencyAllocation: number;
+	sharingConsent: boolean;
+	/** Server-derived: `active` **and** consented. The only field the dispatch gate reads. */
+	isRoutable: boolean;
+	runState: WorkerRunState;
+}
+
+/** One enrollment in the caller's own-worker view (`workers.listMine`). Secret-free. */
+export interface OwnerEnrollment {
+	enrollmentId: string;
+	projectId: string;
+	status: WorkerEnrollmentStatus;
+	allowedClis: string[];
+	concurrencyAllocation: number;
+	sharingConsent: boolean;
+	isRoutable: boolean;
+}
+
+/**
+ * One worker the signed-in operator owns, with its enrollments across projects
+ * (`workers.listMine`, mirroring the service `OwnerWorkerView`). Presence of an
+ * enrollment here — not a client-supplied owner claim — is what authorizes the
+ * dashboard to render a sharing-consent control for it. Secret-free.
+ */
+export interface OwnerWorker {
+	workerId: string;
+	displayName: string;
+	capabilities: string[];
+	runState: WorkerRunState;
+	enrollments: OwnerEnrollment[];
 }
