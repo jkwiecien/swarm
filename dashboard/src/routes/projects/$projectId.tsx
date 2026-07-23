@@ -51,8 +51,6 @@ import {
 } from '@/lib/phase-prompt.js';
 import {
 	autoAdvanceConfigPhase,
-	buildPipelineToggleUpdate,
-	buildReviewChecksPolicyUpdate,
 	isRespondToReviewLocked,
 	isReviewChecksPolicyDirty,
 	PIPELINE_TOGGLE_PHASES,
@@ -81,6 +79,7 @@ import type {
 	AgentsConfig,
 	AgentTarget,
 	PipelineConfig,
+	ProjectConfig,
 	ReviewChecksPolicy,
 } from '../../../../src/config/schema.js';
 import type { AgentCli } from '../../../../src/harness/agent-cli.js';
@@ -1635,6 +1634,12 @@ interface UseToggleAutoSaveArgs {
 	setPipelineEnabled: React.Dispatch<React.SetStateAction<PipelineEnabledForm>>;
 	pipelineAutoAdvance: PipelineAutoAdvanceForm;
 	setPipelineAutoAdvance: React.Dispatch<React.SetStateAction<PipelineAutoAdvanceForm>>;
+	/**
+	 * True while a *different* config write (a tab's Save Changes) is in flight.
+	 * A toggle flip is refused while it's set so the toggle's read-merge-upsert
+	 * can never overlap another write's — the two paths stay serialized (#369).
+	 */
+	blocked: boolean;
 }
 
 /**
@@ -1649,6 +1654,14 @@ interface UseToggleAutoSaveArgs {
  * that component keeps its cognitive-complexity budget and this contract lives in
  * one place.
  *
+ * Serialization is two-way: a toggle refuses to fire while `blocked` (a tab's Save
+ * Changes mutation is running) or while another toggle is still saving, and the
+ * route in turn disables every tab's Save while `savingToggleKey` is set. Both the
+ * toggle path and the Save-Changes path read-merge-upsert the pipeline config
+ * server-side, so letting two overlap would let the later upsert clobber the
+ * earlier one's change (the re-review's lost-update race, #369). Keeping only one
+ * config write in flight at a time removes that race at the source.
+ *
  * Keeps the query cache in sync directly using setQueryData on success, ensuring
  * that concurrent saves have the latest persisted state.
  */
@@ -1658,6 +1671,7 @@ export function useToggleAutoSave({
 	setPipelineEnabled,
 	pipelineAutoAdvance,
 	setPipelineAutoAdvance,
+	blocked,
 }: UseToggleAutoSaveArgs) {
 	const [savingToggleKey, setSavingToggleKey] = useState<string>();
 	const queryClient = useQueryClient();
@@ -1685,6 +1699,9 @@ export function useToggleAutoSave({
 	};
 
 	const handleEnabledChange = (phase: PipelineTogglePhase, enabled: boolean) => {
+		// Refuse to start a write while another config write is in flight — the
+		// toggle stays disabled in the UI too, this guards Enter/programmatic paths.
+		if (blocked || savingToggleKey !== undefined) return;
 		const prev = pipelineEnabled;
 		const next = setPhaseEnabled(prev, phase, enabled);
 		setPipelineEnabled(next);
@@ -1705,6 +1722,7 @@ export function useToggleAutoSave({
 	};
 
 	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
+		if (blocked || savingToggleKey !== undefined) return;
 		const prev = pipelineAutoAdvance;
 		const next = setAutoAdvanceEnabled(prev, phase, enabled);
 		setPipelineAutoAdvance(next);
@@ -1721,6 +1739,44 @@ export function useToggleAutoSave({
 		toggleErrorMessage: mutation.isError ? (mutation.error?.message ?? 'Unknown error') : undefined,
 		handleEnabledChange,
 		handleAutoAdvanceChange,
+	};
+}
+
+export interface ProjectSyncFlags {
+	general: boolean;
+	agents: boolean;
+	pipeline: boolean;
+	boardMapping: boolean;
+}
+
+/**
+ * Which slices of a freshly-loaded project differ from the last one synced into
+ * form state. The route re-syncs *only* the changed slices, so a write that
+ * touches one slice never resets a sibling slice's unsaved edits: an Agents-tab
+ * toggle auto-save changes only `pipeline`, so a `setQueryData`/refetch it triggers
+ * leaves `agents` unchanged here and the user's open target/timeout/prompt edits
+ * survive — the two save paths stay independent (#369). A first sync (`prev`
+ * undefined) reports every slice changed so the form seeds from the initial load.
+ */
+export function diffProjectForSync(
+	prev: ProjectConfig | undefined,
+	next: ProjectConfig,
+): ProjectSyncFlags {
+	if (!prev) {
+		return { general: true, agents: true, pipeline: true, boardMapping: true };
+	}
+	return {
+		general:
+			next.name !== prev.name ||
+			next.repo !== prev.repo ||
+			next.repoRoot !== prev.repoRoot ||
+			next.worktreeRoot !== prev.worktreeRoot ||
+			next.baseBranch !== prev.baseBranch ||
+			next.branchPrefix !== prev.branchPrefix ||
+			next.maxConcurrentJobs !== prev.maxConcurrentJobs,
+		agents: JSON.stringify(next.agents) !== JSON.stringify(prev.agents),
+		pipeline: JSON.stringify(next.pipeline) !== JSON.stringify(prev.pipeline),
+		boardMapping: JSON.stringify(next.githubProjects) !== JSON.stringify(prev.githubProjects),
 	};
 }
 
@@ -1797,26 +1853,14 @@ function ProjectDetailRouteComponent() {
 
 	useEffect(() => {
 		if (project) {
-			const last = lastSyncedProjectRef.current;
-			const generalConfigChanged =
-				!last ||
-				project.name !== last.name ||
-				project.repo !== last.repo ||
-				project.repoRoot !== last.repoRoot ||
-				project.worktreeRoot !== last.worktreeRoot ||
-				project.baseBranch !== last.baseBranch ||
-				project.branchPrefix !== last.branchPrefix ||
-				project.maxConcurrentJobs !== last.maxConcurrentJobs;
+			// Re-sync only the slices that actually changed on the server since the
+			// last load. This is what keeps a toggle auto-save (which changes only
+			// `pipeline`) from resetting unsaved Agents/General/Board edits when its
+			// success `setQueryData` — or any concurrent refetch — updates the cache
+			// (#369). See {@link diffProjectForSync}.
+			const changed = diffProjectForSync(lastSyncedProjectRef.current, project);
 
-			const agentsChanged = !last || JSON.stringify(project.agents) !== JSON.stringify(last.agents);
-
-			const pipelineChanged =
-				!last || JSON.stringify(project.pipeline) !== JSON.stringify(last.pipeline);
-
-			const boardMappingChanged =
-				!last || JSON.stringify(project.githubProjects) !== JSON.stringify(last.githubProjects);
-
-			if (generalConfigChanged) {
+			if (changed.general) {
 				setName(project.name);
 				setRepo(project.repo);
 				setRepoRoot(project.repoRoot);
@@ -1827,11 +1871,11 @@ function ProjectDetailRouteComponent() {
 				setMaxConcurrentJobsError(undefined);
 			}
 
-			if (agentsChanged) {
+			if (changed.agents) {
 				setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
 			}
 
-			if (pipelineChanged) {
+			if (changed.pipeline) {
 				setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
 				setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
 				setAutoMerge(project.pipeline?.respondToReview?.autoMerge ?? false);
@@ -1839,7 +1883,7 @@ function ProjectDetailRouteComponent() {
 				setReviewChecksPolicy(toReviewChecksPolicyForm(project.pipeline));
 			}
 
-			if (boardMappingChanged) {
+			if (changed.boardMapping) {
 				setBoardMapping(toBoardMappingForm(project.githubProjects));
 			}
 
@@ -1881,7 +1925,17 @@ function ProjectDetailRouteComponent() {
 			setPipelineEnabled,
 			pipelineAutoAdvance,
 			setPipelineAutoAdvance,
+			blocked: updateMutation.isPending,
 		});
+
+	// Single serialization gate for every config write on this route. Both the
+	// Save-Changes flow (`updateMutation`) and the Agents-tab toggle auto-save
+	// (`useToggleAutoSave`) read-merge-upsert the project config server-side, so
+	// two overlapping writes would let the later upsert clobber the earlier one's
+	// change (the re-review's lost-update race, #369). Disabling every Save while
+	// any write is in flight — and refusing a toggle while a Save runs — keeps only
+	// one config write outstanding at a time, which removes the race at the source.
+	const configWriteInFlight = updateMutation.isPending || savingToggleKey !== undefined;
 
 	const isDirty = useMemo(() => {
 		if (!project) return false;
@@ -1996,6 +2050,9 @@ function ProjectDetailRouteComponent() {
 		// Save is disabled while the form holds an invalid value, but guard here too so
 		// an Enter-to-submit from a field can't bypass the client-side check (issue #135).
 		if (hasAgentValidationError) return;
+		// Serialize against an in-flight toggle auto-save (#369); the button is also
+		// disabled, this covers Enter-to-submit.
+		if (configWriteInFlight) return;
 		const finalAgents = cleanAgentsConfig(agents);
 		// Only `agents` — the Enabled/Auto-advance toggles persist immediately via
 		// `useToggleAutoSave`, so Save Changes must not re-send (or stomp) their state
@@ -2008,6 +2065,7 @@ function ProjectDetailRouteComponent() {
 
 	const handlePipelineSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
+		if (configWriteInFlight) return;
 		updateMutation.mutate({
 			id: projectId,
 			pipeline: {
@@ -2052,6 +2110,7 @@ function ProjectDetailRouteComponent() {
 
 	const handleBoardMappingSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
+		if (configWriteInFlight) return;
 		updateMutation.mutate({
 			id: projectId,
 			githubProjects: buildGithubProjectsUpdate(boardMapping, project?.githubProjects),
@@ -2074,6 +2133,7 @@ function ProjectDetailRouteComponent() {
 
 	const handleSubmit = (e: React.FormEvent) => {
 		e.preventDefault();
+		if (configWriteInFlight) return;
 		const parsedMaxConcurrentJobs = Number(maxConcurrentJobs);
 		if (!Number.isInteger(parsedMaxConcurrentJobs) || parsedMaxConcurrentJobs < 1) {
 			setMaxConcurrentJobsError('Maximum concurrent jobs must be a positive whole number.');
@@ -2229,7 +2289,7 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handleSubmit}
 					handleReset={handleReset}
 					isDirty={isDirty}
-					isPending={updateMutation.isPending}
+					isPending={configWriteInFlight}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
 					errorMessage={updateMutation.error?.message}
@@ -2257,7 +2317,7 @@ function ProjectDetailRouteComponent() {
 					handleReset={handleAgentsReset}
 					isDirty={isAgentsDirty}
 					hasValidationError={hasAgentValidationError}
-					isPending={updateMutation.isPending}
+					isPending={configWriteInFlight}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
 					errorMessage={updateMutation.error?.message}
@@ -2286,7 +2346,7 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handlePipelineSubmit}
 					handleReset={handlePipelineReset}
 					isDirty={isPipelineDirty}
-					isPending={updateMutation.isPending}
+					isPending={configWriteInFlight}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
 					errorMessage={updateMutation.error?.message}
@@ -2302,7 +2362,7 @@ function ProjectDetailRouteComponent() {
 					handleSubmit={handleBoardMappingSubmit}
 					handleReset={handleBoardMappingReset}
 					isDirty={isBoardMappingFormDirty}
-					isPending={updateMutation.isPending}
+					isPending={configWriteInFlight}
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
 					errorMessage={updateMutation.error?.message}

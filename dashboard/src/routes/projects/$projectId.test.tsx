@@ -2,7 +2,7 @@
 
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, type Mock, vi } from 'vitest';
-import type { AgentConfig } from '../../../../src/config/schema.js';
+import type { AgentConfig, ProjectConfig } from '../../../../src/config/schema.js';
 
 const mockMutate = vi.fn();
 const mockSetQueryData = vi.fn();
@@ -64,6 +64,7 @@ vi.mock('@/lib/trpc.js', () => ({
 }));
 
 import {
+	diffProjectForSync,
 	PhaseConfigRow,
 	PhaseEnabledCell,
 	PhaseSettingsDetail,
@@ -73,6 +74,25 @@ import {
 	toggleSaveKey,
 	useToggleAutoSave,
 } from './$projectId.js';
+
+/** Minimal valid ProjectConfig for the slices `diffProjectForSync` compares. */
+function makeProject(overrides: Partial<ProjectConfig> = {}): ProjectConfig {
+	return {
+		id: 'p1',
+		name: 'Proj',
+		repo: 'owner/repo',
+		repoRoot: '/repo',
+		worktreeRoot: '.worktrees',
+		baseBranch: 'main',
+		branchPrefix: 'issue-',
+		maxConcurrentJobs: 1,
+		visibility: 'private',
+		pm: { type: 'github-projects' },
+		githubProjects: {} as ProjectConfig['githubProjects'],
+		credentials: {} as ProjectConfig['credentials'],
+		...overrides,
+	} as ProjectConfig;
+}
 
 describe('PhaseToggleSwitch', () => {
 	it('renders as a switch with the correct accessible label and state', () => {
@@ -866,6 +886,7 @@ describe('useToggleAutoSave hook', () => {
 				setPipelineEnabled,
 				pipelineAutoAdvance,
 				setPipelineAutoAdvance,
+				blocked: false,
 			}),
 		);
 
@@ -919,6 +940,7 @@ describe('useToggleAutoSave hook', () => {
 				setPipelineEnabled,
 				pipelineAutoAdvance,
 				setPipelineAutoAdvance,
+				blocked: false,
 			}),
 		);
 
@@ -939,7 +961,168 @@ describe('useToggleAutoSave hook', () => {
 		});
 	});
 
-	it('guards against overlapping saves/refetches using lastSyncedProjectRef behavior', () => {
-		expect(true).toBe(true);
+	it('refuses a toggle while a Save Changes mutation is in flight (blocked), leaving state untouched', () => {
+		mockMutateFn.mockClear();
+		const setPipelineEnabled = vi.fn();
+		const setPipelineAutoAdvance = vi.fn();
+
+		const { result } = renderHook(() =>
+			useToggleAutoSave({
+				projectId: 'p1',
+				pipelineEnabled: { review: true, respondToReview: true, respondToCi: true },
+				setPipelineEnabled,
+				pipelineAutoAdvance: { planning: false },
+				setPipelineAutoAdvance,
+				// A tab's Save Changes mutation is running: `updateMutation.isPending`
+				// is wired into `blocked` by the route.
+				blocked: true,
+			}),
+		);
+
+		act(() => {
+			result.current.handleEnabledChange('review', false);
+			result.current.handleAutoAdvanceChange('planning', true);
+		});
+
+		// No write is fired and the optimistic state is not touched — the toggle
+		// auto-save cannot overlap the in-flight Save, so neither read-merge-upsert
+		// can clobber the other (#369).
+		expect(mockMutateFn).not.toHaveBeenCalled();
+		expect(setPipelineEnabled).not.toHaveBeenCalled();
+		expect(setPipelineAutoAdvance).not.toHaveBeenCalled();
+	});
+
+	it('serializes overlapping toggle saves: a second flip is ignored until the first resolves, and Review stays disabled', async () => {
+		mockMutateFn.mockClear();
+		mockSetQueryDataFn.mockClear();
+
+		let resolveFirst: ((value: unknown) => void) | undefined;
+		const persisted = {
+			id: 'p1',
+			pipeline: { review: { enabled: false }, respondToReview: { enabled: false } },
+		};
+		mockMutateFn.mockImplementationOnce(
+			() =>
+				new Promise((res) => {
+					resolveFirst = res;
+				}),
+		);
+
+		const setPipelineEnabled = vi.fn();
+		const { result } = renderHook(() =>
+			useToggleAutoSave({
+				projectId: 'p1',
+				pipelineEnabled: { review: true, respondToReview: true, respondToCi: true },
+				setPipelineEnabled,
+				pipelineAutoAdvance: { planning: false },
+				setPipelineAutoAdvance: vi.fn(),
+				blocked: false,
+			}),
+		);
+
+		// Disable Review — its save is now in flight (the promise has not resolved).
+		act(() => {
+			result.current.handleEnabledChange('review', false);
+		});
+		expect(result.current.savingToggleKey).toBe(toggleSaveKey('review', 'enabled'));
+		expect(mockMutateFn).toHaveBeenCalledTimes(1);
+
+		// A second toggle flip while the first is outstanding is refused — writes
+		// stay serialized so the in-flight Review save can't be clobbered.
+		act(() => {
+			result.current.handleEnabledChange('respondToCi', false);
+		});
+		expect(mockMutateFn).toHaveBeenCalledTimes(1);
+
+		// Resolve the Review save: the gate clears and the cache holds the disabled
+		// Review flag the successful write persisted.
+		await act(async () => {
+			resolveFirst?.(persisted);
+		});
+		expect(result.current.savingToggleKey).toBeUndefined();
+		expect(mockSetQueryDataFn).toHaveBeenCalledWith(
+			['projects', 'getById', { id: 'p1' }],
+			persisted,
+		);
+	});
+});
+
+describe('diffProjectForSync', () => {
+	it('reports every slice changed on the first sync (no previous project)', () => {
+		expect(diffProjectForSync(undefined, makeProject())).toEqual({
+			general: true,
+			agents: true,
+			pipeline: true,
+			boardMapping: true,
+		});
+	});
+
+	it('reports no slice changed when the project is identical', () => {
+		const prev = makeProject({ agents: { defaults: {} }, pipeline: { review: { enabled: true } } });
+		const next = makeProject({ agents: { defaults: {} }, pipeline: { review: { enabled: true } } });
+		expect(diffProjectForSync(prev, next)).toEqual({
+			general: false,
+			agents: false,
+			pipeline: false,
+			boardMapping: false,
+		});
+	});
+
+	it('flags only pipeline when a toggle save changed only the pipeline — Agents/General edits are not re-synced', () => {
+		// This is the toggle-auto-save case: its success `setQueryData` (or a refetch)
+		// updates only `pipeline`, so the route must not reset the user's unsaved
+		// Agents/General/Board edits (#369).
+		const prev = makeProject({
+			agents: { defaults: {} },
+			pipeline: { review: { enabled: true } },
+		});
+		const next = makeProject({
+			agents: { defaults: {} },
+			pipeline: { review: { enabled: false } },
+		});
+		expect(diffProjectForSync(prev, next)).toEqual({
+			general: false,
+			agents: false,
+			pipeline: true,
+			boardMapping: false,
+		});
+	});
+
+	it('flags only agents when just the agents slice changed', () => {
+		const prev = makeProject({ agents: { planning: {} } });
+		const next = makeProject({ agents: { planning: { timeoutMs: 1000 } } });
+		expect(diffProjectForSync(prev, next)).toMatchObject({ agents: true, pipeline: false });
+	});
+
+	it('flags general when a scalar field like maxConcurrentJobs changed', () => {
+		const prev = makeProject({ maxConcurrentJobs: 1 });
+		const next = makeProject({ maxConcurrentJobs: 4 });
+		expect(diffProjectForSync(prev, next)).toMatchObject({ general: true, pipeline: false });
+	});
+});
+
+describe('PipelineSettingsForm serialization', () => {
+	it('disables its Save while a config write is in flight so a Pipeline save cannot overlap a toggle auto-save', () => {
+		// The route feeds `configWriteInFlight` (updateMutation.isPending OR a toggle
+		// save in flight) into `isPending`, so a toggle auto-save disables this tab's
+		// Save — the reverse half of the two-way serialization (#369).
+		render(
+			<PipelineSettingsForm
+				autoMerge={false}
+				setAutoMerge={() => {}}
+				skipRespondToReviewOnMinors={true}
+				setSkipRespondToReviewOnMinors={() => {}}
+				reviewChecksPolicy="required"
+				setReviewChecksPolicy={() => {}}
+				handleSubmit={(e) => e.preventDefault()}
+				handleReset={() => {}}
+				isDirty={true}
+				isPending={true}
+				isSuccess={false}
+				isError={false}
+			/>,
+		);
+
+		expect(screen.getByRole('button', { name: /Saving…/ })).toHaveProperty('disabled', true);
 	});
 });
