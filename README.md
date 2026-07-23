@@ -90,8 +90,15 @@ Start these processes in separate terminals:
 ```bash
 npm run dev:api                   # API server on 127.0.0.1:3101
 npm run dev:dashboard             # Vite dashboard on localhost:5173
-npm run dev:worker                # host worker
+npm run dev:worker                # host worker (1 job at a time by default)
+npm run dev:worker -- --concurrency 2   # …or run up to N jobs at once
 ```
+
+By default the worker runs one job at a time. Pass `--concurrency <n>` (or set
+`SWARM_WORKER_CONCURRENCY`) to raise it — the flag wins over the env var. This is
+the worker's own cap across every project it serves; a project's **Maximum
+Concurrent Jobs** setting bounds it further per project. See
+[`docs/configuration.md`](docs/configuration.md).
 
 Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
 `npm run start:api` and open <http://localhost:3101> instead.

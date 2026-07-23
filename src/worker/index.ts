@@ -46,7 +46,7 @@ import {
 import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
-import { resolveWorkerLockOptions } from './runtime-options.js';
+import { resolveWorkerConcurrency, resolveWorkerLockOptions } from './runtime-options.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -62,11 +62,10 @@ configureLogger({ component: 'worker' });
 // SWARM_LOG_FILE. The file always receives the JSON form (see logger.ts).
 addFileSink(optionalEnv('SWARM_LOG_FILE', 'logs/worker.log'));
 
-const rawConcurrency = optionalEnv('SWARM_WORKER_CONCURRENCY', '1');
-const concurrency = Number(rawConcurrency);
-if (!Number.isInteger(concurrency) || concurrency < 1) {
-	throw new Error(`SWARM_WORKER_CONCURRENCY must be a positive integer, got '${rawConcurrency}'`);
-}
+// How many jobs this worker runs at once. The `--concurrency <n>` launch flag
+// wins over the `SWARM_WORKER_CONCURRENCY` env var, which wins over the default
+// of 1 (see resolveWorkerConcurrency).
+const concurrency = resolveWorkerConcurrency();
 
 const { lockDuration, lockRenewTime } = resolveWorkerLockOptions();
 

@@ -70,7 +70,8 @@ export interface WorkerRosterEntry {
 	status: WorkerEnrollmentStatus;
 	/** Effective CLIs this project may run on the worker — a subset of its capabilities. */
 	allowedClis: string[];
-	concurrencyAllocation: number;
+	/** Optional per-worker sub-limit for this project; `null` = none (bounded by worker + project caps). */
+	concurrencyAllocation: number | null;
 	sharingConsent: boolean;
 	/** Server-derived: `active` **and** consented. The only field the dispatch gate reads. */
 	isRoutable: boolean;
@@ -83,7 +84,8 @@ export interface OwnerEnrollment {
 	projectId: string;
 	status: WorkerEnrollmentStatus;
 	allowedClis: string[];
-	concurrencyAllocation: number;
+	/** Optional per-worker sub-limit for this project; `null` = none (bounded by worker + project caps). */
+	concurrencyAllocation: number | null;
 	sharingConsent: boolean;
 	isRoutable: boolean;
 }

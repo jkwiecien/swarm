@@ -181,7 +181,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 	});
 
 	describe('federated worker execution claims', () => {
-		async function seedFederatedWorker(allocation = 1, suffix = String(allocation)) {
+		async function seedFederatedWorker(allocation: number | null = 1, suffix = String(allocation)) {
 			const owner = await createUser({
 				identifier: `owner-${suffix}@example.com`,
 				displayName: 'Owner',
@@ -267,6 +267,37 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('dispatchesRepository (int
 				{ claimed: false, reason: 'worker-unavailable' },
 			]);
 			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(1);
+		});
+
+		it('a null allocation imposes no per-worker cap — one worker fills the project slots', async () => {
+			// With allocation=1 the previous test capped a single worker at one run
+			// even when the project allowed two. A null allocation removes that
+			// per-worker sub-limit, so the same worker fills both project slots.
+			await getDb()
+				.update(projects)
+				.set({ maxConcurrentJobs: 2 })
+				.where(eq(projects.id, PROJECT_ID));
+			const { worker, session } = await seedFederatedWorker(null, 'unbounded');
+			const [first, second] = await Promise.all([
+				leasedDispatch('host-a:1'),
+				leasedDispatch('host-a:2'),
+			]);
+			const claim = (dispatch: DispatchRow) =>
+				claimWorkerForDispatch({
+					dispatchId: dispatch.id,
+					dispatchLeaseOwner: dispatch.leaseOwner ?? '',
+					projectId: PROJECT_ID,
+					selectedWorkerId: worker.id,
+					executionWorkerId: worker.id,
+					workerSessionId: session.id,
+					workerFencingToken: session.fencingToken,
+					cli: 'claude',
+					heartbeatTtlMs: 60_000,
+				});
+
+			const results = await Promise.all([claim(first), claim(second)]);
+			expect(results.filter((result) => result.claimed)).toHaveLength(2);
+			expect((await getWorkerDispatchClaimState(worker.id, PROJECT_ID)).activeRuns).toBe(2);
 		});
 
 		it('serializes two worker identities against the project concurrency limit', async () => {

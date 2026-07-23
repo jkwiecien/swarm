@@ -564,7 +564,7 @@ describe('enrollWorker', () => {
 		expect(createEnrollment).not.toHaveBeenCalled();
 	});
 
-	it('de-dupes allowed CLIs, defaults status pending / consent off / concurrency 1', async () => {
+	it('de-dupes allowed CLIs, defaults status pending / consent off / no concurrency sub-limit', async () => {
 		const worker = makeWorker({ capabilities: ['claude', 'codex'] });
 		createEnrollment.mockImplementation(async (input) => makeEnrollment(input));
 
@@ -575,7 +575,9 @@ describe('enrollWorker', () => {
 			projectId: 'proj-a',
 			status: 'pending',
 			allowedClis: ['claude'],
-			concurrencyAllocation: 1,
+			// Omitting the sub-limit now defaults to null (bounded only by the
+			// worker's --concurrency launch flag and the project cap), not 1.
+			concurrencyAllocation: null,
 			sharingConsent: false,
 		});
 	});
@@ -635,6 +637,40 @@ describe('updateEnrollmentConstraints', () => {
 		expect(updateEnrollmentConstraintsRow).toHaveBeenCalledWith(ENROLLMENT_ID, {
 			allowedClis: ['codex'],
 			concurrencyAllocation: 3,
+		});
+	});
+
+	it('clears the sub-limit when the allocation is null', async () => {
+		// `null` clears an existing per-worker cap (e.g. an enrollment created
+		// before the sub-limit became optional), leaving the worker bounded only
+		// by its --concurrency and the project cap. It must pass straight through
+		// — not be rejected by the positive-integer validator.
+		const worker = makeWorker();
+		updateEnrollmentConstraintsRow.mockResolvedValue(makeEnrollment());
+
+		await updateEnrollmentConstraints({
+			worker,
+			enrollmentId: ENROLLMENT_ID,
+			concurrencyAllocation: null,
+		});
+
+		expect(updateEnrollmentConstraintsRow).toHaveBeenCalledWith(ENROLLMENT_ID, {
+			concurrencyAllocation: null,
+		});
+	});
+
+	it('omits an unspecified allocation from the patch (leaves it unchanged)', async () => {
+		const worker = makeWorker();
+		updateEnrollmentConstraintsRow.mockResolvedValue(makeEnrollment());
+
+		await updateEnrollmentConstraints({
+			worker,
+			enrollmentId: ENROLLMENT_ID,
+			allowedClis: ['claude'],
+		});
+
+		expect(updateEnrollmentConstraintsRow).toHaveBeenCalledWith(ENROLLMENT_ID, {
+			allowedClis: ['claude'],
 		});
 	});
 });
