@@ -500,6 +500,50 @@ describe('sortQueuedRuns', () => {
 		expect(items.map((i) => i.jobId)).toEqual(['continuation', 'ordinary']);
 	});
 
+	it('orders blocked work purely by availableAt FIFO when prioritizeContinuations is false', () => {
+		const items = toQueuedRuns(
+			[
+				makeDispatch({
+					id: 'ordinary',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: false,
+					availableAt: new Date(1_700_000_010_000),
+				}),
+				makeDispatch({
+					id: 'continuation',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: true,
+					availableAt: new Date(1_700_000_050_000),
+				}),
+			],
+			{ p1: false },
+		);
+		expect(items.map((i) => i.jobId)).toEqual(['ordinary', 'continuation']);
+
+		const itemsReverse = toQueuedRuns(
+			[
+				makeDispatch({
+					id: 'ordinary',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: false,
+					availableAt: new Date(1_700_000_050_000),
+				}),
+				makeDispatch({
+					id: 'continuation',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: true,
+					availableAt: new Date(1_700_000_010_000),
+				}),
+			],
+			{ p1: false },
+		);
+		expect(itemsReverse.map((i) => i.jobId)).toEqual(['continuation', 'ordinary']);
+	});
+
 	it('orders blocked rows of the same continuation class by availableAt, not priority or creation time', () => {
 		const items = toQueuedRuns([
 			makeDispatch({

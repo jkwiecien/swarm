@@ -165,6 +165,8 @@ export const queuedRunSchema = z.object({
 	 * bucket by (mirrors the server `QueuedRunSchema.continuation`, issue #374).
 	 */
 	continuation: z.boolean(),
+	/** Whether the project has SCM continuation prioritization active. */
+	prioritizeContinuations: z.boolean(),
 	/** ISO 8601 — when the job was enqueued. */
 	enqueuedAt: z.string(),
 	/**

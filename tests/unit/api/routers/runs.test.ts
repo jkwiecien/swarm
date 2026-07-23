@@ -12,6 +12,7 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
+	listAllProjectsFromDb: vi.fn(),
 }));
 
 // The GitWorktreeManager constructor is harmless (stores config), but its methods
@@ -77,7 +78,10 @@ import {
 	listWaitingDispatches,
 	reopenDispatchForManualRetry,
 } from '@/db/repositories/dispatchesRepository.js';
-import { getProjectByIdFromDb } from '@/db/repositories/projectsRepository.js';
+import {
+	getProjectByIdFromDb,
+	listAllProjectsFromDb,
+} from '@/db/repositories/projectsRepository.js';
 import {
 	cancelDeferredRunInDb,
 	getRunByIdFromDb,
@@ -253,6 +257,8 @@ describe('runsRouter', () => {
 		vi.mocked(clearRunCancellation).mockReset();
 		vi.mocked(toQueuedRuns).mockReset();
 		vi.mocked(getProjectByIdFromDb).mockReset();
+		vi.mocked(listAllProjectsFromDb).mockReset();
+		vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
 		vi.mocked(getPMProvider).mockReset();
 		vi.mocked(getActiveDispatchByRunId).mockReset();
 		vi.mocked(getDispatchById).mockReset();
@@ -345,6 +351,7 @@ describe('runsRouter', () => {
 				contentType: 'Issue',
 				priority: 10,
 				continuation: false,
+				prioritizeContinuations: true,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
 				availableAt: '2026-07-17T10:00:00.000Z',
 			};
@@ -393,6 +400,7 @@ describe('runsRouter', () => {
 				workItemNodeId: 'PVTI_missing',
 				priority: 10,
 				continuation: false,
+				prioritizeContinuations: true,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
 				availableAt: '2026-07-17T10:00:00.000Z',
 			};
@@ -413,6 +421,7 @@ describe('runsRouter', () => {
 				prNumber: '42',
 				priority: 0,
 				continuation: false,
+				prioritizeContinuations: true,
 				enqueuedAt: '2026-07-17T10:00:00.000Z',
 				availableAt: '2026-07-17T10:00:00.000Z',
 				reviewGate: {
@@ -427,6 +436,38 @@ describe('runsRouter', () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(undefined);
 
 			expect(await caller.queued({})).toEqual([queuedItem]);
+		});
+
+		it('propagates the project-specific prioritizeContinuations policy when scoped', async () => {
+			vi.mocked(toQueuedRuns).mockReturnValue([]);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(
+				createMockProjectConfig({
+					id: 'p1',
+					pipeline: { prioritizeContinuations: false },
+				}),
+			);
+
+			await caller.queued({ projectId: 'p1' });
+
+			expect(toQueuedRuns).toHaveBeenCalledWith(expect.any(Array), { p1: false });
+		});
+
+		it('propagates all project-specific prioritizeContinuations policies when unscoped (cross-project)', async () => {
+			vi.mocked(toQueuedRuns).mockReturnValue([]);
+			vi.mocked(listAllProjectsFromDb).mockResolvedValue([
+				createMockProjectConfig({
+					id: 'p1',
+					pipeline: { prioritizeContinuations: false },
+				}),
+				createMockProjectConfig({
+					id: 'p2',
+					pipeline: { prioritizeContinuations: true },
+				}),
+			]);
+
+			await caller.queued({});
+
+			expect(toQueuedRuns).toHaveBeenCalledWith(expect.any(Array), { p1: false, p2: true });
 		});
 	});
 

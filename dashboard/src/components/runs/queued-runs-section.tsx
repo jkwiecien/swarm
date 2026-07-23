@@ -92,7 +92,7 @@ function QueuedWorkItemContent({
  * row will win a freed project slot ahead of ordinary new work (issue #374).
  */
 function ContinuationBadge({ item }: { item: QueuedRun }) {
-	if (item.state !== 'blocked' || !item.continuation) return null;
+	if (item.state !== 'blocked' || !item.continuation || !item.prioritizeContinuations) return null;
 	return (
 		<span
 			title="Prioritized continuation — takes the next freed project slot ahead of new work."

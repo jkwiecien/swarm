@@ -123,6 +123,10 @@ export const QueuedRunSchema = z.object({
 	 * `blocked` bucket by. Read-model only; mirrors `DispatchRow.continuation`.
 	 */
 	continuation: z.boolean(),
+	/**
+	 * Whether the project has SCM continuation prioritization active.
+	 */
+	prioritizeContinuations: z.boolean(),
 	/** ISO 8601 — when the dispatch was created. */
 	enqueuedAt: z.string(),
 	/**
@@ -195,7 +199,7 @@ export function deriveQueuedState(dispatch: DispatchRow): PendingJobState {
 	return dispatch.priority > 0 ? 'prioritized' : 'waiting';
 }
 
-function toQueuedRun(dispatch: DispatchRow): QueuedRun {
+function toQueuedRun(dispatch: DispatchRow, prioritizeContinuations: boolean): QueuedRun {
 	const data = dispatch.jobPayload;
 	const state = deriveQueuedState(dispatch);
 	const reviewGate = deriveReviewGate(data);
@@ -213,6 +217,7 @@ function toQueuedRun(dispatch: DispatchRow): QueuedRun {
 		attempt: dispatch.attempt,
 		priority: dispatch.priority,
 		continuation: dispatch.continuation,
+		prioritizeContinuations,
 		enqueuedAt: dispatch.createdAt.toISOString(),
 		availableAt: dispatch.availableAt.toISOString(),
 		...(state === 'delayed' ? { runsAt: dispatch.availableAt.toISOString() } : {}),
@@ -256,7 +261,9 @@ export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
 		// selectNextCapacityDispatch's wake order (continuation-first, then
 		// availableAt) instead of priority/FIFO.
 		if (a.state === 'blocked') {
-			if (a.continuation !== b.continuation) return a.continuation ? -1 : 1;
+			const aCont = a.prioritizeContinuations && a.continuation;
+			const bCont = b.prioritizeContinuations && b.continuation;
+			if (aCont !== bCont) return aCont ? -1 : 1;
 			return Date.parse(a.availableAt) - Date.parse(b.availableAt);
 		}
 		if (a.priority !== b.priority) return a.priority - b.priority;
@@ -269,11 +276,15 @@ export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
  * order them to mirror dispatch. Rows whose stored payload no longer parses are
  * skipped (they can't run either — the worker fails them at claim time).
  */
-export function toQueuedRuns(dispatches: DispatchRow[]): QueuedRun[] {
+export function toQueuedRuns(
+	dispatches: DispatchRow[],
+	projectPolicies: Record<string, boolean> = {},
+): QueuedRun[] {
 	const mapped: QueuedRun[] = [];
 	for (const dispatch of dispatches) {
 		try {
-			mapped.push(toQueuedRun(dispatch));
+			const policy = projectPolicies[dispatch.projectId] ?? true;
+			mapped.push(toQueuedRun(dispatch, policy));
 		} catch {
 			// Malformed payload — the claim path surfaces it; don't break the list.
 		}

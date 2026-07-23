@@ -45,6 +45,7 @@ const githubItem: QueuedRun = {
 	prNumber: '42',
 	priority: 0,
 	continuation: false,
+	prioritizeContinuations: true,
 	enqueuedAt: '2026-07-17T10:00:00.000Z',
 	availableAt: '2026-07-17T10:00:00.000Z',
 };
@@ -61,6 +62,7 @@ const boardItem: QueuedRun = {
 	workItemUrl: 'https://github.com/acme/widgets/issues/42',
 	priority: 5,
 	continuation: false,
+	prioritizeContinuations: true,
 	// Enqueued *earlier* than the github item on purpose (see the ordering test).
 	enqueuedAt: '2026-07-17T09:00:00.000Z',
 	availableAt: '2026-07-17T09:00:00.000Z',
@@ -238,6 +240,16 @@ describe('QueuedRunsSection', () => {
 				waitReason: undefined,
 			};
 			renderSection(<QueuedRunsSection items={[runnableContinuation]} />);
+			expect(within(cards()[0]).queryByText('Continuation')).toBeNull();
+		});
+
+		it('does not mark a blocked continuation when prioritizeContinuations is false', () => {
+			const fifoBlockedContinuation: QueuedRun = {
+				...blockedContinuation,
+				jobId: 'job-fifo-blocked-continuation',
+				prioritizeContinuations: false,
+			};
+			renderSection(<QueuedRunsSection items={[fifoBlockedContinuation]} />);
 			expect(within(cards()[0]).queryByText('Continuation')).toBeNull();
 		});
 	});
