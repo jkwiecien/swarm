@@ -639,6 +639,40 @@ describe('updateEnrollmentConstraints', () => {
 			concurrencyAllocation: 3,
 		});
 	});
+
+	it('clears the sub-limit when the allocation is null', async () => {
+		// `null` clears an existing per-worker cap (e.g. an enrollment created
+		// before the sub-limit became optional), leaving the worker bounded only
+		// by its --concurrency and the project cap. It must pass straight through
+		// — not be rejected by the positive-integer validator.
+		const worker = makeWorker();
+		updateEnrollmentConstraintsRow.mockResolvedValue(makeEnrollment());
+
+		await updateEnrollmentConstraints({
+			worker,
+			enrollmentId: ENROLLMENT_ID,
+			concurrencyAllocation: null,
+		});
+
+		expect(updateEnrollmentConstraintsRow).toHaveBeenCalledWith(ENROLLMENT_ID, {
+			concurrencyAllocation: null,
+		});
+	});
+
+	it('omits an unspecified allocation from the patch (leaves it unchanged)', async () => {
+		const worker = makeWorker();
+		updateEnrollmentConstraintsRow.mockResolvedValue(makeEnrollment());
+
+		await updateEnrollmentConstraints({
+			worker,
+			enrollmentId: ENROLLMENT_ID,
+			allowedClis: ['claude'],
+		});
+
+		expect(updateEnrollmentConstraintsRow).toHaveBeenCalledWith(ENROLLMENT_ID, {
+			allowedClis: ['claude'],
+		});
+	});
 });
 
 describe('status / consent write delegation', () => {

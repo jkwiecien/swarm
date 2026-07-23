@@ -131,7 +131,8 @@ export const workersRouter = router({
 				workerId: z.string().uuid(),
 				projectId: z.string().min(1),
 				allowedClis: AllowedClisInput,
-				concurrencyAllocation: ConcurrencyInput.optional(),
+				// Omit (or send `null`) for no per-worker sub-limit — the default.
+				concurrencyAllocation: ConcurrencyInput.nullable().optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
@@ -172,13 +173,16 @@ export const workersRouter = router({
 
 	// Update the execution constraints (allowed CLIs / concurrency) on one of the
 	// caller's enrollments. An `allowedClis` change is re-validated against the
-	// worker's capabilities (BAD_REQUEST if it exceeds them).
+	// worker's capabilities (BAD_REQUEST if it exceeds them). For
+	// `concurrencyAllocation`, omit to leave it unchanged, send a positive integer
+	// to set a per-worker sub-limit, or send `null` to clear it (bounded then only
+	// by the worker's `--concurrency` and the project cap).
 	updateConstraints: authedProcedure
 		.input(
 			z.object({
 				enrollmentId: z.string().uuid(),
 				allowedClis: AllowedClisInput.optional(),
-				concurrencyAllocation: ConcurrencyInput.optional(),
+				concurrencyAllocation: ConcurrencyInput.nullable().optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
