@@ -49,6 +49,9 @@ async function sweepProject(project: ProjectConfig, dryRun: boolean): Promise<vo
 	reportList('skipped (dirty)', result.skippedDirty, (line) =>
 		out.warn(`${line} (has uncommitted changes — clean up manually if it's no longer needed)`),
 	);
+	reportList('skipped (unpushed)', result.skippedUnpushed, (line) =>
+		out.warn(`${line} (has unpushed commits — push or discard them if it's no longer needed)`),
+	);
 	reportList('skipped (deferred session)', result.skippedDeferred);
 	if (result.ignored.length > 0) {
 		out.info(`  ignored: ${result.ignored.length}`);

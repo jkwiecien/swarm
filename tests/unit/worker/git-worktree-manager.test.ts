@@ -6,18 +6,37 @@ import { createMockProjectConfig } from '../../helpers/factories.js';
 // `promisify` resolves with whatever we pass as the callback's second arg —
 // i.e. `{ stdout, stderr }`. `gitHandler` lets each test decide the outcome of
 // every git invocation; `gitCalls` records the exact argv for assertions.
-const { claimWorktreeLeaseMock, releaseWorktreeLeaseMock } = vi.hoisted(() => ({
+const {
+	claimWorktreeLeaseMock,
+	releaseWorktreeLeaseMock,
+	tryClaimWorktreeLeaseMock,
+	isWorktreeLeasedMock,
+	hasResumableDeferredRunMock,
+} = vi.hoisted(() => ({
 	claimWorktreeLeaseMock: vi.fn(),
 	releaseWorktreeLeaseMock: vi.fn(),
+	tryClaimWorktreeLeaseMock: vi.fn(),
+	isWorktreeLeasedMock: vi.fn(),
+	hasResumableDeferredRunMock: vi.fn(),
 }));
 
 vi.mock('@/worktree/worktree-lease.js', () => ({
 	claimWorktreeLease: claimWorktreeLeaseMock,
 	releaseWorktreeLease: releaseWorktreeLeaseMock,
-	isWorktreeLeased: vi.fn(),
+	tryClaimWorktreeLease: tryClaimWorktreeLeaseMock,
+	isWorktreeLeased: isWorktreeLeasedMock,
 }));
 
-type GitOutcome = { stdout?: string; stderr?: string } | Error;
+// Consumed by the reclaim gate (`src/worktree/reclaim.ts`) to detect a resumable
+// deferred/failed run pinning a colliding checkout.
+vi.mock('@/db/repositories/runsRepository.js', () => ({
+	hasResumableDeferredRun: hasResumableDeferredRunMock,
+}));
+
+type GitOutcome =
+	| { stdout?: string; stderr?: string }
+	| Error
+	| Promise<{ stdout?: string; stderr?: string }>;
 let gitHandler: (args: string[]) => GitOutcome;
 const gitCalls: string[][] = [];
 const gitOpts: unknown[] = [];
@@ -32,8 +51,16 @@ vi.mock('node:child_process', () => ({
 		gitCalls.push(args);
 		gitOpts.push(opts);
 		const outcome = gitHandler(args);
-		if (outcome instanceof Error) cb(outcome);
-		else cb(null, { stdout: outcome.stdout ?? '', stderr: outcome.stderr ?? '' });
+		if (outcome instanceof Error) {
+			cb(outcome);
+		} else if (outcome instanceof Promise) {
+			outcome.then(
+				(res) => cb(null, { stdout: res.stdout ?? '', stderr: res.stderr ?? '' }),
+				(err) => cb(err),
+			);
+		} else {
+			cb(null, { stdout: outcome.stdout ?? '', stderr: outcome.stderr ?? '' });
+		}
 	},
 }));
 
@@ -52,7 +79,8 @@ vi.mock('node:fs', () => ({
 	},
 }));
 
-import { GitWorktreeManager, WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
+import { GitWorktreeManager } from '@/worker/git-worktree-manager.js';
+import { BlockedRecoveryError } from '@/worktree/reclaim.js';
 
 const REPO_ROOT = '/Users/dev/swarm/swarm';
 const WORKTREE_14 = `${REPO_ROOT}/.swarm-workspaces/task-14`;
@@ -65,9 +93,18 @@ describe('GitWorktreeManager', () => {
 	beforeEach(() => {
 		gitCalls.length = 0;
 		gitOpts.length = 0;
-		gitHandler = () => ({ stdout: '' });
+		gitHandler = (args) => {
+			if (args[0] === 'symbolic-ref') return { stdout: 'issue-14\n' };
+			return { stdout: '' };
+		};
 		claimWorktreeLeaseMock.mockReset();
 		releaseWorktreeLeaseMock.mockReset();
+		// Reclaim-gate defaults: the lease is free to acquire, no live lease, and no
+		// resumable run pins the checkout — so a collision reclaims unless a test
+		// says otherwise.
+		tryClaimWorktreeLeaseMock.mockReset().mockResolvedValue(true);
+		isWorktreeLeasedMock.mockReset().mockResolvedValue(false);
+		hasResumableDeferredRunMock.mockReset().mockResolvedValue(false);
 		// Default world: the repo root exists and is a git repo; no worktrees yet.
 		existingPaths = new Set([REPO_ROOT]);
 		realpaths = new Map();
@@ -164,10 +201,105 @@ describe('GitWorktreeManager', () => {
 			expect(gitCalls.some((c) => c[1] === 'add')).toBe(false);
 		});
 
-		it('throws if a worktree for the task already exists', async () => {
+		it('reclaims a safe stale checkout on collision and re-provisions (issue #367)', async () => {
 			existingPaths.add(WORKTREE_14);
-			await expect(makeManager().provision('14')).rejects.toThrow(WorktreeAlreadyExistsError);
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+			const handle = await new GitWorktreeManager(project).provision('14');
+
+			// Atomically acquired the lease, removed the stale checkout, then re-added.
+			expect(tryClaimWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14', expect.any(String));
+			expect(gitCalls).toContainEqual(['worktree', 'remove', '--force', WORKTREE_14]);
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main']);
+			expect(handle.path).toBe(WORKTREE_14);
+			expect(releaseWorktreeLeaseMock).not.toHaveBeenCalled();
+		});
+
+		it('reclaims through the original provision options (existing branch checkout)', async () => {
+			existingPaths.add(WORKTREE_14);
+			await makeManager().provision('14', { createBranch: false, branch: 'issue-14-feature' });
+			expect(gitCalls).toContainEqual(['worktree', 'remove', '--force', WORKTREE_14]);
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', WORKTREE_14, 'issue-14-feature']);
+		});
+
+		it('blocks (live-leased) without removing when the lease cannot be acquired', async () => {
+			existingPaths.add(WORKTREE_14);
+			tryClaimWorktreeLeaseMock.mockResolvedValue(false);
+
+			const err = await makeManager()
+				.provision('14')
+				.catch((e) => e);
+			expect(err).toBeInstanceOf(BlockedRecoveryError);
+			expect(err.reason).toBe('live-leased');
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'remove')).toBe(false);
 			expect(gitCalls.some((c) => c[1] === 'add')).toBe(false);
+			// Never acquired, so nothing to release.
+			expect(releaseWorktreeLeaseMock).not.toHaveBeenCalled();
+		});
+
+		it('blocks (resumable-owner) and releases the held lease without removing', async () => {
+			existingPaths.add(WORKTREE_14);
+			hasResumableDeferredRunMock.mockResolvedValue(true);
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+
+			const err = await new GitWorktreeManager(project).provision('14').catch((e) => e);
+			expect(err).toBeInstanceOf(BlockedRecoveryError);
+			expect(err.reason).toBe('resumable-owner');
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'remove')).toBe(false);
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14', expect.any(String));
+		});
+
+		it('blocks (dirty) and releases the held lease without removing', async () => {
+			existingPaths.add(WORKTREE_14);
+			gitHandler = (args) =>
+				args[0] === 'status' && args[1] === '--porcelain'
+					? { stdout: ' M file.ts\n' }
+					: { stdout: '' };
+
+			const err = await makeManager()
+				.provision('14')
+				.catch((e) => e);
+			expect(err).toBeInstanceOf(BlockedRecoveryError);
+			expect(err.reason).toBe('dirty');
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'remove')).toBe(false);
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalled();
+		});
+
+		it('blocks (unpushed) and releases the held lease without removing', async () => {
+			existingPaths.add(WORKTREE_14);
+			// Clean, on a branch, whose upstream is 2 commits behind local HEAD.
+			gitHandler = (args) => {
+				if (args[0] === 'status' && args[1] === '--porcelain') return { stdout: '' };
+				if (args[0] === 'symbolic-ref') return { stdout: 'issue-14\n' };
+				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+					return { stdout: 'origin/issue-14\n' };
+				}
+				if (args[0] === 'rev-list' && args[1] === '--count') return { stdout: '2\n' };
+				return { stdout: '' };
+			};
+
+			const err = await makeManager()
+				.provision('14')
+				.catch((e) => e);
+			expect(err).toBeInstanceOf(BlockedRecoveryError);
+			expect(err.reason).toBe('unpushed');
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'remove')).toBe(false);
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalled();
+		});
+
+		it('releases the reclaim lease if re-provisioning fails after removal', async () => {
+			existingPaths.add(WORKTREE_14);
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') return { stdout: 'issue-14\n' };
+				if (args[0] === 'worktree' && args[1] === 'add') {
+					return Object.assign(new Error('exit 128'), { stderr: 'boom' });
+				}
+				return { stdout: '' };
+			};
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+
+			await expect(new GitWorktreeManager(project).provision('14')).rejects.toThrow(/boom/);
+			expect(gitCalls).toContainEqual(['worktree', 'remove', '--force', WORKTREE_14]);
+			expect(releaseWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14', expect.any(String));
 		});
 
 		it('throws when the repo root does not exist', async () => {
@@ -250,7 +382,131 @@ describe('GitWorktreeManager', () => {
 			const project = createMockProjectConfig({ id: 'project-1' });
 			const manager = new GitWorktreeManager(project);
 			await manager.provision('14');
-			expect(claimWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14');
+			expect(claimWorktreeLeaseMock).toHaveBeenCalledWith('project-1', '14', expect.any(String));
+		});
+
+		it('concurrent provisions: only one succeeds and a failed loser cannot release the winner lease', async () => {
+			existingPaths.add(WORKTREE_14);
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+			const manager = new GitWorktreeManager(project);
+
+			let activeLeaseToken: string | null = null;
+
+			tryClaimWorktreeLeaseMock.mockImplementation(async (_projId, _tId, token) => {
+				if (activeLeaseToken && activeLeaseToken !== token) {
+					return false;
+				}
+				activeLeaseToken = token;
+				return true;
+			});
+
+			releaseWorktreeLeaseMock.mockImplementation(async (_projId, _tId, token) => {
+				if (token && activeLeaseToken === token) {
+					activeLeaseToken = null;
+				}
+			});
+
+			let resolveGitAddA!: () => void;
+			const gitAddAPromise = new Promise<void>((resolve) => {
+				resolveGitAddA = resolve;
+			});
+
+			let callCount = 0;
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') return { stdout: 'issue-14\n' };
+				if (args[0] === 'worktree' && args[1] === 'add') {
+					callCount++;
+					if (callCount === 1) {
+						return gitAddAPromise.then(() => ({ stdout: '' }));
+					}
+				}
+				return { stdout: '' };
+			};
+
+			const promiseA = manager.provision('14');
+
+			await new Promise((r) => setTimeout(r, 10));
+			const tokenA = activeLeaseToken;
+			expect(tokenA).not.toBeNull();
+
+			const promiseB = manager.provision('14');
+
+			await expect(promiseB).rejects.toThrow(BlockedRecoveryError);
+			expect(activeLeaseToken).toBe(tokenA);
+
+			resolveGitAddA();
+			const handleA = await promiseA;
+
+			expect(handleA.path).toBe(WORKTREE_14);
+			expect(activeLeaseToken).toBe(tokenA);
+		});
+
+		it('reclaims a safe pushed checkout and deletes the local branch ref before re-provisioning', async () => {
+			existingPaths.add(WORKTREE_14);
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+			const manager = new GitWorktreeManager(project);
+
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') return { stdout: 'issue-14\n' };
+				if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref')
+					return { stdout: 'origin/issue-14\n' };
+				if (args[0] === 'rev-list' && args[1] === '--count') return { stdout: '0\n' };
+				if (args[0] === 'branch' && args[1] === '--list') return { stdout: '  issue-14\n' };
+				if (args[0] === 'ls-remote') return { stdout: 'abc123\trefs/heads/issue-14\n' };
+				return { stdout: '' };
+			};
+
+			const handle = await manager.provision('14');
+			expect(handle.path).toBe(WORKTREE_14);
+			expect(gitCalls).toContainEqual(['branch', '-D', 'issue-14']);
+			expect(gitCalls.at(-1)).toEqual(['worktree', 'add', '-b', 'issue-14', WORKTREE_14, 'main']);
+		});
+
+		it('detached HEAD: blocks reclaim/retention if HEAD has unpushed commits, succeeds if reachable', async () => {
+			const project = createMockProjectConfig({ id: 'project-1', repoRoot: REPO_ROOT });
+			const manager = new GitWorktreeManager(project);
+
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') {
+					throw new Error('not a symbolic ref');
+				}
+				if (args[0] === 'branch' && args[1] === '-r' && args[2] === '--contains') {
+					return { stdout: '' };
+				}
+				return { stdout: '' };
+			};
+
+			let hasUnpushed = await manager.hasUnpushedWork('14');
+			expect(hasUnpushed).toBe(true);
+
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') {
+					throw new Error('not a symbolic ref');
+				}
+				if (args[0] === 'branch' && args[1] === '-r' && args[2] === '--contains') {
+					return { stdout: '  origin/main\n  origin/issue-14\n' };
+				}
+				return { stdout: '' };
+			};
+
+			hasUnpushed = await manager.hasUnpushedWork('14');
+			expect(hasUnpushed).toBe(false);
+
+			existingPaths.add(WORKTREE_14);
+			gitHandler = (args) => {
+				if (args[0] === 'symbolic-ref') {
+					throw new Error('not a symbolic ref');
+				}
+				if (args[0] === 'branch' && args[1] === '-r' && args[2] === '--contains') {
+					return { stdout: '' };
+				}
+				return { stdout: '' };
+			};
+
+			const err = await manager.provision('14').catch((e) => e);
+			expect(err).toBeInstanceOf(BlockedRecoveryError);
+			expect(err.reason).toBe('unpushed');
+			expect(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'remove')).toBe(false);
 		});
 	});
 

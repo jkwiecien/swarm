@@ -40,6 +40,7 @@ vi.mock('node:fs', async (importOriginal) => {
 class FakeGitWorktreeManager extends GitWorktreeManager {
 	private mockList: string[] = [];
 	private cleanMap = new Map<string, boolean>();
+	private unpushedMap = new Map<string, boolean>();
 	public cleanedUpTasks: string[] = [];
 
 	setWorktreesList(paths: string[]) {
@@ -50,12 +51,20 @@ class FakeGitWorktreeManager extends GitWorktreeManager {
 		this.cleanMap.set(taskId, clean);
 	}
 
+	setTaskUnpushed(taskId: string, unpushed: boolean) {
+		this.unpushedMap.set(taskId, unpushed);
+	}
+
 	override async list(): Promise<string[]> {
 		return this.mockList;
 	}
 
 	override async isClean(taskId: string): Promise<boolean> {
 		return this.cleanMap.get(taskId) ?? true;
+	}
+
+	override async hasUnpushedWork(taskId: string): Promise<boolean> {
+		return this.unpushedMap.get(taskId) ?? false;
 	}
 
 	override async cleanup(taskId: string): Promise<void> {
@@ -203,6 +212,38 @@ describe('pruneStaleWorktrees', () => {
 		]);
 		expect(result.pruned).toEqual([]);
 		expect(result.skippedDirty).toEqual(['/Users/dev/swarm/swarm/.swarm-workspaces/task-1']);
+		expect(manager.cleanedUpTasks).toEqual([]);
+	});
+
+	it('skips a clean old worktree that still has unpushed commits (issue #367)', async () => {
+		const project = createMockProjectConfig({
+			repoRoot: '/Users/dev/swarm/swarm',
+			worktreeRoot: '.swarm-workspaces',
+			worktreeRetention: { maxWorktrees: 2 },
+		});
+
+		const manager = new FakeGitWorktreeManager(project);
+		manager.setWorktreesList([
+			'/Users/dev/swarm/swarm/.swarm-workspaces/task-1',
+			'/Users/dev/swarm/swarm/.swarm-workspaces/task-2',
+			'/Users/dev/swarm/swarm/.swarm-workspaces/task-3',
+		]);
+
+		statSyncMock.mockImplementation((path: string) => {
+			if (path.endsWith('task-1')) return { mtimeMs: 1000 } as unknown as Stats;
+			if (path.endsWith('task-2')) return { mtimeMs: 2000 } as unknown as Stats;
+			if (path.endsWith('task-3')) return { mtimeMs: 3000 } as unknown as Stats;
+			throw new Error('Unknown path');
+		});
+
+		// task-1 is clean but carries unpushed local commits — never prune it.
+		manager.setTaskUnpushed('1', true);
+
+		const result = await pruneStaleWorktrees(project, { worktrees: manager });
+
+		expect(result.pruned).toEqual([]);
+		expect(result.skippedUnpushed).toEqual(['/Users/dev/swarm/swarm/.swarm-workspaces/task-1']);
+		expect(result.skippedDirty).toEqual([]);
 		expect(manager.cleanedUpTasks).toEqual([]);
 	});
 

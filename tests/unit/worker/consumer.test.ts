@@ -9,10 +9,10 @@ import type { WorkerDispatchCandidate } from '@/identity/worker-enrollment-servi
 import { logger } from '@/lib/logger.js';
 import { DependencyBlockedError } from '@/pipeline/dependency-guard.js';
 import type { ProposedScope } from '@/pipeline/planning.js';
+import { BlockedRecoveryError } from '@/pipeline/resume.js';
 import type { PMProvider, WorkItemAssignee } from '@/pm/types.js';
 import type { CancellationOrigin } from '@/queue/cancellation.js';
 import { DeliveryDeferredError } from '@/scm/delivery.js';
-import { WorktreeAlreadyExistsError } from '@/worker/git-worktree-manager.js';
 import {
 	createMockGitHubParsedEvent,
 	createMockGitHubProjectsWebhookJob,
@@ -2503,65 +2503,83 @@ describe('processJob', () => {
 		expect(signalAborted).toBe(true);
 	});
 
-	it('defers a worktree already exists error with the dedup-safe floor delay', async () => {
+	it('terminally fails a blocked worktree collision without deferring, persisting the reason (issue #367)', async () => {
 		phaseImpl = async () => {
-			throw new WorktreeAlreadyExistsError('17', '/some/path');
+			throw new BlockedRecoveryError(
+				'dirty',
+				"Worktree collision for task '17': the existing checkout has uncommitted changes",
+			);
 		};
+
+		commentOnPullRequest.mockClear();
+		completeRun.mockClear();
 
 		const outcome = await processJob(
 			createMockGitHubWebhookJob(),
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome.status).toBe('phase-deferred');
-		if (outcome.status !== 'phase-deferred') throw new Error('unreachable');
-		expect(outcome.attempt).toBe(0);
-		expect(outcome.retryDelayMs).toBe(6 * 60 * 1000);
+		// Terminal, not deferred — no retry is scheduled for a protected collision.
+		expect(outcome.status).toBe('phase-failed');
+		// The blocked reason is persisted on the run's recovery state so the
+		// dashboard can render recovery guidance (Phase 3).
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				recovery: { state: 'blocked', blockedReason: 'dirty' },
+			}),
+		);
+		// The actionable reason is surfaced on the PR for a human to resolve.
+		expect(commentOnPullRequest).toHaveBeenCalledTimes(1);
+		expect(commentOnPullRequest.mock.calls[0][2]).toContain('uncommitted changes');
 	});
 
-	it('fails a worktree already exists error once retry budget is exhausted and comments on PR', async () => {
+	it('never defers a blocked worktree collision, even on the first attempt', async () => {
 		phaseImpl = async () => {
-			throw new WorktreeAlreadyExistsError('17', '/some/path');
+			throw new BlockedRecoveryError('resumable-owner', 'blocked collision');
 		};
 
-		commentOnPullRequest.mockClear();
+		completeRun.mockClear();
 
 		const outcome = await processJob(
-			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 6 }),
+			createMockGitHubWebhookJob({ rateLimitRetryAttempt: 0 }),
 			registryReturning(REVIEW_TRIGGER),
 		);
 
-		expect(outcome).toEqual({
-			status: 'phase-failed',
-			phase: 'review',
-			taskId: '17',
-			error:
-				"Worktree for task '17' already exists at /some/path — clean it up before re-provisioning",
-		});
-		expect(commentOnPullRequest).toHaveBeenCalledTimes(1);
-		expect(commentOnPullRequest.mock.calls[0][1]).toBe(17);
-		expect(commentOnPullRequest.mock.calls[0][2]).toContain(
-			"Worktree for task '17' already exists",
+		expect(outcome.status).toBe('phase-failed');
+		// A `phase-deferred` outcome would carry a retryDelayMs; a blocked collision
+		// must never produce one.
+		expect(outcome).not.toHaveProperty('retryDelayMs');
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				recovery: { state: 'blocked', blockedReason: 'resumable-owner' },
+			}),
 		);
 	});
 
-	it('fails a worktree already exists error once retry budget is exhausted and comments on board for PM phase', async () => {
+	it('reports a blocked worktree collision on the PM board for a board-driven phase', async () => {
 		const workItem = createMockWorkItem({ id: 'item-100' });
 		phaseImpl = async () => {
-			throw new WorktreeAlreadyExistsError('100', '/some/path');
+			throw new BlockedRecoveryError(
+				'unpushed',
+				"Worktree collision for task '100': the existing checkout has unpushed commits",
+			);
 		};
 
 		addComment.mockClear();
 
 		const outcome = await processJob(
-			createMockGitHubProjectsWebhookJob({ rateLimitRetryAttempt: 6 }),
+			createMockGitHubProjectsWebhookJob(),
 			registryReturning({ phase: 'implementation', taskId: '100', workItem }),
 		);
 
 		expect(outcome.status).toBe('phase-failed');
 		expect(addComment).toHaveBeenCalledTimes(1);
 		expect(addComment.mock.calls[0][0]).toBe('item-100');
-		expect(addComment.mock.calls[0][1]).toContain("Worktree for task '100' already exists");
+		expect(addComment.mock.calls[0][1]).toContain('unpushed commits');
 	});
 
 	describe('automation-label gate (issue #131)', () => {

@@ -2,10 +2,9 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, resolve, sep } from 'node:path';
 import type { ProjectConfig } from '../config/schema.js';
 import { PROJECT_DEFAULTS } from '../config/schema.js';
-import { hasResumableDeferredRun } from '../db/repositories/runsRepository.js';
 import { logger } from '../lib/logger.js';
 import { GitWorktreeManager } from '../worker/git-worktree-manager.js';
-import { isWorktreeLeased } from './worktree-lease.js';
+import { evaluateWorktreeReclaim } from './reclaim.js';
 
 export interface PruneStaleWorktreesOptions {
 	/** Injectable for tests; defaults to `new GitWorktreeManager(project)`. */
@@ -21,6 +20,8 @@ export interface PruneStaleWorktreesResult {
 	pruned: string[];
 	skippedInFlight: string[];
 	skippedDirty: string[];
+	/** Worktrees left alone because they carry local commits never pushed to origin (issue #367). */
+	skippedUnpushed: string[];
 	skippedDeferred: string[];
 	/** Worktrees under worktreeRoot that don't match `task-<id>` — left alone entirely (see plan's scope note on legacy worktrees). */
 	ignored: string[];
@@ -86,21 +87,32 @@ async function processCandidateEntries(
 	pruned: string[],
 	skippedInFlight: string[],
 	skippedDirty: string[],
+	skippedUnpushed: string[],
 	skippedDeferred: string[],
 ): Promise<void> {
 	for (const candidate of candidates) {
 		const { path, taskId } = candidate;
-		if (await isWorktreeLeased(project.id, taskId)) {
-			skippedInFlight.push(path);
-			continue;
-		}
-		const isDeferredPinned = options.isDeferredPinned ?? hasResumableDeferredRun;
-		if (await isDeferredPinned(project.id, taskId)) {
-			skippedDeferred.push(path);
-			continue;
-		}
-		if (!(await worktrees.isClean(taskId))) {
-			skippedDirty.push(path);
+		// Share the provision-time reclaim gate (issue #367) so retention preserves
+		// exactly the same protected checkouts, in the same order, and additionally
+		// never prunes one carrying unpushed commits.
+		const decision = await evaluateWorktreeReclaim(worktrees, project.id, taskId, {
+			isResumablePinned: options.isDeferredPinned,
+		});
+		if (!decision.safe) {
+			switch (decision.reason) {
+				case 'live-leased':
+					skippedInFlight.push(path);
+					break;
+				case 'resumable-owner':
+					skippedDeferred.push(path);
+					break;
+				case 'dirty':
+					skippedDirty.push(path);
+					break;
+				case 'unpushed':
+					skippedUnpushed.push(path);
+					break;
+			}
 			continue;
 		}
 		if (!options.dryRun) {
@@ -121,6 +133,7 @@ export async function pruneStaleWorktrees(
 	const pruned: string[] = [];
 	const skippedInFlight: string[] = [];
 	const skippedDirty: string[] = [];
+	const skippedUnpushed: string[] = [];
 	const skippedDeferred: string[] = [];
 	const ignored: string[] = [];
 
@@ -151,6 +164,7 @@ export async function pruneStaleWorktrees(
 		pruned,
 		skippedInFlight,
 		skippedDirty,
+		skippedUnpushed,
 		skippedDeferred,
 	);
 
@@ -160,6 +174,7 @@ export async function pruneStaleWorktrees(
 		pruned: pruned.length,
 		skippedInFlight: skippedInFlight.length,
 		skippedDirty: skippedDirty.length,
+		skippedUnpushed: skippedUnpushed.length,
 		skippedDeferred: skippedDeferred.length,
 		ignored: ignored.length,
 	});
@@ -171,11 +186,19 @@ export async function pruneStaleWorktrees(
 		});
 	}
 
+	for (const unpushedPath of skippedUnpushed) {
+		logger.warn('worktree skipped during retention sweep — has unpushed commits', {
+			projectId: project.id,
+			path: unpushedPath,
+		});
+	}
+
 	return {
 		kept,
 		pruned,
 		skippedInFlight,
 		skippedDirty,
+		skippedUnpushed,
 		skippedDeferred,
 		ignored,
 	};

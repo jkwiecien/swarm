@@ -55,21 +55,17 @@ export function shouldPreserveForResume(error: AgentRunError): boolean {
 }
 
 import { existsSync } from 'node:fs';
+// The reclaim gate owns the structured blocked-recovery error and its reason
+// union so the provision-time collision path and this recovery gate throw one
+// shared type (issue #367); re-exported here for existing importers.
+import { BlockedRecoveryError } from '@/worktree/reclaim.js';
 import {
 	claimWorktreeLease,
 	isWorktreeLeased,
 	releaseWorktreeLease,
 } from '@/worktree/worktree-lease.js';
 
-export class BlockedRecoveryError extends Error {
-	constructor(
-		readonly reason: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation',
-		message: string,
-	) {
-		super(message);
-		this.name = 'BlockedRecoveryError';
-	}
-}
+export { BlockedRecoveryError };
 
 export async function executeRecoveryGate(
 	worktrees: GitWorktreeManager,
