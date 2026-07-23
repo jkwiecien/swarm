@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunRow } from '@/types/runs.js';
 
 const navigate = vi.fn();
@@ -59,120 +59,288 @@ const baseRun: RunRow = {
 	failureDiagnosis: null,
 };
 
-// The table resolves project names via `projects.list`; that query has no server
-// here, so wrap in a QueryClient (retry off) and let it stay pending — the
-// component falls back to the projectId, which is all these tests need.
-function renderTable(ui: ReactElement) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const project = { id: 'proj-a', name: 'Acme', repo: 'acme/widgets' };
+
+// Seed the `projects.list` cache so run cards/rows can resolve the repo (needed
+// for the Task / ID work-item link) synchronously. `staleTime: Infinity` keeps
+// the mocked queryFn from refetching and clobbering the seeded value mid-test.
+function renderTable(ui: ReactElement, projects: unknown[] = [project]) {
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+	});
+	queryClient.setQueryData(['projects.list'], projects);
 	return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
+beforeEach(() => {
+	navigate.mockClear();
+});
+
 describe('RunsTable', () => {
-	it('keeps every column and the key headers rather than dropping them for mobile', () => {
-		renderTable(
-			<RunsTable
-				runs={[baseRun]}
-				totalCount={1}
-				currentPage={1}
-				pageSize={25}
-				onPageChange={vi.fn()}
-			/>,
-		);
+	describe('desktop table (md and up)', () => {
+		it('keeps the full eight-column header set in order inside a hidden md:block wrapper', () => {
+			const { container } = renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
 
-		// The full desktop column set stays in the DOM at every width — the
-		// responsive strategy is horizontal scroll, not a reduced column set.
-		for (const header of [
-			'Phase',
-			'Project',
-			'Task / ID',
-			'Status',
-			'Started',
-			'Duration',
-			'Model',
-			'Tokens',
-		]) {
-			expect(screen.getByText(header)).not.toBeNull();
-		}
+			const table = container.querySelector('table');
+			const headers = within(table as HTMLElement)
+				.getAllByRole('columnheader')
+				.map((th) => th.textContent);
+			expect(headers).toEqual([
+				'Phase',
+				'Project',
+				'Task / ID',
+				'Status',
+				'Started',
+				'Duration',
+				'Model',
+				'Tokens',
+			]);
+
+			// The table is desktop-only; its wrapper hides it below md and clips
+			// rather than scrolls (the pre-#371 recipe), so there is no mobile
+			// horizontal-scroll crutch on the table anymore.
+			const wrapper = table?.parentElement;
+			expect(wrapper?.className).toContain('hidden');
+			expect(wrapper?.className).toContain('md:block');
+			expect(wrapper?.className).toContain('overflow-hidden');
+			expect(wrapper?.className).not.toContain('overflow-x-auto');
+			expect(table?.className).not.toContain('min-w-[48rem]');
+			expect(table?.className).not.toContain('md:min-w-full');
+		});
+
+		it('keeps whole-row navigation on desktop rows', () => {
+			const { container } = renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const table = container.querySelector('table') as HTMLElement;
+			const bodyRow = within(table).getAllByRole('row')[1];
+			fireEvent.click(bodyRow);
+			expect(navigate).toHaveBeenCalledWith({ to: '/runs/run-1' });
+		});
 	});
 
-	it('lets the table scroll horizontally on mobile and restores full width on desktop', () => {
-		const { container } = renderTable(
-			<RunsTable
-				runs={[baseRun]}
-				totalCount={1}
-				currentPage={1}
-				pageSize={25}
-				onPageChange={vi.fn()}
-			/>,
-		);
+	describe('mobile cards (below md)', () => {
+		it('renders one card per run with no horizontal-scroll table at mobile width', () => {
+			const { container } = renderTable(
+				<RunsTable
+					runs={[baseRun, { ...baseRun, id: 'run-2' }]}
+					totalCount={2}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
 
-		const wrapper = container.querySelector('table')?.parentElement;
-		expect(wrapper?.className).toContain('overflow-x-auto');
-		// No clipping wrapper that would crush columns instead of scrolling.
-		expect(wrapper?.className).not.toContain('overflow-hidden');
+			expect(screen.getAllByTestId('run-card')).toHaveLength(2);
 
-		const table = container.querySelector('table');
-		expect(table?.className).toContain('table-fixed');
-		expect(table?.className).toContain('min-w-[48rem]');
-		expect(table?.className).toContain('md:min-w-full');
+			// The card list is the below-md presentation, and nothing in the
+			// component re-introduces a horizontally scrolling wide table.
+			const cardList = screen.getAllByTestId('run-card')[0].parentElement;
+			expect(cardList?.className).toContain('md:hidden');
+			expect(container.querySelector('.overflow-x-auto')).toBeNull();
+			expect(container.querySelector('.min-w-\\[48rem\\]')).toBeNull();
+		});
+
+		it('gives each card a title+status primary line and a subordinate metadata footer', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+
+			const card = screen.getByTestId('run-card');
+			const primary = within(card).getByTestId('run-card-primary');
+			const footer = within(card).getByTestId('run-card-footer');
+
+			// Primary scan line: the run's title + its status badge.
+			expect(within(primary).getByText('Fix the widget')).not.toBeNull();
+			expect(within(primary).getByText('Completed')).not.toBeNull();
+
+			// The title reads as the dominant text and wraps rather than truncating.
+			const title = within(primary).getByText('Fix the widget');
+			expect(title.className).toContain('break-words');
+			expect(title.className).not.toContain('truncate');
+
+			// Reference details (Duration, Model, Tokens) sit in the footer, not the
+			// primary line — no field is dropped, just de-emphasized.
+			expect(within(footer).getByText(/claude-opus-4-8/)).not.toBeNull();
+			expect(within(footer).getByText('5m 0s')).not.toBeNull(); // 300000ms
+			expect(within(footer).getByText('1k / 500')).not.toBeNull(); // tokens
+		});
+
+		it('surfaces Phase, Started and Project as secondary metadata', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			// `formatPhase` lower-cases; the card only capitalizes it via CSS.
+			expect(within(card).getByText('implementation')).not.toBeNull();
+			expect(within(card).getByText('Acme')).not.toBeNull();
+		});
+
+		it('omits Project from the card when showProject is false', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+					showProject={false}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			expect(within(card).queryByText('Acme')).toBeNull();
+			// The priority fields still read.
+			expect(within(card).getByText('Fix the widget')).not.toBeNull();
+			expect(within(card).getByText('Completed')).not.toBeNull();
+			expect(within(card).getByText('implementation')).not.toBeNull();
+		});
+
+		it('navigates to the run detail when the whole card is tapped or activated by keyboard', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			fireEvent.click(card);
+			expect(navigate).toHaveBeenCalledWith({ to: '/runs/run-1' });
+
+			navigate.mockClear();
+			fireEvent.keyDown(card, { key: 'Enter' });
+			expect(navigate).toHaveBeenCalledWith({ to: '/runs/run-1' });
+		});
+
+		it('does not navigate when an in-card work-item link is clicked', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			const link = within(card).getByRole('link');
+			expect(link.getAttribute('href')).toBe(baseRun.workItemUrl);
+			fireEvent.click(link);
+			expect(navigate).not.toHaveBeenCalled();
+		});
+
+		it('does not navigate and does not prevent default when Enter is pressed on an in-card work-item link', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			const link = within(card).getByRole('link');
+			expect(link.getAttribute('href')).toBe(baseRun.workItemUrl);
+
+			const event = createEvent.keyDown(link, { key: 'Enter' });
+			fireEvent(link, event);
+
+			expect(navigate).not.toHaveBeenCalled();
+			expect(event.defaultPrevented).toBe(false);
+		});
+
+		it('does not navigate and does not prevent default when Enter is pressed on an in-card PR link', () => {
+			const prRun = {
+				...baseRun,
+				phase: 'review',
+				prNumber: '42',
+				prTitle: 'PR Title',
+			};
+			renderTable(
+				<RunsTable
+					runs={[prRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			const link = within(card).getByRole('link');
+			expect(link.getAttribute('href')).toBe('https://github.com/acme/widgets/pull/42');
+
+			const event = createEvent.keyDown(link, { key: 'Enter' });
+			fireEvent(link, event);
+
+			expect(navigate).not.toHaveBeenCalled();
+			expect(event.defaultPrevented).toBe(false);
+		});
 	});
 
-	it('stacks the pagination footer on mobile and returns to a row on desktop', () => {
-		renderTable(
-			<RunsTable
-				runs={[baseRun]}
-				totalCount={100}
-				currentPage={2}
-				pageSize={25}
-				onPageChange={vi.fn()}
-			/>,
-		);
+	describe('pagination footer', () => {
+		it('stacks on mobile and returns to a row on desktop', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={100}
+					currentPage={2}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
 
-		const footer = screen.getByText(/Showing/).closest('div')?.parentElement;
-		expect(footer?.className).toContain('flex-col');
-		expect(footer?.className).toContain('sm:flex-row');
-		expect(footer?.className).toContain('sm:justify-between');
-	});
+			const footer = screen.getByText(/Showing/).closest('div')?.parentElement;
+			expect(footer?.className).toContain('flex-col');
+			expect(footer?.className).toContain('sm:flex-row');
+			expect(footer?.className).toContain('sm:justify-between');
+		});
 
-	it('still drives pagination via onPageChange', () => {
-		const onPageChange = vi.fn();
-		renderTable(
-			<RunsTable
-				runs={[baseRun]}
-				totalCount={100}
-				currentPage={2}
-				pageSize={25}
-				onPageChange={onPageChange}
-			/>,
-		);
+		it('still drives pagination via onPageChange', () => {
+			const onPageChange = vi.fn();
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={100}
+					currentPage={2}
+					pageSize={25}
+					onPageChange={onPageChange}
+				/>,
+			);
 
-		fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
-		expect(onPageChange).toHaveBeenCalledWith(1);
+			fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+			expect(onPageChange).toHaveBeenCalledWith(1);
 
-		fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-		expect(onPageChange).toHaveBeenCalledWith(3);
-	});
-
-	it('omits the Project column but keeps the same responsive contract when showProject is false', () => {
-		const { container } = renderTable(
-			<RunsTable
-				runs={[baseRun]}
-				totalCount={1}
-				currentPage={1}
-				pageSize={25}
-				onPageChange={vi.fn()}
-				showProject={false}
-			/>,
-		);
-
-		const table = container.querySelector('table');
-		expect(within(table as HTMLElement).queryByText('Project')).toBeNull();
-		// The Task / ID, Status and Started columns — the priority fields — remain.
-		expect(within(table as HTMLElement).getByText('Task / ID')).not.toBeNull();
-		expect(within(table as HTMLElement).getByText('Status')).not.toBeNull();
-		expect(within(table as HTMLElement).getByText('Started')).not.toBeNull();
-
-		expect(table?.className).toContain('min-w-[48rem]');
-		expect(table?.className).toContain('md:min-w-full');
+			fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+			expect(onPageChange).toHaveBeenCalledWith(3);
+		});
 	});
 });

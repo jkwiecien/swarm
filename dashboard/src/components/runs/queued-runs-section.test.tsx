@@ -63,12 +63,22 @@ const boardItem: QueuedRun = {
 	runsAt: '2026-07-17T12:00:00.000Z',
 };
 
-// The section resolves project names via `projects.list`; that query has no
-// server here, so wrap in a QueryClient (retry off) and let it stay pending —
-// the component falls back to the projectId, which is all these tests need.
-function renderSection(ui: ReactElement) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const project = { id: 'proj-a', name: 'Acme', repo: 'acme/widgets' };
+
+// Seed the `projects.list` cache so queued cards/rows can resolve the project
+// name synchronously. `staleTime: Infinity` keeps the mocked queryFn from
+// refetching and clobbering the seeded value mid-test.
+function renderSection(ui: ReactElement, projects: unknown[] = [project]) {
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+	});
+	queryClient.setQueryData(['projects.list'], projects);
 	return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+/** The mobile card list — the presentation this issue introduces (issue #381). */
+function cards() {
+	return screen.getAllByTestId('queued-run-card');
 }
 
 describe('QueuedRunsSection', () => {
@@ -78,60 +88,65 @@ describe('QueuedRunsSection', () => {
 		expect(screen.queryByTestId('queued-runs-section')).toBeNull();
 	});
 
-	it('renders a row per item with the right phase label and Task / ID reference', () => {
+	it('renders a card per item with the right phase label and Task / ID reference', () => {
 		renderSection(<QueuedRunsSection items={[githubItem, boardItem]} />);
-		const section = screen.getByTestId('queued-runs-section');
+		const [reviewCard, boardCard] = cards();
 
-		expect(within(section).getByText('Review')).not.toBeNull();
-		expect(within(section).getByText(/PR #42/)).not.toBeNull();
-		expect(within(section).getByText('Board (Planning/Impl)')).not.toBeNull();
-		expect(within(section).getByText('Fix the widget')).not.toBeNull();
-		expect(within(section).getByText('Issue: #42')).not.toBeNull();
-		expect(within(section).getByText('Task / ID')).not.toBeNull();
+		expect(within(reviewCard).getByText('Review')).not.toBeNull();
+		expect(within(reviewCard).getByText(/PR #42/)).not.toBeNull();
+
+		expect(within(boardCard).getByText('Board (Planning/Impl)')).not.toBeNull();
+		expect(within(boardCard).getByText('Fix the widget')).not.toBeNull();
+		expect(within(boardCard).getByText('Issue: #42')).not.toBeNull();
+
+		// The desktop table stays present (its Task / ID header included).
+		expect(within(screen.getByTestId('queued-runs-section')).getByText('Task / ID')).not.toBeNull();
 	});
 
-	it('shares the run-table responsive width contract inside a horizontal-scroll wrapper', () => {
+	it('renders cards below md and the table only from md, without a horizontal-scroll crutch', () => {
 		const { container } = renderSection(<QueuedRunsSection items={[githubItem]} />);
+
+		const cardList = cards()[0].parentElement;
+		expect(cardList?.className).toContain('md:hidden');
 
 		const table = container.querySelector('table');
 		const wrapper = table?.parentElement;
-		expect(wrapper?.className).toContain('overflow-x-auto');
-		expect(wrapper?.className).not.toContain('overflow-hidden');
-		expect(table?.className).toContain('table-fixed');
-		expect(table?.className).toContain('min-w-[48rem]');
-		expect(table?.className).toContain('md:min-w-full');
+		expect(wrapper?.className).toContain('hidden');
+		expect(wrapper?.className).toContain('md:block');
+		expect(wrapper?.className).toContain('overflow-hidden');
+		expect(wrapper?.className).not.toContain('overflow-x-auto');
+		expect(table?.className).not.toContain('min-w-[48rem]');
+		expect(table?.className).not.toContain('md:min-w-full');
 	});
 
 	it('preserves the server-provided order (no client-side re-sort)', () => {
 		// Passed github-first even though the board item was enqueued earlier; a
 		// client re-sort by enqueue time would swap them. Ordering is the server's.
 		renderSection(<QueuedRunsSection items={[githubItem, boardItem]} />);
-		const section = screen.getByTestId('queued-runs-section');
-		const bodyRows = within(section).getAllByRole('row').slice(1); // drop the header row
+		const [first, second] = cards();
 
-		expect(bodyRows).toHaveLength(2);
-		expect(within(bodyRows[0]).getByText(/PR #42/)).not.toBeNull();
-		expect(within(bodyRows[1]).getByText('Issue: #42')).not.toBeNull();
+		expect(cards()).toHaveLength(2);
+		expect(within(first).getByText(/PR #42/)).not.toBeNull();
+		expect(within(second).getByText('Issue: #42')).not.toBeNull();
 	});
 
 	it('shows when a delayed item will run', () => {
 		renderSection(<QueuedRunsSection items={[boardItem]} />);
-		const section = screen.getByTestId('queued-runs-section');
-		expect(within(section).getByText(/runs/)).not.toBeNull();
+		expect(within(cards()[0]).getByText(/runs/)).not.toBeNull();
 	});
 
 	it('links a queued retry to its existing run detail', () => {
 		const deferredItem: QueuedRun = { ...githubItem, runId: 'run-deferred' };
 		renderSection(<QueuedRunsSection items={[deferredItem]} />);
 
-		expect(screen.getByRole('link', { name: 'View run' }).getAttribute('href')).toBe(
+		expect(within(cards()[0]).getByRole('link', { name: 'View run' }).getAttribute('href')).toBe(
 			'/runs/run-deferred',
 		);
 	});
 
 	it('does not offer View run for fresh queued work without a run ID', () => {
 		renderSection(<QueuedRunsSection items={[githubItem]} />);
-		expect(screen.queryByRole('link', { name: 'View run' })).toBeNull();
+		expect(within(cards()[0]).queryByRole('link', { name: 'View run' })).toBeNull();
 	});
 
 	it('shows a Queued badge that is visually distinct from a running badge (no pulse)', () => {
@@ -142,13 +157,14 @@ describe('QueuedRunsSection', () => {
 			</>,
 		);
 
-		// The badge element (not the header/column labels) is the one with the
-		// pill classes; its status dot must not pulse.
+		// Both presentations render a Queued badge; none of them may pulse.
 		const queuedBadges = screen
 			.getAllByText('Queued')
 			.filter((el) => el.className.includes('rounded'));
-		expect(queuedBadges).toHaveLength(1);
-		expect(queuedBadges[0].querySelector('span')?.className).not.toContain('animate-pulse');
+		expect(queuedBadges.length).toBeGreaterThanOrEqual(1);
+		for (const badge of queuedBadges) {
+			expect(badge.querySelector('span')?.className).not.toContain('animate-pulse');
+		}
 
 		const runningDot = screen.getByText('Running').querySelector('span');
 		expect(runningDot?.className).toContain('animate-pulse');
@@ -172,10 +188,10 @@ describe('QueuedRunsSection', () => {
 		expect(screen.queryByRole('button', { name: /Put back/i })).toBeNull();
 	});
 
-	it('shows Put back action and opens confirmation modal on click', () => {
+	it('shows Put back action in the card and opens confirmation modal on click', () => {
 		renderSection(<QueuedRunsSection items={[boardItem]} />);
 
-		const putBackBtn = screen.getByRole('button', { name: /Put back/i });
+		const putBackBtn = within(cards()[0]).getByRole('button', { name: /Put back/i });
 		expect(putBackBtn).not.toBeNull();
 
 		fireEvent.click(putBackBtn);
@@ -203,17 +219,17 @@ describe('QueuedRunsSection', () => {
 			reviewGate: { sourceEvent: 'pull_request', sourceAction: 'synchronize', headSha: 'sha-fix' },
 		};
 
-		it('renders duplicate review-gate jobs for the same PR/SHA as one row with gate wording and diagnostics', () => {
+		it('renders duplicate review-gate jobs for the same PR/SHA as one card with gate wording and diagnostics', () => {
 			renderSection(<QueuedRunsSection items={[followUpItem, synchronizeItem]} />);
 			const section = screen.getByTestId('queued-runs-section');
-			const bodyRows = within(section).getAllByRole('row').slice(1);
 
-			expect(bodyRows).toHaveLength(1);
+			expect(cards()).toHaveLength(1);
+			const card = cards()[0];
 			expect(within(section).queryByText('Review')).toBeNull();
-			expect(within(section).getByText('Awaiting review decision/checks')).not.toBeNull();
-			expect(within(section).getByText('2 source events')).not.toBeNull();
-			expect(within(section).getByText('Check suite · completed')).not.toBeNull();
-			expect(within(section).getByText('Pull request · synchronize')).not.toBeNull();
+			expect(within(card).getByText('Awaiting review decision/checks')).not.toBeNull();
+			expect(within(card).getByText('2 source events')).not.toBeNull();
+			expect(within(card).getByText('Check suite · completed')).not.toBeNull();
+			expect(within(card).getByText('Pull request · synchronize')).not.toBeNull();
 		});
 
 		it('does not group review-gate jobs for a different PR or head SHA', () => {
@@ -224,19 +240,16 @@ describe('QueuedRunsSection', () => {
 			};
 			renderSection(<QueuedRunsSection items={[followUpItem, otherSha]} />);
 			const section = screen.getByTestId('queued-runs-section');
-			const bodyRows = within(section).getAllByRole('row').slice(1);
 
-			expect(bodyRows).toHaveLength(2);
+			expect(cards()).toHaveLength(2);
 			expect(within(section).queryByText('Awaiting review decision/checks')).toBeNull();
 		});
 
-		it('still renders an ordinary (non-review-gate) queued job one-to-one alongside a grouped row', () => {
+		it('still renders an ordinary (non-review-gate) queued job one-to-one alongside a grouped card', () => {
 			renderSection(<QueuedRunsSection items={[followUpItem, synchronizeItem, boardItem]} />);
-			const section = screen.getByTestId('queued-runs-section');
-			const bodyRows = within(section).getAllByRole('row').slice(1);
 
-			expect(bodyRows).toHaveLength(2);
-			expect(within(section).getByText('Board (Planning/Impl)')).not.toBeNull();
+			expect(cards()).toHaveLength(2);
+			expect(within(cards()[1]).getByText('Board (Planning/Impl)')).not.toBeNull();
 		});
 
 		it('ties Put back to the retained representative job (the first source event)', async () => {
@@ -259,7 +272,7 @@ describe('QueuedRunsSection', () => {
 			};
 			renderSection(<QueuedRunsSection items={[groupedBoardFollowUp, groupedBoardSync]} />);
 
-			fireEvent.click(screen.getByRole('button', { name: /Put back/i }));
+			fireEvent.click(within(cards()[0]).getByRole('button', { name: /Put back/i }));
 			fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
 			await waitFor(() =>
@@ -268,6 +281,20 @@ describe('QueuedRunsSection', () => {
 					projectId: groupedBoardFollowUp.projectId,
 				}),
 			);
+		});
+
+		it('includes Project on mobile cards when showProject is true', () => {
+			renderSection(<QueuedRunsSection items={[githubItem]} showProject={true} />);
+			const card = cards()[0];
+			expect(within(card).getByText('Project:')).not.toBeNull();
+			expect(within(card).getByText('Acme')).not.toBeNull();
+		});
+
+		it('omits Project from mobile cards when showProject is false', () => {
+			renderSection(<QueuedRunsSection items={[githubItem]} showProject={false} />);
+			const card = cards()[0];
+			expect(within(card).queryByText('Project:')).toBeNull();
+			expect(within(card).queryByText('Acme')).toBeNull();
 		});
 	});
 });

@@ -1,16 +1,12 @@
 /**
- * Responsive width contract shared by the persisted (`RunsTable`) and queued
- * (`QueuedRunsSection`) run tables. The eight fixed-percentage columns crush
- * below legibility on mobile widths (~375–430px), so the table keeps an
- * intrinsic minimum width and lets its bordered `overflow-x-auto` wrapper
- * scroll horizontally; at the dashboard's `md` breakpoint `md:min-w-full`
- * restores the current full-width desktop layout so column proportions are
- * unchanged. Kept here so both tables share one contract and their aligned
- * layouts cannot drift (issue #371).
+ * Shared desktop column widths for the persisted (`RunsTable`) and queued
+ * (`QueuedRunsSection`) run tables. The eight fixed-percentage columns only
+ * ever render at the dashboard's `md` breakpoint and up — below `md` both
+ * tables are replaced by purpose-built stacked cards, so there is no
+ * horizontal-scroll workaround here anymore (issue #381, superseding the
+ * `min-w-[48rem]` crutch from issue #371). Kept here so both tables share one
+ * contract and their aligned column proportions cannot drift.
  */
-export const runTableResponsiveWidth = 'min-w-[48rem] md:min-w-full';
-
-/** Shared widths for the queued and persisted run tables. */
 export function runTableColumnWidths(showProject: boolean): {
 	phase: string;
 	project: string;
