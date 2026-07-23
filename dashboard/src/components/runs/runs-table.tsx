@@ -8,7 +8,7 @@ import {
 	formatTokensCompact,
 } from '@/lib/format.js';
 import { resolveRunDurationMs, useNow } from '@/lib/run-duration.js';
-import { runTableColumnWidths, runTableResponsiveWidth } from '@/lib/run-table-layout.js';
+import { runTableColumnWidths } from '@/lib/run-table-layout.js';
 import { trpc } from '@/lib/trpc.js';
 import { parseWorkItemRef, workItemLabel } from '@/lib/work-item.js';
 import type { RunRow } from '@/types/runs.js';
@@ -35,12 +35,27 @@ const PR_DRIVEN_PHASES = new Set([
 	'resolve-conflicts',
 ]);
 
-function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
+function WorkItemCell({
+	run,
+	repo,
+	variant = 'cell',
+}: {
+	run: RunRow;
+	repo?: string;
+	/**
+	 * `'cell'` truncates the title to one line for the fixed-width desktop table;
+	 * `'card'` lets it grow to the dominant, wrapping primary line of a mobile
+	 * run card (issue #381) so nothing is clipped and no field forces horizontal
+	 * scroll.
+	 */
+	variant?: 'cell' | 'card';
+}) {
 	const hasWorkItem = !!run.workItemId;
 	const hasPR = !!run.prNumber;
 	const workItemRef = parseWorkItemRef(run.workItemUrl);
 	const isPrDriven = PR_DRIVEN_PHASES.has(run.phase);
 	const title = isPrDriven ? run.prTitle : run.workItemTitle;
+	const isCard = variant === 'card';
 
 	if (!repo || (!hasWorkItem && !hasPR)) {
 		return <span className="text-zinc-500 font-mono">—</span>;
@@ -50,11 +65,16 @@ function WorkItemCell({ run, repo }: { run: RunRow; repo?: string }) {
 
 	return (
 		<div className="flex w-full min-w-0 flex-col gap-1 text-xs">
-			{title && (
-				<span className="block w-full truncate text-zinc-200" title={title}>
-					{title}
-				</span>
-			)}
+			{title &&
+				(isCard ? (
+					<span className="block w-full break-words text-sm font-medium text-zinc-100">
+						{title}
+					</span>
+				) : (
+					<span className="block w-full truncate text-zinc-200" title={title}>
+						{title}
+					</span>
+				))}
 			{isPrDriven && hasPR ? (
 				<a
 					href={`https://github.com/${repo}/pull/${run.prNumber}`}
@@ -106,12 +126,88 @@ export function RunsTable({
 		navigate({ to: `/runs/${runId}` });
 	};
 
+	const handleCardKeyDown = (event: React.KeyboardEvent, runId: string) => {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			handleRowClick(runId);
+		}
+	};
+
 	return (
 		<div className="space-y-4">
-			<div className="border border-zinc-800 rounded-md overflow-x-auto bg-panel/20 shadow-sm">
-				<table
-					className={`w-full ${runTableResponsiveWidth} table-fixed text-left border-collapse`}
-				>
+			{/*
+			 * Mobile (< md): each run reads top-to-bottom as a self-contained,
+			 * tappable card — no horizontal scroll (issue #381). Deliberate
+			 * hierarchy: the Task / ID + status form the primary scan line, Phase +
+			 * Started are lighter supporting metadata, and Duration / Model / Tokens
+			 * sit in a subordinate footer. No field is dropped, just de-emphasized.
+			 */}
+			<div className="space-y-3 md:hidden">
+				{runs.map((run) => {
+					const project = projectsMap.get(run.projectId);
+					return (
+						// biome-ignore lint/a11y/useSemanticElements: a real <button> can't contain the nested work-item/PR <a> links this card carries; role="button" + tabIndex + Enter/Space handling gives it the same activation without invalid nesting.
+						<div
+							key={run.id}
+							data-testid="run-card"
+							role="button"
+							tabIndex={0}
+							onClick={() => handleRowClick(run.id)}
+							onKeyDown={(event) => handleCardKeyDown(event, run.id)}
+							className="flex cursor-pointer flex-col gap-3 rounded-lg border border-zinc-800 bg-panel/20 p-4 shadow-sm transition-colors hover:bg-zinc-800/40 focus:outline-none focus:ring-2 focus:ring-violet-500"
+						>
+							<div
+								data-testid="run-card-primary"
+								className="flex items-start justify-between gap-3"
+							>
+								<div className="min-w-0 flex-1">
+									<WorkItemCell run={run} repo={project?.repo} variant="card" />
+								</div>
+								<RunStatusBadge
+									status={run.status as 'running' | 'completed' | 'failed' | 'deferred'}
+									timedOut={run.timedOut}
+									phase={run.phase}
+									reviewVerdict={run.reviewVerdict}
+									reviewAutomationOutcome={run.reviewAutomationOutcome}
+									className="shrink-0"
+								/>
+							</div>
+							<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-400">
+								<span className="font-semibold capitalize text-zinc-300">
+									{formatPhase(run.phase)}
+								</span>
+								<span className="text-zinc-600">·</span>
+								<span>{formatRelativeTime(run.startedAt)}</span>
+								{showProject && (
+									<>
+										<span className="text-zinc-600">·</span>
+										<span className="min-w-0 break-all font-mono">
+											{project?.name || run.projectId}
+										</span>
+									</>
+								)}
+							</div>
+							<div
+								data-testid="run-card-footer"
+								className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-xs text-zinc-500"
+							>
+								<span>{formatDuration(resolveRunDurationMs(run, now))}</span>
+								<span className="text-zinc-700">·</span>
+								<span className="min-w-0 break-all">
+									{run.model || '—'}
+									{run.reasoning ? <span className="text-zinc-600"> · {run.reasoning}</span> : null}
+								</span>
+								<span className="text-zinc-700">·</span>
+								<span title="input / output tokens">{formatTokensCompact(run.usage)}</span>
+							</div>
+						</div>
+					);
+				})}
+			</div>
+
+			{/* Desktop (md+): the unchanged eight-column table. */}
+			<div className="hidden border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm md:block">
+				<table className="w-full table-fixed text-left border-collapse">
 					<colgroup>
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}

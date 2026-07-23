@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, RotateCcw } from 'lucide-react';
 import { useState } from 'react';
 import { formatRelativeTime, formatTimeUntil } from '@/lib/format.js';
+import type { QueuedDisplayRow } from '@/lib/queued-runs.js';
 import {
 	groupQueuedRuns,
 	queuedPhaseLabel,
@@ -13,11 +14,90 @@ import {
 	REVIEW_GATE_GROUP_LABEL,
 	reviewGateSourceEventLabel,
 } from '@/lib/queued-runs.js';
-import { runTableColumnWidths, runTableResponsiveWidth } from '@/lib/run-table-layout.js';
+import { runTableColumnWidths } from '@/lib/run-table-layout.js';
 import { trpc, trpcClient } from '@/lib/trpc.js';
 import type { QueuedRun } from '@/types/runs.js';
 import { Modal, ModalFooter } from '../ui/modal.js';
 import { RunStatusBadge } from './run-status-badge.js';
+
+/**
+ * Phase content for one queued row, shared by the desktop table cell and the
+ * mobile card so their wording and review-gate diagnostics stay identical.
+ */
+function QueuedPhaseContent({ row }: { row: QueuedDisplayRow }) {
+	const item = row.representative;
+	if (!row.isReviewGateGroup) {
+		return <span className="font-semibold text-zinc-100">{queuedPhaseLabel(item.phaseHint)}</span>;
+	}
+	return (
+		<div className="flex flex-col gap-1">
+			<span className="font-semibold text-zinc-100">{REVIEW_GATE_GROUP_LABEL}</span>
+			<span className="text-[11px] font-normal text-zinc-400">
+				{row.sourceEvents.length} source events
+			</span>
+			<ul className="space-y-0.5 font-mono text-[11px] font-normal text-zinc-500">
+				{row.sourceEvents.map((event) => (
+					<li key={event.jobId}>{reviewGateSourceEventLabel(event)}</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/** Task / ID reference for one queued row, shared by the table cell and the card. */
+function QueuedWorkItemContent({
+	item,
+	variant = 'cell',
+}: {
+	item: QueuedRun;
+	variant?: 'cell' | 'card';
+}) {
+	const title = queuedWorkItemTitle(item);
+	const url = queuedWorkItemUrl(item);
+	const isCard = variant === 'card';
+	return (
+		<div className="flex w-full min-w-0 flex-col gap-1">
+			{title &&
+				(isCard ? (
+					<span className="block w-full break-words text-sm font-medium text-zinc-100">
+						{title}
+					</span>
+				) : (
+					<span className="block w-full truncate text-zinc-200" title={title}>
+						{title}
+					</span>
+				))}
+			{url ? (
+				<a
+					href={url}
+					target="_blank"
+					rel="noopener noreferrer"
+					className="inline-flex self-start items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono text-xs hover:underline"
+				>
+					{queuedWorkItemLabel(item)}
+					<ExternalLink className="h-3 w-3" />
+				</a>
+			) : (
+				<span className="font-mono text-xs text-zinc-400">{queuedWorkItemLabel(item)}</span>
+			)}
+		</div>
+	);
+}
+
+/** Enqueued / delayed / wait-reason text for one queued row, shared by both presentations. */
+function QueuedEnqueuedContent({ item }: { item: QueuedRun }) {
+	return (
+		<>
+			{formatRelativeTime(item.enqueuedAt)}
+			{item.state === 'delayed' && item.runsAt && (
+				<span className="text-zinc-500"> · runs {formatTimeUntil(item.runsAt)}</span>
+			)}
+			{item.waitReason && (
+				<span className="text-zinc-500"> · {queuedWaitReasonLabel(item.waitReason)}</span>
+			)}
+		</>
+	);
+}
 
 interface QueuedRunsSectionProps {
 	items: QueuedRun[];
@@ -100,10 +180,68 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 					{successMessage}
 				</div>
 			)}
-			<div className="border border-zinc-800 rounded-md overflow-x-auto bg-panel/20 shadow-sm">
-				<table
-					className={`w-full ${runTableResponsiveWidth} table-fixed text-left border-collapse`}
-				>
+			{/*
+			 * Mobile (< md): one card per grouped queued row — no horizontal scroll
+			 * (issue #381). Task / ID + Queued badge are the primary line, phase (with
+			 * review-gate diagnostics) and Enqueued details are lighter metadata, and
+			 * the View-run / Put-back actions sit in a clearly separated action row
+			 * with generous tap targets.
+			 */}
+			<div className="space-y-3 md:hidden">
+				{rows.map((row) => {
+					const item = row.representative;
+					const isSupportedPhase = item.phaseHint === 'board' || item.phaseHint === 'review';
+					const hasLinkedCard = !!item.workItemNodeId;
+					const showPutBack = isSupportedPhase && hasLinkedCard;
+
+					return (
+						<div
+							key={queuedRunKey(item)}
+							data-testid="queued-run-card"
+							className="flex flex-col gap-3 rounded-lg border border-zinc-800 bg-panel/20 p-4 shadow-sm"
+						>
+							<div className="flex items-start justify-between gap-3">
+								<div className="min-w-0 flex-1">
+									<QueuedWorkItemContent item={item} variant="card" />
+								</div>
+								<RunStatusBadge status="queued" className="shrink-0" />
+							</div>
+							<div className="flex flex-col gap-1 text-xs text-zinc-400">
+								<QueuedPhaseContent row={row} />
+								<span>
+									<QueuedEnqueuedContent item={item} />
+								</span>
+							</div>
+							{(item.runId || showPutBack) && (
+								<div className="flex flex-wrap items-center gap-2 border-t border-zinc-800/60 pt-3">
+									{item.runId && (
+										<a
+											href={`/runs/${item.runId}`}
+											className="inline-flex min-h-[40px] items-center gap-1 rounded-md border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-violet-300 hover:bg-zinc-800 hover:text-violet-200"
+										>
+											View run
+										</a>
+									)}
+									{showPutBack && (
+										<button
+											type="button"
+											onClick={() => handleOpenConfirm(item)}
+											className="inline-flex min-h-[40px] items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900 px-3 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white focus:outline-none focus:ring-1 focus:ring-violet-500 transition-colors disabled:opacity-55 disabled:cursor-not-allowed"
+										>
+											<RotateCcw className="w-3.5 h-3.5" />
+											Put back
+										</button>
+									)}
+								</div>
+							)}
+						</div>
+					);
+				})}
+			</div>
+
+			{/* Desktop (md+): the unchanged queued table. */}
+			<div className="hidden border border-zinc-800 rounded-md overflow-hidden bg-panel/20 shadow-sm md:block">
+				<table className="w-full table-fixed text-left border-collapse">
 					<colgroup>
 						<col className={columnWidths.phase} />
 						{showProject && <col className={columnWidths.project} />}
@@ -145,22 +283,8 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 
 							return (
 								<tr key={queuedRunKey(item)}>
-									<td className="px-2 py-2 text-xs font-semibold text-zinc-100">
-										{row.isReviewGateGroup ? (
-											<div className="flex flex-col gap-1">
-												<span>{REVIEW_GATE_GROUP_LABEL}</span>
-												<span className="text-[11px] font-normal text-zinc-400">
-													{row.sourceEvents.length} source events
-												</span>
-												<ul className="space-y-0.5 font-mono text-[11px] font-normal text-zinc-500">
-													{row.sourceEvents.map((event) => (
-														<li key={event.jobId}>{reviewGateSourceEventLabel(event)}</li>
-													))}
-												</ul>
-											</div>
-										) : (
-											queuedPhaseLabel(item.phaseHint)
-										)}
+									<td className="px-2 py-2 text-xs">
+										<QueuedPhaseContent row={row} />
 									</td>
 									{showProject && (
 										<td className="px-2 py-2 text-xs text-zinc-300 font-mono">
@@ -168,44 +292,13 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 										</td>
 									)}
 									<td className="px-2 py-2 text-xs">
-										<div className="flex w-full min-w-0 flex-col gap-1">
-											{queuedWorkItemTitle(item) && (
-												<span
-													className="block w-full truncate text-zinc-200"
-													title={queuedWorkItemTitle(item)}
-												>
-													{queuedWorkItemTitle(item)}
-												</span>
-											)}
-											{queuedWorkItemUrl(item) ? (
-												<a
-													href={queuedWorkItemUrl(item)}
-													target="_blank"
-													rel="noopener noreferrer"
-													className="inline-flex self-start items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
-												>
-													{queuedWorkItemLabel(item)}
-													<ExternalLink className="h-3 w-3" />
-												</a>
-											) : (
-												<span className="font-mono text-zinc-400">{queuedWorkItemLabel(item)}</span>
-											)}
-										</div>
+										<QueuedWorkItemContent item={item} />
 									</td>
 									<td className="px-2 py-2 text-xs">
 										<RunStatusBadge status="queued" />
 									</td>
 									<td className="px-2 py-2 text-xs text-zinc-400">
-										{formatRelativeTime(item.enqueuedAt)}
-										{item.state === 'delayed' && item.runsAt && (
-											<span className="text-zinc-500"> · runs {formatTimeUntil(item.runsAt)}</span>
-										)}
-										{item.waitReason && (
-											<span className="text-zinc-500">
-												{' '}
-												· {queuedWaitReasonLabel(item.waitReason)}
-											</span>
-										)}
+										<QueuedEnqueuedContent item={item} />
 									</td>
 									<td className="px-2 py-2 text-xs">
 										<div className="flex flex-wrap items-center gap-2">
