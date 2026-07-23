@@ -41,7 +41,7 @@ export interface DiagnoseFailureInput {
 	knownCondition?: KnownFailureCondition;
 }
 
-const RESPONSE_STALL_BANNER_RE = /(?:\r?\n)?timeout waiting for response\s*$/i;
+const RESPONSE_STALL_BANNER_RE = /(?:\r?\n)?[^\r\n]*timeout waiting for response\s*$/i;
 export const MIN_SCOPE_STALL_DURATION_MS = 10 * 60 * 1000;
 export const MIN_SCOPE_STALL_OUTPUT_BYTES = 1_000;
 
@@ -95,8 +95,9 @@ function knownDiagnosis(condition: KnownFailureCondition): FailureDiagnosis {
 }
 
 function progressOutputBytes(agent: AgentCliResult): number {
-	const output = `${agent.stdout}\n${agent.stderr}`.replace(RESPONSE_STALL_BANNER_RE, '');
-	return Buffer.byteLength(output, 'utf8');
+	const cleanStdout = agent.stdout.replace(RESPONSE_STALL_BANNER_RE, '');
+	const cleanStderr = agent.stderr.replace(RESPONSE_STALL_BANNER_RE, '');
+	return Buffer.byteLength(cleanStdout, 'utf8') + Buffer.byteLength(cleanStderr, 'utf8');
 }
 
 /**

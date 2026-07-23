@@ -43,6 +43,18 @@ describe('diagnoseFailure (issue #269)', () => {
 		});
 	});
 
+	it('remains provider-stalled-early with 993 bytes of preceding output and a real stall line', () => {
+		const diagnosis = diagnoseFailure({
+			failureKind: 'stalled',
+			planningScope: MULTI_CONCERN_SCOPE,
+			agent: agent({
+				stdout: `${'x'.repeat(993)}\nError: timeout waiting for response`,
+			}),
+		});
+
+		expect(diagnosis?.kind).toBe('provider-stalled-early');
+	});
+
 	it('keeps a short or minimally-output stall provider-oriented even when scope metadata exists', () => {
 		const diagnosis = diagnoseFailure({
 			failureKind: 'stalled',
