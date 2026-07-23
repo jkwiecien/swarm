@@ -77,9 +77,10 @@ function retrySplitPalette(isResume: boolean): { wrapper: string; main: string; 
 }
 
 /**
- * The main-action + chevron pair of the retry control. A resumable deferred run
- * shows a green "Resume" (Play glyph); every other retryable run shows the violet
- * "Retry now" (RefreshCw). The chevron opens the override popup the parent owns.
+ * The main-action + chevron pair of the retry control. A resumable run shows a
+ * green "Resume" (Play glyph); a blocked run shows the violet "Recheck and
+ * retry" and every other retryable run the violet "Retry now" (both RefreshCw).
+ * The chevron opens the override popup the parent owns.
  */
 function RetrySplitButton({
 	kind,
@@ -192,8 +193,10 @@ function RetryNowButton({ run }: { run: RunRow }) {
 
 	const reasoningOptions = reasoningChoicesFor(selectedCli, selectedModel);
 
-	// A resumable deferred run continues its captured CLI session (green
-	// "Resume"); everything else relaunches from scratch (violet "Retry now").
+	// A resumable run continues its captured CLI session (green "Resume"); a
+	// blocked run rechecks its protected worktree first ("Recheck and retry");
+	// everything else relaunches from scratch (violet "Retry now"). All three
+	// fire the same unchanged mutation — the label only reflects server intent.
 	const kind = retryActionKind(run.status, run.agentSessionId, run.recovery);
 	const isResume = kind === 'resume';
 	const palette = retrySplitPalette(isResume);
@@ -458,32 +461,54 @@ export function RecoveryCallout({ run }: RecoveryCalloutProps) {
 	}
 
 	if (state === 'blocked') {
-		let reasonText = '';
-		switch (blockedReason) {
-			case 'dirty':
-				reasonText = 'the worktree has uncommitted changes.';
-				break;
-			case 'unpushed':
-				reasonText = 'the worktree has unpushed commits.';
-				break;
-			case 'live-leased':
-				reasonText = 'the worktree is leased by another active run.';
-				break;
-			case 'missing-validation':
-				reasonText = 'the worktree directory does not exist or the expected session ID is missing.';
-				break;
-			default:
-				reasonText = 'validation failed.';
-		}
+		// Reason-specific guidance (issue #368): what condition kept the checkout
+		// protected and what the operator must resolve. Once resolved, the retry
+		// button below ("Recheck and retry") re-runs the server's provisioning gate,
+		// which reclaims the checkout or leaves the refreshed run blocked — the
+		// mutation payload is unchanged, so all the safety stays server-side.
+		const { condition, resolution } = ((): { condition: string; resolution: string } => {
+			switch (blockedReason) {
+				case 'dirty':
+					return {
+						condition:
+							"This run's worktree has uncommitted changes, so SWARM kept it instead of reclaiming it.",
+						resolution:
+							'Commit, stash, or discard those changes in the checkout, then use "Recheck and retry".',
+					};
+				case 'unpushed':
+					return {
+						condition:
+							"This run's worktree has commits that were never pushed, so SWARM kept it to avoid losing work.",
+						resolution: 'Push or discard those commits, then use "Recheck and retry".',
+					};
+				case 'live-leased':
+					return {
+						condition:
+							"This run's worktree is leased by another active run, so it can't be reclaimed yet.",
+						resolution:
+							'Wait for that run to finish or terminate it, then use "Recheck and retry".',
+					};
+				case 'missing-validation':
+					return {
+						condition:
+							"The preserved checkout or its saved agent session is gone, so this run can't be resumed.",
+						resolution: 'Use "Recheck and retry" to provision a fresh checkout and start over.',
+					};
+				default:
+					return {
+						condition: "This run's worktree failed a safety check, so SWARM kept it protected.",
+						resolution: 'Resolve the condition on the checkout, then use "Recheck and retry".',
+					};
+			}
+		})();
 
 		return (
 			<div className="p-4 bg-red-950/20 border border-red-900/30 rounded flex items-start gap-3">
 				<AlertTriangle className="h-5 w-5 text-red-400 shrink-0 mt-0.5" />
 				<div>
 					<h3 className="text-xs font-semibold text-red-200">Recovery Blocked</h3>
-					<p className="text-xs text-red-400/80 mt-1">
-						Cannot resume or safely retry this run because {reasonText}
-					</p>
+					<p className="text-xs text-red-400/80 mt-1">{condition}</p>
+					<p className="text-xs text-red-400/80 mt-2">{resolution}</p>
 				</div>
 			</div>
 		);

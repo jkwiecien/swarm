@@ -3,7 +3,12 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { RunRow } from '@/types/runs.js';
-import { FailureDiagnosisCallout, ReviewCapCallout, ReviewMergeCallout } from './$runId.js';
+import {
+	FailureDiagnosisCallout,
+	RecoveryCallout,
+	ReviewCapCallout,
+	ReviewMergeCallout,
+} from './$runId.js';
 
 function makeReviewRun(overrides: Partial<RunRow> = {}): RunRow {
 	return {
@@ -136,6 +141,67 @@ describe('ReviewCapCallout (issue #242)', () => {
 		);
 
 		expect(container.firstChild).toBeNull();
+	});
+});
+
+function makeRecoveryRun(recovery: RunRow['recovery'], overrides: Partial<RunRow> = {}): RunRow {
+	return makeReviewRun({
+		status: 'failed',
+		phase: 'implementation',
+		reviewVerdict: null,
+		reviewOrdinal: null,
+		reviewAutomationOutcome: null,
+		error: 'Worktree for task 1 is protected.',
+		completedAt: '2026-01-01T00:05:00.000Z',
+		recovery,
+		...overrides,
+	});
+}
+
+describe('RecoveryCallout (issue #368)', () => {
+	it('renders nothing for an unrelated run with no recovery record', () => {
+		const { container } = render(<RecoveryCallout run={makeReviewRun()} />);
+		expect(container.firstChild).toBeNull();
+	});
+
+	it('shows the preserved state for a resumable run', () => {
+		render(<RecoveryCallout run={makeRecoveryRun({ state: 'preserved' })} />);
+		expect(screen.getByRole('heading', { name: /worktree preserved/i })).toBeDefined();
+	});
+
+	it('shows the recovered state', () => {
+		render(<RecoveryCallout run={makeRecoveryRun({ state: 'recovered' })} />);
+		expect(screen.getByRole('heading', { name: /successfully recovered/i })).toBeDefined();
+	});
+
+	it.each([
+		['dirty', /uncommitted changes/i, /commit, stash, or discard/i],
+		['unpushed', /never pushed/i, /push or discard those commits/i],
+		['live-leased', /leased by another active run/i, /wait for that run to finish/i],
+		['missing-validation', /saved agent session is gone/i, /provision a fresh checkout/i],
+	] as const)('explains the %s blocked reason and offers Recheck and retry', (blockedReason, conditionPattern, resolutionPattern) => {
+		render(<RecoveryCallout run={makeRecoveryRun({ state: 'blocked', blockedReason })} />);
+
+		expect(screen.getByRole('heading', { name: /recovery blocked/i })).toBeDefined();
+		expect(screen.getByText(conditionPattern)).toBeDefined();
+		expect(screen.getByText(resolutionPattern)).toBeDefined();
+		expect(screen.getByText(/recheck and retry/i)).toBeDefined();
+	});
+
+	it('falls back to generic guidance for an unknown blocked reason', () => {
+		render(
+			<RecoveryCallout
+				run={makeRecoveryRun({
+					state: 'blocked',
+					// A reason the union doesn't yet name must still render actionable guidance.
+					blockedReason: 'something-new' as unknown as 'dirty',
+				})}
+			/>,
+		);
+
+		expect(screen.getByRole('heading', { name: /recovery blocked/i })).toBeDefined();
+		expect(screen.getByText(/failed a safety check/i)).toBeDefined();
+		expect(screen.getByText(/recheck and retry/i)).toBeDefined();
 	});
 });
 
