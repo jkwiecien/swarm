@@ -60,9 +60,22 @@ cd dashboard && npm install && cd ..
 docker compose up -d --build      # Postgres, Redis, and router
 npm run db:migrate
 npm run db:seed                   # loads swarm.config.json into Postgres
-npm run swarm -- users add you@example.com --admin    # create your dashboard user, then
-npm run swarm -- users set-password you@example.com   # set its login password (prompts, no echo)
 ```
+
+> **Local single-user mode is on by default.** The `.env.docker.example` template
+> sets `SWARM_SINGLE_USER_MODE=true`, so this local install needs **no dashboard
+> user, no password, no `/login`, and no session cookie**: the API bootstraps a
+> passwordless `localhost-admin` and signs you straight into the dashboard. Skip
+> the account commands below.
+>
+> **Multi-user alternative.** Set `SWARM_SINGLE_USER_MODE=false` in `.env` (or
+> remove the line) to require per-user session auth instead, then create your
+> dashboard user and set its login password before signing in at `/login`:
+>
+> ```bash
+> npm run swarm -- users add you@example.com --admin    # create your dashboard user, then
+> npm run swarm -- users set-password you@example.com   # set its login password (prompts, no echo)
+> ```
 
 Start these processes in separate terminals:
 
@@ -76,10 +89,13 @@ Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
 `npm run start:api` and open <http://localhost:3101> instead.
 
 The worker is intentionally host-run: it needs local Git worktrees, agent CLI
-authentication, and the developer's PATH. The dashboard uses per-user session
+authentication, and the developer's PATH. With local single-user mode on (the
+Docker template default) the dashboard opens straight in as `localhost-admin`
+with no `/login` step. With it disabled the dashboard uses per-user session
 auth: sign in at `/login` with a user created via `swarm users` (above);
-`/health` is unauthenticated, while every API request carries an HTTP-only
-session cookie. See [`docs/operations.md`](./docs/operations.md) for health
+`/health` is unauthenticated either way, while every API request in multi-user
+mode carries an HTTP-only session cookie. See
+[`docs/operations.md`](./docs/operations.md) for health
 checks, ports, webhook setup, and troubleshooting.
 
 ## Failure diagnosis

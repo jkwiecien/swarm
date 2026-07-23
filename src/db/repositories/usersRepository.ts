@@ -19,6 +19,17 @@ import { users } from '../schema/users.js';
 
 type UserRow = typeof users.$inferSelect;
 
+/**
+ * The reserved login handle of the bootstrapped local single-user admin (issue
+ * #298). `ensureLocalAdminUser` owns this row; it is a normal `users.identifier`
+ * (subject to the same unique constraint) chosen so it cannot collide with a
+ * real email/username. Exported so the auth path and tests refer to one constant.
+ */
+export const LOCAL_ADMIN_IDENTIFIER = 'localhost-admin';
+
+/** Human-friendly label shown for the bootstrapped local single-user admin. */
+const LOCAL_ADMIN_DISPLAY_NAME = 'Local Admin';
+
 /** The fields a caller supplies to create a user; `id`/timestamps are generated. */
 export interface CreateUserInput {
 	identifier: string;
@@ -50,6 +61,38 @@ export async function createUser(input: CreateUserInput): Promise<SwarmUser> {
 			identifier: input.identifier,
 			displayName: input.displayName,
 			instanceAdmin: input.instanceAdmin ?? false,
+		})
+		.returning();
+	return rowToSwarmUser(row);
+}
+
+/**
+ * Ensure the reserved `localhost-admin` user exists as an installation admin,
+ * for local single-user mode (issue #298). Atomic and idempotent via the
+ * `users.identifier` unique constraint — no new schema, no migration:
+ *
+ * - first use inserts the account with no password (`password_hash` stays null),
+ * - repeated or concurrent use returns the same row (the loser of a concurrent
+ *   insert takes the `ON CONFLICT` update path), and
+ * - a pre-existing row with this identifier is promoted to `instanceAdmin`
+ *   without touching its `password_hash` or display name.
+ *
+ * The single-user admin never has a password — it authenticates by the mode
+ * flag, not credentials — so this never sets one.
+ */
+export async function ensureLocalAdminUser(): Promise<SwarmUser> {
+	const [row] = await getDb()
+		.insert(users)
+		.values({
+			identifier: LOCAL_ADMIN_IDENTIFIER,
+			displayName: LOCAL_ADMIN_DISPLAY_NAME,
+			instanceAdmin: true,
+		})
+		.onConflictDoUpdate({
+			target: users.identifier,
+			// Promote an existing row to admin only; leave password_hash and
+			// display_name as they are.
+			set: { instanceAdmin: true },
 		})
 		.returning();
 	return rowToSwarmUser(row);

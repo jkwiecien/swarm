@@ -22,7 +22,11 @@ import {
 	findUserIdBySessionToken,
 	insertSession,
 } from '../db/repositories/userSessionsRepository.js';
-import { findUserCredentialByIdentifier, getUserById } from '../db/repositories/usersRepository.js';
+import {
+	ensureLocalAdminUser,
+	findUserCredentialByIdentifier,
+	getUserById,
+} from '../db/repositories/usersRepository.js';
 import type { SwarmUser } from './schema.js';
 
 const scryptAsync = promisify(scrypt);
@@ -140,6 +144,19 @@ export async function resolveSession(rawToken: string): Promise<SwarmUser | unde
 
 	void deleteExpiredSessions().catch(() => {});
 	return getUserById(userId);
+}
+
+/**
+ * Resolve the caller in local single-user mode (issue #298): the bootstrapped
+ * `localhost-admin` installation admin, ensured on first use and returned
+ * directly. This is the single-user counterpart to {@link resolveSession} —
+ * deliberately session-free, so a local install needs no `/login`, password, or
+ * `swarm_session` cookie. It never mints or reads a session; callers use it only
+ * when `isSingleUserMode()` is enabled, and the normal cookie flow is untouched
+ * when it is not.
+ */
+export async function resolveSingleUser(): Promise<SwarmUser> {
+	return ensureLocalAdminUser();
 }
 
 /** Revoke a session by its raw token (logout). A no-op if it doesn't exist. */

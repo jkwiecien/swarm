@@ -21,3 +21,17 @@ export function optionalEnv(name: string, fallback: string): string {
 	const value = process.env[name];
 	return value === undefined || value === '' ? fallback : value;
 }
+
+/**
+ * Whether SWARM's local single-user mode is enabled (`SWARM_SINGLE_USER_MODE`).
+ *
+ * A disabled-by-default API authentication policy for a local, single-operator
+ * install (issue #298): when enabled the API resolves the bootstrapped
+ * `localhost-admin` instead of requiring a dashboard session cookie. Only the
+ * literal string `true` enables it — an unset, empty, or any other value keeps
+ * the coded default (the existing multi-user, session-cookie behavior), so the
+ * safe multi-user policy is what you get unless you opt in explicitly.
+ */
+export function isSingleUserMode(): boolean {
+	return process.env.SWARM_SINGLE_USER_MODE === 'true';
+}

@@ -15,6 +15,7 @@ vi.mock('@/identity/auth.js', () => ({
 	verifyCredentials: vi.fn(),
 	createSession: vi.fn(),
 	resolveSession: vi.fn(),
+	resolveSingleUser: vi.fn(),
 	revokeSession: vi.fn(),
 }));
 
@@ -28,6 +29,7 @@ import { listAllProjectsFromDb } from '@/db/repositories/projectsRepository.js';
 import {
 	createSession,
 	resolveSession,
+	resolveSingleUser,
 	revokeSession,
 	verifyCredentials,
 } from '@/identity/auth.js';
@@ -49,10 +51,14 @@ describe('swarm-api', () => {
 	beforeEach(() => {
 		// Keep the default-CORS assertions deterministic regardless of the ambient env.
 		delete process.env.CORS_ORIGIN;
+		// Keep the single-user policy off unless a test opts in via the app option,
+		// so the default-mode assertions don't depend on the ambient env.
+		delete process.env.SWARM_SINGLE_USER_MODE;
 		vi.mocked(listAllProjectsFromDb).mockReset();
 		vi.mocked(verifyCredentials).mockReset();
 		vi.mocked(createSession).mockReset();
 		vi.mocked(resolveSession).mockReset();
+		vi.mocked(resolveSingleUser).mockReset();
 		vi.mocked(revokeSession).mockReset().mockResolvedValue(undefined);
 		vi.mocked(listAccessibleProjectIds).mockReset();
 	});
@@ -116,6 +122,79 @@ describe('swarm-api', () => {
 
 			expect(res.status).toBe(401);
 			expect(listAllProjectsFromDb).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('single-user mode (SWARM_SINGLE_USER_MODE)', () => {
+		const admin: SwarmUser = {
+			...user,
+			identifier: 'localhost-admin',
+			displayName: 'Local Admin',
+			instanceAdmin: true,
+		};
+
+		it('serves auth.me from the bootstrapped admin with no session cookie', async () => {
+			vi.mocked(resolveSingleUser).mockResolvedValue(admin);
+
+			const app = createApiApp({ singleUserMode: true });
+			const res = await app.request('/trpc/auth.me');
+
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.result.data).toMatchObject({
+				identifier: 'localhost-admin',
+				instanceAdmin: true,
+			});
+			// The cookie/session path is never consulted in single-user mode.
+			expect(resolveSession).not.toHaveBeenCalled();
+		});
+
+		it('serves a protected procedure with no cookie and without resolveSession', async () => {
+			vi.mocked(resolveSingleUser).mockResolvedValue(admin);
+			vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
+
+			const app = createApiApp({ singleUserMode: true });
+			const res = await app.request('/trpc/projects.list');
+
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ result: { data: [] } });
+			expect(resolveSession).not.toHaveBeenCalled();
+			expect(listAllProjectsFromDb).toHaveBeenCalledTimes(1);
+		});
+
+		it('bootstraps the admin once and caches it across requests', async () => {
+			vi.mocked(resolveSingleUser).mockResolvedValue(admin);
+
+			const app = createApiApp({ singleUserMode: true });
+			await app.request('/trpc/auth.me');
+			await app.request('/trpc/auth.me');
+
+			expect(resolveSingleUser).toHaveBeenCalledTimes(1);
+		});
+
+		it('explicitly disabled: still 401s without a cookie and never bootstraps an admin', async () => {
+			const app = createApiApp({ singleUserMode: false });
+			const res = await app.request('/trpc/projects.list');
+
+			expect(res.status).toBe(401);
+			expect(resolveSingleUser).not.toHaveBeenCalled();
+			expect(listAllProjectsFromDb).not.toHaveBeenCalled();
+		});
+
+		it('explicitly disabled: still resolves a valid cookie exactly as today', async () => {
+			vi.mocked(resolveSession).mockResolvedValue(user);
+			vi.mocked(listAllProjectsFromDb).mockResolvedValue([]);
+			vi.mocked(listAccessibleProjectIds).mockResolvedValue([]);
+
+			const app = createApiApp({ singleUserMode: false });
+			const res = await app.request('/trpc/projects.list', {
+				headers: { Cookie: `${SESSION_COOKIE_NAME}=${RAW_TOKEN}` },
+			});
+
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ result: { data: [] } });
+			expect(resolveSession).toHaveBeenCalledWith(RAW_TOKEN);
+			expect(resolveSingleUser).not.toHaveBeenCalled();
 		});
 	});
 

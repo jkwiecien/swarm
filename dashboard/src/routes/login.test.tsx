@@ -13,9 +13,22 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/lib/auth.js', () => ({ login: vi.fn() }));
+vi.mock('@/lib/use-current-user.js', () => ({ useCurrentUser: vi.fn() }));
 
 import { login } from '@/lib/auth.js';
+import { useCurrentUser } from '@/lib/use-current-user.js';
 import { LoginScreen } from './login.js';
+
+// Minimal react-query-shaped results for the two states the screen branches on:
+// unauthenticated (show the form) and resolved (redirect into the app). Only the
+// `data`/`isLoading` fields the screen reads matter.
+// biome-ignore lint/suspicious/noExplicitAny: a partial query result is enough for these branches.
+const UNAUTHENTICATED = { data: undefined, isLoading: false } as any;
+const RESOLVED_ADMIN = {
+	data: { id: '1', identifier: 'localhost-admin', displayName: 'Local Admin', instanceAdmin: true },
+	isLoading: false,
+	// biome-ignore lint/suspicious/noExplicitAny: a partial query result is enough for these branches.
+} as any;
 
 // Render the real LoginScreen inside a minimal memory router + query client, so
 // its useNavigate/useQueryClient hooks work; only the network `login` call is
@@ -46,6 +59,18 @@ function renderLogin() {
 describe('LoginScreen', () => {
 	beforeEach(() => {
 		vi.mocked(login).mockReset();
+		vi.mocked(useCurrentUser).mockReset().mockReturnValue(UNAUTHENTICATED);
+	});
+
+	it('redirects a resolved user into the app without showing the form', async () => {
+		// e.g. single-user mode, where the API resolves the local admin with no
+		// session — a direct visit to /login skips the screen.
+		vi.mocked(useCurrentUser).mockReturnValue(RESOLVED_ADMIN);
+		renderLogin();
+
+		expect(await screen.findByText('home-screen')).not.toBeNull();
+		expect(screen.queryByLabelText(/username or email/i)).toBeNull();
+		expect(login).not.toHaveBeenCalled();
 	});
 
 	it('submits the entered credentials and navigates into the app on success', async () => {

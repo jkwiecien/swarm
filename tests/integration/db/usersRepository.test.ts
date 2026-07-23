@@ -2,10 +2,14 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
 	createUser,
+	ensureLocalAdminUser,
 	findUserByIdentifier,
+	findUserCredentialByIdentifier,
 	getUserById,
+	LOCAL_ADMIN_IDENTIFIER,
 	listUsers,
 	setInstanceAdmin,
+	setPasswordHash,
 } from '../../../src/db/repositories/usersRepository.js';
 import { truncateAll } from '../helpers/db.js';
 
@@ -82,6 +86,48 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('usersRepository (integrat
 
 		it('returns undefined for an unknown id', async () => {
 			expect(await setInstanceAdmin('11111111-1111-4111-8111-111111111111', true)).toBeUndefined();
+		});
+	});
+
+	describe('ensureLocalAdminUser', () => {
+		it('creates the reserved localhost-admin as an admin with no password', async () => {
+			const admin = await ensureLocalAdminUser();
+
+			expect(admin.identifier).toBe(LOCAL_ADMIN_IDENTIFIER);
+			expect(admin.instanceAdmin).toBe(true);
+			expect(admin.id).toMatch(/^[0-9a-f-]{36}$/);
+
+			// No password is set — the single-user admin authenticates by mode, not
+			// credentials. The hash lives only in the credential read model.
+			const credential = await findUserCredentialByIdentifier(LOCAL_ADMIN_IDENTIFIER);
+			expect(credential?.passwordHash).toBeNull();
+		});
+
+		it('is idempotent — repeated calls return the same row', async () => {
+			const first = await ensureLocalAdminUser();
+			const second = await ensureLocalAdminUser();
+
+			expect(second.id).toBe(first.id);
+			expect(
+				(await listUsers()).filter((u) => u.identifier === LOCAL_ADMIN_IDENTIFIER),
+			).toHaveLength(1);
+		});
+
+		it('promotes a pre-existing non-admin row to admin without touching its password', async () => {
+			const existing = await createUser({
+				identifier: LOCAL_ADMIN_IDENTIFIER,
+				displayName: 'Pre-existing',
+			});
+			await setPasswordHash(existing.id, 'deadbeef:cafef00d');
+			expect(existing.instanceAdmin).toBe(false);
+
+			const promoted = await ensureLocalAdminUser();
+
+			expect(promoted.id).toBe(existing.id);
+			expect(promoted.instanceAdmin).toBe(true);
+
+			const credential = await findUserCredentialByIdentifier(LOCAL_ADMIN_IDENTIFIER);
+			expect(credential?.passwordHash).toBe('deadbeef:cafef00d');
 		});
 	});
 });
