@@ -120,8 +120,9 @@ npm test
 `npm run swarm -- <command>` runs the CLI from source. After `npm run build`,
 the `swarm` binary can be invoked directly. `queue:clear` cancels waiting
 dispatches but does not terminate an active agent; stop the worker first when
-clearing work before a restart. Detailed operator guidance is in
-[`docs/operations.md`](./docs/operations.md).
+clearing work before a restart. The full list of `swarm` commands and `npm run`
+scripts, with descriptions, is in [`docs/cli.md`](./docs/cli.md); detailed
+operator guidance is in [`docs/operations.md`](./docs/operations.md).
 
 ## Configuration
 
@@ -140,6 +141,8 @@ The complete option catalogue, defaults, and source-of-truth schemas are in
 
 ## Documentation
 
+- [`docs/cli.md`](./docs/cli.md) — complete command reference: every `swarm`
+  operator CLI command and `npm run` script, with descriptions
 - [`docs/operations.md`](./docs/operations.md) — setup, run modes, ports,
   health checks, operator CLI, migrations, queues, worktrees, and webhooks
 - [`docs/configuration.md`](./docs/configuration.md) — complete environment,
