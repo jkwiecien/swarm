@@ -62,6 +62,9 @@ function WorkItemCell({
 	}
 
 	const stopPropagation = (event: React.MouseEvent) => event.stopPropagation();
+	const handleLinkKeyDown = (event: React.KeyboardEvent) => {
+		event.stopPropagation();
+	};
 
 	return (
 		<div className="flex w-full min-w-0 flex-col gap-1 text-xs">
@@ -81,6 +84,7 @@ function WorkItemCell({
 					target="_blank"
 					rel="noopener noreferrer"
 					onClick={stopPropagation}
+					onKeyDown={handleLinkKeyDown}
 					className="inline-flex self-start items-center gap-1 text-violet-400 hover:text-violet-300 font-mono hover:underline"
 				>
 					PR #{run.prNumber}
@@ -92,6 +96,7 @@ function WorkItemCell({
 					target="_blank"
 					rel="noopener noreferrer"
 					onClick={stopPropagation}
+					onKeyDown={handleLinkKeyDown}
 					className="inline-flex self-start items-center gap-1 text-zinc-400 hover:text-zinc-300 font-mono hover:underline"
 				>
 					{workItemLabel(workItemRef)}

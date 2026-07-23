@@ -211,6 +211,14 @@ export function QueuedRunsSection({ items, showProject = true }: QueuedRunsSecti
 								<span>
 									<QueuedEnqueuedContent item={item} />
 								</span>
+								{showProject && (
+									<span className="min-w-0 break-all text-zinc-500">
+										Project:{' '}
+										<span className="font-mono text-zinc-300">
+											{projectsMap.get(item.projectId)?.name || item.projectId}
+										</span>
+									</span>
+								)}
 							</div>
 							{(item.runId || showPutBack) && (
 								<div className="flex flex-wrap items-center gap-2 border-t border-zinc-800/60 pt-3">

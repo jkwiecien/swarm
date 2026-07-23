@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RunRow } from '@/types/runs.js';
@@ -255,6 +255,54 @@ describe('RunsTable', () => {
 			expect(link.getAttribute('href')).toBe(baseRun.workItemUrl);
 			fireEvent.click(link);
 			expect(navigate).not.toHaveBeenCalled();
+		});
+
+		it('does not navigate and does not prevent default when Enter is pressed on an in-card work-item link', () => {
+			renderTable(
+				<RunsTable
+					runs={[baseRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			const link = within(card).getByRole('link');
+			expect(link.getAttribute('href')).toBe(baseRun.workItemUrl);
+
+			const event = createEvent.keyDown(link, { key: 'Enter' });
+			fireEvent(link, event);
+
+			expect(navigate).not.toHaveBeenCalled();
+			expect(event.defaultPrevented).toBe(false);
+		});
+
+		it('does not navigate and does not prevent default when Enter is pressed on an in-card PR link', () => {
+			const prRun = {
+				...baseRun,
+				phase: 'review',
+				prNumber: '42',
+				prTitle: 'PR Title',
+			};
+			renderTable(
+				<RunsTable
+					runs={[prRun]}
+					totalCount={1}
+					currentPage={1}
+					pageSize={25}
+					onPageChange={vi.fn()}
+				/>,
+			);
+			const card = screen.getByTestId('run-card');
+			const link = within(card).getByRole('link');
+			expect(link.getAttribute('href')).toBe('https://github.com/acme/widgets/pull/42');
+
+			const event = createEvent.keyDown(link, { key: 'Enter' });
+			fireEvent(link, event);
+
+			expect(navigate).not.toHaveBeenCalled();
+			expect(event.defaultPrevented).toBe(false);
 		});
 	});
 

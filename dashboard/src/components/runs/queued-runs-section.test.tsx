@@ -63,11 +63,16 @@ const boardItem: QueuedRun = {
 	runsAt: '2026-07-17T12:00:00.000Z',
 };
 
-// The section resolves project names via `projects.list`; that query has no
-// server here, so wrap in a QueryClient (retry off) and let it stay pending —
-// the component falls back to the projectId, which is all these tests need.
-function renderSection(ui: ReactElement) {
-	const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+const project = { id: 'proj-a', name: 'Acme', repo: 'acme/widgets' };
+
+// Seed the `projects.list` cache so queued cards/rows can resolve the project
+// name synchronously. `staleTime: Infinity` keeps the mocked queryFn from
+// refetching and clobbering the seeded value mid-test.
+function renderSection(ui: ReactElement, projects: unknown[] = [project]) {
+	const queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+	});
+	queryClient.setQueryData(['projects.list'], projects);
 	return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
 }
 
@@ -276,6 +281,20 @@ describe('QueuedRunsSection', () => {
 					projectId: groupedBoardFollowUp.projectId,
 				}),
 			);
+		});
+
+		it('includes Project on mobile cards when showProject is true', () => {
+			renderSection(<QueuedRunsSection items={[githubItem]} showProject={true} />);
+			const card = cards()[0];
+			expect(within(card).getByText('Project:')).not.toBeNull();
+			expect(within(card).getByText('Acme')).not.toBeNull();
+		});
+
+		it('omits Project from mobile cards when showProject is false', () => {
+			renderSection(<QueuedRunsSection items={[githubItem]} showProject={false} />);
+			const card = cards()[0];
+			expect(within(card).queryByText('Project:')).toBeNull();
+			expect(within(card).queryByText('Acme')).toBeNull();
 		});
 	});
 });
