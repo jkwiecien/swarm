@@ -9,6 +9,8 @@ import {
 	PhaseSettingsDetail,
 	PhaseToggleSwitch,
 	PipelineSettingsForm,
+	ToggleSaveIndicator,
+	toggleSaveKey,
 } from './$projectId.js';
 
 describe('PhaseToggleSwitch', () => {
@@ -57,6 +59,28 @@ describe('PhaseToggleSwitch', () => {
 	});
 });
 
+describe('toggleSaveKey', () => {
+	it('builds a stable per-phase, per-kind key', () => {
+		expect(toggleSaveKey('review', 'enabled')).toBe('review:enabled');
+		expect(toggleSaveKey('planning', 'autoAdvance')).toBe('planning:autoAdvance');
+		// The two kinds never collide for the same phase.
+		expect(toggleSaveKey('planning', 'enabled')).not.toBe(toggleSaveKey('planning', 'autoAdvance'));
+	});
+});
+
+describe('ToggleSaveIndicator', () => {
+	it('renders a labelled spinner while a save is in flight', () => {
+		render(<ToggleSaveIndicator saving={true} />);
+		expect(screen.getByLabelText('Saving')).toBeDefined();
+	});
+
+	it('renders nothing when idle', () => {
+		const { container } = render(<ToggleSaveIndicator saving={false} />);
+		expect(container.firstChild).toBeNull();
+		expect(screen.queryByLabelText('Saving')).toBeNull();
+	});
+});
+
 describe('PhaseEnabledCell', () => {
 	it('renders "Always on" text for mandatory phases when enabled is undefined', () => {
 		render(
@@ -101,6 +125,36 @@ describe('PhaseEnabledCell', () => {
 		const switchElement = screen.getByRole('switch') as HTMLButtonElement;
 		expect(switchElement.disabled).toBe(true);
 	});
+
+	it('shows a spinner on the toggle whose immediate save is in flight', () => {
+		render(
+			<PhaseEnabledCell
+				phase="review"
+				label="Review"
+				enabled={true}
+				isPending={false}
+				savingToggleKey={toggleSaveKey('review', 'enabled')}
+			/>,
+		);
+		expect(screen.getByLabelText('Saving')).toBeDefined();
+	});
+
+	it('disables the toggle while any toggle save is in flight, without its own spinner', () => {
+		// A different toggle is saving: this one must not accept a flip mid-write
+		// (saves are serialized) and shows no spinner of its own.
+		render(
+			<PhaseEnabledCell
+				phase="review"
+				label="Review"
+				enabled={true}
+				isPending={false}
+				savingToggleKey={toggleSaveKey('respondToCi', 'enabled')}
+			/>,
+		);
+		const switchElement = screen.getByRole('switch') as HTMLButtonElement;
+		expect(switchElement.disabled).toBe(true);
+		expect(screen.queryByLabelText('Saving')).toBeNull();
+	});
 });
 
 describe('PhaseConfigRow', () => {
@@ -139,6 +193,28 @@ describe('PhaseConfigRow', () => {
 		// Click the auto-advance toggle
 		fireEvent.click(switches[0]);
 		expect(handleAutoAdvanceChange).toHaveBeenCalledWith('planning', false);
+	});
+
+	it('shows a spinner on the Planning auto-advance toggle while its save is in flight', () => {
+		render(
+			<table>
+				<tbody>
+					<PhaseConfigRow
+						phase="planning"
+						config={mockConfig}
+						isPending={false}
+						enabled={undefined}
+						autoAdvance={true}
+						savingToggleKey={toggleSaveKey('planning', 'autoAdvance')}
+						handleAutoAdvanceChange={() => {}}
+						onSelect={() => {}}
+					/>
+				</tbody>
+			</table>,
+		);
+		expect(screen.getByLabelText('Saving')).toBeDefined();
+		const switches = screen.getAllByRole('switch') as HTMLButtonElement[];
+		expect(switches[0].disabled).toBe(true);
 	});
 
 	it('shows the preferred target as CLI • Model with reasoning beneath it', () => {

@@ -8,6 +8,7 @@ import {
 	Cpu,
 	GitBranch,
 	GitMerge,
+	Loader2,
 	Play,
 	Plus,
 	Settings,
@@ -50,11 +51,8 @@ import {
 } from '@/lib/phase-prompt.js';
 import {
 	autoAdvanceConfigPhase,
-	buildPipelineAutoAdvanceUpdate,
-	buildPipelineEnabledUpdate,
+	buildPipelineToggleUpdate,
 	buildReviewChecksPolicyUpdate,
-	isPipelineAutoAdvanceDirty,
-	isPipelineEnabledDirty,
 	isRespondToReviewLocked,
 	isReviewChecksPolicyDirty,
 	PIPELINE_TOGGLE_PHASES,
@@ -583,6 +581,8 @@ interface PhaseConfigRowProps {
 	enabled?: boolean;
 	/** Whether the enable toggle is locked off by a dependency (Review → Respond). */
 	enabledDisabled?: boolean;
+	/** Key of the toggle whose immediate save is in flight, or undefined when idle. */
+	savingToggleKey?: string;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	autoAdvance?: boolean;
 	handleAutoAdvanceChange?: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
@@ -603,6 +603,7 @@ export function PhaseEnabledCell({
 	enabled,
 	enabledDisabled,
 	isPending,
+	savingToggleKey,
 	handleEnabledChange,
 }: {
 	phase: (typeof PHASES)[number];
@@ -610,18 +611,27 @@ export function PhaseEnabledCell({
 	enabled?: boolean;
 	enabledDisabled?: boolean;
 	isPending: boolean;
+	/** Key of the toggle whose immediate save is in flight, or undefined when idle. */
+	savingToggleKey?: string;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 }) {
 	if (enabled === undefined) {
 		return <span className="text-xs text-zinc-500">Always on</span>;
 	}
+	const key = toggleSaveKey(phase, 'enabled');
+	// Any toggle save disables every toggle until it settles, so the auto-save
+	// path stays serialized and the optimistic rollback has a single prior state.
+	const togglesBusy = savingToggleKey !== undefined;
 	return (
-		<PhaseToggleSwitch
-			checked={enabled === true}
-			label={`${label} enabled`}
-			disabled={Boolean(isPending || enabledDisabled)}
-			onChange={() => handleEnabledChange?.(phase as PipelineTogglePhase, !enabled)}
-		/>
+		<span className="inline-flex items-center gap-2">
+			<PhaseToggleSwitch
+				checked={enabled === true}
+				label={`${label} enabled`}
+				disabled={Boolean(isPending || enabledDisabled || togglesBusy)}
+				onChange={() => handleEnabledChange?.(phase as PipelineTogglePhase, !enabled)}
+			/>
+			<ToggleSaveIndicator saving={savingToggleKey === key} />
+		</span>
 	);
 }
 
@@ -660,6 +670,31 @@ export function PhaseToggleSwitch({
 }
 
 /**
+ * Which interactive toggle on the Agents tab a save-in-flight refers to — a phase
+ * paired with the flag it flips. Each such toggle auto-saves on its own (issue
+ * #369), so the row shows its own spinner rather than the tab-wide Save button.
+ */
+type ToggleKind = 'enabled' | 'autoAdvance';
+
+/** Stable key for one phase's interactive toggle, used to target its spinner. */
+export function toggleSaveKey(phase: string, kind: ToggleKind): string {
+	return `${phase}:${kind}`;
+}
+
+/**
+ * The trailing spinner shown beside a phase toggle while its immediate save is in
+ * flight — the toggle's own pending feedback now that flipping it persists right
+ * away instead of waiting for a Save Changes click (issue #369). Renders nothing
+ * when idle.
+ */
+export function ToggleSaveIndicator({ saving }: { saving?: boolean }) {
+	if (!saving) return null;
+	return (
+		<Loader2 aria-label="Saving" className="h-3.5 w-3.5 shrink-0 animate-spin text-zinc-400" />
+	);
+}
+
+/**
  * One phase's navigation row in the Agent Configuration summary: phase identity,
  * its Enabled toggle (optional phases only), a one-line summary of the current
  * override, a "Custom prompt" badge when one is set, and a trailing chevron. The
@@ -674,6 +709,7 @@ export function PhaseConfigRow({
 	isPending,
 	enabled,
 	enabledDisabled,
+	savingToggleKey,
 	handleEnabledChange,
 	autoAdvance,
 	handleAutoAdvanceChange,
@@ -681,6 +717,7 @@ export function PhaseConfigRow({
 }: PhaseConfigRowProps) {
 	const phaseLabel = PHASE_LABELS[phase];
 	const autoAdvancePhase = autoAdvanceConfigPhase(phase);
+	const autoAdvanceKey = autoAdvancePhase && toggleSaveKey(autoAdvancePhase, 'autoAdvance');
 	const hasCustomPrompt = normalizeCustomPrompt(config.prompt) !== undefined;
 	return (
 		// Mouse users can click anywhere on the row; keyboard/AT users reach the
@@ -702,6 +739,7 @@ export function PhaseConfigRow({
 					enabled={enabled}
 					enabledDisabled={enabledDisabled}
 					isPending={isPending}
+					savingToggleKey={savingToggleKey}
 					handleEnabledChange={handleEnabledChange}
 				/>
 			</td>
@@ -709,14 +747,19 @@ export function PhaseConfigRow({
 				{autoAdvance === undefined ? (
 					<span className="text-xs text-zinc-500">N/A</span>
 				) : (
-					<PhaseToggleSwitch
-						checked={autoAdvance}
-						label={`${phaseLabel.label} auto-advance`}
-						disabled={isPending}
-						onChange={() =>
-							autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
-						}
-					/>
+					<span className="inline-flex items-center gap-2">
+						<PhaseToggleSwitch
+							checked={autoAdvance}
+							label={`${phaseLabel.label} auto-advance`}
+							disabled={isPending || savingToggleKey !== undefined}
+							onChange={() =>
+								autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
+							}
+						/>
+						<ToggleSaveIndicator
+							saving={Boolean(autoAdvanceKey) && savingToggleKey === autoAdvanceKey}
+						/>
+					</span>
 				)}
 			</td>
 			<td className="px-4 py-3.5">
@@ -772,6 +815,8 @@ interface PhaseSettingsDetailProps extends TargetHandlers {
 	isPending: boolean;
 	enabled?: boolean;
 	enabledDisabled?: boolean;
+	/** Key of the toggle whose immediate save is in flight, or undefined when idle. */
+	savingToggleKey?: string;
 	handleEnabledChange?: (phase: PipelineTogglePhase, enabled: boolean) => void;
 	autoAdvance?: boolean;
 	handleAutoAdvanceChange?: (phase: PipelineAutoAdvancePhase, enabled: boolean) => void;
@@ -1052,6 +1097,7 @@ export function PhaseSettingsDetail({
 	isPending,
 	enabled,
 	enabledDisabled,
+	savingToggleKey,
 	handleEnabledChange,
 	autoAdvance,
 	handleAutoAdvanceChange,
@@ -1065,6 +1111,7 @@ export function PhaseSettingsDetail({
 }: PhaseSettingsDetailProps) {
 	const phaseLabel = PHASE_LABELS[phase];
 	const autoAdvancePhase = autoAdvanceConfigPhase(phase);
+	const autoAdvanceKey = autoAdvancePhase && toggleSaveKey(autoAdvancePhase, 'autoAdvance');
 	// Projected rather than read straight off `config.targets` so a phase still
 	// carrying only the pre-`targets` single selection renders as its one target.
 	const targets = toTargetList(config);
@@ -1108,6 +1155,7 @@ export function PhaseSettingsDetail({
 								enabled={enabled}
 								enabledDisabled={enabledDisabled}
 								isPending={isPending}
+								savingToggleKey={savingToggleKey}
 								handleEnabledChange={handleEnabledChange}
 							/>
 						)}
@@ -1125,14 +1173,19 @@ export function PhaseSettingsDetail({
 
 					{autoAdvance !== undefined && (
 						<div className="flex items-start gap-3">
-							<PhaseToggleSwitch
-								checked={autoAdvance}
-								label={`${phaseLabel.label} auto-advance`}
-								disabled={isPending}
-								onChange={() =>
-									autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
-								}
-							/>
+							<span className="inline-flex items-center gap-2">
+								<PhaseToggleSwitch
+									checked={autoAdvance}
+									label={`${phaseLabel.label} auto-advance`}
+									disabled={isPending || savingToggleKey !== undefined}
+									onChange={() =>
+										autoAdvancePhase && handleAutoAdvanceChange?.(autoAdvancePhase, !autoAdvance)
+									}
+								/>
+								<ToggleSaveIndicator
+									saving={Boolean(autoAdvanceKey) && savingToggleKey === autoAdvanceKey}
+								/>
+							</span>
 							<span>
 								<span className="block text-sm font-medium text-zinc-200">Auto-advance</span>
 								<span className="block text-xs text-zinc-400 mt-1">
@@ -1231,14 +1284,20 @@ interface AgentConfigurationFormProps extends TargetHandlers {
 	isSuccess: boolean;
 	isError: boolean;
 	errorMessage?: string;
+	/** Key of the phase toggle whose immediate save is in flight, or undefined. */
+	savingToggleKey?: string;
+	/** Message shown when the last immediate toggle save failed and was rolled back. */
+	toggleErrorMessage?: string;
 }
 
 /**
  * Agent Configuration tab. Shows the per-phase summary table (each row navigates
  * to its detail screen), or — when a phase is
- * selected — that phase's detail screen. Both views live in one `<form>` and
- * share a single Save/Reset and the route's `agents`/`pipeline` state, so there
- * is no second competing save model (issue #135, #119).
+ * selected — that phase's detail screen. The Enabled/Auto-advance toggles save
+ * immediately on their own scoped mutation with inline pending/error feedback
+ * (issue #369); the Save Changes / Reset controls and the route's `agents` state
+ * govern only the non-toggle edits (target lists, timeouts, custom prompts), so
+ * the two save paths never persist each other's in-progress edits (issue #135, #119).
  */
 function AgentConfigurationForm({
 	agents,
@@ -1263,6 +1322,8 @@ function AgentConfigurationForm({
 	isSuccess,
 	isError,
 	errorMessage,
+	savingToggleKey,
+	toggleErrorMessage,
 }: AgentConfigurationFormProps) {
 	const selectedAutoAdvancePhase = selectedPhase
 		? autoAdvanceConfigPhase(selectedPhase)
@@ -1270,6 +1331,15 @@ function AgentConfigurationForm({
 
 	return (
 		<form onSubmit={handleSubmit} className="space-y-6">
+			{/* Toggle auto-save failed: the flip was rolled back, so say so here rather
+			    than letting it fail silently (issue #369). Distinct from the Save
+			    Changes banners below, which cover the non-toggle edits. */}
+			{toggleErrorMessage && (
+				<div className="p-2.5 bg-red-950/30 border border-red-900/30 text-xs text-red-400 rounded">
+					Couldn't save the toggle: {toggleErrorMessage}. Reverted to the last saved value.
+				</div>
+			)}
+
 			{selectedPhase ? (
 				<PhaseSettingsDetail
 					phase={selectedPhase}
@@ -1284,6 +1354,7 @@ function AgentConfigurationForm({
 					enabledDisabled={
 						selectedPhase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 					}
+					savingToggleKey={savingToggleKey}
 					autoAdvance={
 						selectedAutoAdvancePhase ? pipelineAutoAdvance[selectedAutoAdvancePhase] : undefined
 					}
@@ -1339,6 +1410,7 @@ function AgentConfigurationForm({
 												enabledDisabled={
 													phase === 'respondToReview' && isRespondToReviewLocked(pipelineEnabled)
 												}
+												savingToggleKey={savingToggleKey}
 												autoAdvance={
 													autoAdvancePhase ? pipelineAutoAdvance[autoAdvancePhase] : undefined
 												}
@@ -1557,6 +1629,91 @@ export function PipelineSettingsForm({
 	);
 }
 
+interface UseToggleAutoSaveArgs {
+	projectId: string;
+	/** The stored pipeline config the toggle payload is layered over. */
+	existingPipeline: PipelineConfig | undefined;
+	pipelineEnabled: PipelineEnabledForm;
+	setPipelineEnabled: React.Dispatch<React.SetStateAction<PipelineEnabledForm>>;
+	pipelineAutoAdvance: PipelineAutoAdvanceForm;
+	setPipelineAutoAdvance: React.Dispatch<React.SetStateAction<PipelineAutoAdvanceForm>>;
+}
+
+/**
+ * Wires the Agents-tab Enabled/Auto-advance toggles to immediate, scoped saves
+ * (issue #369). A flip updates the pipeline form optimistically and fires a
+ * `pipeline`-only mutation — never `agents`, so the tab's unsaved target/timeout/
+ * prompt edits are left untouched (the issue's caveat: the two save paths stay
+ * independent). While a save is in flight `savingToggleKey` names the toggle so it
+ * shows a spinner and all toggles disable, serializing writes; on failure the form
+ * rolls back to the pre-flip state and `toggleErrorMessage` surfaces the reason
+ * rather than the toggle reverting silently. Extracted from the route component so
+ * that component keeps its cognitive-complexity budget and this contract lives in
+ * one place.
+ *
+ * Deliberately does not invalidate the project query on success: a refetch would
+ * re-run the route's form-sync effect and discard any unsaved target/timeout/prompt
+ * edits the user has on this same tab. The optimistic local state is authoritative
+ * for the toggle's display and the write is already persisted, so no refetch is
+ * needed to stay correct.
+ */
+function useToggleAutoSave({
+	projectId,
+	existingPipeline,
+	pipelineEnabled,
+	setPipelineEnabled,
+	pipelineAutoAdvance,
+	setPipelineAutoAdvance,
+}: UseToggleAutoSaveArgs) {
+	const [savingToggleKey, setSavingToggleKey] = useState<string>();
+	const mutation = useMutation({
+		mutationFn: (variables: { id: string; pipeline: PipelineConfig }) =>
+			trpcClient.projects.update.mutate(variables),
+		onSettled: () => setSavingToggleKey(undefined),
+	});
+
+	const persist = (
+		key: string,
+		nextEnabled: PipelineEnabledForm,
+		nextAutoAdvance: PipelineAutoAdvanceForm,
+		rollback: () => void,
+	) => {
+		setSavingToggleKey(key);
+		mutation.mutate(
+			{
+				id: projectId,
+				pipeline: buildPipelineToggleUpdate(nextEnabled, nextAutoAdvance, existingPipeline),
+			},
+			{ onError: rollback },
+		);
+	};
+
+	const handleEnabledChange = (phase: PipelineTogglePhase, enabled: boolean) => {
+		const prev = pipelineEnabled;
+		const next = setPhaseEnabled(prev, phase, enabled);
+		setPipelineEnabled(next);
+		persist(toggleSaveKey(phase, 'enabled'), next, pipelineAutoAdvance, () =>
+			setPipelineEnabled(prev),
+		);
+	};
+
+	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
+		const prev = pipelineAutoAdvance;
+		const next = setAutoAdvanceEnabled(prev, phase, enabled);
+		setPipelineAutoAdvance(next);
+		persist(toggleSaveKey(phase, 'autoAdvance'), pipelineEnabled, next, () =>
+			setPipelineAutoAdvance(prev),
+		);
+	};
+
+	return {
+		savingToggleKey,
+		toggleErrorMessage: mutation.isError ? (mutation.error?.message ?? 'Unknown error') : undefined,
+		handleEnabledChange,
+		handleAutoAdvanceChange,
+	};
+}
+
 function ProjectDetailRouteComponent() {
 	const { projectId } = projectDetailRoute.useParams();
 	// The active tab and the open Agent Configuration phase live in the URL so each
@@ -1670,6 +1827,19 @@ function ProjectDetailRouteComponent() {
 		},
 	});
 
+	// The Agents-tab Enabled/Auto-advance toggles persist immediately on their own
+	// scoped `pipeline`-only mutation, independent of the Save Changes flow above
+	// (issue #369). See {@link useToggleAutoSave}.
+	const { savingToggleKey, toggleErrorMessage, handleEnabledChange, handleAutoAdvanceChange } =
+		useToggleAutoSave({
+			projectId,
+			existingPipeline: project?.pipeline,
+			pipelineEnabled,
+			setPipelineEnabled,
+			pipelineAutoAdvance,
+			setPipelineAutoAdvance,
+		});
+
 	const isDirty = useMemo(() => {
 		if (!project) return false;
 		return (
@@ -1693,15 +1863,11 @@ function ProjectDetailRouteComponent() {
 		);
 		if (hasDefaultChange) return true;
 
-		if (PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase])))
-			return true;
-
-		// The per-phase enable toggles save through this same form.
-		return (
-			isPipelineEnabledDirty(pipelineEnabled, project.pipeline) ||
-			isPipelineAutoAdvanceDirty(pipelineAutoAdvance, project.pipeline)
-		);
-	}, [project, agents, pipelineEnabled, pipelineAutoAdvance]);
+		// Only the non-toggle edits gate Save Changes now — the Enabled/Auto-advance
+		// toggles auto-save on their own scoped mutation (issue #369), so they're
+		// deliberately excluded here and from `handleAgentsSubmit`.
+		return PHASES.some((phase) => isPhaseConfigDirty(agents[phase], projectAgents[phase]));
+	}, [project, agents]);
 
 	// An over-limit custom prompt — or a duplicate target CLI, which the selectors
 	// don't offer but the schema also rejects — would only fail server-side; surface
@@ -1773,21 +1939,11 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
-	const handleEnabledChange = (phase: PipelineTogglePhase, enabled: boolean) => {
-		setPipelineEnabled((prev) => setPhaseEnabled(prev, phase, enabled));
-		updateMutation.reset();
-	};
-
-	const handleAutoAdvanceChange = (phase: PipelineAutoAdvancePhase, enabled: boolean) => {
-		setPipelineAutoAdvance((prev) => setAutoAdvanceEnabled(prev, phase, enabled));
-		updateMutation.reset();
-	};
-
 	const handleAgentsReset = () => {
 		if (project) {
+			// Resets only the non-toggle edits the Save Changes button owns; the
+			// toggles auto-save and already reflect the stored state (issue #369).
 			setAgents(normalizeAgentsForDisplay(project.agents ?? {}));
-			setPipelineEnabled(toPipelineEnabledForm(project.pipeline));
-			setPipelineAutoAdvance(toPipelineAutoAdvanceForm(project.pipeline));
 			updateMutation.reset();
 		}
 	};
@@ -1798,13 +1954,12 @@ function ProjectDetailRouteComponent() {
 		// an Enter-to-submit from a field can't bypass the client-side check (issue #135).
 		if (hasAgentValidationError) return;
 		const finalAgents = cleanAgentsConfig(agents);
+		// Only `agents` — the Enabled/Auto-advance toggles persist immediately via
+		// `useToggleAutoSave`, so Save Changes must not re-send (or stomp) their state
+		// (issue #369).
 		updateMutation.mutate({
 			id: projectId,
 			agents: finalAgents,
-			pipeline: buildPipelineAutoAdvanceUpdate(
-				pipelineAutoAdvance,
-				buildPipelineEnabledUpdate(pipelineEnabled, project?.pipeline),
-			),
 		});
 	};
 
@@ -2064,6 +2219,8 @@ function ProjectDetailRouteComponent() {
 					isSuccess={updateMutation.isSuccess}
 					isError={updateMutation.isError}
 					errorMessage={updateMutation.error?.message}
+					savingToggleKey={savingToggleKey}
+					toggleErrorMessage={toggleErrorMessage}
 				/>
 			)}
 
