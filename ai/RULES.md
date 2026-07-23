@@ -91,7 +91,7 @@ As above, don't *build* Bitbucket/GitLab providers until they're needed — just
 
 ---
 
-## 4. Project skills → expose to Claude, Antigravity, and Codex
+## 4. Project skills → expose to Claude, Antigravity, and Codex, but keep local-only
 
 Whenever asked to create a project skill, keep its canonical copy at `.claude/skills/<name>/SKILL.md` as usual — **and** make it visible to both Antigravity and Codex through their shared project-scoped skills path, `.agents/skills/<name>/SKILL.md`. Don't duplicate the files; symlink the whole skill folder so there's one copy to maintain:
 
@@ -101,6 +101,8 @@ ln -s ../../.claude/skills/<name> .agents/skills/<name>
 ```
 
 Do this as part of creating the skill, not as a separate follow-up step — a project skill isn't "done" until the `.agents/skills` symlink exists and the same skill is available to all three agents: Claude, Antigravity, and Codex.
+
+**Skills are not committed to the repo.** Both `.claude/skills/` and `.agents/skills/` are gitignored — they're personal/local tooling, not shared project artifacts. Don't `git add` a skill folder or its symlink, and don't fight the ignore rule to force one in.
 
 ---
 
@@ -115,7 +117,7 @@ The backlog/task board lives in **GitHub Projects**. `KANBAN_BOARD.md`, the stan
 - **Record issue dependencies, not only prose dependencies.** When creating multiple tasks that depend on one another, use GitHub's native **Blocked by** relationship wherever it is available: mark the dependent issue as blocked by every prerequisite, in addition to any explanatory text in its body. When a newly created issue is a prerequisite for work already known on the board, review those known issues immediately and add the corresponding **Blocked by** relationship wherever it applies. This keeps the board and scheduler from treating an unbuildable task as ready.
 - **Keep the live board in proposed execution order.** The manual order of issues within each Status column must represent the intended development sequence: prerequisites come before the tasks they block, then order independent work by agreed priority. Whenever issues or dependency relationships are created, removed, or materially changed, review and update that order rather than leaving backlog priority implicit or stale.
 - **Status field** (project `6`): id `PVTSSF_lADODb1Ycc4BcnwuzhXPKyM`, options — `Backlog` (`f75ad846`), `Planning` (`3fe662f4`), `Ready` (`61e4505c` — SWARM's `todo` key; PROJECT.md's "Ready for Dev"), `In progress` (`47fc9ee4`), `In review` (`df73e18b`), `Done` (`98236657`).
-- **Labels**: each issue also carries a `phase-<N>` label (`phase-0` … `phase-6`) since the project has no native "phase" field. `phase-0` … `phase-5` mirror the old Phase 0–5 groupings; `phase-6` (Dashboard) was added later for the dashboard/credential-UI backlog.
+- **Labels**: every newly created issue also carries a type label — `bug`, `enhancement`, or `feature` — picked to match the work. **`phase-<N>` labels (`phase-0` … `phase-6`) are retired: do not add one to a new issue.** They served their purpose grouping the original phased backlog and stay on the issues that already carry them for historical reference, but phase is no longer how new work gets classified.
 
 Interact with the board via `gh` (`gh issue create/list/view`, `gh project item-add`, `gh project item-edit` — see §3 for the account to run these as). Keep it current: when you pick up a task move its Status to **Planning** while you scope it, to **In progress** once you start implementing, to **In review** when a PR is open, and to **Done** once merged. When new work is identified mid-task, file it as a new issue and add it to the project with Status **Backlog** rather than letting it evaporate.
 
