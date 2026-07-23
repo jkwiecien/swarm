@@ -335,84 +335,83 @@ export type ReviewChecksPolicy = z.infer<typeof ReviewChecksPolicySchema>;
  * Implementation always reports pickup by moving to "In progress", then moves
  * to "In review" after delivery exactly when Review is enabled.
  */
-export const PipelineConfigSchema = z
-	.object({
-		/**
-		 * Whether Planning moves the item to "ToDo" once it posts the plan.
-		 * Unset (or the whole `pipeline.planning` block omitted) defaults to
-		 * `false`: a human reviews the plan and moves the item themselves to
-		 * greenlight Implementation.
-		 *
-		 * `autoSplit` (default `true`) lets the planning agent decompose a task it
-		 * judges too large for a single PR: the original item becomes the smaller
-		 * first task (re-scoped, possibly renamed), and the remaining work is spawned
-		 * as sibling items that are preplanned by the parent and never auto-advance to
-		 * "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
-		 *
-		 * `maxConcerns` (default `1`, only used when `autoSplit` is on) is the
-		 * single-task budget the deterministic post-plan guard enforces: the largest
-		 * number of independent concerns an unsplit task may declare in
-		 * `proposed_scope.json` before Planning fails and asks for a split or a
-		 * narrower plan (issue #268). Raise it to loosen the guard.
-		 */
-		planning: z
-			.object({
-				autoAdvance: z.boolean().optional(),
-				autoSplit: z.boolean().optional(),
-				maxConcerns: z.number().int().positive().optional(),
-			})
-			.optional(),
-		review: z
-			.object({
-				enabled: z.boolean().optional(),
-				/** See {@link ReviewChecksPolicySchema}. Unset defaults to `required`. */
-				checks: ReviewChecksPolicySchema.optional(),
-			})
-			.optional(),
-		respondToReview: z
-			.object({
-				enabled: z.boolean().optional(),
-				autoMerge: z.boolean().optional(),
-				/** Skip approval/comment reviews so only requested changes consume a response run. */
-				skipOnMinors: z.boolean().optional(),
-			})
-			.optional(),
-		respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
-		/**
-		 * When a continuation of already-active pipeline work is blocked *solely* by
-		 * this project's concurrency limit, prioritize it over fresh
-		 * Planning/Implementation work once a slot frees, instead of sending it
-		 * through the generic rate-limit retry delay (issue #214). Unset (or the
-		 * whole `pipeline` block omitted) defaults to `true`; set `false` to preserve
-		 * the prior best-effort/FIFO scheduling for maximum new-work throughput.
-		 *
-		 * Applies to Review, Respond-to-review, Respond-to-CI, and
-		 * Resolve-conflicts; Planning and Implementation remain new board work.
-		 */
-		prioritizeContinuations: z.boolean().optional(),
-		/**
-		 * Label a work item must carry before SWARM starts a board-driven agent
-		 * phase (Planning, Implementation) for it — the explicit, human-controlled
-		 * automation opt-in (issue #131). Provider-neutral: it is a work-item label
-		 * name resolved through `WorkItem.labels`, not a GitHub-specific concept
-		 * (`src/pm/automation-label.ts`). Unset defaults to
-		 * `DEFAULT_AUTOMATION_LABEL` (`swarm`); an explicitly empty string turns the
-		 * gate off for the project.
-		 *
-		 * This is an opt-in marker, never an access-control mechanism: it cannot
-		 * grant a user or a worker access to a project (ADR-001's authorization
-		 * layers are separate and unaffected).
-		 */
-		automationLabel: z.string().trim().optional(),
-	})
-	.refine(
-		(pipeline) => pipeline.review?.enabled !== false || pipeline.respondToReview?.enabled === false,
-		{
-			message: 'Respond-to-review cannot be enabled when Review is disabled',
-			path: ['respondToReview', 'enabled'],
-		},
-	)
-	.describe('Per-phase pipeline controls');
+export const PipelineBaseSchema = z.object({
+	/**
+	 * Whether Planning moves the item to "ToDo" once it posts the plan.
+	 * Unset (or the whole `pipeline.planning` block omitted) defaults to
+	 * `false`: a human reviews the plan and moves the item themselves to
+	 * greenlight Implementation.
+	 *
+	 * `autoSplit` (default `true`) lets the planning agent decompose a task it
+	 * judges too large for a single PR: the original item becomes the smaller
+	 * first task (re-scoped, possibly renamed), and the remaining work is spawned
+	 * as sibling items that are preplanned by the parent and never auto-advance to
+	 * "ToDo" — a human moves those in the order they choose (`src/pipeline/planning.ts`).
+	 *
+	 * `maxConcerns` (default `1`, only used when `autoSplit` is on) is the
+	 * single-task budget the deterministic post-plan guard enforces: the largest
+	 * number of independent concerns an unsplit task may declare in
+	 * `proposed_scope.json` before Planning fails and asks for a split or a
+	 * narrower plan (issue #268). Raise it to loosen the guard.
+	 */
+	planning: z
+		.object({
+			autoAdvance: z.boolean().optional(),
+			autoSplit: z.boolean().optional(),
+			maxConcerns: z.number().int().positive().optional(),
+		})
+		.optional(),
+	review: z
+		.object({
+			enabled: z.boolean().optional(),
+			/** See {@link ReviewChecksPolicySchema}. Unset defaults to `required`. */
+			checks: ReviewChecksPolicySchema.optional(),
+		})
+		.optional(),
+	respondToReview: z
+		.object({
+			enabled: z.boolean().optional(),
+			autoMerge: z.boolean().optional(),
+			/** Skip approval/comment reviews so only requested changes consume a response run. */
+			skipOnMinors: z.boolean().optional(),
+		})
+		.optional(),
+	respondToCi: z.object({ enabled: z.boolean().optional() }).optional(),
+	/**
+	 * When a continuation of already-active pipeline work is blocked *solely* by
+	 * this project's concurrency limit, prioritize it over fresh
+	 * Planning/Implementation work once a slot frees, instead of sending it
+	 * through the generic rate-limit retry delay (issue #214). Unset (or the
+	 * whole `pipeline` block omitted) defaults to `true`; set `false` to preserve
+	 * the prior best-effort/FIFO scheduling for maximum new-work throughput.
+	 *
+	 * Applies to Review, Respond-to-review, Respond-to-CI, and
+	 * Resolve-conflicts; Planning and Implementation remain new board work.
+	 */
+	prioritizeContinuations: z.boolean().optional(),
+	/**
+	 * Label a work item must carry before SWARM starts a board-driven agent
+	 * phase (Planning, Implementation) for it — the explicit, human-controlled
+	 * automation opt-in (issue #131). Provider-neutral: it is a work-item label
+	 * name resolved through `WorkItem.labels`, not a GitHub-specific concept
+	 * (`src/pm/automation-label.ts`). Unset defaults to
+	 * `DEFAULT_AUTOMATION_LABEL` (`swarm`); an explicitly empty string turns the
+	 * gate off for the project.
+	 *
+	 * This is an opt-in marker, never an access-control mechanism: it cannot
+	 * grant a user or a worker access to a project (ADR-001's authorization
+	 * layers are separate and unaffected).
+	 */
+	automationLabel: z.string().trim().optional(),
+});
+
+export const PipelineConfigSchema = PipelineBaseSchema.refine(
+	(pipeline) => pipeline.review?.enabled !== false || pipeline.respondToReview?.enabled === false,
+	{
+		message: 'Respond-to-review cannot be enabled when Review is disabled',
+		path: ['respondToReview', 'enabled'],
+	},
+).describe('Per-phase pipeline controls');
 
 export const WorktreeRetentionConfigSchema = z
 	.object({

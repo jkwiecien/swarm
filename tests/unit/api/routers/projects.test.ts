@@ -457,6 +457,39 @@ describe('projectsRouter', () => {
 			expect(result.pipeline?.respondToReview).toEqual({ autoMerge: true, skipOnMinors: false });
 		});
 
+		it('merges a nested pipeline patch with the existing pipeline configuration', async () => {
+			const withPipeline = createMockProjectConfig({
+				id: 'p1',
+				pipeline: {
+					planning: { autoAdvance: true },
+					review: { enabled: false },
+					respondToReview: { enabled: false, autoMerge: true, skipOnMinors: false },
+				},
+			});
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(withPipeline);
+			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);
+
+			// Client sends ONLY the pipeline tab fields patch
+			const result = await caller.update({
+				id: 'p1',
+				pipeline: {
+					review: { checks: 'if-present' },
+					respondToReview: {
+						autoMerge: false,
+						skipOnMinors: true,
+					},
+				},
+			});
+
+			expect(result.pipeline?.review?.checks).toBe('if-present');
+			// Unrelated/omitted pipeline fields are preserved
+			expect(result.pipeline?.review?.enabled).toBe(false);
+			expect(result.pipeline?.planning?.autoAdvance).toBe(true);
+			expect(result.pipeline?.respondToReview?.enabled).toBe(false);
+			expect(result.pipeline?.respondToReview?.autoMerge).toBe(false);
+			expect(result.pipeline?.respondToReview?.skipOnMinors).toBe(true);
+		});
+
 		it('does not invent a Review check policy for an unrelated update on a project with none stored', async () => {
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(existing);
 			vi.mocked(upsertProjectToDb).mockResolvedValue(undefined);

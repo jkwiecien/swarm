@@ -5,6 +5,7 @@ import {
 	autoAdvanceSummary,
 	buildPipelineAutoAdvanceUpdate,
 	buildPipelineEnabledUpdate,
+	buildPipelineToggleUpdate,
 	buildReviewChecksPolicyUpdate,
 	isAutoAdvancePhase,
 	isPipelineAutoAdvanceDirty,
@@ -183,6 +184,50 @@ describe('buildPipelineEnabledUpdate', () => {
 		expect(result.respondToReview?.enabled).toBe(false);
 		// The unrelated field still survives.
 		expect(result.respondToReview?.autoMerge).toBe(true);
+	});
+});
+
+describe('buildPipelineToggleUpdate', () => {
+	it('carries both the enabled flags and Planning auto-advance in one payload', () => {
+		const result = buildPipelineToggleUpdate(
+			{ review: true, respondToReview: false, respondToCi: true },
+			{ planning: true },
+			undefined,
+		);
+		expect(result.review?.enabled).toBe(true);
+		expect(result.respondToReview?.enabled).toBe(false);
+		expect(result.respondToCi?.enabled).toBe(true);
+		expect(result.planning?.autoAdvance).toBe(true);
+	});
+
+	it('preserves every stored pipeline field the Agents-tab toggles do not own', () => {
+		// The scoped toggle save must not drop Pipeline-tab settings (issue #369): a
+		// project's autoMerge/skipOnMinors and Review check policy have to survive.
+		const existing: PipelineConfig = {
+			planning: { autoAdvance: false, autoSplit: true },
+			review: { checks: 'if-present' },
+			respondToReview: { autoMerge: true, skipOnMinors: false },
+		};
+		const result = buildPipelineToggleUpdate(
+			{ review: true, respondToReview: true, respondToCi: true },
+			{ planning: true },
+			existing,
+		);
+		expect(result.planning).toEqual({ autoAdvance: true, autoSplit: true });
+		expect(result.review?.checks).toBe('if-present');
+		expect(result.review?.enabled).toBe(true);
+		expect(result.respondToReview?.autoMerge).toBe(true);
+		expect(result.respondToReview?.skipOnMinors).toBe(false);
+	});
+
+	it('applies the Review→Respond dependency (respond forced off while review is off)', () => {
+		const result = buildPipelineToggleUpdate(
+			{ review: false, respondToReview: true, respondToCi: true },
+			{ planning: false },
+			undefined,
+		);
+		expect(result.review?.enabled).toBe(false);
+		expect(result.respondToReview?.enabled).toBe(false);
 	});
 });
 

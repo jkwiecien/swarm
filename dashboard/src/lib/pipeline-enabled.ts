@@ -113,6 +113,24 @@ export function buildPipelineAutoAdvanceUpdate(
 	};
 }
 
+/**
+ * The complete `pipeline` payload carrying only the Agent Configuration toggles'
+ * state (every phase's `enabled` flag and Planning's `autoAdvance`), layered over
+ * the stored config so every field the toggles don't own — Respond-to-review's
+ * autoMerge/skipOnMinors, Review's checks policy — survives the write. This is the
+ * scoped payload the Agents tab sends when a toggle is flipped: it persists the
+ * toggle immediately without dragging along the tab's unsaved non-toggle edits
+ * (target lists, timeouts, custom prompts) that the Save Changes button owns
+ * (issue #369).
+ */
+export function buildPipelineToggleUpdate(
+	enabled: PipelineEnabledForm,
+	autoAdvance: PipelineAutoAdvanceForm,
+	existing: PipelineConfig | undefined,
+): PipelineConfig {
+	return buildPipelineAutoAdvanceUpdate(autoAdvance, buildPipelineEnabledUpdate(enabled, existing));
+}
+
 /** Whether the form differs from the stored pipeline config. */
 export function isPipelineEnabledDirty(
 	form: PipelineEnabledForm,

@@ -1,7 +1,12 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
-import { ProjectConfigSchema } from '../../config/schema.js';
+import {
+	PipelineBaseSchema,
+	type PipelineConfig,
+	PipelineConfigSchema,
+	ProjectConfigSchema,
+} from '../../config/schema.js';
 import {
 	approveMembershipRequestInDb,
 	createMembershipRequest,
@@ -38,6 +43,46 @@ const DEFAULT_CREDENTIAL_REFERENCES = {
 
 const ProjectWriteInputSchema = ProjectConfigSchema.omit({ credentials: true });
 const ProjectCreateInputSchema = ProjectWriteInputSchema.omit({ githubProjects: true });
+
+function mergePipelineConfig(
+	existing: PipelineConfig | undefined,
+	patch: Partial<PipelineConfig> | undefined,
+): PipelineConfig {
+	if (!existing) return (patch || {}) as PipelineConfig;
+	if (!patch) return existing;
+	return {
+		...existing,
+		...patch,
+		planning:
+			existing.planning || patch.planning
+				? {
+						...existing.planning,
+						...patch.planning,
+					}
+				: undefined,
+		review:
+			existing.review || patch.review
+				? {
+						...existing.review,
+						...patch.review,
+					}
+				: undefined,
+		respondToReview:
+			existing.respondToReview || patch.respondToReview
+				? {
+						...existing.respondToReview,
+						...patch.respondToReview,
+					}
+				: undefined,
+		respondToCi:
+			existing.respondToCi || patch.respondToCi
+				? {
+						...existing.respondToCi,
+						...patch.respondToCi,
+					}
+				: undefined,
+	};
+}
 
 function hasUniqueViolationCode(error: unknown): boolean {
 	return (
@@ -115,7 +160,12 @@ export const projectsRouter = router({
 	}),
 
 	update: authedProcedure
-		.input(ProjectWriteInputSchema.partial().extend({ id: z.string().min(1) }))
+		.input(
+			ProjectWriteInputSchema.partial().extend({
+				id: z.string().min(1),
+				pipeline: PipelineBaseSchema.optional(),
+			}),
+		)
 		.mutation(async ({ ctx, input }) => {
 			// Config changes are a `projectAdmin`-only action; a `member`/`contributor`
 			// gets FORBIDDEN, a non-member NOT_FOUND.
@@ -132,6 +182,11 @@ export const projectsRouter = router({
 				...existing,
 				...updates,
 			};
+			if (updates.pipeline) {
+				config.pipeline = PipelineConfigSchema.parse(
+					mergePipelineConfig(existing.pipeline, updates.pipeline),
+				);
+			}
 			try {
 				await upsertProjectToDb(config);
 				return config;
