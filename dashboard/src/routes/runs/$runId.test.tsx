@@ -178,6 +178,11 @@ describe('RecoveryCallout (issue #368)', () => {
 		['dirty', /uncommitted changes/i, /commit, stash, or discard/i],
 		['unpushed', /never pushed/i, /push or discard those commits/i],
 		['live-leased', /leased by another active run/i, /wait for that run to finish/i],
+		[
+			'resumable-owner',
+			/pinned by another resumable run/i,
+			/resume, finish, or deliberately terminate/i,
+		],
 		['missing-validation', /saved agent session is gone/i, /provision a fresh checkout/i],
 	] as const)('explains the %s blocked reason and offers Recheck and retry', (blockedReason, conditionPattern, resolutionPattern) => {
 		render(<RecoveryCallout run={makeRecoveryRun({ state: 'blocked', blockedReason })} />);

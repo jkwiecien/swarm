@@ -33,7 +33,7 @@ export type RetryActionKind = 'resume' | 'recheck' | 'retry';
  * `preserved` for its captured session is likewise a "resume".
  *
  * A `failed` run whose worktree stayed `blocked` (dirty/unpushed/live-leased/
- * missing-validation, issue #368) offers a "recheck": the retry payload is
+ * missing-validation/resumable-owner, issue #368) offers a "recheck": the retry payload is
  * identical to a fresh retry — the label only tells the operator that the
  * server's provisioning gate re-verifies the protected condition first and
  * either reclaims the checkout or keeps the refreshed run blocked, so all the

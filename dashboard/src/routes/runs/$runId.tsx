@@ -488,6 +488,13 @@ export function RecoveryCallout({ run }: RecoveryCalloutProps) {
 						resolution:
 							'Wait for that run to finish or terminate it, then use "Recheck and retry".',
 					};
+				case 'resumable-owner':
+					return {
+						condition:
+							"This run's worktree is pinned by another resumable run, so it can't be reclaimed yet.",
+						resolution:
+							'Resume, finish, or deliberately terminate/clear that recovery, then use "Recheck and retry".',
+					};
 				case 'missing-validation':
 					return {
 						condition:
