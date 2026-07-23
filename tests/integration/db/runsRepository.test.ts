@@ -26,6 +26,7 @@ import {
 	listRunsFromDb,
 	MAX_RUN_OUTPUT_BYTES,
 	markRunUserTerminated,
+	recordRunCleanupBlocked,
 	resetRunToRunning,
 	storeRunLogs,
 	updateReviewMergeOutcome,
@@ -504,8 +505,77 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)('runsRepository (integrati
 				},
 			);
 
-			expect(result).toEqual({ success: false, dispatch: null });
+			expect(result).toEqual({ success: false, dispatch: null, preservedSession: null });
 			expect((await getRunByIdFromDb(id))?.status).toBe('running');
+		});
+
+		it('reports the preserved session and recovery record for a resumable deferral (issue #361)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20c', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'deferred',
+				error: 'rate limited',
+				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
+				agentSessionId: id,
+			});
+
+			const result = await cancelDeferredRunInDb(
+				id,
+				'Run cancelled after a cancellation request.',
+				{
+					source: 'dashboard',
+					requestedAt: '2026-07-10T12:31:00.000Z',
+				},
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.preservedSession).toBe(id);
+			const row = await getRunByIdFromDb(id);
+			expect(row?.agentSessionId).toBe(id);
+			expect(row?.recovery).toEqual({ state: 'preserved', agentSessionId: id });
+		});
+
+		it('reports no preserved session and a null recovery record when the deferral had none (issue #361)', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20d', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'deferred',
+				error: 'worktree exists',
+				nextRetryAt: new Date('2026-07-10T12:30:00.000Z'),
+				agentSessionId: null,
+			});
+
+			const result = await cancelDeferredRunInDb(
+				id,
+				'Run cancelled after a cancellation request.',
+				{
+					source: 'dashboard',
+					requestedAt: '2026-07-10T12:31:00.000Z',
+				},
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.preservedSession).toBeNull();
+			const row = await getRunByIdFromDb(id);
+			expect(row?.agentSessionId).toBeNull();
+			expect(row?.recovery).toBeNull();
+		});
+	});
+
+	describe('recordRunCleanupBlocked (issue #361)', () => {
+		it('records a blocked recovery reason without reopening the cancelled dispatch', async () => {
+			const id = await createRun({ projectId: PROJECT_ID, taskId: '20e', phase: 'implementation' });
+			await completeRun(id, {
+				status: 'failed',
+				error: 'Run cancelled after a cancellation request.',
+				agentSessionId: null,
+			});
+
+			await recordRunCleanupBlocked(id, 'dirty');
+
+			const row = await getRunByIdFromDb(id);
+			// The terminal state and cleared retry columns are untouched — only recovery.
+			expect(row?.status).toBe('failed');
+			expect(row?.recovery).toEqual({ state: 'blocked', blockedReason: 'dirty' });
+			expect(row?.agentSessionId).toBeNull();
 		});
 	});
 

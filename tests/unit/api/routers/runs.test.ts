@@ -7,10 +7,17 @@ vi.mock('@/db/repositories/runsRepository.js', () => ({
 	getRunOutputEvents: vi.fn(),
 	markRunUserTerminated: vi.fn(),
 	cancelDeferredRunInDb: vi.fn(),
+	recordRunCleanupBlocked: vi.fn(),
 }));
 
 vi.mock('@/db/repositories/projectsRepository.js', () => ({
 	getProjectByIdFromDb: vi.fn(),
+}));
+
+// The GitWorktreeManager constructor is harmless (stores config), but its methods
+// touch git/Redis — the settlement decision is mocked at its own boundary.
+vi.mock('@/worktree/termination-cleanup.js', () => ({
+	reconcileTerminatedWorktree: vi.fn(),
 }));
 
 vi.mock('@/identity/membership-service.js', () => ({
@@ -78,6 +85,7 @@ import {
 	getRunOutputEvents,
 	listRunsFromDb,
 	markRunUserTerminated,
+	recordRunCleanupBlocked,
 } from '@/db/repositories/runsRepository.js';
 import type { runs } from '@/db/schema/runs.js';
 import {
@@ -97,6 +105,7 @@ import {
 } from '@/queue/cancellation.js';
 import type { SwarmJob } from '@/queue/jobs.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
+import { reconcileTerminatedWorktree } from '@/worktree/termination-cleanup.js';
 import {
 	createMockGitHubProjectsWebhookJob,
 	createMockProjectConfig,
@@ -237,6 +246,9 @@ describe('runsRouter', () => {
 		vi.mocked(getRunLogsFromDb).mockReset();
 		vi.mocked(getRunOutputEvents).mockReset();
 		vi.mocked(cancelDeferredRunInDb).mockReset();
+		vi.mocked(recordRunCleanupBlocked).mockReset();
+		vi.mocked(reconcileTerminatedWorktree).mockReset();
+		vi.mocked(reconcileTerminatedWorktree).mockResolvedValue({ outcome: 'absent' });
 		vi.mocked(requestRunCancellation).mockReset();
 		vi.mocked(clearRunCancellation).mockReset();
 		vi.mocked(toQueuedRuns).mockReset();
@@ -802,6 +814,7 @@ describe('runsRouter', () => {
 			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
 				success: true,
 				dispatch: { id: 'disp-1', wakeSeq: 2 },
+				preservedSession: null,
 			});
 
 			const result = await caller.terminate({ runId: 'run-1' });
@@ -816,6 +829,99 @@ describe('runsRouter', () => {
 			expect(clearRunCancellation).not.toHaveBeenCalled();
 		});
 
+		it('reconciles the checkout after cancelling a no-session deferred run (issue #361)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', projectId: 'p1', taskId: '103' }),
+			);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: true,
+				dispatch: { id: 'disp-1', wakeSeq: 2 },
+				preservedSession: null,
+			});
+			vi.mocked(reconcileTerminatedWorktree).mockResolvedValue({ outcome: 'removed' });
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
+			// A deferred run never held the lease itself, so `stoppedRunHeldLease` is false.
+			expect(reconcileTerminatedWorktree).toHaveBeenCalledWith(
+				expect.anything(),
+				'p1',
+				'103',
+				null,
+				false,
+			);
+			// A removed checkout needs no follow-up recovery write.
+			expect(recordRunCleanupBlocked).not.toHaveBeenCalled();
+		});
+
+		it('reconciles with the preserved session for a resumable deferred run (issue #361)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', projectId: 'p1', taskId: '103' }),
+			);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: true,
+				dispatch: { id: 'disp-1', wakeSeq: 2 },
+				preservedSession: 'sess-def',
+			});
+			vi.mocked(reconcileTerminatedWorktree).mockResolvedValue({
+				outcome: 'preserved',
+				agentSessionId: 'sess-def',
+			});
+
+			await caller.terminate({ runId: 'run-1' });
+
+			expect(reconcileTerminatedWorktree).toHaveBeenCalledWith(
+				expect.anything(),
+				'p1',
+				'103',
+				'sess-def',
+				false,
+			);
+			expect(recordRunCleanupBlocked).not.toHaveBeenCalled();
+		});
+
+		it('records a blocked recovery reason when the deferred checkout cannot be removed (issue #361)', async () => {
+			vi.mocked(getRunByIdFromDb).mockResolvedValue(
+				makeRun({ id: 'run-1', status: 'deferred', projectId: 'p1', taskId: '103' }),
+			);
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(createMockProjectConfig({ id: 'p1' }));
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: true,
+				dispatch: { id: 'disp-1', wakeSeq: 2 },
+				preservedSession: null,
+			});
+			vi.mocked(reconcileTerminatedWorktree).mockResolvedValue({
+				outcome: 'blocked',
+				blockedReason: 'live-leased',
+			});
+
+			const result = await caller.terminate({ runId: 'run-1' });
+
+			expect(result).toEqual({ runId: 'run-1', status: 'failed' });
+			// The narrow recovery write records the reason without reopening the dispatch.
+			expect(recordRunCleanupBlocked).toHaveBeenCalledWith('run-1', 'live-leased');
+		});
+
+		it('never reconciles the checkout while a deferred run may still be active (issue #361)', async () => {
+			// The atomic cancel lost the race to a worker pickup: leave any cleanup to
+			// the running-run path rather than touching a possibly-live checkout.
+			vi.mocked(getRunByIdFromDb)
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
+				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'running' }));
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: false,
+				dispatch: null,
+				preservedSession: null,
+			});
+
+			await caller.terminate({ runId: 'run-1' });
+
+			expect(reconcileTerminatedWorktree).not.toHaveBeenCalled();
+		});
+
 		it('falls back to the worker path when a deferred run was picked up concurrently', async () => {
 			// The conditional deferred→failed loses the race (returns false): the row is
 			// now running. Re-read shows running → report terminating; the flag we set
@@ -823,7 +929,11 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'running' }));
-			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({ success: false, dispatch: null });
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: false,
+				dispatch: null,
+				preservedSession: null,
+			});
 
 			const result = await caller.terminate({ runId: 'run-1' });
 
@@ -841,7 +951,11 @@ describe('runsRouter', () => {
 			vi.mocked(getRunByIdFromDb)
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'deferred' }))
 				.mockResolvedValueOnce(makeRun({ id: 'run-1', status: 'completed' }));
-			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({ success: false, dispatch: null });
+			vi.mocked(cancelDeferredRunInDb).mockResolvedValue({
+				success: false,
+				dispatch: null,
+				preservedSession: null,
+			});
 
 			const result = await caller.terminate({ runId: 'run-1' });
 

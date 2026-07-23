@@ -368,6 +368,24 @@ vi.mock('@/worker/run-cancellation.js', () => ({
 		beginRunCancellationTracking(runId, controller),
 }));
 
+// Terminated-run checkout settlement (issue #361): mocked at its boundary so the
+// consumer's finalize wiring is asserted (which outcome → which recovery record)
+// without a real git worktree. Defaults to 'absent' (no checkout to reconcile).
+type TerminationResult =
+	| { outcome: 'absent' }
+	| { outcome: 'preserved'; agentSessionId: string }
+	| { outcome: 'removed' }
+	| { outcome: 'blocked'; blockedReason: 'dirty' | 'unpushed' | 'live-leased' };
+const reconcileTerminatedWorktree = vi.fn<() => Promise<TerminationResult>>(async () => ({
+	outcome: 'absent',
+}));
+vi.mock('@/worktree/termination-cleanup.js', () => ({
+	reconcileTerminatedWorktree: (...args: unknown[]) =>
+		(reconcileTerminatedWorktree as unknown as (...a: unknown[]) => Promise<TerminationResult>)(
+			...args,
+		),
+}));
+
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
 import {
@@ -482,6 +500,8 @@ describe('processJob', () => {
 		resetRunToRunning.mockResolvedValue(true);
 		getRunByIdFromDb.mockClear();
 		getRunByIdFromDb.mockResolvedValue(undefined);
+		reconcileTerminatedWorktree.mockClear();
+		reconcileTerminatedWorktree.mockResolvedValue({ outcome: 'absent' });
 		getLatestRunForTask.mockClear();
 		getLatestRunForTask.mockResolvedValue(undefined);
 		getLatestCompletedPlanningScope.mockClear();
@@ -2390,6 +2410,79 @@ describe('processJob', () => {
 				status: 'failed',
 				error: 'Run cancelled after a cancellation request.',
 				cancellation: origin,
+			}),
+		);
+	});
+
+	it('reconciles a terminated run’s checkout and cleans it when there is no session (issue #361)', async () => {
+		isRunCancellationRequested.mockResolvedValue(true);
+		reconcileTerminatedWorktree.mockResolvedValue({ outcome: 'removed' });
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		// The settlement removed a clean checkout: no recovery state, and — crucially —
+		// no session id survives the removed checkout.
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({ status: 'failed', recovery: null, agentSessionId: null }),
+		);
+		// Reconciled as a run that owned its own worktree lease (stoppedRunHeldLease=true).
+		expect(reconcileTerminatedWorktree).toHaveBeenCalledWith(
+			expect.anything(),
+			PROJECT.id,
+			'17',
+			null,
+			true,
+		);
+	});
+
+	it('preserves a terminated run’s checkout and session when reconciliation preserves it (issue #361)', async () => {
+		isRunCancellationRequested.mockResolvedValue(true);
+		getRunByIdFromDb.mockResolvedValue({ agentSessionId: 'sess-live' });
+		reconcileTerminatedWorktree.mockResolvedValue({
+			outcome: 'preserved',
+			agentSessionId: 'sess-live',
+		});
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				agentSessionId: 'sess-live',
+				recovery: { state: 'preserved', agentSessionId: 'sess-live' },
+			}),
+		);
+	});
+
+	it('records a blocked recovery reason when protected work cannot be removed (issue #361)', async () => {
+		isRunCancellationRequested.mockResolvedValue(true);
+		reconcileTerminatedWorktree.mockResolvedValue({ outcome: 'blocked', blockedReason: 'dirty' });
+		phaseImpl = async () => {
+			throw new AgentRunError('Review agent (claude) exited with code 143 (aborted)', {
+				kind: 'aborted',
+			});
+		};
+
+		await processJob(createMockGitHubWebhookJob(), registryReturning(REVIEW_TRIGGER));
+
+		expect(completeRun).toHaveBeenCalledWith(
+			'run-1',
+			expect.objectContaining({
+				status: 'failed',
+				agentSessionId: null,
+				recovery: { state: 'blocked', blockedReason: 'dirty' },
 			}),
 		);
 	});

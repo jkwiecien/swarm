@@ -68,6 +68,12 @@ logs/
 # SWARM task worktrees (ai/ARCHITECTURE.md "Worktree lifecycle")
 .swarm-workspaces/
 
+# Project skills (Claude/Antigravity/Codex) are local-only tooling, not committed —
+# see ai/RULES.md §4. Ignores the canonical .claude/skills/<name>/SKILL.md copies and
+# the .agents/skills/<name> symlinks that expose them to Antigravity and Codex.
+.claude/skills/
+.agents/skills/
+
 # SWARM agent hand-off/scratch artifacts (src/scm/delivery.ts's `HANDOFF_FILENAMES`,
 # `PROGRESS_FILENAME`, and delegation scratch) — written at the worktree root by a
 # phase's agent, read by deterministic delivery, and never meant to be committed;
