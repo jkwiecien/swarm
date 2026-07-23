@@ -33,10 +33,15 @@ import { workers } from './workers.js';
  * the source of truth for the values), matching how `project_members.role` /
  * `project_membership_requests.status` persist their enums. `allowed_clis` is a
  * `jsonb` of `AgentCli[]` (a subset of the worker's `capabilities`), the same
- * treatment `workers.capabilities` gets. `concurrency_allocation` defaults to 1;
- * `sharing_consent` defaults to `false` (a fresh enrollment is never routable
- * until the owner opts in), so revoking consent is the owner's explicit lever
- * for flipping the routability predicate (`isRoutable`).
+ * treatment `workers.capabilities` gets. `concurrency_allocation` is **nullable**
+ * and defaults to `NULL` — an *optional* per-worker sub-limit: `NULL` means the
+ * worker imposes no project-scoped cap of its own, so its concurrency for this
+ * project is bounded only by its process-wide `SWARM_WORKER_CONCURRENCY`
+ * (`src/worker/index.ts`, overridable per launch with `--concurrency`) and the
+ * project's own `max_concurrent_jobs`. A positive integer narrows it further for
+ * this one project. `sharing_consent` defaults to `false` (a fresh enrollment is
+ * never routable until the owner opts in), so revoking consent is the owner's
+ * explicit lever for flipping the routability predicate (`isRoutable`).
  *
  * The two secondary indexes serve the two read models: `project_id` for the
  * project roster (`listEnrollmentsForProject`) and `worker_id` for the owner
@@ -56,7 +61,12 @@ export const workerProjectEnrollments = pgTable(
 		status: text('status').notNull().default('pending'),
 		/** Subset of the worker's `capabilities` this project may run (source of truth in `worker-enrollment.ts`). */
 		allowedClis: jsonb('allowed_clis').$type<AgentCli[]>().notNull(),
-		concurrencyAllocation: integer('concurrency_allocation').notNull().default(1),
+		/**
+		 * Optional per-worker, per-project concurrency sub-limit. `NULL` (the
+		 * default) = no cap of its own; a positive integer narrows this project's
+		 * share of the worker. See the table doc-comment.
+		 */
+		concurrencyAllocation: integer('concurrency_allocation'),
 		/** Owner-controlled, revocable; defaults false so a fresh enrollment is not routable until the owner opts in. */
 		sharingConsent: boolean('sharing_consent').notNull().default(false),
 		createdAt: timestamp('created_at').notNull().defaultNow(),

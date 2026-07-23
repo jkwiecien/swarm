@@ -1,0 +1,2 @@
+ALTER TABLE "worker_project_enrollments" ALTER COLUMN "concurrency_allocation" DROP DEFAULT;--> statement-breakpoint
+ALTER TABLE "worker_project_enrollments" ALTER COLUMN "concurrency_allocation" DROP NOT NULL;

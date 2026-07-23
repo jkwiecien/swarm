@@ -564,7 +564,7 @@ describe('enrollWorker', () => {
 		expect(createEnrollment).not.toHaveBeenCalled();
 	});
 
-	it('de-dupes allowed CLIs, defaults status pending / consent off / concurrency 1', async () => {
+	it('de-dupes allowed CLIs, defaults status pending / consent off / no concurrency sub-limit', async () => {
 		const worker = makeWorker({ capabilities: ['claude', 'codex'] });
 		createEnrollment.mockImplementation(async (input) => makeEnrollment(input));
 
@@ -575,7 +575,9 @@ describe('enrollWorker', () => {
 			projectId: 'proj-a',
 			status: 'pending',
 			allowedClis: ['claude'],
-			concurrencyAllocation: 1,
+			// Omitting the sub-limit now defaults to null (bounded only by the
+			// worker's --concurrency launch flag and the project cap), not 1.
+			concurrencyAllocation: null,
 			sharingConsent: false,
 		});
 	});

@@ -75,7 +75,10 @@ Usage:
   set-cli    Replace a worker's declared CLIs by worker id.
   remove     Deregister a worker by worker id.
   enroll     Enroll a worker into a project with allowed CLIs (--cli, a subset of
-             the worker's capabilities) and an optional --concurrency (default 1).
+             the worker's capabilities) and an optional --concurrency per-project
+             sub-limit. Omit --concurrency for no sub-limit (the default): the
+             worker's concurrency here is then governed by its --concurrency launch
+             flag (SWARM_WORKER_CONCURRENCY) and the project's Maximum Concurrent Jobs.
              Starts pending with sharing consent off; --active approves it and
              --consent grants sharing consent at once (operator seeding).
   approve    Approve a pending enrollment (worker + project) → active.
@@ -354,8 +357,12 @@ async function performEnroll(
 			status: active ? 'active' : undefined,
 			sharingConsent: consent,
 		});
+		const concurrencyLabel =
+			enrollment.concurrencyAllocation === null
+				? 'unbounded (worker/project caps)'
+				: String(enrollment.concurrencyAllocation);
 		out.info(
-			`enrolled worker '${worker.displayName}' (${worker.id}) in '${projectId}' — status ${enrollment.status}, CLIs ${enrollment.allowedClis.join(', ')}, concurrency ${enrollment.concurrencyAllocation}, sharing consent ${enrollment.sharingConsent ? 'on' : 'off'}`,
+			`enrolled worker '${worker.displayName}' (${worker.id}) in '${projectId}' — status ${enrollment.status}, CLIs ${enrollment.allowedClis.join(', ')}, concurrency ${concurrencyLabel}, sharing consent ${enrollment.sharingConsent ? 'on' : 'off'}`,
 		);
 		return 0;
 	} catch (err) {

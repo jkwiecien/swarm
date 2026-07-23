@@ -302,6 +302,21 @@ function eligibilityClaimRefusal(
 }
 
 /**
+ * Whether a worker's active-run count meets or exceeds its per-worker allocation
+ * for this project. A `null` `concurrencyAllocation` means the enrollment imposes
+ * no per-worker sub-limit — the worker is bounded only by the project's
+ * `maxConcurrentJobs` and its process-wide `SWARM_WORKER_CONCURRENCY` — so it is
+ * never "exceeded". Only a set positive allocation gates on a free slot.
+ */
+function workerAllocationExceeded(
+	enrollment: typeof workerProjectEnrollments.$inferSelect | undefined,
+	activeRuns: number,
+): boolean {
+	const allocation = enrollment?.concurrencyAllocation;
+	return allocation != null && activeRuns >= allocation;
+}
+
+/**
  * Bind a leased dispatch to the selected worker's authenticated live session and
  * atomically reserve one project allocation slot. The worker-session row is the
  * serialization lock: every claim for the same worker queues behind it, so the
@@ -388,7 +403,7 @@ export async function claimWorkerForDispatch(
 					activeClaimPredicate,
 				),
 			);
-		if ((workerCapacity?.activeRuns ?? 0) >= (enrollment?.concurrencyAllocation ?? 0)) {
+		if (workerAllocationExceeded(enrollment, workerCapacity?.activeRuns ?? 0)) {
 			return { claimed: false, reason: 'worker-unavailable' };
 		}
 

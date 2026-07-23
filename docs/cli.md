@@ -214,7 +214,10 @@ swarm workers consent <worker-id> <project-id> <on|off>
 - **`set-cli`** — replace a worker's declared CLIs by worker id.
 - **`remove`** — deregister a worker by worker id.
 - **`enroll`** — enroll a worker into a project with allowed CLIs (`--cli`, a
-  subset of the worker's capabilities) and an optional `--concurrency` (default 1).
+  subset of the worker's capabilities) and an optional `--concurrency` per-project
+  sub-limit. Omit `--concurrency` for no sub-limit (the default): the worker's
+  concurrency for this project is then governed by its launch `--concurrency` flag
+  (`SWARM_WORKER_CONCURRENCY`) and the project's Maximum Concurrent Jobs.
   Starts pending with sharing consent off; `--active` approves it and `--consent`
   grants sharing consent at once (operator seeding).
 - **`approve`** — approve a pending enrollment (worker + project) → active.
@@ -261,7 +264,7 @@ repo root.
 | `npm run dev:api` | Migrate the DB, free `API_PORT`, then start the API server (`:3101`) with `--watch`. In dev it serves the API only; it also serves the built dashboard SPA from `dashboard/dist` when that exists. |
 | `npm run start:api` | Build the dashboard, then run `dev:api` — the recommended **same-origin** mode where one process serves the SPA + API on `:3101` (used for public/tunnel access). |
 | `npm run reload` | After `git pull`: sync both dependency trees, rebuild the dashboard (`dist`, picked up live by a running `dev:api`/`start:api` since it serves `dist` from disk), and apply migrations. Does **not** restart the worker or rebuild the router — do those manually if their code changed (it prints the reminder). |
-| `npm run dev:worker` | Migrate the DB, then start the host worker (BullMQ consumer). This is how the worker runs — it is not in Docker Compose. |
+| `npm run dev:worker` | Migrate the DB, then start the host worker (BullMQ consumer). This is how the worker runs — it is not in Docker Compose. Runs one job at a time by default; append `-- --concurrency <n>` to run up to N at once (overrides `SWARM_WORKER_CONCURRENCY`). |
 | `npm run dev:worker:watch` | Same as `dev:worker`, with `--watch` auto-restart. |
 | `npm run dev:worker:seed` | Apply `swarm.config.json` (`db:seed`) then start the worker. |
 | `npm run dev:dashboard` | Start the dashboard Vite dev server (`:5173`) — local development only; not what you expose publicly. |

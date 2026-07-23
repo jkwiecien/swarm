@@ -55,9 +55,14 @@ export const EnrollmentAllowedClisSchema = z
 	.transform((clis) => [...new Set(clis)]);
 
 /**
- * How many concurrent runs the project may allocate to this worker. A positive
- * integer — an enrollment that can take on no work is a `suspended` status, not
- * a zero allocation, so the two concepts don't overlap.
+ * An *optional* per-worker, per-project concurrency sub-limit. When set it is a
+ * positive integer — an enrollment that can take on no work is a `suspended`
+ * status, not a zero allocation, so the two concepts don't overlap. When
+ * **unset** (`null`) the enrollment imposes no cap of its own: the worker's
+ * concurrency for this project is bounded only by its process-wide
+ * `SWARM_WORKER_CONCURRENCY` (the `--concurrency` launch flag) and the project's
+ * `maxConcurrentJobs`. This schema validates a *provided* value; the `null` case
+ * is modelled on {@link WorkerEnrollmentSchema} directly (`.nullable()`).
  */
 export const ConcurrencyAllocationSchema = z.number().int().positive();
 
@@ -79,7 +84,7 @@ export const WorkerEnrollmentSchema = z.object({
 	projectId: z.string().min(1),
 	status: EnrollmentStatusSchema,
 	allowedClis: z.array(AgentCliSchema),
-	concurrencyAllocation: z.number().int().positive(),
+	concurrencyAllocation: z.number().int().positive().nullable(),
 	sharingConsent: z.boolean(),
 	createdAt: z.date(),
 	updatedAt: z.date(),

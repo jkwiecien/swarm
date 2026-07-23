@@ -134,6 +134,25 @@ describe('evaluateWorkerEligibility', () => {
 		});
 	});
 
+	it('imposes no per-worker slot cap when the allocation is null', () => {
+		// A null allocation means the enrollment adds no sub-limit: the worker
+		// stays eligible however many runs it already has for this project (the
+		// process-wide SWARM_WORKER_CONCURRENCY and the project cap bound it).
+		const enrollment = makeEnrollment({ concurrencyAllocation: null });
+		expect(evaluate({ enrollment, availability: { connected: true, activeRuns: 5 } })).toEqual({
+			eligible: true,
+		});
+	});
+
+	it('still reports worker-unavailable with a null allocation when disconnected', () => {
+		// Null only removes the capacity check — a dead session is still unavailable.
+		const enrollment = makeEnrollment({ concurrencyAllocation: null });
+		expect(evaluate({ enrollment, availability: { connected: false, activeRuns: 0 } })).toEqual({
+			eligible: false,
+			reason: 'worker-unavailable',
+		});
+	});
+
 	it('missing-cli-capability when the worker does not declare the target CLI', () => {
 		const worker = makeWorker({ capabilities: ['claude'] });
 		expect(evaluate({ worker, target: { cli: 'codex' } })).toEqual({
