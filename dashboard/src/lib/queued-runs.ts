@@ -127,12 +127,40 @@ export interface QueuedDisplayRow {
 	isReviewGateGroup: boolean;
 	/** One entry per source event folded into this row; empty when the job carries no review-gate metadata. */
 	sourceEvents: QueuedReviewGateSourceEventDisplay[];
+	/**
+	 * Extra fresh board dispatches for the *same* card folded into this row beyond
+	 * the representative (issue #374). 0 for any non-board or single-dispatch row.
+	 * A single board-card interaction fans out into several dispatches — the two
+	 * `projects_v2_item` webhooks a drag fires (`reordered` + `edited`) plus the
+	 * synthetic Planning→Implementation self-enqueue — none of which share a
+	 * delivery-id dedup key, so the queue would otherwise list the same card two
+	 * or three times. The dispatches are harmless (each re-reads authoritative
+	 * board state at claim time and the redundant ones no-op), so this collapses
+	 * only the *display*, leaving the dispatch flow untouched.
+	 */
+	boardDuplicateCount: number;
 }
 
 /** Grouping identity for a review-gate job: same project, repo, PR, and head SHA never split across rows. */
 function reviewGateGroupKey(item: QueuedRun): string | null {
 	if (!item.reviewGate || !item.repo || !item.prNumber) return null;
 	return [item.projectId, item.repo, item.prNumber, item.reviewGate.headSha].join(':');
+}
+
+/**
+ * Grouping identity for a *fresh* board (PM status) dispatch: same project and
+ * work-item node id fold into one row (issue #374). Only unresolved board
+ * dispatches (`phaseHint === 'board'`) with no backing run are folded — a
+ * dispatch that already resolved a phase (`planning`/`implementation`) or owns a
+ * `runId` (a capacity-blocked continuation or a deferred/resuming run) is a
+ * distinct, legitimate unit of work and always renders on its own row.
+ */
+function boardGroupKey(item: QueuedRun): string | null {
+	if (item.type !== 'github-projects') return null;
+	if (item.phaseHint !== 'board') return null;
+	if (item.runId) return null;
+	if (!item.workItemNodeId) return null;
+	return [item.projectId, item.workItemNodeId].join(':');
 }
 
 function toSourceEventDisplay(item: QueuedRun): QueuedReviewGateSourceEventDisplay {
@@ -148,25 +176,37 @@ function toSourceEventDisplay(item: QueuedRun): QueuedReviewGateSourceEventDispl
 
 /**
  * Turn the server's already-ordered `runs.queued` rows into display rows,
- * grouping pending review-gate jobs — raw `pull_request`/`check_suite`
- * lifecycle events hinting `review` (see {@link QueuedRun.reviewGate}) — that
- * share the same project, repo, PR number, and head SHA into one row. Every
- * other job renders one row per job, exactly as before. A row's position is
- * the position of the first job that started its group, so this never
- * reorders the server's dispatch order; it only folds later duplicates into
- * an earlier row. Never groups across a different project, repo, PR, or SHA
- * (or a job missing the identity a safe group needs).
+ * folding two kinds of duplicate into one logical row:
+ *
+ * - **Review-gate jobs** — raw `pull_request`/`check_suite` lifecycle events
+ *   hinting `review` (see {@link QueuedRun.reviewGate}) that share the same
+ *   project, repo, PR number, and head SHA.
+ * - **Fresh board dispatches** — the several dispatches one board-card
+ *   interaction fans out into for the same card (issue #374), keyed on project
+ *   and work-item node id (see {@link boardGroupKey}).
+ *
+ * Every other job renders one row per job, exactly as before. A row's position
+ * is the position of the first job that started its group, so this never
+ * reorders the server's dispatch order; it only folds later duplicates into an
+ * earlier row. The two group kinds are mutually exclusive (review-gate is a
+ * `github` job, board is a `github-projects` job), so a job joins at most one.
  */
 export function groupQueuedRuns(items: QueuedRun[]): QueuedDisplayRow[] {
 	const rowByGroupKey = new Map<string, QueuedDisplayRow>();
 	const rows: QueuedDisplayRow[] = [];
 
 	for (const item of items) {
-		const key = reviewGateGroupKey(item);
+		const reviewKey = reviewGateGroupKey(item);
+		const boardKey = reviewKey ? null : boardGroupKey(item);
+		const key = reviewKey ?? boardKey;
 		const existingRow = key ? rowByGroupKey.get(key) : undefined;
 		if (existingRow) {
-			existingRow.isReviewGateGroup = true;
-			existingRow.sourceEvents.push(toSourceEventDisplay(item));
+			if (reviewKey) {
+				existingRow.isReviewGateGroup = true;
+				existingRow.sourceEvents.push(toSourceEventDisplay(item));
+			} else {
+				existingRow.boardDuplicateCount += 1;
+			}
 			continue;
 		}
 
@@ -174,6 +214,7 @@ export function groupQueuedRuns(items: QueuedRun[]): QueuedDisplayRow[] {
 			representative: item,
 			isReviewGateGroup: false,
 			sourceEvents: item.reviewGate ? [toSourceEventDisplay(item)] : [],
+			boardDuplicateCount: 0,
 		};
 		rows.push(row);
 		if (key) rowByGroupKey.set(key, row);

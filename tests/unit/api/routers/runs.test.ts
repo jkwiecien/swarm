@@ -49,9 +49,19 @@ vi.mock('@/queue/producer.js', () => ({
 	removePendingJobById: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock('@/queue/queued-runs.js', () => ({
-	toQueuedRuns: vi.fn(),
-	deriveQueuedPhaseHint: vi.fn((job) => {
+vi.mock('@/queue/queued-runs.js', () => {
+	const PHASE_HINTS = new Set([
+		'board',
+		'planning',
+		'implementation',
+		'review',
+		'respond-to-review',
+		'respond-to-ci',
+		'resolve-conflicts',
+		'merge-automation',
+		'unknown',
+	]);
+	const deriveQueuedPhaseHint = vi.fn((job) => {
 		if (job.type === 'github-projects') return 'board';
 		const { event } = job;
 		if (event.eventType === 'pull_request_review') {
@@ -61,8 +71,19 @@ vi.mock('@/queue/queued-runs.js', () => ({
 			return 'resolve-conflicts';
 		}
 		return 'unknown';
-	}),
-}));
+	});
+	return {
+		toQueuedRuns: vi.fn(),
+		deriveQueuedPhaseHint,
+		// Mirrors the real helper: a resolved `dispatch.phase` wins, else the
+		// event-derived hint (always `board` for a github-projects job).
+		deriveDispatchPhaseHint: vi.fn((dispatch) =>
+			typeof dispatch.phase === 'string' && PHASE_HINTS.has(dispatch.phase)
+				? dispatch.phase
+				: deriveQueuedPhaseHint(dispatch.jobPayload),
+		),
+	};
+});
 
 vi.mock('@/queue/cancellation.js', () => ({
 	requestRunCancellation: vi.fn(),
@@ -111,6 +132,7 @@ import type { SwarmJob } from '@/queue/jobs.js';
 import { toQueuedRuns } from '@/queue/queued-runs.js';
 import { reconcileTerminatedWorktree } from '@/worktree/termination-cleanup.js';
 import {
+	createMockGitHubProjectsParsedEvent,
 	createMockGitHubProjectsWebhookJob,
 	createMockProjectConfig,
 	createMockWorkItem,
@@ -1011,6 +1033,13 @@ describe('runsRouter', () => {
 	});
 
 	describe('putBack', () => {
+		// A fresh (unclaimed) board dispatch for a specific card.
+		const boardJobForCard = (itemNodeId: string) =>
+			createMockGitHubProjectsWebhookJob({
+				projectId: 'p1',
+				event: createMockGitHubProjectsParsedEvent({ itemNodeId }),
+			});
+
 		it('cancels a waiting github-projects dispatch and moves its card to backlog', async () => {
 			const project = createMockProjectConfig({ id: 'p1' });
 			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
@@ -1206,6 +1235,130 @@ describe('runsRouter', () => {
 				/picked up while putting it back/,
 			);
 			expect(moveWorkItem).not.toHaveBeenCalled();
+		});
+
+		// #374: one board-card interaction fans out into several fresh dispatches
+		// (the `reordered` + `edited` webhooks a drag fires, plus the Planning
+		// self-enqueue), which the queue view folds into one row. Putting the card
+		// back must silence that whole fold — but only the fold: never a different
+		// card, a dispatch that owns a run, or one whose phase already resolved.
+		it('cancels the other fresh board dispatches for the same card, and nothing else', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const CARD = 'PVTI_card_x';
+			const primary = makeDispatch({
+				id: 'dispatch-1',
+				state: 'pending',
+				phase: 'board',
+				runId: null,
+				jobPayload: boardJobForCard(CARD),
+			});
+			vi.mocked(getDispatchById).mockResolvedValue(primary);
+			vi.mocked(cancelDispatchAndWake).mockResolvedValue(primary);
+			vi.mocked(listWaitingDispatches).mockResolvedValue([
+				primary,
+				// Fresh same-card duplicates — folded into the put-back row, so cancelled.
+				makeDispatch({
+					id: 'dup-board',
+					phase: 'board',
+					runId: null,
+					jobPayload: boardJobForCard(CARD),
+				}),
+				makeDispatch({
+					id: 'dup-unclaimed',
+					phase: null,
+					runId: null,
+					jobPayload: boardJobForCard(CARD),
+				}),
+				// Left alone: another card, a dispatch owning a run, and one whose
+				// worker-resolved phase already advanced past `board`.
+				makeDispatch({
+					id: 'other-card',
+					phase: 'board',
+					runId: null,
+					jobPayload: boardJobForCard('PVTI_other'),
+				}),
+				makeDispatch({
+					id: 'owns-run',
+					phase: 'board',
+					runId: 'run-9',
+					jobPayload: boardJobForCard(CARD),
+				}),
+				makeDispatch({
+					id: 'resolved-planning',
+					phase: 'planning',
+					runId: null,
+					jobPayload: boardJobForCard(CARD),
+				}),
+			]);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: CARD,
+				statusId: '61e4505c', // Planning status
+				title: 'X',
+				url: 'https://github.com/acme/widgets/issues/1',
+			});
+			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem, moveWorkItem }),
+			} as never);
+
+			const result = await caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' });
+			expect(result).toEqual({ success: true });
+
+			const cancelledIds = vi.mocked(cancelDispatchAndWake).mock.calls.map((call) => call[0]);
+			expect(cancelledIds).toContain('dispatch-1'); // the canonical dispatch
+			expect(cancelledIds).toContain('dup-board');
+			expect(cancelledIds).toContain('dup-unclaimed');
+			expect(cancelledIds).not.toContain('other-card');
+			expect(cancelledIds).not.toContain('owns-run');
+			expect(cancelledIds).not.toContain('resolved-planning');
+			expect(moveWorkItem).toHaveBeenCalledWith(CARD, 'backlog');
+		});
+
+		it('still moves the card to backlog when cancelling a duplicate fails (best-effort)', async () => {
+			const project = createMockProjectConfig({ id: 'p1' });
+			vi.mocked(getProjectByIdFromDb).mockResolvedValue(project);
+
+			const CARD = 'PVTI_card_y';
+			const primary = makeDispatch({
+				id: 'dispatch-1',
+				state: 'pending',
+				phase: 'board',
+				runId: null,
+				jobPayload: boardJobForCard(CARD),
+			});
+			vi.mocked(getDispatchById).mockResolvedValue(primary);
+			vi.mocked(cancelDispatchAndWake).mockImplementation(async (id) => {
+				if (id === 'dup-board') throw new Error('sibling was just claimed');
+				return primary;
+			});
+			vi.mocked(listWaitingDispatches).mockResolvedValue([
+				primary,
+				makeDispatch({
+					id: 'dup-board',
+					phase: 'board',
+					runId: null,
+					jobPayload: boardJobForCard(CARD),
+				}),
+			]);
+
+			const getWorkItem = vi.fn().mockResolvedValue({
+				id: CARD,
+				statusId: '61e4505c',
+				title: 'Y',
+				url: 'https://github.com/acme/widgets/issues/2',
+			});
+			const moveWorkItem = vi.fn().mockResolvedValue(undefined);
+			vi.mocked(getPMProvider).mockReturnValue({
+				createProvider: () => ({ getWorkItem, moveWorkItem }),
+			} as never);
+
+			await expect(caller.putBack({ jobId: 'dispatch-1', projectId: 'p1' })).resolves.toEqual({
+				success: true,
+			});
+			expect(moveWorkItem).toHaveBeenCalledWith(CARD, 'backlog');
 		});
 	});
 

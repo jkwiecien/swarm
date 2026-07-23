@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DispatchRow } from '@/db/repositories/dispatchesRepository.js';
 import {
+	deriveDispatchPhaseHint,
 	deriveQueuedPhaseHint,
 	deriveReviewGate,
 	QueuedRunSchema,
@@ -138,6 +139,32 @@ describe('deriveQueuedPhaseHint', () => {
 			},
 		});
 		expect(deriveQueuedPhaseHint(job)).toBe('unknown');
+	});
+});
+
+describe('deriveDispatchPhaseHint', () => {
+	it('returns the event-derived hint for a never-claimed board dispatch', () => {
+		const dispatch = makeDispatch({
+			phase: null,
+			jobPayload: createMockGitHubProjectsWebhookJob(),
+		});
+		expect(deriveDispatchPhaseHint(dispatch)).toBe('board');
+	});
+
+	it('prefers a worker-resolved phase over the event-derived hint', () => {
+		const dispatch = makeDispatch({
+			phase: 'planning',
+			jobPayload: createMockGitHubProjectsWebhookJob(),
+		});
+		expect(deriveDispatchPhaseHint(dispatch)).toBe('planning');
+	});
+
+	it('falls back to the event-derived hint when the stored phase is not a known hint', () => {
+		const dispatch = makeDispatch({
+			phase: 'not-a-real-phase',
+			jobPayload: createMockGitHubProjectsWebhookJob(),
+		});
+		expect(deriveDispatchPhaseHint(dispatch)).toBe('board');
 	});
 });
 

@@ -167,12 +167,12 @@ describe('groupQueuedRuns', () => {
 	});
 
 	it('preserves the position of the first job in a group within the overall row order', () => {
-		const before = boardRun({ jobId: 'job-before' });
+		const before = boardRun({ jobId: 'job-before', workItemNodeId: 'PVTI_card_before' });
 		const followUp = reviewGateRun({
 			jobId: 'job-followup',
 			reviewGate: { sourceEvent: 'check_suite', headSha: 'sha-fix' },
 		});
-		const after = boardRun({ jobId: 'job-after' });
+		const after = boardRun({ jobId: 'job-after', workItemNodeId: 'PVTI_card_after' });
 		const synchronize = reviewGateRun({
 			jobId: 'job-synchronize',
 			reviewGate: { sourceEvent: 'pull_request', sourceAction: 'synchronize', headSha: 'sha-fix' },
@@ -253,6 +253,82 @@ describe('groupQueuedRuns', () => {
 		const rows = groupQueuedRuns([respondToReview, resolveConflicts]);
 		expect(rows).toHaveLength(2);
 		expect(rows.every((r) => !r.isReviewGateGroup && r.sourceEvents.length === 0)).toBe(true);
+	});
+
+	it('reports boardDuplicateCount 0 for a lone board dispatch', () => {
+		const rows = groupQueuedRuns([boardRun({ jobId: 'solo', workItemNodeId: 'PVTI_solo' })]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].boardDuplicateCount).toBe(0);
+	});
+
+	// Regression (issue #374): one board-card drag fires `reordered` + `edited`
+	// webhooks (and Planning self-enqueues Implementation), each a separate
+	// dispatch for the same card — the queue must show one row, not two/three.
+	it('folds fresh board dispatches for the same card into one row', () => {
+		const reordered = boardRun({ jobId: 'job-reordered', workItemNodeId: 'PVTI_card_x' });
+		const edited = boardRun({ jobId: 'job-edited', workItemNodeId: 'PVTI_card_x' });
+
+		const rows = groupQueuedRuns([reordered, edited]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].representative.jobId).toBe('job-reordered');
+		expect(rows[0].boardDuplicateCount).toBe(1);
+		expect(rows[0].isReviewGateGroup).toBe(false);
+	});
+
+	it('never folds board dispatches for different cards', () => {
+		const cardA = boardRun({ jobId: 'job-a', workItemNodeId: 'PVTI_card_a' });
+		const cardB = boardRun({ jobId: 'job-b', workItemNodeId: 'PVTI_card_b' });
+
+		const rows = groupQueuedRuns([cardA, cardB]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => r.boardDuplicateCount === 0)).toBe(true);
+	});
+
+	it('never folds board dispatches across different projects', () => {
+		const projA = boardRun({ jobId: 'job-pa', projectId: 'proj-a', workItemNodeId: 'PVTI_same' });
+		const projB = boardRun({ jobId: 'job-pb', projectId: 'proj-b', workItemNodeId: 'PVTI_same' });
+
+		const rows = groupQueuedRuns([projA, projB]);
+		expect(rows).toHaveLength(2);
+	});
+
+	// A dispatch that already owns a run (a capacity-blocked continuation or a
+	// deferred/resuming run) is a distinct unit of work, not a display duplicate.
+	it('never folds a board dispatch that owns a runId', () => {
+		const fresh = boardRun({ jobId: 'job-fresh', workItemNodeId: 'PVTI_card_y' });
+		const deferred = boardRun({
+			jobId: 'job-deferred',
+			workItemNodeId: 'PVTI_card_y',
+			runId: 'run-123',
+		});
+
+		const rows = groupQueuedRuns([fresh, deferred]);
+		expect(rows).toHaveLength(2);
+		expect(rows.every((r) => r.boardDuplicateCount === 0)).toBe(true);
+	});
+
+	// Once the worker resolves the authoritative phase (Planning vs Implementation)
+	// the row is no longer an ambiguous "board" duplicate — keep it on its own row.
+	it('never folds a board dispatch whose phase already resolved', () => {
+		const board = boardRun({ jobId: 'job-board-hint', workItemNodeId: 'PVTI_card_z' });
+		const planning = boardRun({
+			jobId: 'job-planning',
+			workItemNodeId: 'PVTI_card_z',
+			phaseHint: 'planning',
+		});
+
+		const rows = groupQueuedRuns([board, planning]);
+		expect(rows).toHaveLength(2);
+	});
+
+	it('keeps the earliest folded board dispatch as the representative and preserves order', () => {
+		const other = boardRun({ jobId: 'job-other', workItemNodeId: 'PVTI_other' });
+		const first = boardRun({ jobId: 'job-first', workItemNodeId: 'PVTI_dup' });
+		const second = boardRun({ jobId: 'job-second', workItemNodeId: 'PVTI_dup' });
+
+		const rows = groupQueuedRuns([first, other, second]);
+		expect(rows.map((r) => r.representative.jobId)).toEqual(['job-first', 'job-other']);
+		expect(rows[0].boardDuplicateCount).toBe(1);
 	});
 });
 

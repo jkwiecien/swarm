@@ -199,19 +199,29 @@ export function deriveQueuedState(dispatch: DispatchRow): PendingJobState {
 	return dispatch.priority > 0 ? 'prioritized' : 'waiting';
 }
 
+/**
+ * The queue-facing phase hint for a waiting dispatch, exactly as the read model
+ * renders it: a worker-resolved phase (`dispatch.phase`) is authoritative; the
+ * event-derived hint covers dispatches never claimed yet (for a
+ * `github-projects` job that is always `board`). Shared so any caller deciding
+ * whether a dispatch is still an unresolved `board` row agrees with the queue
+ * view (issue #374).
+ */
+export function deriveDispatchPhaseHint(dispatch: DispatchRow): QueuedPhaseHint {
+	const resolved = QueuedPhaseHintSchema.safeParse(dispatch.phase);
+	return resolved.success ? resolved.data : deriveQueuedPhaseHint(dispatch.jobPayload);
+}
+
 function toQueuedRun(dispatch: DispatchRow, prioritizeContinuations: boolean): QueuedRun {
 	const data = dispatch.jobPayload;
 	const state = deriveQueuedState(dispatch);
 	const reviewGate = deriveReviewGate(data);
-	// A worker-resolved phase is authoritative; the event-derived hint covers
-	// dispatches never claimed yet.
-	const phaseHint = QueuedPhaseHintSchema.safeParse(dispatch.phase);
 	const shared = {
 		jobId: dispatch.id,
 		projectId: dispatch.projectId,
 		type: data.type,
 		state,
-		phaseHint: phaseHint.success ? phaseHint.data : deriveQueuedPhaseHint(data),
+		phaseHint: deriveDispatchPhaseHint(dispatch),
 		waitReason: dispatch.waitReason ?? undefined,
 		runId: dispatch.runId ?? undefined,
 		attempt: dispatch.attempt,
