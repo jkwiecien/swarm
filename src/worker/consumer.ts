@@ -134,7 +134,6 @@ import {
 	type FailureDiagnosis,
 	type KnownFailureCondition,
 } from './failure-diagnosis.js';
-import { WorktreeAlreadyExistsError } from './git-worktree-manager.js';
 import { createLiveOutputRunner } from './live-output.js';
 import {
 	type MergeAutomationSettledOutcome,
@@ -2107,16 +2106,17 @@ async function handlePhaseFailure(
 	const failureKind =
 		err instanceof AgentRunError
 			? err.failure.kind
-			: err instanceof WorktreeAlreadyExistsError
-				? 'worktree-exists'
-				: err instanceof BlockedRecoveryError
-					? 'blocked-recovery'
-					: undefined;
+			: err instanceof BlockedRecoveryError
+				? 'blocked-recovery'
+				: undefined;
 
-	// A usage/session-limit hit, a worker-shutdown abort, or a worktree "already
-	// exists" directory collision is transient/recoverable: rather than failing the
-	// job, we defer it and let the worker re-enqueue it once it's safe to retry.
-	// Capped so a persistent limit or collision can't loop forever.
+	// A usage/session-limit hit or a worker-shutdown abort is transient/recoverable:
+	// rather than failing the job, we defer it and let the worker re-enqueue it once
+	// it's safe to retry. Capped so a persistent limit can't loop forever. A worktree
+	// collision is deliberately NOT deferrable (issue #367): provisioning already
+	// reclaimed the checkout if it was safe, so a surviving collision is a protected
+	// checkout raised as a terminal BlockedRecoveryError — re-deferring it would just
+	// loop on the same protected worktree.
 	const isDeferrable =
 		(err instanceof AgentRunError &&
 			(err.failure.kind === 'rate-limit' ||
@@ -2130,15 +2130,10 @@ async function handlePhaseFailure(
 				// its worktree, so it stays a terminal failure rather than deferring onto
 				// a checkout that's gone.
 				(err.failure.kind === 'timeout' && err.agent !== undefined && err.agent.exitCode !== 0))) ||
-		err instanceof WorktreeAlreadyExistsError ||
 		err instanceof DeliveryDeferredError;
 	if (isDeferrable) {
 		const failure: DeferrableFailure =
-			err instanceof AgentRunError
-				? err.failure
-				: err instanceof DeliveryDeferredError
-					? { kind: 'delivery' }
-					: { kind: 'worktree-exists' };
+			err instanceof AgentRunError ? err.failure : { kind: 'delivery' };
 		const deferred = deferAgentRunError(failure, job, trigger, project.id, error, runId);
 		if (deferred) return deferred;
 	}

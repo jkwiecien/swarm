@@ -40,6 +40,7 @@ describe('swarm worktrees', () => {
 				pruned: ['/path/to/task-1'],
 				skippedInFlight: [],
 				skippedDirty: [],
+				skippedUnpushed: [],
 				skippedDeferred: [],
 				ignored: [],
 			});
@@ -83,12 +84,28 @@ describe('swarm worktrees', () => {
 			pruned: [],
 			skippedInFlight: [],
 			skippedDirty: ['/path/to/task-1'],
+			skippedUnpushed: [],
 			skippedDeferred: [],
 			ignored: [],
 		});
 		const warnSpy = vi.spyOn(console, 'warn');
 		expect(await worktreesRun(['prune'])).toBe(0);
 		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('has uncommitted changes'));
+	});
+
+	it('prints warning lines for skipped unpushed worktrees', async () => {
+		vi.mocked(pruneStaleWorktrees).mockResolvedValue({
+			kept: ['/path/to/task-2'],
+			pruned: [],
+			skippedInFlight: [],
+			skippedDirty: [],
+			skippedUnpushed: ['/path/to/task-1'],
+			skippedDeferred: [],
+			ignored: [],
+		});
+		const warnSpy = vi.spyOn(console, 'warn');
+		expect(await worktreesRun(['prune'])).toBe(0);
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('has unpushed commits'));
 	});
 
 	it('closes the db even when pruneStaleWorktrees throws', async () => {

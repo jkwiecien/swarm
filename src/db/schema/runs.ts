@@ -149,7 +149,16 @@ export const runs = pgTable(
 		outputTruncated: boolean('output_truncated').notNull().default(false),
 		recovery: jsonb('recovery').$type<{
 			state: 'preserved' | 'recovered' | 'blocked';
-			blockedReason?: 'dirty' | 'unpushed' | 'live-leased' | 'missing-validation';
+			// Kept in sync with `BlockedRecoveryReason` (`src/worktree/reclaim.ts`).
+			// `resumable-owner` (issue #367) marks a collision blocked because a
+			// resumable deferred/failed run still pins the checkout. Widening this
+			// union needs no SQL migration — the column is free-form `jsonb`.
+			blockedReason?:
+				| 'dirty'
+				| 'unpushed'
+				| 'live-leased'
+				| 'missing-validation'
+				| 'resumable-owner';
 			agentSessionId?: string | null;
 		}>(),
 		/**

@@ -42,6 +42,32 @@ export async function claimWorktreeLease(projectId: string, taskId: string): Pro
 	}
 }
 
+/**
+ * Race-safe acquisition: claims the lease only if it is currently free (`SET NX`),
+ * returning whether this caller won it. Used by the collision-reclaim path so two
+ * concurrent provisioners for the same task can't both decide to remove the
+ * checkout — the loser sees the lease as held and blocks instead. Fails CLOSED:
+ * a Redis error returns `false` (treat as "could not acquire"), so an uncertain
+ * gate never reclaims a checkout it isn't sure is free.
+ */
+export async function tryClaimWorktreeLease(projectId: string, taskId: string): Promise<boolean> {
+	const key = buildLeaseKey(projectId, taskId);
+	const namespacedKey = `${KEY_NS}${key}`;
+	try {
+		const result = await getRedis().set(namespacedKey, '1', 'EX', LEASE_TTL_SEC, 'NX');
+		const acquired = result === 'OK';
+		logger.debug('worktree lease: conditional claim', { projectId, taskId, acquired });
+		return acquired;
+	} catch (err) {
+		logger.error('worktree lease: conditional claim failed — failing closed (not acquired)', {
+			projectId,
+			taskId,
+			error: String(err),
+		});
+		return false;
+	}
+}
+
 /** Best-effort; never throws — same posture as releaseReviewDispatch (TTL is the backstop). */
 export async function releaseWorktreeLease(projectId: string, taskId: string): Promise<void> {
 	const key = buildLeaseKey(projectId, taskId);
