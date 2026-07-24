@@ -35,13 +35,18 @@ async function startTransport() {
 }
 
 /** Open a WS carrying the bearer credential and resolve once it is open. */
-function openStream(wsBase: string, credential: string): Promise<WebSocket> {
-	const ws = new WebSocket(`${wsBase}/worker/stream`, {
-		headers: { authorization: `Bearer ${credential}` },
-	});
+function openStream(wsBase: string, credential: string, fencingToken?: number): Promise<WebSocket> {
+	const headers: Record<string, string> = { authorization: `Bearer ${credential}` };
+	if (fencingToken !== undefined) {
+		headers['x-fencing-token'] = String(fencingToken);
+	}
+	const ws = new WebSocket(`${wsBase}/worker/stream`, { headers });
 	return new Promise((resolve, reject) => {
 		ws.once('open', () => resolve(ws));
 		ws.once('error', reject);
+		ws.once('close', (code, reason) => {
+			reject(new Error(`WebSocket closed with code ${code}: ${reason.toString()}`));
+		});
 	});
 }
 
@@ -104,7 +109,7 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 			expect(await getLiveSessionForWorker(workerId, TTL_MS)).toBeDefined();
 
 			// A heartbeat over the stream is acked and refreshes the lease.
-			const ws = await openStream(transport.wsBase, credential);
+			const ws = await openStream(transport.wsBase, credential, fencingToken);
 			try {
 				const ack = nextMessage(ws);
 				ws.send(JSON.stringify({ type: 'heartbeat', fencingToken }));
@@ -122,13 +127,77 @@ describe.skipIf(!process.env.SWARM_TEST_DB_AVAILABLE)(
 
 		it('refuses the stream upgrade for an unknown credential', async () => {
 			const ws = new WebSocket(`${transport.wsBase}/worker/stream`, {
-				headers: { authorization: 'Bearer not-a-real-credential' },
+				headers: {
+					authorization: 'Bearer not-a-real-credential',
+					'x-fencing-token': '7',
+				},
 			});
 			const closeCode = await new Promise<number>((resolve, reject) => {
 				ws.once('close', (code) => resolve(code));
 				ws.once('error', reject);
 			});
 			expect(closeCode).toBe(4401);
+		});
+
+		it('sends a heartbeat immediately after opening with an unknown credential and asserts 4401 plus no unhandled rejection', async () => {
+			const ws = new WebSocket(`${transport.wsBase}/worker/stream`, {
+				headers: {
+					authorization: 'Bearer not-a-real-credential',
+					'x-fencing-token': '7',
+				},
+			});
+
+			ws.on('open', () => {
+				ws.send(JSON.stringify({ type: 'heartbeat', fencingToken: 7 }));
+			});
+
+			const closeCode = await new Promise<number>((resolve, reject) => {
+				ws.once('close', (code) => resolve(code));
+				ws.once('error', reject);
+			});
+			expect(closeCode).toBe(4401);
+		});
+
+		it('handshakes, opens stream, and closes without a heartbeat, releasing lease immediately', async () => {
+			const { status, body } = await handshake();
+			expect(status).toBe(200);
+			const fencingToken = body.fencingToken as number;
+
+			expect(await getLiveSessionForWorker(workerId, TTL_MS)).toBeDefined();
+
+			const ws = await openStream(transport.wsBase, credential, fencingToken);
+			await new Promise<void>((resolve) => {
+				ws.once('close', () => resolve());
+				ws.close();
+			});
+
+			expect(await getLiveSessionForWorker(workerId, TTL_MS)).toBeUndefined();
+
+			const secondHandshake = await handshake();
+			expect(secondHandshake.status).toBe(200);
+		});
+
+		it('proves an older stream with a stale token cannot release a replacement lease', async () => {
+			const first = await handshake();
+			expect(first.status).toBe(200);
+			const fencingToken1 = first.body.fencingToken as number;
+
+			const ws1 = await openStream(transport.wsBase, credential, fencingToken1);
+
+			await sleep(TTL_MS + 200);
+			expect(await getLiveSessionForWorker(workerId, TTL_MS)).toBeUndefined();
+
+			const second = await handshake();
+			expect(second.status).toBe(200);
+			const fencingToken2 = second.body.fencingToken as number;
+			expect(fencingToken2).toBeGreaterThan(fencingToken1);
+
+			await new Promise<void>((resolve) => {
+				ws1.once('close', () => resolve());
+				ws1.close();
+			});
+
+			expect(await getLiveSessionForWorker(workerId, TTL_MS)).toBeDefined();
 		});
 	},
 );

@@ -53,6 +53,7 @@ function makeDeps(overrides: Partial<WorkerTransportDeps> = {}): WorkerTransport
 		releaseSession: vi.fn().mockResolvedValue(true),
 		refreshWorkerCapabilities: vi.fn().mockResolvedValue(makeWorker()),
 		resolveHeartbeatTtlMs: vi.fn().mockReturnValue(60_000),
+		validateFencingToken: vi.fn().mockResolvedValue(true),
 		...overrides,
 	};
 }
@@ -141,7 +142,7 @@ describe('handleHandshake', () => {
 describe('handleWorkerStreamFrame', () => {
 	beforeEach(() => vi.clearAllMocks());
 
-	const ctx = { credential: CREDENTIAL, ttlMs: 60_000 };
+	const ctx = { credential: CREDENTIAL, ttlMs: 60_000, fencingToken: 7 };
 
 	it('refreshes the lease and acks a valid heartbeat', async () => {
 		const deps = makeDeps();

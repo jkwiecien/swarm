@@ -45,6 +45,7 @@ import {
 	releaseSession,
 	resolveHeartbeatTtlMs,
 	UnknownWorkerCredentialError,
+	validateFencingToken,
 	WorkerSessionHeldError,
 } from '../identity/worker-session-service.js';
 import { logger } from '../lib/logger.js';
@@ -88,6 +89,7 @@ export interface WorkerTransportDeps {
 	releaseSession: (rawCredential: string, fencingToken: number) => Promise<boolean>;
 	refreshWorkerCapabilities: (id: string, capabilities: AgentCli[]) => Promise<Worker | undefined>;
 	resolveHeartbeatTtlMs: () => number;
+	validateFencingToken: (workerId: string, token: number, ttlMs?: number) => Promise<boolean>;
 }
 
 function defaultDeps(): WorkerTransportDeps {
@@ -98,6 +100,7 @@ function defaultDeps(): WorkerTransportDeps {
 		releaseSession,
 		refreshWorkerCapabilities,
 		resolveHeartbeatTtlMs,
+		validateFencingToken,
 	};
 }
 
@@ -206,6 +209,8 @@ export interface WorkerStreamContext {
 	credential: string;
 	/** The heartbeat TTL resolved once when the stream opened. */
 	ttlMs: number;
+	/** The fencing token bound to this WebSocket at upgrade time. */
+	fencingToken: number;
 }
 
 /**
@@ -249,6 +254,13 @@ export async function handleWorkerStreamFrame(
 	}
 
 	const frame = parsed.data;
+	if (frame.fencingToken !== ctx.fencingToken) {
+		return {
+			action: 'close',
+			code: WS_CLOSE.LEASE_LOST,
+			reason: 'fencing token mismatch',
+		};
+	}
 	// Only `heartbeat` exists this phase; the discriminated union guarantees it.
 	const refreshed = await deps.heartbeat(ctx.credential, frame.fencingToken, ctx.ttlMs);
 	if (!refreshed) {
@@ -319,52 +331,71 @@ export function registerWorkerTransport(
 		return c.json(result.json, result.status);
 	});
 
+	async function authenticateUpgrade(
+		deps: WorkerTransportDeps,
+		credential: string | undefined,
+		fencingToken: number,
+		ttlMs: number,
+	): Promise<boolean> {
+		if (!credential || Number.isNaN(fencingToken)) return false;
+		try {
+			const worker = await deps.resolveWorkerByCredential(credential);
+			if (!worker) return false;
+			return deps.validateFencingToken(worker.id, fencingToken, ttlMs);
+		} catch (err) {
+			logger.error('worker transport upgrade authentication failed', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
+	}
+
 	app.get(
 		'/worker/stream',
-		upgradeWebSocket((c) => {
+		upgradeWebSocket(async (c) => {
 			// Authenticate the upgrade from the bearer credential. The factory runs
 			// before the socket opens; an unknown/absent credential yields handlers
 			// that close the connection the moment it opens (4401).
 			const credential = extractBearerCredential(c.req.header('authorization'));
+			const fencingTokenStr = c.req.header('x-fencing-token');
+			const fencingToken = fencingTokenStr ? Number.parseInt(fencingTokenStr, 10) : NaN;
 			const ttlMs = deps.resolveHeartbeatTtlMs();
-			// The latest fencing token a heartbeat presented on this connection, so a
-			// graceful close releases exactly that lease instead of waiting out the TTL.
-			let lastFencingToken: number | undefined;
+
+			const authenticated = await authenticateUpgrade(deps, credential, fencingToken, ttlMs);
+			const safeCredential = credential ?? '';
 
 			return {
-				async onOpen(_evt, ws) {
-					if (!credential) {
-						ws.close(WS_CLOSE.UNAUTHORIZED, 'missing credential');
-						return;
-					}
-					const worker = await deps.resolveWorkerByCredential(credential);
-					if (!worker) {
-						ws.close(WS_CLOSE.UNAUTHORIZED, 'unknown credential');
+				onOpen(_evt, ws) {
+					if (!authenticated) {
+						ws.close(WS_CLOSE.UNAUTHORIZED, 'unauthorized');
 					}
 				},
 				async onMessage(evt, ws) {
-					// A message can only follow a resolved upgrade, but guard defensively.
-					if (!credential) {
-						ws.close(WS_CLOSE.UNAUTHORIZED, 'missing credential');
+					if (!authenticated) {
+						ws.close(WS_CLOSE.UNAUTHORIZED, 'unauthorized');
 						return;
 					}
-					const action = await handleWorkerStreamFrame(
-						deps,
-						{ credential, ttlMs },
-						frameToString(evt.data),
-					);
-					if (action.action === 'ack' || action.action === 'disconnect') {
-						lastFencingToken = action.fencingToken;
+					try {
+						const action = await handleWorkerStreamFrame(
+							deps,
+							{ credential: safeCredential, ttlMs, fencingToken },
+							frameToString(evt.data),
+						);
+						applyStreamAction(ws, action);
+					} catch (err) {
+						logger.error('worker transport stream onMessage failed', {
+							error: err instanceof Error ? err.message : String(err),
+						});
+						ws.close(WS_CLOSE.LEASE_LOST, 'heartbeat processing failed');
 					}
-					applyStreamAction(ws, action);
 				},
 				async onClose() {
 					// Free the lease promptly on a graceful disconnect rather than waiting
 					// out the TTL. An ungraceful drop with no prior heartbeat still expires
 					// via the TTL — the existing mechanism. Best-effort: log, don't throw.
-					if (!credential || lastFencingToken === undefined) return;
+					if (!authenticated || !credential) return;
 					try {
-						await deps.releaseSession(credential, lastFencingToken);
+						await deps.releaseSession(credential, fencingToken);
 					} catch (err) {
 						logger.warn('worker transport lease release on disconnect failed', {
 							error: err instanceof Error ? err.message : String(err),
