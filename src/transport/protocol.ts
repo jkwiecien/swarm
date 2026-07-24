@@ -405,3 +405,53 @@ export const PostCommentDeliveryResponseSchema = z.object({
 	commentId: z.number().int().positive(),
 });
 export type PostCommentDeliveryResponse = z.infer<typeof PostCommentDeliveryResponseSchema>;
+
+/**
+ * Control-plane PM metadata delivery frames (ADR-002 §2, the independent Phase
+ * 2/2 half of the SCM frames above). The metadata-only PM board writes — move a
+ * card to a canonical pipeline status, add a comment on the item's backing
+ * Issue/PR — move server-side so the **per-project PM credential** stays on the
+ * router and never reaches a worker: a federated worker sends only the canonical
+ * status key / comment body up the transport, and the router performs the board
+ * write under that credential (`../router/worker-delivery.ts`).
+ *
+ * Same shape and contract as the SCM delivery frames — HTTP request/response
+ * carried by the router's `POST /worker/delivery/pm/*` routes (deliberately
+ * *not* part of the WebSocket `WorkerStreamMessageSchema`/`ControlPlaneMessageSchema`
+ * unions), `protocolVersion`-handshaked so a mismatch is a clean 400. The fields
+ * carry no GitHub vocabulary (ai/RULES.md §2): `status` is a canonical
+ * `PmStatusKey` (`../pm/pipeline.ts`), never a board option ID — the adapter
+ * resolves it to an option ID server-side — so a second PM provider reuses the
+ * same wire. Only metadata crosses; the repository tree never does.
+ */
+export const MoveWorkItemDeliveryRequestSchema = z.object({
+	projectId: z.string().min(1),
+	itemId: z.string().min(1),
+	/** Canonical SWARM pipeline status key (`PmStatusKey`), never a board option ID. */
+	status: z.string().min(1),
+	protocolVersion: z.number().int(),
+});
+export type MoveWorkItemDeliveryRequest = z.infer<typeof MoveWorkItemDeliveryRequestSchema>;
+
+/** `POST /worker/delivery/pm/move` success body — a card move carries no return value. */
+export const MoveWorkItemDeliveryResponseSchema = z.object({});
+export type MoveWorkItemDeliveryResponse = z.infer<typeof MoveWorkItemDeliveryResponseSchema>;
+
+/** `POST /worker/delivery/pm/comment` request body — a comment on the item's backing Issue/PR. */
+export const AddPmCommentDeliveryRequestSchema = z.object({
+	projectId: z.string().min(1),
+	itemId: z.string().min(1),
+	body: z.string().min(1),
+	protocolVersion: z.number().int(),
+});
+export type AddPmCommentDeliveryRequest = z.infer<typeof AddPmCommentDeliveryRequestSchema>;
+
+/**
+ * `POST /worker/delivery/pm/comment` success body — the created comment's id. A
+ * `string` (unlike the SCM PR-comment's numeric id) because `PMProvider.addComment`
+ * returns a provider-native comment id as a string (`../pm/types.ts`).
+ */
+export const AddPmCommentDeliveryResponseSchema = z.object({
+	commentId: z.string().min(1),
+});
+export type AddPmCommentDeliveryResponse = z.infer<typeof AddPmCommentDeliveryResponseSchema>;
