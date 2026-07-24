@@ -221,14 +221,18 @@ export interface WorkerStreamContext {
 export type WorkerStreamAction =
 	| { action: 'ack'; fencingToken: number; message: ControlPlaneMessage }
 	| { action: 'disconnect'; fencingToken: number; code: number; message: ControlPlaneMessage }
-	| { action: 'close'; code: number; reason: string };
+	| { action: 'close'; code: number; reason: string }
+	| { action: 'ignore' };
 
 /**
  * Decide what to do with one inbound stream frame — pure, so tests drive it with
  * fake deps and a raw string. An unparseable frame closes (4400). A `heartbeat`
  * frame refreshes the lease: a refreshed lease acks; a lease that can no longer
  * be refreshed (lost/expired/superseded) sends a `disconnect` frame and closes
- * (4408).
+ * (4408). The split-delivery back-channel frames (assignment ack, live output,
+ * execution result — ADR-003 §2) are worker→cloud but are consumed by the
+ * control-plane split-delivery side (a follow-up phase); this session endpoint
+ * does not act on them yet, so it ignores them rather than closing the session.
  */
 export async function handleWorkerStreamFrame(
 	deps: WorkerTransportDeps,
@@ -248,6 +252,12 @@ export async function handleWorkerStreamFrame(
 	}
 
 	const frame = parsed.data;
+	// Lease liveness rides the heartbeat; the back-channel frames carry no fencing
+	// token and are not yet consumed here, so short-circuit them before the
+	// heartbeat-only lease-refresh path below.
+	if (frame.type !== 'heartbeat') {
+		return { action: 'ignore' };
+	}
 	if (frame.fencingToken !== ctx.fencingToken) {
 		return {
 			action: 'close',
@@ -255,7 +265,6 @@ export async function handleWorkerStreamFrame(
 			reason: 'fencing token mismatch',
 		};
 	}
-	// Only `heartbeat` exists this phase; the discriminated union guarantees it.
 	const refreshed = await deps.heartbeat(ctx.credential, frame.fencingToken, ctx.ttlMs);
 	if (!refreshed) {
 		return {
@@ -297,6 +306,8 @@ function applyStreamAction(ws: WSContext, action: WorkerStreamAction): void {
 			return;
 		case 'close':
 			ws.close(action.code, action.reason);
+			return;
+		case 'ignore':
 			return;
 	}
 }

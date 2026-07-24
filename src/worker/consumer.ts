@@ -438,7 +438,7 @@ async function tryFailDispatch(dispatchId: string, error: string): Promise<void>
 	}
 }
 
-type DeferrableFailure = AgentFailure | { kind: 'delivery' };
+export type DeferrableFailure = AgentFailure | { kind: 'delivery' };
 
 /**
  * Turn a deferrable failure into a clamped retry delay. An `aborted` run (the
@@ -448,7 +448,7 @@ type DeferrableFailure = AgentFailure | { kind: 'delivery' };
  * already finished restarting, so the only reason to wait at all is the same
  * dedup-claim floor a rate-limit retry respects.
  */
-function retryDelayForFailure(failure: DeferrableFailure, now: number): number {
+export function retryDelayForFailure(failure: DeferrableFailure, now: number): number {
 	if (
 		failure.kind === 'aborted' ||
 		failure.kind === 'capacity' ||
@@ -1041,27 +1041,18 @@ function logAgentRouting(
 }
 
 /**
- * Run the pipeline phase a matched trigger resolved to. The orchestrators
- * differ in their inputs but all resolve to a result carrying the agent run
- * (`.agent`); the phase owns its own worktree lifecycle, so this doesn't
- * provision anything. `signal` (the worker's shutdown signal) is threaded
- * through so a graceful shutdown kills any in-flight agent CLI.
- *
- * `movedTo` (planning/implementation only) surfaces the canonical completion
- * status the phase moved the item to, if any — `processJob` uses it to
- * self-enqueue a next PM-driven phase (see {@link selfEnqueueNextPhase}) rather
- * than waiting on a webhook GitHub will never deliver for a SWARM persona's move.
+ * A phase run's result — the shape every `runXPhase` resolves to as far as the
+ * worker cares. The orchestrators differ in their inputs and return richer
+ * types, but all carry the agent run (`.agent`); the optional fields below are
+ * the ones the worker (and the transport back-channel) read off the result.
  */
-function runPhase(
-	trigger: TriggerResult,
-	project: ProjectConfig,
-	resolution: PhaseResolution,
-	job: SwarmJob,
-	runId: string | undefined,
-	signal?: AbortSignal,
-	implementationUnplanned = false,
-): Promise<{
+export interface PhaseRunResult {
 	agent: AgentCliResult;
+	/**
+	 * The canonical completion status a PM-driven phase moved the item to, if any
+	 * — `processJob` uses it to self-enqueue the next PM-driven phase
+	 * (see {@link selfEnqueueNextPhase}).
+	 */
 	movedTo?: PmStatusKey;
 	split?: { subTaskItemIds: string[]; mainTaskUpdated: boolean };
 	/** Validated Planning scope, available only after a successful normal Planning run. */
@@ -1072,7 +1063,242 @@ function runPhase(
 	reviewOrdinal?: number;
 	/** This Review run's automation outcome (e.g. `manual-intervention-required`) — persisted onto its history row (issue #235). */
 	automationOutcome?: ReviewAutomationOutcome;
-}> {
+}
+
+/**
+ * The already-resolved inputs a single pipeline phase runs from — the normalized
+ * shape both dispatch paths build before invoking a phase: the in-process path
+ * ({@link runPhase}, from a `TriggerResult` + routing overrides + the job's
+ * session fields) and the transport path (`../worker/transport-client.ts`, from
+ * a pushed `TaskAssignment`). Centralizing the per-phase runner switch in
+ * {@link runAssignedPhase} is what keeps the two paths from diverging — the
+ * mapping of "which phase → which `runXPhase`, with which arguments" lives in
+ * exactly one place.
+ */
+export interface AssignedPhaseInputs {
+	phase: TriggerPhase;
+	taskId: string;
+	project: ProjectConfig;
+	cli?: AgentCli;
+	model?: string;
+	reasoning?: ReasoningLevel;
+	customPrompt?: string;
+	timeoutMs?: number;
+	/** Deterministic session handle assigned to a fresh run (claude's `--session-id`). */
+	sessionId?: string;
+	/** Session to resume on a rate-limit/timeout retry — undefined on a fresh run. */
+	resumeSessionId?: string;
+	/** Resume deterministic-delivery progress rather than an agent session. */
+	resumeDelivery: boolean;
+	/** The database run id, when one exists for this attempt. */
+	runId?: string;
+	/** External cancellation — aborting kills the agent CLI. */
+	signal?: AbortSignal;
+	/** Agent runner (live-output-wrapped by the caller); defaults are the phase's own. */
+	runAgent: ReturnType<typeof createLiveOutputRunner>;
+	/** planning / implementation: the board item to act on. */
+	workItem?: WorkItem;
+	/** implementation: reuse an already-provisioned task branch on a resumed retry. */
+	resumeExistingBranch?: boolean;
+	/** implementation: called once the task branch has been acquired, for resume idempotency. */
+	onBranchProvisioned?: () => Promise<void>;
+	/** PR-driven phases (review / respond-to-* / resolve-conflicts). */
+	prNumber?: string;
+	prBranch?: string;
+	headSha?: string;
+	/** respond-to-review only. */
+	reviewId?: string;
+	/** resolve-conflicts only. */
+	baseBranch?: string;
+	baseSha?: string;
+}
+
+/**
+ * Dispatch already-resolved {@link AssignedPhaseInputs} to the matching
+ * `runXPhase` orchestrator — the single per-phase switch both the in-process and
+ * transport dispatch paths share. The phase owns its own worktree lifecycle, so
+ * this provisions nothing; it only builds the concrete PM provider the
+ * board-driven phases need (the one place a concrete provider is named, per
+ * ai/RULES.md §2) and forwards each phase its inputs.
+ *
+ * A missing phase-required input (a planning/implementation call with no
+ * `workItem`, a PR phase with no coordinates) throws here rather than reaching
+ * the orchestrator with an undefined argument — the trigger union and the
+ * `TaskAssignment` schema both guarantee these upstream, so a violation is a
+ * programming error at this seam.
+ */
+export async function runAssignedPhase(inputs: AssignedPhaseInputs): Promise<PhaseRunResult> {
+	const { project, taskId, runId, signal, runAgent, cli, model, reasoning, customPrompt } = inputs;
+	const timeoutMs = inputs.timeoutMs;
+	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
+	// resume retry the persisted id is handed back as the CLI's resume id; on a
+	// fresh run it's assigned as claude's `--session-id` (codex/agy ignore the
+	// assign and have their id captured post-run).
+	const session = {
+		sessionId: inputs.sessionId,
+		resumeSessionId: inputs.resumeSessionId,
+		resumeDelivery: inputs.resumeDelivery,
+	};
+	switch (inputs.phase) {
+		case 'planning':
+			if (!inputs.workItem) throw new Error('planning phase requires a workItem');
+			return runPlanningPhase({
+				project,
+				workItem: inputs.workItem,
+				taskId,
+				pm: createGitHubProjectsProvider(project),
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				autoAdvance: project.pipeline?.planning?.autoAdvance,
+				autoSplit: project.pipeline?.planning?.autoSplit,
+				maxConcerns: project.pipeline?.planning?.maxConcerns,
+				timeoutMs,
+				signal,
+				// The run-row id anchors the plan comment's per-delivery idempotency
+				// marker (planning.ts `planDeliveryMarker`): stable across a retry of
+				// this run, fresh for a later replan, so a retry reuses its comment
+				// while a replan posts anew.
+				runId,
+				...session,
+				runAgent,
+			});
+		case 'implementation':
+			if (!inputs.workItem) throw new Error('implementation phase requires a workItem');
+			return runImplementationPhase({
+				project,
+				workItem: inputs.workItem,
+				taskId,
+				pm: createGitHubProjectsProvider(project),
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				resumeExistingBranch: inputs.resumeExistingBranch === true,
+				onBranchProvisioned: inputs.onBranchProvisioned,
+				...session,
+				timeoutMs,
+				signal,
+				runAgent,
+			});
+		case 'review':
+			if (inputs.prNumber === undefined || inputs.headSha === undefined) {
+				throw new Error('review phase requires prNumber and headSha');
+			}
+			return runReviewPhase({
+				project,
+				prNumber: inputs.prNumber,
+				headSha: inputs.headSha,
+				taskId,
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				...session,
+				timeoutMs,
+				signal,
+				runAgent,
+			});
+		case 'respond-to-review':
+			if (
+				inputs.prNumber === undefined ||
+				inputs.prBranch === undefined ||
+				inputs.reviewId === undefined ||
+				inputs.headSha === undefined
+			) {
+				throw new Error(
+					'respond-to-review phase requires prNumber, prBranch, reviewId and headSha',
+				);
+			}
+			return runRespondToReviewPhase({
+				project,
+				prNumber: inputs.prNumber,
+				prBranch: inputs.prBranch,
+				reviewId: inputs.reviewId,
+				headSha: inputs.headSha,
+				taskId,
+				pm: createGitHubProjectsProvider(project),
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				...session,
+				timeoutMs,
+				signal,
+				runAgent,
+			});
+		case 'respond-to-ci':
+			if (
+				inputs.prNumber === undefined ||
+				inputs.prBranch === undefined ||
+				inputs.headSha === undefined
+			) {
+				throw new Error('respond-to-ci phase requires prNumber, prBranch and headSha');
+			}
+			return runRespondToCiPhase({
+				project,
+				prNumber: inputs.prNumber,
+				prBranch: inputs.prBranch,
+				headSha: inputs.headSha,
+				taskId,
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				...session,
+				timeoutMs,
+				signal,
+				runAgent,
+			});
+		case 'resolve-conflicts':
+			if (
+				inputs.prNumber === undefined ||
+				inputs.prBranch === undefined ||
+				inputs.headSha === undefined ||
+				inputs.baseBranch === undefined ||
+				inputs.baseSha === undefined
+			) {
+				throw new Error(
+					'resolve-conflicts phase requires prNumber, prBranch, headSha, baseBranch and baseSha',
+				);
+			}
+			return runResolveConflictsPhase({
+				project,
+				prNumber: inputs.prNumber,
+				prBranch: inputs.prBranch,
+				headSha: inputs.headSha,
+				baseBranch: inputs.baseBranch,
+				baseSha: inputs.baseSha,
+				taskId,
+				cli,
+				model,
+				reasoning,
+				customPrompt,
+				...session,
+				timeoutMs,
+				signal,
+				runAgent,
+			});
+	}
+}
+
+/**
+ * Run the pipeline phase a matched trigger resolved to (the in-process dispatch
+ * path). Resolves routing overrides and the job's session-threading fields into
+ * {@link AssignedPhaseInputs}, then hands off to the shared
+ * {@link runAssignedPhase} switch. `signal` (the worker's shutdown signal) is
+ * threaded through so a graceful shutdown kills any in-flight agent CLI.
+ */
+function runPhase(
+	trigger: TriggerResult,
+	project: ProjectConfig,
+	resolution: PhaseResolution,
+	job: SwarmJob,
+	runId: string | undefined,
+	signal?: AbortSignal,
+	implementationUnplanned = false,
+): Promise<PhaseRunResult> {
 	const overrides = agentOverrideFor(
 		project,
 		resolution,
@@ -1082,15 +1308,6 @@ function runPhase(
 	);
 	logAgentRouting(project, trigger, overrides.routing);
 	const runAgent = createLiveOutputRunner(runId);
-	// Session threading, uniform across every phase (issue: cross-CLI resume). On a
-	// resume retry (`resumeSession`) the persisted id is handed back as the CLI's
-	// resume id; on a fresh run it's assigned as claude's `--session-id` (codex/agy
-	// ignore the assign and have their id captured post-run).
-	const session = {
-		sessionId: job.resumeSession ? undefined : job.agentSessionId,
-		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
-		resumeDelivery: job.resumeDelivery === true,
-	};
 	const markImplementationBranchProvisioned = async (): Promise<void> => {
 		job.implementationBranchProvisioned = true;
 		if (!runId) return;
@@ -1104,113 +1321,56 @@ function runPhase(
 			});
 		}
 	};
+	const base = {
+		phase: trigger.phase,
+		taskId: trigger.taskId,
+		project,
+		cli: overrides.cli,
+		model: overrides.model,
+		reasoning: overrides.reasoning,
+		customPrompt: overrides.customPrompt,
+		timeoutMs: overrides.timeoutMs,
+		sessionId: job.resumeSession ? undefined : job.agentSessionId,
+		resumeSessionId: job.resumeSession ? job.agentSessionId : undefined,
+		resumeDelivery: job.resumeDelivery === true,
+		runId,
+		signal,
+		runAgent,
+	};
 	switch (trigger.phase) {
 		case 'planning':
-			return runPlanningPhase({
-				project,
-				workItem: trigger.workItem,
-				taskId: trigger.taskId,
-				pm: createGitHubProjectsProvider(project),
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
-				autoAdvance: project.pipeline?.planning?.autoAdvance,
-				autoSplit: project.pipeline?.planning?.autoSplit,
-				maxConcerns: project.pipeline?.planning?.maxConcerns,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				// The run-row id anchors the plan comment's per-delivery idempotency
-				// marker (planning.ts `planDeliveryMarker`): stable across a retry of
-				// this run, fresh for a later replan, so a retry reuses its comment
-				// while a replan posts anew.
-				runId,
-				...session,
-				runAgent,
-			});
 		case 'implementation':
-			return runImplementationPhase({
-				project,
+			return runAssignedPhase({
+				...base,
 				workItem: trigger.workItem,
-				taskId: trigger.taskId,
-				pm: createGitHubProjectsProvider(project),
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
 				resumeExistingBranch: job.implementationBranchProvisioned === true,
 				onBranchProvisioned: markImplementationBranchProvisioned,
-				...session,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				runAgent,
 			});
 		case 'review':
-			return runReviewPhase({
-				project,
-				prNumber: trigger.prNumber,
-				headSha: trigger.headSha,
-				taskId: trigger.taskId,
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
-				...session,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				runAgent,
-			});
+			return runAssignedPhase({ ...base, prNumber: trigger.prNumber, headSha: trigger.headSha });
 		case 'respond-to-review':
-			return runRespondToReviewPhase({
-				project,
+			return runAssignedPhase({
+				...base,
 				prNumber: trigger.prNumber,
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
 				headSha: trigger.headSha,
-				taskId: trigger.taskId,
-				pm: createGitHubProjectsProvider(project),
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
-				...session,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				runAgent,
 			});
 		case 'respond-to-ci':
-			return runRespondToCiPhase({
-				project,
+			return runAssignedPhase({
+				...base,
 				prNumber: trigger.prNumber,
 				prBranch: trigger.prBranch,
 				headSha: trigger.headSha,
-				taskId: trigger.taskId,
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
-				...session,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				runAgent,
 			});
 		case 'resolve-conflicts':
-			return runResolveConflictsPhase({
-				project,
+			return runAssignedPhase({
+				...base,
 				prNumber: trigger.prNumber,
 				prBranch: trigger.prBranch,
 				headSha: trigger.headSha,
 				baseBranch: trigger.baseBranch,
 				baseSha: trigger.baseSha,
-				taskId: trigger.taskId,
-				cli: overrides.cli,
-				model: overrides.model,
-				reasoning: overrides.reasoning,
-				customPrompt: overrides.customPrompt,
-				...session,
-				timeoutMs: overrides.timeoutMs,
-				signal,
-				runAgent,
 			});
 	}
 }
