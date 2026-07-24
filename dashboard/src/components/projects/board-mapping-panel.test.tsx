@@ -23,7 +23,10 @@ vi.mock('@/lib/trpc.js', () => ({
 	trpc: {
 		pm: {
 			listProviders: {
-				queryOptions: () => ({ queryKey: ['pm.listProviders'], queryFn: () => listProvidersFn() }),
+				queryOptions: (args: unknown) => ({
+					queryKey: ['pm.listProviders', args],
+					queryFn: () => listProvidersFn(args),
+				}),
 			},
 			discoverContainers: {
 				queryOptions: (args: unknown) => ({
@@ -113,6 +116,7 @@ describe('BoardMappingPanel (issue #201)', () => {
 
 		renderHarness();
 
+		await waitFor(() => expect(listProvidersFn).toHaveBeenCalledWith({ projectId: 'p1' }));
 		expect((screen.getByLabelText('Provider') as HTMLSelectElement).value).toBe('github-projects');
 		await screen.findByRole('option', { name: 'My Board' });
 		// The whole point of #201: opaque IDs are never typed.

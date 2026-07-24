@@ -99,7 +99,7 @@ export function BoardMappingPanel({
 	// The registered providers confirm which catalogue entries are actually
 	// selectable — a catalogue entry alone never offers a provider the backend
 	// can't discover.
-	const providersQuery = useQuery(trpc.pm.listProviders.queryOptions());
+	const providersQuery = useQuery(trpc.pm.listProviders.queryOptions({ projectId }));
 	const registeredIds = new Set<string>((providersQuery.data ?? []).map((p) => p.id));
 	const providerSelectable = registeredIds.has(form.providerId);
 

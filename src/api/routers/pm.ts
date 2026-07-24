@@ -95,13 +95,16 @@ export const pmRouter = router({
 	 * enough for the mapping screen's provider selector to render data-driven
 	 * choices without importing a concrete provider.
 	 */
-	listProviders: authedProcedure.query(() => {
-		return listPMProviders().map((m) => ({
-			id: m.id,
-			label: m.label,
-			discovery: [...m.discovery],
-		}));
-	}),
+	listProviders: authedProcedure
+		.input(z.object({ projectId: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+			await assertProjectAccess(ctx.user, input.projectId, 'projectAdmin');
+			return listPMProviders().map((m) => ({
+				id: m.id,
+				label: m.label,
+				discovery: [...m.discovery],
+			}));
+		}),
 
 	/** Discover the selectable boards for a project's configured PM provider. */
 	discoverContainers: authedProcedure

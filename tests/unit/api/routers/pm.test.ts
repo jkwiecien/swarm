@@ -83,9 +83,27 @@ describe('pmRouter', () => {
 				} as any,
 			]);
 
-			await expect(caller.listProviders()).resolves.toEqual([
+			await expect(caller.listProviders({ projectId: 'swarm' })).resolves.toEqual([
 				{ id: 'github-projects', label: 'GitHub Projects', discovery: ['containers', 'states'] },
 			]);
+		});
+
+		it('hides existence from a non-member (NOT_FOUND, not FORBIDDEN)', async () => {
+			const memberCaller = pmRouter.createCaller({ user: ORDINARY_USER });
+			vi.mocked(getMembership).mockResolvedValue(undefined);
+			await expect(memberCaller.listProviders({ projectId: 'swarm' })).rejects.toMatchObject({
+				code: 'NOT_FOUND',
+			});
+			expect(listPMProviders).not.toHaveBeenCalled();
+		});
+
+		it('is FORBIDDEN for a member below projectAdmin', async () => {
+			const memberCaller = pmRouter.createCaller({ user: ORDINARY_USER });
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('member'));
+			await expect(memberCaller.listProviders({ projectId: 'swarm' })).rejects.toMatchObject({
+				code: 'FORBIDDEN',
+			});
+			expect(listPMProviders).not.toHaveBeenCalled();
 		});
 	});
 

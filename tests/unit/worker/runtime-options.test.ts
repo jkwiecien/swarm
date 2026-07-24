@@ -31,8 +31,16 @@ describe('resolveWorkerLockOptions', () => {
 
 describe('resolveWorkerConcurrency', () => {
 	it('defaults to 1 when neither flag nor env is set', () => {
-		expect(resolveWorkerConcurrency([], undefined)).toBe(DEFAULT_WORKER_CONCURRENCY);
-		expect(DEFAULT_WORKER_CONCURRENCY).toBe(1);
+		const old = process.env.SWARM_WORKER_CONCURRENCY;
+		delete process.env.SWARM_WORKER_CONCURRENCY;
+		try {
+			expect(resolveWorkerConcurrency([], undefined)).toBe(DEFAULT_WORKER_CONCURRENCY);
+			expect(DEFAULT_WORKER_CONCURRENCY).toBe(1);
+		} finally {
+			if (old !== undefined) {
+				process.env.SWARM_WORKER_CONCURRENCY = old;
+			}
+		}
 	});
 
 	it('reads the SWARM_WORKER_CONCURRENCY env var when there is no flag', () => {
