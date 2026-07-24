@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
 	AGENT_MODELS,
 	ALL_AGENT_MODELS,
+	ANTIGRAVITY_MODEL_SLUGS,
 	ANTIGRAVITY_MODELS,
 	CLAUDE_MODELS,
 	CODEX_MODELS,
 	capabilityFor,
-	LEGACY_ANTIGRAVITY_MODELS,
 	normalizeModelSelection,
 	reasoningChoicesFor,
 	resolveModelLaunch,
@@ -102,38 +102,45 @@ describe('resolveModelLaunch', () => {
 		});
 	});
 
-	it('folds antigravity reasoning into the combined --model variant, no flag', () => {
+	it('folds antigravity reasoning into the combined --model slug, no flag', () => {
 		expect(resolveModelLaunch('antigravity', 'gemini-3.5-flash', 'high')).toEqual({
-			model: 'Gemini 3.5 Flash (High)',
+			model: 'gemini-3.5-flash-high',
 			providerArgs: [],
 		});
 	});
 
-	it('folds gemini-3.6-flash reasoning into the exact agy --model variant string', () => {
+	it('folds gemini-3.6-flash reasoning into the exact agy --model slug', () => {
 		expect(resolveModelLaunch('antigravity', 'gemini-3.6-flash', 'high')).toEqual({
-			model: 'Gemini 3.6 Flash (High)',
+			model: 'gemini-3.6-flash-high',
 			providerArgs: [],
 		});
 		expect(resolveModelLaunch('antigravity', 'gemini-3.6-flash', undefined).model).toBe(
-			'Gemini 3.6 Flash (Medium)',
+			'gemini-3.6-flash-medium',
 		);
 	});
 
-	it('falls back to the antigravity model default variant when reasoning is omitted', () => {
+	it('falls back to the antigravity model default slug when reasoning is omitted', () => {
 		expect(resolveModelLaunch('antigravity', 'gemini-3.5-flash', undefined).model).toBe(
-			'Gemini 3.5 Flash (Medium)',
+			'gemini-3.5-flash-medium',
 		);
 	});
 
-	it('uses the fixed variant for a single-variant antigravity model', () => {
+	it('uses the fixed slug for a single-variant antigravity model', () => {
 		expect(resolveModelLaunch('antigravity', 'claude-sonnet-4.6', undefined).model).toBe(
-			'Claude Sonnet 4.6 (Thinking)',
+			'claude-sonnet-4-6',
 		);
 	});
 
-	it('passes a legacy combined antigravity string through verbatim (back-compat)', () => {
+	it('re-emits a slug already in model verbatim', () => {
+		expect(resolveModelLaunch('antigravity', 'gemini-3.6-flash-high', undefined)).toEqual({
+			model: 'gemini-3.6-flash-high',
+			providerArgs: [],
+		});
+	});
+
+	it('translates a retired display string to today’s slug (back-compat)', () => {
 		expect(resolveModelLaunch('antigravity', 'Gemini 3.1 Pro (High)', undefined)).toEqual({
-			model: 'Gemini 3.1 Pro (High)',
+			model: 'gemini-3.1-pro-high',
 			providerArgs: [],
 		});
 	});
@@ -145,7 +152,14 @@ describe('resolveModelLaunch', () => {
 });
 
 describe('splitAntigravityModel / normalizeModelSelection', () => {
-	it('decomposes every legacy combined string into a logical id + reasoning', () => {
+	it('decomposes both slugs and retired display strings into a logical id + reasoning', () => {
+		expect(splitAntigravityModel('gemini-3.6-flash-high')).toEqual({
+			model: 'gemini-3.6-flash',
+			reasoning: 'high',
+		});
+		expect(splitAntigravityModel('claude-opus-4-6-thinking')).toEqual({
+			model: 'claude-opus-4.6',
+		});
 		expect(splitAntigravityModel('Gemini 3.5 Flash (High)')).toEqual({
 			model: 'gemini-3.5-flash',
 			reasoning: 'high',
@@ -160,12 +174,12 @@ describe('splitAntigravityModel / normalizeModelSelection', () => {
 		expect(splitAntigravityModel('gemini-3.5-flash')).toBeNull();
 	});
 
-	it('round-trips every legacy string back to the same launch variant', () => {
-		for (const legacy of LEGACY_ANTIGRAVITY_MODELS) {
-			const split = splitAntigravityModel(legacy);
+	it('round-trips every slug back to the same launch slug', () => {
+		for (const slug of ANTIGRAVITY_MODEL_SLUGS) {
+			const split = splitAntigravityModel(slug);
 			expect(split).not.toBeNull();
 			const launched = resolveModelLaunch('antigravity', split?.model as string, split?.reasoning);
-			expect(launched.model).toBe(legacy);
+			expect(launched.model).toBe(slug);
 		}
 	});
 

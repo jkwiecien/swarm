@@ -19,15 +19,19 @@
  *    model in that tier.
  *  - `codex`: a separate `model_reasoning_effort` config value passed as
  *    `-c model_reasoning_effort="<level>"`; models are short identifiers.
- *  - `antigravity`: no reasoning flag at all — the level is baked into the
- *    model *name* `agy models` prints (`"Gemini 3.5 Flash (High)"`), so a
- *    logical model + reasoning maps back to that exact combined variant string.
- *    Single-variant models (`Claude Sonnet 4.6 (Thinking)`, `GPT-OSS 120B
- *    (Medium)`) expose no reasoning choice — their variant is fixed.
+ *  - `antigravity` (agy 1.1.5+): the reasoning effort is part of the model
+ *    *slug* `agy models` prints (`gemini-3.6-flash-high`) — the string `--model`
+ *    pins reliably — so a logical model + reasoning maps back to that exact slug.
+ *    agy also grew a separate `--effort low|medium|high` flag, but SWARM keeps
+ *    driving it through the combined slug rather than the flag. Single-variant
+ *    models (`claude-sonnet-4-6`, `gpt-oss-120b-medium`) expose no reasoning
+ *    choice — their slug is fixed. Pre-1.1.5 agy printed parenthesized display
+ *    strings (`"Gemini 3.5 Flash (High)"`) instead; those linger only as legacy
+ *    config values (`LEGACY_ANTIGRAVITY_DISPLAY_STRINGS`), never a launch target.
  *
  * These are capability *inputs* observed on the current dev host, not a promise
- * that provider catalogs never change — hence the `LEGACY_ANTIGRAVITY_MODELS`
- * back-compat set (§below) and `resolveModelLaunch`'s fail-visibly behavior.
+ * that provider catalogs never change — hence the legacy back-compat sets
+ * (§below) and `resolveModelLaunch`'s fail-visibly behavior.
  */
 
 import { z } from 'zod';
@@ -134,9 +138,9 @@ const CODEX_CAPABILITIES: readonly ModelCapability[] = [
 }));
 
 /**
- * `agy --model "<combined>"`. The logical model + reasoning re-combine into the
- * exact `agy models` display string. Flash/Pro expose reasoning tiers; the
- * Claude/GPT-OSS entries are single fixed variants (no reasoning choice).
+ * `agy --model <slug>`. The logical model + reasoning re-combine into the exact
+ * `agy models` slug (`gemini-3.6-flash-high`). Flash/Pro expose reasoning tiers;
+ * the Claude/GPT-OSS entries are single fixed slugs (no reasoning choice).
  */
 const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 	{
@@ -146,9 +150,9 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		reasoningChoices: ['low', 'medium', 'high'],
 		defaultReasoning: 'medium',
 		variantByReasoning: {
-			low: 'Gemini 3.5 Flash (Low)',
-			medium: 'Gemini 3.5 Flash (Medium)',
-			high: 'Gemini 3.5 Flash (High)',
+			low: 'gemini-3.5-flash-low',
+			medium: 'gemini-3.5-flash-medium',
+			high: 'gemini-3.5-flash-high',
 		},
 	},
 	{
@@ -158,9 +162,9 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		reasoningChoices: ['low', 'medium', 'high'],
 		defaultReasoning: 'medium',
 		variantByReasoning: {
-			low: 'Gemini 3.6 Flash (Low)',
-			medium: 'Gemini 3.6 Flash (Medium)',
-			high: 'Gemini 3.6 Flash (High)',
+			low: 'gemini-3.6-flash-low',
+			medium: 'gemini-3.6-flash-medium',
+			high: 'gemini-3.6-flash-high',
 		},
 	},
 	{
@@ -172,8 +176,8 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		// un-reasoned Pro selection still launches a real, documented variant.
 		defaultReasoning: 'high',
 		variantByReasoning: {
-			low: 'Gemini 3.1 Pro (Low)',
-			high: 'Gemini 3.1 Pro (High)',
+			low: 'gemini-3.1-pro-low',
+			high: 'gemini-3.1-pro-high',
 		},
 	},
 	{
@@ -182,7 +186,7 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		label: 'Claude Sonnet 4.6',
 		reasoningChoices: [],
 		defaultReasoning: null,
-		fixedVariant: 'Claude Sonnet 4.6 (Thinking)',
+		fixedVariant: 'claude-sonnet-4-6',
 	},
 	{
 		cli: 'antigravity',
@@ -190,7 +194,7 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		label: 'Claude Opus 4.6',
 		reasoningChoices: [],
 		defaultReasoning: null,
-		fixedVariant: 'Claude Opus 4.6 (Thinking)',
+		fixedVariant: 'claude-opus-4-6-thinking',
 	},
 	{
 		cli: 'antigravity',
@@ -198,7 +202,7 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 		label: 'GPT-OSS 120B',
 		reasoningChoices: [],
 		defaultReasoning: null,
-		fixedVariant: 'GPT-OSS 120B (Medium)',
+		fixedVariant: 'gpt-oss-120b-medium',
 	},
 ];
 
@@ -243,15 +247,40 @@ export const DEFAULT_MODEL_PER_CLI: Record<AgentCli, string> = {
 };
 
 /**
- * The exact `agy models` combined display strings previous configs stored in
- * `AgentConfig.model` (before reasoning was a separate field). Still accepted by
- * the config schema and recognized by `resolveModelLaunch`/`splitAntigravityModel`
- * so existing `"Gemini 3.5 Flash (High)"` selections migrate losslessly into
- * logical model + reasoning and keep launching that exact variant (issue #180).
+ * Every combined `agy models` slug SWARM can launch (`gemini-3.6-flash-high`,
+ * `claude-sonnet-4-6`, …) — the exact strings agy 1.1.5+ accepts on `--model`.
+ * Derived from the capabilities so it can't drift from what `resolveModelLaunch`
+ * emits; `splitAntigravityModel` decomposes any of them back into logical model
+ * + reasoning.
  */
-export const LEGACY_ANTIGRAVITY_MODELS: readonly string[] = ANTIGRAVITY_CAPABILITIES.flatMap((m) =>
+export const ANTIGRAVITY_MODEL_SLUGS: readonly string[] = ANTIGRAVITY_CAPABILITIES.flatMap((m) =>
 	m.fixedVariant ? [m.fixedVariant] : Object.values(m.variantByReasoning ?? {}),
 );
+
+/**
+ * Retired pre-1.1.5 agy display strings (`"Gemini 3.5 Flash (High)"`) that
+ * pre-#180 SWARM configs stored in `AgentConfig.model` before reasoning became a
+ * separate field. agy's model list no longer contains them, so they are never a
+ * launch target — but the config schema still accepts them and
+ * `splitAntigravityModel` migrates them losslessly to logical model + reasoning
+ * (which then launches today's slug), so those configs keep working (issue #180,
+ * #409).
+ */
+export const LEGACY_ANTIGRAVITY_DISPLAY_STRINGS: Readonly<
+	Record<string, { model: string; reasoning?: ReasoningLevel }>
+> = {
+	'Gemini 3.5 Flash (Low)': { model: 'gemini-3.5-flash', reasoning: 'low' },
+	'Gemini 3.5 Flash (Medium)': { model: 'gemini-3.5-flash', reasoning: 'medium' },
+	'Gemini 3.5 Flash (High)': { model: 'gemini-3.5-flash', reasoning: 'high' },
+	'Gemini 3.6 Flash (Low)': { model: 'gemini-3.6-flash', reasoning: 'low' },
+	'Gemini 3.6 Flash (Medium)': { model: 'gemini-3.6-flash', reasoning: 'medium' },
+	'Gemini 3.6 Flash (High)': { model: 'gemini-3.6-flash', reasoning: 'high' },
+	'Gemini 3.1 Pro (Low)': { model: 'gemini-3.1-pro', reasoning: 'low' },
+	'Gemini 3.1 Pro (High)': { model: 'gemini-3.1-pro', reasoning: 'high' },
+	'Claude Sonnet 4.6 (Thinking)': { model: 'claude-sonnet-4.6' },
+	'Claude Opus 4.6 (Thinking)': { model: 'claude-opus-4.6' },
+	'GPT-OSS 120B (Medium)': { model: 'gpt-oss-120b' },
+};
 
 /** Look up a logical model's capability, or `undefined` if unknown for that CLI. */
 export function capabilityFor(cli: AgentCli, model: string): ModelCapability | undefined {
@@ -264,10 +293,12 @@ export function reasoningChoicesFor(cli: AgentCli, model: string): readonly Reas
 }
 
 /**
- * Decompose a legacy combined antigravity model string into a logical model id
- * plus reasoning level (or no level, for a fixed single-variant model). Returns
- * `null` when the string isn't a recognized combined variant — callers then
- * treat the value as an already-logical id.
+ * Decompose a combined antigravity model string into a logical model id plus
+ * reasoning level (or no level, for a fixed single-variant model). Recognizes
+ * both today's `agy models` slug (`gemini-3.6-flash-high`) and the retired
+ * pre-1.1.5 display string (`"Gemini 3.6 Flash (High)"`) a legacy config may
+ * still carry. Returns `null` when the string isn't a recognized combined
+ * variant — callers then treat the value as an already-logical id.
  */
 export function splitAntigravityModel(
 	model: string,
@@ -278,7 +309,8 @@ export function splitAntigravityModel(
 			if (variant === model) return { model: cap.id, reasoning: level as ReasoningLevel };
 		}
 	}
-	return null;
+	const legacy = LEGACY_ANTIGRAVITY_DISPLAY_STRINGS[model];
+	return legacy ? { ...legacy } : null;
 }
 
 /**
@@ -312,11 +344,13 @@ export interface ModelLaunch {
  *
  * - claude → `{ model, providerArgs: reasoning ? ['--effort', level] : [] }`
  * - codex  → `{ model, providerArgs: reasoning ? ['-c', 'model_reasoning_effort="level"'] : [] }`
- * - antigravity → the combined `agy models` string in `model`, no provider args.
- *   A legacy combined string in `model` is passed through verbatim (lossless
- *   back-compat). Otherwise the logical id + reasoning (or the model's default /
- *   fixed variant) re-combine; an unknown logical id falls through to `model`
- *   verbatim so `agy` itself fails visibly rather than us silently substituting.
+ * - antigravity → the combined `agy models` slug in `model`, no provider args.
+ *   A combined string already in `model` — today's slug, or a retired pre-1.1.5
+ *   display string a legacy config carries — is decomposed and re-resolved to the
+ *   current slug, so we never send agy a name its model list no longer contains.
+ *   Otherwise the logical id + reasoning (or the model's default / fixed variant)
+ *   re-combine; an unknown logical id falls through to `model` verbatim so `agy`
+ *   itself fails visibly rather than us silently substituting.
  *
  * Throws only when an antigravity logical model is known but the requested
  * reasoning maps to no real variant — failing visibly per issue #180 rather
@@ -339,19 +373,22 @@ export function resolveModelLaunch(
 		};
 	}
 
-	// antigravity: reasoning is encoded in the model string, never a flag.
-	if ((LEGACY_ANTIGRAVITY_MODELS as readonly string[]).includes(model)) {
-		return { model, providerArgs: [] };
-	}
-	const cap = capabilityFor('antigravity', model);
+	// antigravity: reasoning is encoded in the model slug, never a flag. If `model`
+	// is itself a combined string (today's slug or a legacy display string),
+	// decompose it so a retired display string re-resolves to the current slug; an
+	// explicit combined string wins over a separately-passed reasoning level.
+	const combined = splitAntigravityModel(model);
+	const logicalId = combined?.model ?? model;
+	const level = combined?.reasoning ?? reasoning;
+	const cap = capabilityFor('antigravity', logicalId);
 	if (!cap) return { model, providerArgs: [] };
 	if (cap.fixedVariant) return { model: cap.fixedVariant, providerArgs: [] };
-	const level = reasoning ?? cap.defaultReasoning ?? undefined;
-	const variant = level ? cap.variantByReasoning?.[level] : undefined;
-	if (!variant) {
+	const chosen = level ?? cap.defaultReasoning ?? undefined;
+	const slug = chosen ? cap.variantByReasoning?.[chosen] : undefined;
+	if (!slug) {
 		throw new Error(
-			`antigravity model '${model}' has no variant for reasoning '${level ?? 'default'}'`,
+			`antigravity model '${logicalId}' has no variant for reasoning '${chosen ?? 'default'}'`,
 		);
 	}
-	return { model: variant, providerArgs: [] };
+	return { model: slug, providerArgs: [] };
 }
