@@ -39,8 +39,10 @@ import {
 	type HandshakeResponse,
 	HandshakeResponseSchema,
 	type Heartbeat,
+	type TaskAssignment,
 	TRANSPORT_PROTOCOL_VERSION,
 	type WorkerHealth,
+	type WorkerStreamMessage,
 	WS_CLOSE,
 } from './protocol.js';
 
@@ -318,6 +320,19 @@ export interface WorkerTransportClient {
 	stop(): Promise<void>;
 }
 
+/**
+ * The channel an {@link WorkerTransportOptions.onAssignment} handler uses to send
+ * worker→cloud frames (the assignment ack, batched live output, progress, and
+ * the terminal execution result) back on the live session socket. `send` is a
+ * best-effort write: once the session ends it drops the frame (logged), because a
+ * reconnect re-pushes the assignment and the handler resumes rather than
+ * duplicating (ADR-003 §2). Serialization is handled here so the handler only
+ * ever deals in typed frames.
+ */
+export interface AssignmentSink {
+	send(frame: WorkerStreamMessage): void;
+}
+
 export interface WorkerTransportOptions {
 	controlPlaneUrl: string;
 	credential: string;
@@ -328,6 +343,17 @@ export interface WorkerTransportOptions {
 	health?: () => WorkerHealth | undefined;
 	/** Reconnect backoff overrides (defaults to {@link DEFAULT_BACKOFF}). */
 	backoff?: Partial<BackoffConfig>;
+	/**
+	 * Called when the control plane pushes a `task-assignment` frame on the live
+	 * session (ADR-003 §2). The handler runs the phase and streams results back
+	 * through the supplied {@link AssignmentSink}. Left undefined by the
+	 * session-only remote client (`./connect-entry.ts`), which keeps its lease live
+	 * but executes no work; the in-process transport-dispatch client
+	 * (`../worker/transport-client.ts`) supplies it. Fire-and-forget: the handler
+	 * runs independently of the heartbeat loop, so a long phase never blocks lease
+	 * liveness.
+	 */
+	onAssignment?: (assignment: TaskAssignment, sink: AssignmentSink) => void;
 }
 
 /** How a live session ended, deciding whether the loop reconnects or fails. */
@@ -398,6 +424,28 @@ export function connectWorkerTransport(
 				resolve(end);
 			};
 
+			// The back-channel a task-assignment handler writes its ack/output/result
+			// frames through. Best-effort: once the session has ended the frame is
+			// dropped (a reconnect re-pushes the assignment — ADR-003 §2).
+			const sink: AssignmentSink = {
+				send(frame: WorkerStreamMessage): void {
+					if (settled) {
+						deps.logger.warn('dropping worker frame — transport session already ended', {
+							type: frame.type,
+						});
+						return;
+					}
+					try {
+						socket.send(JSON.stringify(frame));
+					} catch (err) {
+						deps.logger.warn('failed to send worker frame on transport session', {
+							type: frame.type,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				},
+			};
+
 			socket.on('open', () => {
 				// stop() may have fired while the socket was connecting.
 				if (stopped) {
@@ -420,10 +468,22 @@ export function connectWorkerTransport(
 			});
 			socket.on('message', (data) => {
 				const frame = parseControlFrame(data);
+				if (!frame) return;
 				// A `disconnect` control frame means the lease can no longer be refreshed
 				// (lost/expired/superseded) — end the session so the loop reconnects with a
-				// fresh handshake. `heartbeat-ack` needs no action.
-				if (frame?.type === 'disconnect') finish({ reason: 'disconnect', message: frame.reason });
+				// fresh handshake.
+				if (frame.type === 'disconnect') {
+					finish({ reason: 'disconnect', message: frame.reason });
+					return;
+				}
+				// A pushed assignment (ADR-003 §2): hand it to the executor, which streams
+				// its results back through `sink`. Runs independently of this session's
+				// heartbeat loop, so a long phase never blocks lease liveness.
+				if (frame.type === 'task-assignment') {
+					options.onAssignment?.(frame, sink);
+					return;
+				}
+				// `heartbeat-ack` needs no action.
 			});
 			socket.on('close', (code) =>
 				finish({ reason: 'close', code: typeof code === 'number' ? code : WS_CLOSE.LEASE_LOST }),

@@ -11,9 +11,11 @@
  * The session subset (ADR-003 §1) stands up an authenticated session and keeps
  * its `worker_sessions` lease live: handshake in both directions, plus the
  * heartbeat/ack/disconnect control frames. Split delivery (ADR-003 §2) then
- * adds the `TaskAssignment` cloud→worker frame below; the back-channel frames it
- * pairs with — `TaskExecutionResult` / `StreamLog` (PROJECT.md §3) — join the
- * worker→cloud union in a later split-delivery slice and are absent here.
+ * adds the `TaskAssignment` cloud→worker frame below and the worker→cloud
+ * back-channel frames it pairs with — `TaskAssignmentAck` / `StreamLog` /
+ * `TaskProgress` / `TaskExecutionResult` (PROJECT.md §3) — so a connected worker
+ * can acknowledge an assignment, stream its live output, and report the terminal
+ * outcome the control plane settles the dispatch on.
  *
  * Capabilities are the harness's `AgentCli` vocabulary
  * (`../harness/agent-cli.ts`), never a parallel CLI enum — the same rule the
@@ -227,11 +229,117 @@ export const TaskAssignmentSchema = z.object({
 export type TaskAssignment = z.infer<typeof TaskAssignmentSchema>;
 
 /**
- * Every worker→cloud stream frame, discriminated on `type`. Only `heartbeat`
- * exists this phase; `TaskExecutionResult`/`StreamLog` (PROJECT.md §3) join here
- * in the split-delivery phase (ADR-003 §2).
+ * One captured agent-output line, the transport mirror of a `run_output_events`
+ * row (`../worker/live-output.ts`): the `stream` it came from, its `content`
+ * (newline-terminated, as the batcher stores it), and the ISO-8601 instant it
+ * was emitted. Carried in batches by {@link StreamLogSchema}.
  */
-export const WorkerStreamMessageSchema = z.discriminatedUnion('type', [HeartbeatSchema]);
+export const StreamLogLineSchema = z.object({
+	stream: z.enum(['stdout', 'stderr']),
+	content: z.string(),
+	emittedAt: z.string().min(1),
+});
+export type StreamLogLine = z.infer<typeof StreamLogLineSchema>;
+
+/**
+ * Worker→cloud frame carrying a batch of live output lines for an in-flight
+ * assignment so the control plane can persist them to the run's output stream
+ * exactly as the in-process worker's live-output batcher does. Lines are batched
+ * (never one frame per line) to bound socket chatter, mirroring
+ * `../worker/live-output.ts`'s `BATCH_MS`/`BATCH_SIZE` window.
+ */
+export const StreamLogSchema = z.object({
+	type: z.literal('stream-log'),
+	dispatchId: z.string().uuid(),
+	runId: z.string().uuid().optional(),
+	lines: z.array(StreamLogLineSchema).nonempty(),
+});
+export type StreamLog = z.infer<typeof StreamLogSchema>;
+
+/**
+ * Worker→cloud coarse progress marker for an in-flight assignment — the phase
+ * lifecycle transitions the control plane surfaces on the board/run while the
+ * agent works, distinct from the line-level {@link StreamLogSchema}. `running`
+ * is emitted once the phase actually starts; `branch-provisioned` reports the
+ * Implementation task-branch checkpoint so a re-pushed assignment can resume on
+ * the existing branch (the transport mirror of `implementationBranchProvisioned`).
+ */
+export const TaskProgressSchema = z.object({
+	type: z.literal('task-progress'),
+	dispatchId: z.string().uuid(),
+	runId: z.string().uuid().optional(),
+	phase: TaskPhaseSchema,
+	taskId: z.string().min(1),
+	state: z.enum(['running', 'branch-provisioned']),
+});
+export type TaskProgress = z.infer<typeof TaskProgressSchema>;
+
+/**
+ * Worker→cloud acknowledgement that a pushed {@link TaskAssignmentSchema} was
+ * received and accepted for execution. `duplicate` is true when this worker is
+ * already running the same dispatch (a re-pushed assignment): the worker keeps
+ * the in-flight run rather than starting a second, so the control plane can drop
+ * the re-push instead of treating the silence as a lost assignment.
+ */
+export const TaskAssignmentAckSchema = z.object({
+	type: z.literal('task-assignment-ack'),
+	dispatchId: z.string().uuid(),
+	runId: z.string().uuid().optional(),
+	duplicate: z.boolean(),
+});
+export type TaskAssignmentAck = z.infer<typeof TaskAssignmentAckSchema>;
+
+/**
+ * Worker→cloud terminal frame settling a pushed {@link TaskAssignmentSchema}. It
+ * mirrors the fields the in-process `JobOutcome` (`../worker/consumer.ts`) carries
+ * so the control plane can settle the dispatch exactly as `processJob` does
+ * locally: `succeeded` with the agent exit metadata, `deferred` with the retry
+ * hint and resume flags a `phase-deferred` outcome carries, or `failed` with the
+ * error (and `cancelled` set for a user termination, so the control plane cancels
+ * rather than fails the dispatch). The worker reports the classification and the
+ * derived retry delay; the retry-budget accounting stays with the control plane,
+ * which owns the dispatch record (phase 4).
+ */
+export const TaskExecutionResultSchema = z.object({
+	type: z.literal('task-execution-result'),
+	dispatchId: z.string().uuid(),
+	runId: z.string().uuid().optional(),
+	status: z.enum(['succeeded', 'deferred', 'failed']),
+	phase: TaskPhaseSchema,
+	taskId: z.string().min(1),
+	// `succeeded` — the agent run's exit metadata (mirrors the `phase-succeeded`
+	// outcome fields).
+	exitCode: z.number().int().nullable().optional(),
+	signal: z.string().nullable().optional(),
+	timedOut: z.boolean().optional(),
+	durationMs: z.number().int().nonnegative().optional(),
+	// `deferred` — the retry hint + resume flags (mirrors `phase-deferred`).
+	retryDelayMs: z.number().int().nonnegative().optional(),
+	resumable: z.boolean().optional(),
+	resumeDelivery: z.boolean().optional(),
+	failureKind: z.string().optional(),
+	// `deferred`/`failed` — the human-readable originating reason.
+	reason: z.string().optional(),
+	// `failed` — the terminal error and whether it was a user termination.
+	error: z.string().optional(),
+	cancelled: z.boolean().optional(),
+});
+export type TaskExecutionResult = z.infer<typeof TaskExecutionResultSchema>;
+
+/**
+ * Every worker→cloud stream frame, discriminated on `type`: the `heartbeat` that
+ * keeps the session lease live (ADR-003 §1) plus the split-delivery back-channel
+ * frames (ADR-003 §2) — the assignment ack, batched live output, coarse
+ * progress, and the terminal execution result — the worker sends while running a
+ * pushed {@link TaskAssignmentSchema}.
+ */
+export const WorkerStreamMessageSchema = z.discriminatedUnion('type', [
+	HeartbeatSchema,
+	TaskAssignmentAckSchema,
+	StreamLogSchema,
+	TaskProgressSchema,
+	TaskExecutionResultSchema,
+]);
 export type WorkerStreamMessage = z.infer<typeof WorkerStreamMessageSchema>;
 
 /**
