@@ -8,7 +8,10 @@ import {
 	listWaitingDispatches,
 	reopenDispatchForManualRetry,
 } from '../../db/repositories/dispatchesRepository.js';
-import { getProjectByIdFromDb } from '../../db/repositories/projectsRepository.js';
+import {
+	getProjectByIdFromDb,
+	listAllProjectsFromDb,
+} from '../../db/repositories/projectsRepository.js';
 import {
 	cancelDeferredRunInDb,
 	getRunByIdFromDb,
@@ -316,10 +319,20 @@ export const runsRouter = router({
 		.query(async ({ ctx, input }) => {
 			if (input?.projectId) {
 				await assertProjectAccess(ctx.user, input.projectId, 'contributor');
-				return enrichQueuedWorkItems(toQueuedRuns(await listWaitingDispatches(input.projectId)));
+				const project = await getProjectByIdFromDb(input.projectId);
+				const policy = project?.pipeline?.prioritizeContinuations !== false;
+				const policies = { [input.projectId]: policy };
+				return enrichQueuedWorkItems(
+					toQueuedRuns(await listWaitingDispatches(input.projectId), policies),
+				);
 			}
 			const scope = await accessibleProjectScope(ctx.user);
-			const items = toQueuedRuns(await listWaitingDispatches(input?.projectId));
+			const dispatches = await listWaitingDispatches(input?.projectId);
+			const projects = await listAllProjectsFromDb();
+			const policies = Object.fromEntries(
+				projects.map((p) => [p.id, p.pipeline?.prioritizeContinuations !== false]),
+			);
+			const items = toQueuedRuns(dispatches, policies);
 			if (scope === null) return enrichQueuedWorkItems(items);
 			const accessible = new Set(scope);
 			return enrichQueuedWorkItems(items.filter((item) => accessible.has(item.projectId)));

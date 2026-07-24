@@ -158,8 +158,23 @@ export const queuedRunSchema = z.object({
 	workItemUrl: z.string().optional(),
 	/** Effective BullMQ priority; 0 is highest. */
 	priority: z.number().int().nonnegative(),
+	/**
+	 * Whether this dispatch is a prioritized SCM continuation (Review /
+	 * Respond-to-review / Respond-to-CI / Resolve-conflicts resumed after a
+	 * capacity wait) — the primary key the scheduler orders the capacity-blocked
+	 * bucket by (mirrors the server `QueuedRunSchema.continuation`, issue #374).
+	 */
+	continuation: z.boolean(),
+	/** Whether the project has SCM continuation prioritization active. */
+	prioritizeContinuations: z.boolean(),
 	/** ISO 8601 — when the job was enqueued. */
 	enqueuedAt: z.string(),
+	/**
+	 * ISO 8601 — when the dispatch became eligible; the capacity wake selector's
+	 * secondary ordering key, distinct from `enqueuedAt` (mirrors the server
+	 * `QueuedRunSchema.availableAt`, issue #374).
+	 */
+	availableAt: z.string(),
 	/** ISO 8601 — `delayed` jobs only, scheduled run time. */
 	runsAt: z.string().optional(),
 	/**

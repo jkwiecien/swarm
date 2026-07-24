@@ -258,6 +258,17 @@ describe('toQueuedRuns', () => {
 		expect(item.runsAt).toBeUndefined();
 	});
 
+	it('carries the dispatch continuation flag and exact availability timestamp through', () => {
+		const [continuationItem] = toQueuedRuns([
+			makeDispatch({ continuation: true, availableAt: new Date(1_700_000_030_000) }),
+		]);
+		expect(continuationItem.continuation).toBe(true);
+		expect(continuationItem.availableAt).toBe(new Date(1_700_000_030_000).toISOString());
+
+		const [ordinaryItem] = toQueuedRuns([makeDispatch()]);
+		expect(ordinaryItem.continuation).toBe(false);
+	});
+
 	it('maps a github job to repo + prNumber, no board fields', () => {
 		const job = createMockGitHubWebhookJob({
 			event: {
@@ -461,6 +472,98 @@ describe('sortQueuedRuns', () => {
 			makeDispatch({ id: 'waiting', createdAt: new Date(1_700_000_005_000) }),
 		]);
 		expect(items.map((i) => i.jobId)).toEqual(['waiting', 'blocked', 'delayed']);
+	});
+
+	// Regression (issue #374): the blocked bucket must mirror
+	// selectNextCapacityDispatch (continuation desc, availableAt asc), NOT the
+	// generic priority/FIFO ordering the other buckets use — otherwise the
+	// dashboard's displayed order diverges from the scheduler's real wake order.
+	it('orders a blocked continuation ahead of higher-priority, earlier ordinary blocked work', () => {
+		const items = toQueuedRuns([
+			makeDispatch({
+				id: 'ordinary',
+				waitReason: 'project-capacity',
+				continuation: false,
+				priority: 0,
+				availableAt: new Date(1_700_000_010_000),
+				createdAt: new Date(1_700_000_010_000),
+			}),
+			makeDispatch({
+				id: 'continuation',
+				waitReason: 'project-capacity',
+				continuation: true,
+				priority: 10,
+				availableAt: new Date(1_700_000_050_000),
+				createdAt: new Date(1_700_000_050_000),
+			}),
+		]);
+		expect(items.map((i) => i.jobId)).toEqual(['continuation', 'ordinary']);
+	});
+
+	it('orders blocked work purely by availableAt FIFO when prioritizeContinuations is false', () => {
+		const items = toQueuedRuns(
+			[
+				makeDispatch({
+					id: 'ordinary',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: false,
+					availableAt: new Date(1_700_000_010_000),
+				}),
+				makeDispatch({
+					id: 'continuation',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: true,
+					availableAt: new Date(1_700_000_050_000),
+				}),
+			],
+			{ p1: false },
+		);
+		expect(items.map((i) => i.jobId)).toEqual(['ordinary', 'continuation']);
+
+		const itemsReverse = toQueuedRuns(
+			[
+				makeDispatch({
+					id: 'ordinary',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: false,
+					availableAt: new Date(1_700_000_050_000),
+				}),
+				makeDispatch({
+					id: 'continuation',
+					projectId: 'p1',
+					waitReason: 'project-capacity',
+					continuation: true,
+					availableAt: new Date(1_700_000_010_000),
+				}),
+			],
+			{ p1: false },
+		);
+		expect(itemsReverse.map((i) => i.jobId)).toEqual(['continuation', 'ordinary']);
+	});
+
+	it('orders blocked rows of the same continuation class by availableAt, not priority or creation time', () => {
+		const items = toQueuedRuns([
+			makeDispatch({
+				id: 'later-available',
+				waitReason: 'project-capacity',
+				continuation: true,
+				priority: 0,
+				availableAt: new Date(1_700_000_050_000),
+				createdAt: new Date(1_700_000_000_000),
+			}),
+			makeDispatch({
+				id: 'earlier-available',
+				waitReason: 'project-capacity',
+				continuation: true,
+				priority: 10,
+				availableAt: new Date(1_700_000_030_000),
+				createdAt: new Date(1_700_000_060_000),
+			}),
+		]);
+		expect(items.map((i) => i.jobId)).toEqual(['earlier-available', 'later-available']);
 	});
 
 	it('orders priority-0 github ahead of priority-10 github-projects within the runnable group', () => {

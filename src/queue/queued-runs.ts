@@ -116,8 +116,26 @@ export const QueuedRunSchema = z.object({
 	workItemUrl: z.string().optional(),
 	/** Effective queue priority; 0 is highest. */
 	priority: z.number().int().nonnegative(),
+	/**
+	 * Whether this dispatch is a prioritized SCM continuation (Review /
+	 * Respond-to-review / Respond-to-CI / Resolve-conflicts resumed after a
+	 * capacity wait) — the primary key `selectNextCapacityDispatch` orders the
+	 * `blocked` bucket by. Read-model only; mirrors `DispatchRow.continuation`.
+	 */
+	continuation: z.boolean(),
+	/**
+	 * Whether the project has SCM continuation prioritization active.
+	 */
+	prioritizeContinuations: z.boolean(),
 	/** ISO 8601 — when the dispatch was created. */
 	enqueuedAt: z.string(),
+	/**
+	 * ISO 8601 — when the dispatch became eligible (`DispatchRow.availableAt`).
+	 * The capacity wake selector's secondary ordering key, distinct from
+	 * `enqueuedAt`: a dispatch deferred to `pending` on a freed slot has its
+	 * availability reset to that moment while its creation time stays fixed.
+	 */
+	availableAt: z.string(),
 	/** ISO 8601 — `delayed` dispatches only, scheduled run time. */
 	runsAt: z.string().optional(),
 	/**
@@ -181,7 +199,7 @@ export function deriveQueuedState(dispatch: DispatchRow): PendingJobState {
 	return dispatch.priority > 0 ? 'prioritized' : 'waiting';
 }
 
-function toQueuedRun(dispatch: DispatchRow): QueuedRun {
+function toQueuedRun(dispatch: DispatchRow, prioritizeContinuations: boolean): QueuedRun {
 	const data = dispatch.jobPayload;
 	const state = deriveQueuedState(dispatch);
 	const reviewGate = deriveReviewGate(data);
@@ -198,7 +216,10 @@ function toQueuedRun(dispatch: DispatchRow): QueuedRun {
 		runId: dispatch.runId ?? undefined,
 		attempt: dispatch.attempt,
 		priority: dispatch.priority,
+		continuation: dispatch.continuation,
+		prioritizeContinuations,
 		enqueuedAt: dispatch.createdAt.toISOString(),
+		availableAt: dispatch.availableAt.toISOString(),
 		...(state === 'delayed' ? { runsAt: dispatch.availableAt.toISOString() } : {}),
 		...(reviewGate ? { reviewGate } : {}),
 	};
@@ -214,9 +235,18 @@ function toQueuedRun(dispatch: DispatchRow): QueuedRun {
 
 /**
  * Order to mirror dispatch intent: runnable (`waiting`/`prioritized`) first,
- * capacity-`blocked` next (eligible, waiting on a slot), `delayed` last;
- * priority ascending (0 highest); then FIFO within the same priority — enqueue
- * time for runnable jobs, scheduled run time for delayed ones.
+ * capacity-`blocked` next (eligible, waiting on a slot), `delayed` last.
+ *
+ * Runnable/delayed rows order by priority ascending (0 highest), then FIFO
+ * within the same priority — enqueue time for runnable jobs, scheduled run time
+ * for delayed ones.
+ *
+ * The `blocked` bucket deliberately does NOT use generic priority. When a
+ * project slot frees, the scheduler picks the next blocked dispatch via
+ * `selectNextCapacityDispatch` (`continuation desc, availableAt asc`), so a
+ * prioritized SCM continuation wins the freed slot ahead of new work regardless
+ * of queue priority. This mirrors that ordering exactly so the displayed order
+ * matches the real wake order (issue #374).
  */
 export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
 	const stateRank = (state: PendingJobState): number =>
@@ -227,6 +257,15 @@ export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
 	return [...items].sort((a, b) => {
 		const byState = stateRank(a.state) - stateRank(b.state);
 		if (byState !== 0) return byState;
+		// Both rows are in the same bucket here. Within `blocked`, mirror
+		// selectNextCapacityDispatch's wake order (continuation-first, then
+		// availableAt) instead of priority/FIFO.
+		if (a.state === 'blocked') {
+			const aCont = a.prioritizeContinuations && a.continuation;
+			const bCont = b.prioritizeContinuations && b.continuation;
+			if (aCont !== bCont) return aCont ? -1 : 1;
+			return Date.parse(a.availableAt) - Date.parse(b.availableAt);
+		}
 		if (a.priority !== b.priority) return a.priority - b.priority;
 		return timeRank(a) - timeRank(b);
 	});
@@ -237,11 +276,15 @@ export function sortQueuedRuns(items: QueuedRun[]): QueuedRun[] {
  * order them to mirror dispatch. Rows whose stored payload no longer parses are
  * skipped (they can't run either — the worker fails them at claim time).
  */
-export function toQueuedRuns(dispatches: DispatchRow[]): QueuedRun[] {
+export function toQueuedRuns(
+	dispatches: DispatchRow[],
+	projectPolicies: Record<string, boolean> = {},
+): QueuedRun[] {
 	const mapped: QueuedRun[] = [];
 	for (const dispatch of dispatches) {
 		try {
-			mapped.push(toQueuedRun(dispatch));
+			const policy = projectPolicies[dispatch.projectId] ?? true;
+			mapped.push(toQueuedRun(dispatch, policy));
 		} catch {
 			// Malformed payload — the claim path surfaces it; don't break the list.
 		}
