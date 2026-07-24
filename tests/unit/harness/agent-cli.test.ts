@@ -420,7 +420,7 @@ describe('runAgentCli', () => {
 		]);
 	});
 
-	it('folds antigravity reasoning into the combined --model variant with no reasoning flag', async () => {
+	it('folds antigravity reasoning into the combined --model slug with no reasoning flag', async () => {
 		const promise = runAgentCli(
 			createMockRunAgentCliOptions({
 				cli: 'antigravity',
@@ -434,7 +434,7 @@ describe('runAgentCli', () => {
 
 		const args = spawnMock.mock.calls[0][1] as string[];
 		expect(args).toContain('--model');
-		expect(args[args.indexOf('--model') + 1]).toBe('Gemini 3.5 Flash (High)');
+		expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.5-flash-high');
 		expect(args).not.toContain('--effort');
 		expect(args.some((a) => a.startsWith('model_reasoning_effort'))).toBe(false);
 	});

@@ -15,8 +15,9 @@ import { type AgentCli, AgentCliSchema } from '../harness/agent-cli.js';
 import {
 	AGENT_MODELS,
 	ALL_AGENT_MODELS,
+	ANTIGRAVITY_MODEL_SLUGS,
 	capabilityFor,
-	LEGACY_ANTIGRAVITY_MODELS,
+	LEGACY_ANTIGRAVITY_DISPLAY_STRINGS,
 	ReasoningLevelSchema,
 	splitAntigravityModel,
 } from '../harness/models.js';
@@ -25,15 +26,19 @@ import { CUSTOM_PROMPT_MAX_LENGTH, normalizeCustomPrompt } from './custom-prompt
 
 /**
  * A model value is known when it's a logical id for its CLI (or the union, when
- * `cli` is omitted). Antigravity additionally accepts the legacy combined
- * display strings (`"Gemini 3.5 Flash (High)"`) previous configs stored, so they
- * validate unchanged and are normalized to logical id + reasoning on parse.
+ * `cli` is omitted). Antigravity additionally accepts its combined `agy models`
+ * slugs (`gemini-3.6-flash-high`) and the retired pre-1.1.5 display strings
+ * (`"Gemini 3.5 Flash (High)"`) previous configs stored, so both validate
+ * unchanged and are normalized to logical id + reasoning on parse.
  */
 function isKnownModel(cli: AgentCli | undefined, model: string): boolean {
 	const allowed = cli ? AGENT_MODELS[cli] : ALL_AGENT_MODELS;
 	if ((allowed as readonly string[]).includes(model)) return true;
 	if (cli === 'antigravity' || cli === undefined) {
-		return (LEGACY_ANTIGRAVITY_MODELS as readonly string[]).includes(model);
+		return (
+			(ANTIGRAVITY_MODEL_SLUGS as readonly string[]).includes(model) ||
+			Object.hasOwn(LEGACY_ANTIGRAVITY_DISPLAY_STRINGS, model)
+		);
 	}
 	return false;
 }
