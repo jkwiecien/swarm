@@ -23,9 +23,15 @@ import type { ProjectConfig } from '../../../config/schema.js';
 import { logger } from '../../../lib/logger.js';
 import { dedupeBlockers, findDependencyReferences } from '../../../pm/dependencies.js';
 import type {
+	ContainerDiscoveryResult,
 	CreateWorkItemInput,
+	DiscoveredContainer,
+	PMDiscoveryArgs,
+	PMDiscoveryCapability,
+	PMDiscoveryResult,
 	PMProvider,
 	PMType,
+	StateDiscoveryResult,
 	UpdateWorkItemPatch,
 	WorkItem,
 	WorkItemAssignee,
@@ -187,6 +193,121 @@ const ADD_PROJECT_ITEM_MUTATION = /* GraphQL */ `
 
 interface AddProjectItemResponse {
 	addProjectV2ItemById?: { item?: { id?: string } | null } | null;
+}
+
+/**
+ * One page of the Projects v2 boards owned by the authenticated user, for board
+ * discovery (issue #201). The dashboard picks a board from these instead of an
+ * operator typing its node ID. `url` is the board's web URL, shown as picker
+ * detail. Paginated like every Projects v2 connection so a user with more than
+ * one page of boards isn't silently truncated to the first 100.
+ */
+const VIEWER_PROJECTS_QUERY = /* GraphQL */ `
+	query($cursor: String) {
+		viewer {
+			projectsV2(first: 100, after: $cursor) {
+				pageInfo { hasNextPage endCursor }
+				nodes { id title url }
+			}
+		}
+	}
+`;
+
+/** One page of the organizations the authenticated user belongs to, for org board discovery. */
+const VIEWER_ORGS_QUERY = /* GraphQL */ `
+	query($cursor: String) {
+		viewer {
+			organizations(first: 100, after: $cursor) {
+				pageInfo { hasNextPage endCursor }
+				nodes { login }
+			}
+		}
+	}
+`;
+
+/** One page of the Projects v2 boards owned by a single organization. */
+const ORG_PROJECTS_QUERY = /* GraphQL */ `
+	query($login: String!, $cursor: String) {
+		organization(login: $login) {
+			projectsV2(first: 100, after: $cursor) {
+				pageInfo { hasNextPage endCursor }
+				nodes { id title url }
+			}
+		}
+	}
+`;
+
+/**
+ * One page of a selected board's fields, for state discovery (issue #201). Only
+ * the single-select fields carry `options`; the mapping's states come from the
+ * one named `Status` (the same field name {@link GET_ITEM_QUERY} reads item
+ * status from). `fields` is a paginated connection — a board with many custom
+ * fields could push `Status` past the first page, so it is walked to the end.
+ */
+const PROJECT_FIELDS_QUERY = /* GraphQL */ `
+	query($projectId: ID!, $cursor: String) {
+		node(id: $projectId) {
+			... on ProjectV2 {
+				id
+				fields(first: 100, after: $cursor) {
+					pageInfo { hasNextPage endCursor }
+					nodes {
+						... on ProjectV2SingleSelectField {
+							id
+							name
+							options { id name }
+						}
+					}
+				}
+			}
+		}
+	}
+`;
+
+/** A discovered Projects v2 board node (user- or org-owned). */
+interface ProjectV2Node {
+	id?: string;
+	title?: string;
+	url?: string;
+}
+
+interface ProjectsConnection {
+	nodes?: Array<ProjectV2Node | null> | null;
+	pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+}
+
+interface ViewerProjectsResponse {
+	viewer?: { projectsV2?: ProjectsConnection | null } | null;
+}
+
+interface ViewerOrgsResponse {
+	viewer?: {
+		organizations?: {
+			nodes?: Array<{ login?: string } | null> | null;
+			pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+		} | null;
+	} | null;
+}
+
+interface OrgProjectsResponse {
+	organization?: { projectsV2?: ProjectsConnection | null } | null;
+}
+
+/** A single-select field node (others in the `fields` connection come back empty). */
+interface SingleSelectFieldNode {
+	id?: string;
+	name?: string;
+	options?: Array<{ id?: string; name?: string } | null> | null;
+}
+
+interface ProjectFieldsResponse {
+	node?: {
+		id?: string;
+		fields?: {
+			nodes?: Array<SingleSelectFieldNode | null> | null;
+			pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+		} | null;
+	} | null;
 }
 
 /** Default label color (GitHub's neutral grey) for a SWARM-created label. */
@@ -562,6 +683,112 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		});
 	}
 
+	async discover<C extends PMDiscoveryCapability>(
+		capability: C,
+		args: PMDiscoveryArgs[C],
+	): Promise<PMDiscoveryResult[C]> {
+		switch (capability) {
+			case 'containers':
+				return (await this.discoverContainers()) as PMDiscoveryResult[C];
+			case 'states':
+				return (await this.discoverStates(args.containerId)) as PMDiscoveryResult[C];
+			default:
+				// Unreachable for a declared capability (the type union is exhaustive),
+				// but a runtime guard keeps a future capability from silently no-op'ing.
+				throw new Error(`GitHub Projects does not support discovery capability '${capability}'`);
+		}
+	}
+
+	/**
+	 * Enumerate the Projects v2 boards the implementer persona can pick from: the
+	 * boards it owns directly, plus the boards owned by each organization it
+	 * belongs to. Every connection is paginated to the end and the result is
+	 * deduplicated by node ID (a board can surface through more than one path),
+	 * then sorted by title so the picker is stable.
+	 */
+	private async discoverContainers(): Promise<ContainerDiscoveryResult> {
+		return this.run(async () => {
+			const client = getScopedClient();
+			const own = await collectConnection<ProjectV2Node>(async (cursor) => {
+				const data = await client.graphql<ViewerProjectsResponse>(VIEWER_PROJECTS_QUERY, {
+					cursor,
+				});
+				return data.viewer?.projectsV2 ?? null;
+			});
+			const orgs = await collectConnection<{ login?: string }>(async (cursor) => {
+				const data = await client.graphql<ViewerOrgsResponse>(VIEWER_ORGS_QUERY, { cursor });
+				return data.viewer?.organizations ?? null;
+			});
+			const orgBoards: ProjectV2Node[] = [];
+			for (const org of orgs) {
+				if (!org.login) continue;
+				const login = org.login;
+				const boards = await collectConnection<ProjectV2Node>(async (cursor) => {
+					const data = await client.graphql<OrgProjectsResponse>(ORG_PROJECTS_QUERY, {
+						login,
+						cursor,
+					});
+					return data.organization?.projectsV2 ?? null;
+				});
+				orgBoards.push(...boards);
+			}
+			return { containers: normalizeContainers([...own, ...orgBoards]) };
+		});
+	}
+
+	/**
+	 * Discover a selected board's workflow states — the options of its single-select
+	 * `Status` field — plus the field's own node ID in {@link StateDiscoveryResult.providerContext}
+	 * so the mapping can persist `statusFieldId` without the shared picker naming a
+	 * GitHub-specific field. Throws an actionable error when the board can't be
+	 * resolved, has no `Status` single-select field, or that field has no options.
+	 */
+	private async discoverStates(containerId: string): Promise<StateDiscoveryResult> {
+		return this.run(async () => {
+			const client = getScopedClient();
+			const fields: SingleSelectFieldNode[] = [];
+			let cursor: string | undefined;
+			let resolved = false;
+			for (;;) {
+				const data = await client.graphql<ProjectFieldsResponse>(PROJECT_FIELDS_QUERY, {
+					projectId: containerId,
+					cursor,
+				});
+				const node = data.node;
+				// `node: null` (bad id) or a node that isn't a ProjectV2 (the inline
+				// fragment matched nothing, so no `id`) both mean the board didn't resolve.
+				if (!node?.id) break;
+				resolved = true;
+				const conn = node.fields;
+				for (const f of conn?.nodes ?? []) {
+					if (f) fields.push(f);
+				}
+				const pageInfo = conn?.pageInfo;
+				if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
+				if (pageInfo.endCursor === cursor) break;
+				cursor = pageInfo.endCursor;
+			}
+			if (!resolved) {
+				throw new Error(`GitHub Projects board '${containerId}' did not resolve`);
+			}
+			const statusField = fields.find((f) => f.name === 'Status' && Array.isArray(f.options));
+			if (!statusField?.id) {
+				throw new Error(
+					`GitHub Projects board '${containerId}' has no single-select "Status" field to map`,
+				);
+			}
+			const states = (statusField.options ?? [])
+				.filter((o): o is { id: string; name: string } => !!o?.id && !!o.name)
+				.map((o) => ({ id: o.id, name: o.name }));
+			if (states.length === 0) {
+				throw new Error(
+					`GitHub Projects board '${containerId}' Status field has no options to map`,
+				);
+			}
+			return { states, providerContext: { statusFieldId: statusField.id } };
+		});
+	}
+
 	/**
 	 * The item's native "blocked by" prerequisites, via the GitHub issue-dependencies
 	 * REST API. A repo/plan without the feature answers 404/410 — treated as "no
@@ -680,6 +907,52 @@ async function ensureLabel(owner: string, repo: string, name: string): Promise<v
 		// A parallel create won the race — the label now exists, which is all we need.
 		if (!isHttpStatus(err, 422)) throw err;
 	}
+}
+
+/**
+ * Walk a paginated GraphQL connection to the end, collecting every node. Applies
+ * the same termination guards as {@link GitHubProjectsPMProvider.listWorkItems}:
+ * stop when there's no next page or no cursor, and stop if a page repeats the
+ * cursor it was fetched with (a misbehaving server must not loop forever). Must
+ * run inside a scoped-credentials context (its callers do).
+ */
+async function collectConnection<N>(
+	fetchPage: (cursor: string | undefined) => Promise<{
+		nodes?: Array<N | null> | null;
+		pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
+	} | null>,
+): Promise<N[]> {
+	const all: N[] = [];
+	let cursor: string | undefined;
+	for (;;) {
+		const page = await fetchPage(cursor);
+		for (const node of page?.nodes ?? []) {
+			if (node) all.push(node);
+		}
+		const pageInfo = page?.pageInfo;
+		if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
+		if (pageInfo.endCursor === cursor) break;
+		cursor = pageInfo.endCursor;
+	}
+	return all;
+}
+
+/**
+ * Reduce discovered board nodes to stable picker options: keep only nodes with a
+ * node ID and title, deduplicate by ID (a board can be reachable both directly
+ * and through an org), and sort by title (case-insensitive) so the picker order
+ * doesn't jump between refreshes.
+ */
+function normalizeContainers(nodes: ProjectV2Node[]): DiscoveredContainer[] {
+	const byId = new Map<string, DiscoveredContainer>();
+	for (const node of nodes) {
+		if (!node.id || !node.title) continue;
+		if (byId.has(node.id)) continue;
+		byId.set(node.id, { id: node.id, name: node.title, url: node.url || undefined });
+	}
+	return [...byId.values()].sort((a, b) =>
+		a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+	);
 }
 
 /** Whether an Octokit error carries a specific HTTP status. */

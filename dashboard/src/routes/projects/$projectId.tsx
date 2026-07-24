@@ -17,8 +17,8 @@ import {
 } from 'lucide-react';
 import type React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BoardMappingPanel } from '@/components/projects/board-mapping-panel.js';
 import { CredentialsPanel } from '@/components/projects/credentials-panel.js';
-import { GitHubProjectsMappingForm } from '@/components/projects/github-projects-mapping-form.js';
 import { ProjectRunsPanel } from '@/components/runs/project-runs-panel.js';
 import {
 	addTarget,
@@ -39,6 +39,7 @@ import {
 import {
 	type BoardMappingForm,
 	buildGithubProjectsUpdate,
+	blankStatusOptions as emptyBoardStatusOptions,
 	isBoardMappingDirty,
 	toBoardMappingForm,
 } from '@/lib/board-mapping.js';
@@ -1887,7 +1888,7 @@ function ProjectDetailRouteComponent() {
 			}
 
 			if (changed.boardMapping) {
-				setBoardMapping(toBoardMappingForm(project.githubProjects));
+				setBoardMapping(toBoardMappingForm(project.githubProjects, project.pm.type));
 			}
 
 			lastSyncedProjectRef.current = project;
@@ -2088,13 +2089,23 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
-	const handleBoardMappingProjectId = (value: string) => {
-		setBoardMapping((prev) => ({ ...prev, projectId: value }));
+	const handleBoardMappingProvider = (providerId: string) => {
+		setBoardMapping((prev) => ({ ...prev, providerId }));
 		updateMutation.reset();
 	};
 
-	const handleBoardMappingStatusFieldId = (value: string) => {
-		setBoardMapping((prev) => ({ ...prev, statusFieldId: value }));
+	const handleBoardMappingSelectContainer = (containerId: string) => {
+		setBoardMapping((prev) => {
+			if (prev.containerId === containerId) return prev;
+			// Switching boards clears the previous board's state mappings and provider
+			// context so option/field IDs from one board can't be saved against another.
+			return {
+				...prev,
+				containerId,
+				statusOptions: emptyBoardStatusOptions(),
+				providerContext: {},
+			};
+		});
 		updateMutation.reset();
 	};
 
@@ -2106,8 +2117,12 @@ function ProjectDetailRouteComponent() {
 		updateMutation.reset();
 	};
 
+	const handleBoardMappingStatesContext = (context: Record<string, string>) => {
+		setBoardMapping((prev) => ({ ...prev, providerContext: context }));
+	};
+
 	const handleBoardMappingReset = () => {
-		setBoardMapping(toBoardMappingForm(project?.githubProjects));
+		setBoardMapping(toBoardMappingForm(project?.githubProjects, project?.pm.type));
 		updateMutation.reset();
 	};
 
@@ -2357,11 +2372,13 @@ function ProjectDetailRouteComponent() {
 			)}
 
 			{activeTab === 'boardMapping' && (
-				<GitHubProjectsMappingForm
+				<BoardMappingPanel
+					projectId={projectId}
 					form={boardMapping}
-					setProjectId={handleBoardMappingProjectId}
-					setStatusFieldId={handleBoardMappingStatusFieldId}
-					setStatusOption={handleBoardMappingStatusOption}
+					onProviderChange={handleBoardMappingProvider}
+					onSelectContainer={handleBoardMappingSelectContainer}
+					onStatusOptionChange={handleBoardMappingStatusOption}
+					onStatesContext={handleBoardMappingStatesContext}
 					handleSubmit={handleBoardMappingSubmit}
 					handleReset={handleBoardMappingReset}
 					isDirty={isBoardMappingFormDirty}

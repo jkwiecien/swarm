@@ -25,6 +25,9 @@ export const githubProjectsManifest: PMProviderManifest = {
 	createProvider: createGitHubProjectsProvider,
 	configSchema: githubProjectsConfigSchema,
 	routerAdapter: new GitHubProjectsRouterAdapter(),
+	// Board discovery reads the authenticated user's (and their orgs') Projects v2
+	// boards; state discovery reads a selected board's single-select Status field.
+	discovery: ['containers', 'states'],
 };
 
 registerPMProvider(githubProjectsManifest);

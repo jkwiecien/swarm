@@ -33,4 +33,8 @@ describe('github-projects manifest registration', () => {
 	it('exposes a router adapter wired to the same provider id', () => {
 		expect(githubProjectsManifest.routerAdapter.type).toBe('github-projects');
 	});
+
+	it('declares the board and state discovery capabilities', () => {
+		expect(githubProjectsManifest.discovery).toEqual(['containers', 'states']);
+	});
 });

@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { GitHubProjectsIntegrationConfig } from '../../../src/integrations/pm/github-projects/config-schema.js';
 import {
 	buildGithubProjectsUpdate,
+	canSaveBoardMapping,
 	cleanStatusOptions,
+	getPmMappingProvider,
 	isBoardMappingDirty,
 	STATUS_KEYS,
 	toBoardMappingForm,
@@ -22,30 +24,41 @@ const fullConfig: GitHubProjectsIntegrationConfig = {
 };
 
 describe('toBoardMappingForm', () => {
-	it('fills blanks for every canonical key when config is undefined', () => {
+	it('fills blanks and defaults the provider when config is undefined', () => {
 		const form = toBoardMappingForm(undefined);
-		expect(form.projectId).toBe('');
-		expect(form.statusFieldId).toBe('');
+		expect(form.providerId).toBe('github-projects');
+		expect(form.containerId).toBe('');
+		expect(form.providerContext).toEqual({});
 		for (const key of STATUS_KEYS) {
 			expect(form.statusOptions[key]).toBe('');
 		}
 	});
 
-	it('projects stored ids and only surfaces canonical keys', () => {
+	it('projects the stored board, field context, and only canonical status keys', () => {
 		const form = toBoardMappingForm({
 			...fullConfig,
 			// A board may carry a non-canonical key; it must not leak into the form.
 			statusOptions: { ...fullConfig.statusOptions, custom: 'zzz' },
 		});
-		expect(form.projectId).toBe(fullConfig.projectId);
+		expect(form.containerId).toBe(fullConfig.projectId);
+		expect(form.providerContext).toEqual({ statusFieldId: fullConfig.statusFieldId });
 		expect(form.statusOptions.inReview).toBe('df73e18b');
 		expect(Object.keys(form.statusOptions).sort()).toEqual([...STATUS_KEYS].sort());
 	});
 
-	it('leaves an unmapped canonical key blank', () => {
-		const form = toBoardMappingForm({ ...fullConfig, statusOptions: { backlog: 'f75ad846' } });
+	it('carries the provided provider id through', () => {
+		expect(toBoardMappingForm(fullConfig, 'github-projects').providerId).toBe('github-projects');
+	});
+
+	it('leaves an unmapped canonical key blank and omits absent field context', () => {
+		const form = toBoardMappingForm({
+			projectId: 'PVT_1',
+			statusFieldId: '',
+			statusOptions: { backlog: 'f75ad846' },
+		} as GitHubProjectsIntegrationConfig);
 		expect(form.statusOptions.backlog).toBe('f75ad846');
 		expect(form.statusOptions.done).toBe('');
+		expect(form.providerContext).toEqual({});
 	});
 });
 
@@ -64,16 +77,18 @@ describe('cleanStatusOptions', () => {
 });
 
 describe('buildGithubProjectsUpdate', () => {
-	it('trims ids and cleans options', () => {
+	it('serializes the container to projectId and the discovered field context to statusFieldId', () => {
 		const payload = buildGithubProjectsUpdate(
 			{
-				projectId: '  PVT_1  ',
-				statusFieldId: 'PVTSSF_1',
+				providerId: 'github-projects',
+				containerId: '  PVT_1  ',
 				statusOptions: { ...toBoardMappingForm(undefined).statusOptions, planning: ' 3fe662f4 ' },
+				providerContext: { statusFieldId: '  PVTSSF_1  ' },
 			},
 			undefined,
 		);
 		expect(payload.projectId).toBe('PVT_1');
+		expect(payload.statusFieldId).toBe('PVTSSF_1');
 		expect(payload.statusOptions).toEqual({ planning: '3fe662f4' });
 	});
 
@@ -99,7 +114,7 @@ describe('isBoardMappingDirty', () => {
 
 	it('ignores surrounding whitespace when comparing', () => {
 		const form = toBoardMappingForm(fullConfig);
-		form.projectId = `  ${fullConfig.projectId}  `;
+		form.containerId = `  ${fullConfig.projectId}  `;
 		expect(isBoardMappingDirty(form, fullConfig)).toBe(false);
 	});
 
@@ -109,9 +124,47 @@ describe('isBoardMappingDirty', () => {
 		expect(isBoardMappingDirty(form, fullConfig)).toBe(true);
 	});
 
-	it('is true when a field is filled against an empty config', () => {
+	it('is true when the discovered Status field context changes', () => {
+		const form = toBoardMappingForm(fullConfig);
+		form.providerContext = { statusFieldId: 'PVTSSF_other' };
+		expect(isBoardMappingDirty(form, fullConfig)).toBe(true);
+	});
+
+	it('is true when a board is selected against an empty config', () => {
 		const form = toBoardMappingForm(undefined);
-		form.statusFieldId = 'PVTSSF_1';
+		form.containerId = 'PVT_1';
 		expect(isBoardMappingDirty(form, undefined)).toBe(true);
+	});
+});
+
+describe('canSaveBoardMapping', () => {
+	it('requires a board, a Status field context, and at least one mapped status', () => {
+		expect(canSaveBoardMapping(toBoardMappingForm(fullConfig))).toBe(true);
+	});
+
+	it('is false without a selected board', () => {
+		const form = toBoardMappingForm(fullConfig);
+		form.containerId = '';
+		expect(canSaveBoardMapping(form)).toBe(false);
+	});
+
+	it('is false without a Status field context', () => {
+		const form = toBoardMappingForm(fullConfig);
+		form.providerContext = {};
+		expect(canSaveBoardMapping(form)).toBe(false);
+	});
+
+	it('is false when no status is mapped', () => {
+		const form = toBoardMappingForm(undefined);
+		form.containerId = 'PVT_1';
+		form.providerContext = { statusFieldId: 'PVTSSF_1' };
+		expect(canSaveBoardMapping(form)).toBe(false);
+	});
+});
+
+describe('getPmMappingProvider', () => {
+	it('returns the matching provider and falls back to the default for an unknown id', () => {
+		expect(getPmMappingProvider('github-projects').label).toBe('GitHub Projects');
+		expect(getPmMappingProvider('nope').id).toBe('github-projects');
 	});
 });
