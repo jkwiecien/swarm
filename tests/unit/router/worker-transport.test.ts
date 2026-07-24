@@ -6,6 +6,7 @@ import { WorkerCapabilityReductionError } from '@/identity/worker.js';
 import type { AcquiredSession } from '@/identity/worker-session-service.js';
 import { WorkerSessionHeldError } from '@/identity/worker-session-service.js';
 import { logger } from '@/lib/logger.js';
+import { isWorkerConnected, sendToWorker } from '@/router/worker-connections.js';
 import {
 	handleHandshake,
 	handleWorkerStreamFrame,
@@ -293,9 +294,12 @@ async function openStream(
 }
 
 function fakeWs() {
-	return { send: vi.fn(), close: vi.fn() } as unknown as WSContext & {
+	// `readyState: 1` is the WebSocket OPEN state, so the connection registry treats
+	// this fake as a live socket (`sendToWorker`/`isWorkerConnected`).
+	return { send: vi.fn(), close: vi.fn(), readyState: 1 } as unknown as WSContext & {
 		send: ReturnType<typeof vi.fn>;
 		close: ReturnType<typeof vi.fn>;
+		readyState: number;
 	};
 }
 
@@ -324,5 +328,48 @@ describe('GET /worker/stream onMessage (adapter handler)', () => {
 		expect(errorSpy).toHaveBeenCalled();
 
 		errorSpy.mockRestore();
+	});
+});
+
+describe('GET /worker/stream connected-worker registry lifecycle', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it('registers an authenticated socket on open and deregisters on close', async () => {
+		const deps = makeDeps();
+		const handlers = await openStream(deps, {
+			authorization: `Bearer ${CREDENTIAL}`,
+			fencingToken: '7',
+		});
+		const ws = fakeWs();
+
+		handlers.onOpen?.({}, ws);
+
+		// The authenticated open makes the worker reachable, and the push primitive
+		// lands on exactly this socket.
+		expect(isWorkerConnected(WORKER_ID)).toBe(true);
+		expect(ws.close).not.toHaveBeenCalled();
+		expect(sendToWorker(WORKER_ID, { type: 'heartbeat-ack' })).toBe(true);
+		expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'heartbeat-ack' }));
+
+		await handlers.onClose?.({}, ws);
+
+		// The close removes it from the registry (and still frees the lease).
+		expect(isWorkerConnected(WORKER_ID)).toBe(false);
+		expect(deps.releaseSession).toHaveBeenCalledWith(CREDENTIAL, 7);
+	});
+
+	it('registers nothing for an unauthenticated open', async () => {
+		const deps = makeDeps({ resolveWorkerByCredential: vi.fn().mockResolvedValue(undefined) });
+		const handlers = await openStream(deps, {
+			authorization: `Bearer ${CREDENTIAL}`,
+			fencingToken: '7',
+		});
+		const ws = fakeWs();
+
+		handlers.onOpen?.({}, ws);
+
+		expect(ws.close).toHaveBeenCalledWith(WS_CLOSE.UNAUTHORIZED, 'unauthorized');
+		expect(isWorkerConnected(WORKER_ID)).toBe(false);
+		expect(sendToWorker(WORKER_ID, { type: 'heartbeat-ack' })).toBe(false);
 	});
 });
