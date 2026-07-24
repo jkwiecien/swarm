@@ -25,6 +25,81 @@
 
 export type PMType = 'github-projects';
 
+/**
+ * The discovery capabilities the board-mapping screen needs a provider to answer:
+ * enumerate the provider's selectable boards (`containers`) and, for one selected
+ * board, its workflow states (`states`). Kept as one `as const` constant so the
+ * runtime capability list ({@link PMProviderManifest.discovery}) and the
+ * TypeScript {@link PMDiscoveryCapability} union can't drift apart.
+ *
+ * Provider-neutral on purpose (`containers`/`states`, not GitHub's `board`/
+ * `Status field`): a GitHub Projects board, a Jira project, and a Trello board
+ * are all "containers"; a GitHub Status option, a Jira workflow status, and a
+ * Trello list are all "states". Mapping those neutral concepts to a provider's
+ * own vocabulary stays inside the adapter (ai/RULES.md §2).
+ */
+export const PM_DISCOVERY_CAPABILITIES = ['containers', 'states'] as const;
+
+/** One discovery capability a provider may declare and answer (see {@link PM_DISCOVERY_CAPABILITIES}). */
+export type PMDiscoveryCapability = (typeof PM_DISCOVERY_CAPABILITIES)[number];
+
+/**
+ * A selectable board/project/list a provider exposes — an opaque `id` (persisted
+ * as the board mapping), a human-readable `name` for the picker, and an optional
+ * `url` the picker can link to. No provider-specific fields: a GitHub Projects v2
+ * node ID, a Jira project key, and a Trello board ID all reduce to `id`.
+ */
+export interface DiscoveredContainer {
+	id: string;
+	name: string;
+	url?: string;
+}
+
+/**
+ * One workflow state within a selected container — an opaque `id` (a GitHub
+ * Status single-select option ID, a Jira transition, a Trello list) and a
+ * human-readable `name`. The mapping screen maps each canonical SWARM status to
+ * one of these.
+ */
+export interface DiscoveredState {
+	id: string;
+	name: string;
+}
+
+/** Result of the `containers` capability. */
+export interface ContainerDiscoveryResult {
+	containers: DiscoveredContainer[];
+}
+
+/**
+ * Result of the `states` capability. `providerContext` carries any extra opaque
+ * scope the provider needs threaded back to save time without naming it in the
+ * shared contract — GitHub Projects returns the selected board's Status *field*
+ * ID here (`{ statusFieldId }`), which the mapping needs alongside the option
+ * IDs. A provider whose states need no extra scope omits it.
+ */
+export interface StateDiscoveryResult {
+	states: DiscoveredState[];
+	providerContext?: Record<string, string>;
+}
+
+/** Arguments for the `states` capability — the opaque id of the selected container. */
+export interface DiscoverStatesArgs {
+	containerId: string;
+}
+
+/** Maps each discovery capability to the arguments it takes. */
+export interface PMDiscoveryArgs {
+	containers: Record<string, never>;
+	states: DiscoverStatesArgs;
+}
+
+/** Maps each discovery capability to the result shape it returns. */
+export interface PMDiscoveryResult {
+	containers: ContainerDiscoveryResult;
+	states: StateDiscoveryResult;
+}
+
 export interface WorkItemLabel {
 	id: string;
 	name: string;
@@ -251,4 +326,28 @@ export interface PMProvider {
 	 * ai/RULES.md §2).
 	 */
 	addBlockedBy(id: string, blockerId: string): Promise<void>;
+
+	/**
+	 * Discover the provider's selectable boards, or the workflow states of one
+	 * selected board, so an administrator can build the board mapping by picking
+	 * from real names rather than typing opaque IDs. Registry consumers (the `pm`
+	 * API router) dispatch here after checking {@link PMProviderManifest.discovery}
+	 * declares the capability; a provider that declares a capability implements it,
+	 * and throws for one it does not.
+	 *
+	 * Optional because discovery is a per-provider capability declared on the
+	 * manifest (`discovery`), not part of the four-method pipeline surface every
+	 * provider needs: a provider whose manifest declares no capabilities can omit
+	 * it entirely. Dispatch stays provider-agnostic — the router looks the method
+	 * up through the manifest rather than branching on a concrete provider
+	 * (ai/RULES.md §2).
+	 *
+	 * Runs inside the provider's own credential scope — the browser never supplies
+	 * a token, and the raw credential is never returned. Throws an actionable error
+	 * when a selected board can't be resolved or has no usable states.
+	 */
+	discover?<C extends PMDiscoveryCapability>(
+		capability: C,
+		args: PMDiscoveryArgs[C],
+	): Promise<PMDiscoveryResult[C]>;
 }

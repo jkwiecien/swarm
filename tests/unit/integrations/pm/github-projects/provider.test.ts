@@ -603,4 +603,183 @@ describe('GitHubProjectsPMProvider', () => {
 			await expect(provider.addBlockedBy('PVTI_target', 'PVTI_blocker')).resolves.toBeUndefined();
 		});
 	});
+
+	describe('discover', () => {
+		/**
+		 * Route the shared `graphql` mock by the query it receives: board discovery
+		 * fires three distinct queries (viewer boards, viewer orgs, per-org boards)
+		 * and state discovery a fourth (the board's fields), all through the same
+		 * scoped client.
+		 */
+		function routeDiscovery(handlers: {
+			viewerProjects?: unknown;
+			orgs?: unknown;
+			orgProjects?: (login: string) => unknown;
+			fields?: unknown;
+		}) {
+			graphql.mockImplementation(async (query: string, vars: { login?: string }) => {
+				if (query.includes('organizations'))
+					return handlers.orgs ?? { viewer: { organizations: { nodes: [] } } };
+				if (query.includes('organization(login'))
+					return (
+						handlers.orgProjects?.(vars.login ?? '') ?? {
+							organization: { projectsV2: { nodes: [] } },
+						}
+					);
+				if (query.includes('ProjectV2SingleSelectField')) return handlers.fields ?? { node: null };
+				if (query.includes('projectsV2'))
+					return handlers.viewerProjects ?? { viewer: { projectsV2: { nodes: [] } } };
+				throw new Error(`unexpected discovery query: ${query}`);
+			});
+		}
+
+		describe('containers', () => {
+			it('returns user- and org-owned boards, deduped by id and sorted by name', async () => {
+				routeDiscovery({
+					viewerProjects: {
+						viewer: {
+							projectsV2: {
+								nodes: [
+									{ id: 'PVT_me', title: 'Zeta', url: 'https://github.com/users/me/projects/1' },
+									// Also owned via the org below — must appear once.
+									{ id: 'PVT_shared', title: 'Shared' },
+								],
+								pageInfo: { hasNextPage: false, endCursor: null },
+							},
+						},
+					},
+					orgs: {
+						viewer: {
+							organizations: {
+								nodes: [{ login: 'acme' }],
+								pageInfo: { hasNextPage: false, endCursor: null },
+							},
+						},
+					},
+					orgProjects: () => ({
+						organization: {
+							projectsV2: {
+								nodes: [
+									{ id: 'PVT_org', title: 'Alpha', url: 'https://github.com/orgs/acme/projects/2' },
+									{ id: 'PVT_shared', title: 'Shared' },
+								],
+								pageInfo: { hasNextPage: false, endCursor: null },
+							},
+						},
+					}),
+				});
+
+				const result = await provider.discover?.('containers', {});
+
+				expect(result?.containers).toEqual([
+					{ id: 'PVT_org', name: 'Alpha', url: 'https://github.com/orgs/acme/projects/2' },
+					{ id: 'PVT_shared', name: 'Shared', url: undefined },
+					{ id: 'PVT_me', name: 'Zeta', url: 'https://github.com/users/me/projects/1' },
+				]);
+			});
+
+			it('walks every page of the viewer boards connection', async () => {
+				let viewerCalls = 0;
+				graphql.mockImplementation(async (query: string) => {
+					if (query.includes('organizations')) return { viewer: { organizations: { nodes: [] } } };
+					if (query.includes('projectsV2')) {
+						viewerCalls += 1;
+						return viewerCalls === 1
+							? {
+									viewer: {
+										projectsV2: {
+											nodes: [{ id: 'PVT_1', title: 'One' }],
+											pageInfo: { hasNextPage: true, endCursor: 'C1' },
+										},
+									},
+								}
+							: {
+									viewer: {
+										projectsV2: {
+											nodes: [{ id: 'PVT_2', title: 'Two' }],
+											pageInfo: { hasNextPage: false, endCursor: null },
+										},
+									},
+								};
+					}
+					throw new Error('unexpected');
+				});
+
+				const result = await provider.discover?.('containers', {});
+
+				expect(viewerCalls).toBe(2);
+				expect(result?.containers.map((c) => c.id).sort()).toEqual(['PVT_1', 'PVT_2']);
+			});
+		});
+
+		describe('states', () => {
+			const FIELDS_RESPONSE = {
+				node: {
+					id: 'PVT_me',
+					fields: {
+						nodes: [
+							// A non-single-select field comes back empty (fragment didn't match).
+							{},
+							{
+								id: 'PVTSSF_status',
+								name: 'Status',
+								options: [
+									{ id: '61e4505c', name: 'Ready' },
+									{ id: '47fc9ee4', name: 'In progress' },
+								],
+							},
+						],
+						pageInfo: { hasNextPage: false, endCursor: null },
+					},
+				},
+			};
+
+			it('returns the Status field options and its field id as provider context', async () => {
+				routeDiscovery({ fields: FIELDS_RESPONSE });
+
+				const result = await provider.discover?.('states', { containerId: 'PVT_me' });
+
+				expect(result?.states).toEqual([
+					{ id: '61e4505c', name: 'Ready' },
+					{ id: '47fc9ee4', name: 'In progress' },
+				]);
+				expect(result?.providerContext).toEqual({ statusFieldId: 'PVTSSF_status' });
+			});
+
+			it('throws when the board does not resolve', async () => {
+				routeDiscovery({ fields: { node: null } });
+				await expect(provider.discover?.('states', { containerId: 'PVT_missing' })).rejects.toThrow(
+					'did not resolve',
+				);
+			});
+
+			it('throws when the board has no single-select Status field', async () => {
+				routeDiscovery({
+					fields: {
+						node: { id: 'PVT_me', fields: { nodes: [{ id: 'X', name: 'Priority', options: [] }] } },
+					},
+				});
+				await expect(provider.discover?.('states', { containerId: 'PVT_me' })).rejects.toThrow(
+					'no single-select "Status" field',
+				);
+			});
+
+			it('throws when the Status field has no options', async () => {
+				routeDiscovery({
+					fields: {
+						node: { id: 'PVT_me', fields: { nodes: [{ id: 'S', name: 'Status', options: [] }] } },
+					},
+				});
+				await expect(provider.discover?.('states', { containerId: 'PVT_me' })).rejects.toThrow(
+					'has no options',
+				);
+			});
+		});
+
+		it('throws for an unsupported discovery capability', async () => {
+			await expect(
+				(provider.discover as (c: string, a: unknown) => Promise<unknown>)('bogus', {}),
+			).rejects.toThrow('does not support discovery capability');
+		});
+	});
 });

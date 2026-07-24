@@ -94,6 +94,35 @@ plain `ProjectV2Field`s with a `dataType` (`TITLE`, `ASSIGNEES`, `LABELS`,
 rename-prone; the option ID (`47fc9ee4`) is stable. This is why `config-schema.ts` stores
 `statusOptions` as `status-key → optionId`, not `→ name`.
 
+### 2b. Discovering boards for the dashboard picker (issue #201)
+
+The dashboard's **Board Mapping** tab no longer asks an operator to type the `projectId`,
+`statusFieldId`, and option IDs above. It discovers them read-only through the provider's
+`discover()` method (surfaced by the `pm` tRPC router, run under the project's implementer
+token) and the operator picks from real names; the persisted representation is still the
+opaque IDs documented above.
+
+Board discovery enumerates the authenticated user's boards and the boards of each
+organization they belong to (every connection is paginated to the end and results are
+deduplicated by node ID):
+
+```graphql
+query($cursor: String) {
+  viewer { projectsV2(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id title url } } }
+}
+query($cursor: String) {
+  viewer { organizations(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { login } } }
+}
+query($login: String!, $cursor: String) {
+  organization(login: $login) { projectsV2(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id title url } } }
+}
+```
+
+State discovery is the §2 fields query for the selected board, narrowed to the single-select
+`Status` field: its options become the mappable states and its own node ID is returned as the
+`statusFieldId` to persist. A board that doesn't resolve, has no single-select `Status`
+field, or whose `Status` field has no options fails with an actionable error.
+
 ---
 
 ## 3. Reading a single item (`getWorkItem`)

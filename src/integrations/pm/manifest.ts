@@ -25,9 +25,11 @@
  *   trigger handlers (`src/triggers/handlers/`) remain in the trigger registry.
  *   The remaining fields get added the day a second provider makes the
  *   registry lookup earn its keep, not before.
- * - wizard / discovery / lifecycle-conformance fields — SWARM has no setup
- *   wizard, and the conformance harness is explicitly deferred until there's a
- *   second provider (ai/TESTING.md "Provider conformance").
+ * - wizard / lifecycle-conformance fields — SWARM has no setup wizard, and the
+ *   conformance harness is explicitly deferred until there's a second provider
+ *   (ai/TESTING.md "Provider conformance"). Discovery, by contrast, is no longer
+ *   deferred: the board-mapping screen (issue #201) is a real consumer, so the
+ *   manifest declares each provider's `discovery` capabilities below.
  *
  * `routerAdapter` is typed to the concrete `GitHubProjectsRouterAdapter` because
  * there's one provider: a shared `PMRouterAdapter` interface would be
@@ -38,7 +40,7 @@
 
 import type { z } from 'zod';
 import type { ProjectConfig } from '../../config/schema.js';
-import type { PMProvider, PMType } from '../../pm/types.js';
+import type { PMDiscoveryCapability, PMProvider, PMType } from '../../pm/types.js';
 import type { GitHubProjectsRouterAdapter } from '../../router/adapters/github-projects.js';
 
 export interface PMProviderManifest {
@@ -67,4 +69,16 @@ export interface PMProviderManifest {
 	 * rather than constructing it per request.
 	 */
 	readonly routerAdapter: GitHubProjectsRouterAdapter;
+
+	/**
+	 * The discovery capabilities this provider answers through
+	 * {@link PMProvider.discover} — the board-mapping screen (issue #201) reads
+	 * boards (`containers`) and, for one selected board, its workflow states
+	 * (`states`). Declared here so the `pm` API router can dispatch a discovery
+	 * request through the registry (checking the capability is declared) without
+	 * importing a concrete provider, and refuse a capability a provider does not
+	 * offer with a clear `NOT_IMPLEMENTED` (ai/CODING_STANDARDS.md "Module shape
+	 * for a provider").
+	 */
+	readonly discovery: readonly PMDiscoveryCapability[];
 }
