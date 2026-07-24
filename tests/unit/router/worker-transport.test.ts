@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
+import type { WSContext } from 'hono/ws';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Worker } from '@/identity/worker.js';
 import { WorkerCapabilityReductionError } from '@/identity/worker.js';
 import type { AcquiredSession } from '@/identity/worker-session-service.js';
 import { WorkerSessionHeldError } from '@/identity/worker-session-service.js';
+import { logger } from '@/lib/logger.js';
 import {
 	handleHandshake,
 	handleWorkerStreamFrame,
@@ -247,5 +249,80 @@ describe('POST /worker/session route', () => {
 		const res = await post(app, JSON.stringify(validBody()));
 		expect(res.status).toBe(401);
 		expect(await res.text()).not.toContain(CREDENTIAL);
+	});
+});
+
+/** The adapter-facing stream handlers returned by the upgrade event factory. */
+interface StreamHandlers {
+	onOpen?: (evt: unknown, ws: WSContext) => void;
+	onMessage: (evt: { data: unknown }, ws: WSContext) => void | Promise<void>;
+	onClose?: (evt: unknown, ws: WSContext) => void | Promise<void>;
+	onError?: (evt: unknown, ws: WSContext) => void;
+}
+
+/**
+ * Capture the async WebSocket event factory `registerWorkerTransport` hands to
+ * `upgradeWebSocket` and run it with a fake context, returning the adapter-facing
+ * handlers. This drives the real `onMessage` glue — the void callback the
+ * `@hono/node-ws` adapter invokes without awaiting or catching — rather than only
+ * the pure `handleWorkerStreamFrame`, so the "no rejected promise escapes" safety
+ * property can be asserted.
+ */
+async function openStream(
+	deps: WorkerTransportDeps,
+	headers: { authorization?: string; fencingToken?: string },
+): Promise<StreamHandlers> {
+	let factory: ((c: unknown) => Promise<StreamHandlers>) | undefined;
+	const upgrade = ((f: (c: unknown) => Promise<StreamHandlers>) => {
+		factory = f;
+		return async () => {};
+	}) as unknown as Parameters<typeof registerWorkerTransport>[1];
+	registerWorkerTransport(new Hono(), upgrade, deps);
+	if (!factory) throw new Error('worker-transport did not register a stream event factory');
+	const c = {
+		req: {
+			header: (name: string) =>
+				name === 'authorization'
+					? headers.authorization
+					: name === 'x-fencing-token'
+						? headers.fencingToken
+						: undefined,
+		},
+	};
+	return factory(c);
+}
+
+function fakeWs() {
+	return { send: vi.fn(), close: vi.fn() } as unknown as WSContext & {
+		send: ReturnType<typeof vi.fn>;
+		close: ReturnType<typeof vi.fn>;
+	};
+}
+
+describe('GET /worker/stream onMessage (adapter handler)', () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it('swallows a rejected heartbeat dependency and closes 4408 without an unhandled rejection', async () => {
+		const errorSpy = vi.spyOn(logger, 'error').mockImplementation(() => {});
+		// Authenticated upgrade (valid worker + bound fencing token), then the
+		// heartbeat dependency rejects mid-frame — a transient session-store fault.
+		const deps = makeDeps({ heartbeat: vi.fn().mockRejectedValue(new Error('boom')) });
+		const handlers = await openStream(deps, {
+			authorization: `Bearer ${CREDENTIAL}`,
+			fencingToken: '7',
+		});
+		const ws = fakeWs();
+		const evt = { data: JSON.stringify({ type: 'heartbeat', fencingToken: 7 }) };
+
+		// The adapter runs onMessage as an un-awaited void callback, so the required
+		// property is that it settles rather than leaking a rejected promise.
+		await expect(handlers.onMessage(evt, ws)).resolves.toBeUndefined();
+
+		expect(deps.heartbeat).toHaveBeenCalledWith(CREDENTIAL, 7, 60_000);
+		expect(ws.close).toHaveBeenCalledWith(WS_CLOSE.LEASE_LOST, 'heartbeat processing failed');
+		expect(ws.send).not.toHaveBeenCalled();
+		expect(errorSpy).toHaveBeenCalled();
+
+		errorSpy.mockRestore();
 	});
 });
