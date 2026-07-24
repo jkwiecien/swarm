@@ -15,12 +15,19 @@ GitHub ──webhook──▶ https://<your-tunnel>.trycloudflare.com  (Cloudfla
                          cloudflared ──▶ http://localhost:${ROUTER_PORT:-3000}  (Router)
 ```
 
+The router also serves an **authenticated worker-transport endpoint** under
+`/worker/*` (ADR-003 §1), so the same tunnel doubles as the path a *remote* worker
+reaches the control plane on — see [Remote worker transport
+(`/worker/*`)](#remote-worker-transport-worker) below.
+
 > **Scope.** The tunnel is **external infrastructure, not SWARM code** — SWARM never
 > builds, ships, or manages it, and this document is the whole of SWARM's involvement
 > (`ai/ARCHITECTURE.md` calls the tunnel "external, not our concern — just a public
 > HTTPS URL pointed at the router"). Everything else — router, worker, Postgres, Redis
-> — stays local; the tunnel only ever forwards webhook payloads inbound and the
-> router's responses back. Source code never crosses it.
+> — stays local; the tunnel forwards webhook payloads inbound, the worker-transport
+> handshake + heartbeat frames (`/worker/*`), and the router's responses back. Source
+> code never crosses it — the transport carries only a session handshake and liveness
+> heartbeats, never a repo or a diff.
 
 ---
 
@@ -207,6 +214,44 @@ non-repo subscription depends on who owns the board:
 (This is the equivalent of Cascade's `pm:status-changed` trigger — see
 `ai/ARCHITECTURE.md`, PM section. `docs/github-projects-v2-api.md` §5 is the authoritative
 detail on this event's delivery scope.)
+
+---
+
+## Remote worker transport (`/worker/*`)
+
+The same tunnel that delivers webhooks also fronts SWARM's **worker transport**
+(ADR-003 §1) — the front door a worker running on a *different* machine uses to
+join the control plane. A remote worker holds only its
+`SWARM_WORKER_CREDENTIAL`; it never gets `DATABASE_URL`/`REDIS_URL`. Point it at
+the tunnel and run the client:
+
+```bash
+SWARM_CONTROL_PLANE_URL=https://swarm.example.com \
+SWARM_WORKER_CREDENTIAL=<the credential from `swarm workers register`> \
+npm run dev:worker:connect
+```
+
+The client derives two endpoints from `SWARM_CONTROL_PLANE_URL`:
+
+- **`POST https://swarm.example.com/worker/session`** — the HTTP handshake:
+  declares the CLIs the host can run plus its hostname/version, and receives the
+  fenced session (`fencingToken`, `heartbeatTtlMs`).
+- **`wss://swarm.example.com/worker/stream`** — a WebSocket carrying periodic
+  heartbeat frames that keep the worker's session lease live (so the eligibility
+  gate sees it as connected), reconnecting with exponential backoff on transport
+  loss.
+
+> **`cloudflared` forwards WebSocket upgrades transparently.** No extra tunnel
+> configuration is needed for `/worker/stream`: the `Upgrade: websocket` request
+> rides the same ingress as the plain HTTP routes. The scheme just switches from
+> `https`→`wss` (or `http`→`ws` for a plain-HTTP base) — the client does that
+> derivation itself, so `SWARM_CONTROL_PLANE_URL` is always the ordinary
+> `http(s)` base URL, the same value you'd `curl .../health`.
+
+Because the worker points `SWARM_CONTROL_PLANE_URL` at the tunnel base URL, a
+named tunnel (Path B/C) is the practical choice here — a Path A quick tunnel's
+URL changes on every restart, so you'd have to re-point every remote worker each
+time, just as with the webhook.
 
 ---
 

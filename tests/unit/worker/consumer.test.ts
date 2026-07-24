@@ -87,6 +87,14 @@ vi.mock('@/pipeline/respond-to-review.js', () => ({
 	runRespondToReviewPhase: mockPhase('respond-to-review'),
 	DEFAULT_RESPOND_CLI: 'claude',
 }));
+vi.mock('@/pipeline/respond-to-ci.js', () => ({
+	runRespondToCiPhase: mockPhase('respond-to-ci'),
+	DEFAULT_RESPOND_CI_CLI: 'claude',
+}));
+vi.mock('@/pipeline/resolve-conflicts.js', () => ({
+	runResolveConflictsPhase: mockPhase('resolve-conflicts'),
+	DEFAULT_RESOLVE_CONFLICTS_CLI: 'claude',
+}));
 
 vi.mock('@/queue/producer.js', () => ({
 	priorityFor: (job: { type: string }) => (job.type === 'github-projects' ? 10 : undefined),
@@ -389,9 +397,11 @@ vi.mock('@/worktree/termination-cleanup.js', () => ({
 import { createTriggerRegistry } from '@/triggers/registry.js';
 import type { TriggerContext, TriggerResult } from '@/triggers/types.js';
 import {
+	type AssignedPhaseInputs,
 	DEFAULT_AGENT_TIMEOUT_MS,
 	processJob,
 	reportInterruptedJobToBoard,
+	runAssignedPhase,
 } from '@/worker/consumer.js';
 
 const PROJECT = createMockProjectConfig();
@@ -3522,5 +3532,128 @@ describe('reportInterruptedJobToBoard', () => {
 		await expect(
 			reportInterruptedJobToBoard(createMockGitHubWebhookJob(), 'stalled'),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe('runAssignedPhase (shared per-phase runner switch)', () => {
+	const runAgent = (async () => agentResult()) as AssignedPhaseInputs['runAgent'];
+
+	function baseInputs(overrides: Partial<AssignedPhaseInputs>): AssignedPhaseInputs {
+		return {
+			phase: 'planning',
+			taskId: '17',
+			project: PROJECT,
+			resumeDelivery: false,
+			runAgent,
+			...overrides,
+		};
+	}
+
+	beforeEach(() => {
+		phaseCalls.length = 0;
+		providerBuiltWith.length = 0;
+		phaseImpl = async () => ({ agent: agentResult() });
+	});
+
+	it('routes planning to runPlanningPhase with the board PM provider and work item', async () => {
+		const workItem = createMockWorkItem({ id: 'PVTI_1' });
+		await runAssignedPhase(baseInputs({ phase: 'planning', workItem }));
+		expect(phaseCalls).toHaveLength(1);
+		expect(phaseCalls[0].phase).toBe('planning');
+		expect(phaseCalls[0].args.workItem).toBe(workItem);
+		// The board-driven phases build the concrete PM provider inside the switch.
+		expect(providerBuiltWith).toHaveLength(1);
+	});
+
+	it('routes implementation and forwards the branch-resume flag + hook', async () => {
+		const onBranchProvisioned = async () => {};
+		await runAssignedPhase(
+			baseInputs({
+				phase: 'implementation',
+				workItem: createMockWorkItem(),
+				resumeExistingBranch: true,
+				onBranchProvisioned,
+			}),
+		);
+		expect(phaseCalls[0].phase).toBe('implementation');
+		expect(phaseCalls[0].args.resumeExistingBranch).toBe(true);
+		expect(phaseCalls[0].args.onBranchProvisioned).toBe(onBranchProvisioned);
+	});
+
+	it('routes review with PR coordinates and no PM provider', async () => {
+		await runAssignedPhase(baseInputs({ phase: 'review', prNumber: '42', headSha: 'deadbeef' }));
+		expect(phaseCalls[0].phase).toBe('review');
+		expect(phaseCalls[0].args.prNumber).toBe('42');
+		expect(phaseCalls[0].args.headSha).toBe('deadbeef');
+		expect(providerBuiltWith).toHaveLength(0);
+	});
+
+	it('routes respond-to-review with the submitted review id and the PM provider', async () => {
+		await runAssignedPhase(
+			baseInputs({
+				phase: 'respond-to-review',
+				prNumber: '42',
+				prBranch: 'issue-17',
+				reviewId: 'RV_1',
+				headSha: 'deadbeef',
+			}),
+		);
+		expect(phaseCalls[0].phase).toBe('respond-to-review');
+		expect(phaseCalls[0].args.reviewId).toBe('RV_1');
+		expect(providerBuiltWith).toHaveLength(1);
+	});
+
+	it('routes respond-to-ci with PR coordinates', async () => {
+		await runAssignedPhase(
+			baseInputs({ phase: 'respond-to-ci', prNumber: '42', prBranch: 'issue-17', headSha: 'dead' }),
+		);
+		expect(phaseCalls[0].phase).toBe('respond-to-ci');
+		expect(phaseCalls[0].args.prBranch).toBe('issue-17');
+	});
+
+	it('routes resolve-conflicts with base + head coordinates', async () => {
+		await runAssignedPhase(
+			baseInputs({
+				phase: 'resolve-conflicts',
+				prNumber: '42',
+				prBranch: 'issue-17',
+				headSha: 'dead',
+				baseBranch: 'main',
+				baseSha: 'cafe',
+			}),
+		);
+		expect(phaseCalls[0].phase).toBe('resolve-conflicts');
+		expect(phaseCalls[0].args.baseBranch).toBe('main');
+		expect(phaseCalls[0].args.baseSha).toBe('cafe');
+	});
+
+	it('threads a fresh session id as sessionId and a resume as resumeSessionId', async () => {
+		await runAssignedPhase(
+			baseInputs({ phase: 'planning', workItem: createMockWorkItem(), sessionId: 'sess-fresh' }),
+		);
+		expect(phaseCalls[0].args.sessionId).toBe('sess-fresh');
+		expect(phaseCalls[0].args.resumeSessionId).toBeUndefined();
+
+		phaseCalls.length = 0;
+		await runAssignedPhase(
+			baseInputs({
+				phase: 'review',
+				prNumber: '42',
+				headSha: 'dead',
+				resumeSessionId: 'sess-resume',
+			}),
+		);
+		expect(phaseCalls[0].args.resumeSessionId).toBe('sess-resume');
+		expect(phaseCalls[0].args.sessionId).toBeUndefined();
+	});
+
+	it('throws when a required phase input is missing rather than calling the runner', async () => {
+		await expect(
+			runAssignedPhase(baseInputs({ phase: 'planning', workItem: undefined })),
+		).rejects.toThrow(/requires a workItem/);
+		await expect(runAssignedPhase(baseInputs({ phase: 'review' }))).rejects.toThrow(
+			/requires prNumber and headSha/,
+		);
+		expect(phaseCalls).toHaveLength(0);
 	});
 });

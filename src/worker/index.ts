@@ -10,6 +10,7 @@
 // so a provider can never be registered on one runtime surface but not another.
 import '../integrations/entrypoint.js';
 
+import { hostname } from 'node:os';
 import { Worker } from 'bullmq';
 import { runMigrations } from '../db/migrate.js';
 import { upsertCliQuota } from '../db/repositories/cliQuotasRepository.js';
@@ -25,12 +26,13 @@ import {
 	reconcileSupersededWorkerClaims,
 } from '../dispatch/reconciler.js';
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
-import { optionalEnv, requireEnv } from '../lib/env.js';
+import { optionalEnv, requireEnv, resolveDispatchMode } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { addFileSink, configureLogger, logger } from '../lib/logger.js';
 import { parseRedisUrl } from '../lib/redis.js';
 import { closeRunCancellationRedis, subscribeToRunCancellations } from '../queue/cancellation.js';
 import { QUEUE_NAME, SwarmJobSchema } from '../queue/jobs.js';
+import { discoverAvailableClis, parseDeclaredClisOverride } from '../transport/cli-discovery.js';
 import { createTriggerRegistry, registerBuiltInTriggers } from '../triggers/index.js';
 import { pruneStaleWorktrees } from '../worktree/retention.js';
 import {
@@ -47,6 +49,7 @@ import { isJobStale, resolveMaxJobAgeMs } from './job-freshness.js';
 import { resetProjectSlot } from './project-concurrency.js';
 import { abortRun } from './run-cancellation.js';
 import { resolveWorkerConcurrency, resolveWorkerLockOptions } from './runtime-options.js';
+import { startWorkerTransportDispatch } from './transport-client.js';
 
 // Tag every line this process emits so router and worker logs stay
 // distinguishable in a shared stream (ai/ARCHITECTURE.md "Observability").
@@ -124,6 +127,73 @@ try {
 		error: describeError(err),
 	});
 	process.exit(1);
+}
+
+// Dispatch mode (ADR-003 §2). Default `in-process` falls straight through to the
+// BullMQ consumer below — today's behavior, unchanged. `transport` instead runs
+// the worker-side transport-dispatch client: this same-host worker connects to
+// the control plane, receives pushed TaskAssignment frames, runs each phase
+// locally (persona tokens still resolve from the DB), and reports results back
+// over the transport back-channel. The top-level `await` on the client's `done`
+// suspends the rest of this entry point (the BullMQ setup) for the client's
+// lifetime, so the two paths never run at once.
+if (resolveDispatchMode() === 'transport') {
+	const credential = requireEnv('SWARM_WORKER_CREDENTIAL').trim();
+	const controlPlaneUrl = requireEnv('SWARM_CONTROL_PLANE_URL').trim();
+	// Declare the CLIs this host can run — an explicit override, else a PATH probe.
+	// The control plane routes on this set; an empty one can't handshake.
+	const capabilities =
+		parseDeclaredClisOverride(process.env.SWARM_WORKER_TRANSPORT_CLIS) ??
+		(await discoverAvailableClis());
+	if (capabilities.length === 0) {
+		logger.error(
+			'No agent CLIs found on PATH to declare (looked for claude, agy, codex) — refusing to start in transport dispatch mode. Install at least one, or set SWARM_WORKER_TRANSPORT_CLIS.',
+		);
+		process.exit(1);
+	}
+	const transportShutdown = new AbortController();
+	const client = startWorkerTransportDispatch({
+		controlPlaneUrl,
+		credential,
+		capabilities,
+		hostname: hostname(),
+		daemonVersion: process.env.npm_package_version ?? '0.0.0',
+		shutdownSignal: transportShutdown.signal,
+	});
+	logger.info('swarm-worker started in transport dispatch mode', { controlPlaneUrl, capabilities });
+
+	let stoppingTransport = false;
+	for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+		process.on(signal, () => {
+			if (stoppingTransport) return;
+			stoppingTransport = true;
+			logger.debug(`Received ${signal} — stopping transport dispatch client`);
+			// Abort any in-flight agent CLI, then release the session via a normal
+			// close so the control plane frees the lease promptly.
+			transportShutdown.abort();
+			void client.stop().then(
+				() => process.exit(0),
+				(err) => {
+					logger.error('Transport dispatch client shutdown failed', {
+						error: describeError(err),
+					});
+					process.exit(1);
+				},
+			);
+		});
+	}
+
+	// Resolves on a graceful stop; rejects on a fatal, non-recoverable handshake
+	// error (bad credential, protocol mismatch, capability rejection).
+	try {
+		await client.done;
+		process.exit(0);
+	} catch (err) {
+		logger.error('Transport dispatch client exited with a fatal error', {
+			error: describeError(err),
+		});
+		process.exit(1);
+	}
 }
 
 const rawWorkerCredential = optionalEnv('SWARM_WORKER_CREDENTIAL', '').trim();

@@ -7,12 +7,39 @@ import {
 	HandshakeResponseSchema,
 	HeartbeatAckSchema,
 	HeartbeatSchema,
+	StreamLogSchema,
+	TaskAssignmentAckSchema,
+	TaskAssignmentSchema,
+	TaskExecutionResultSchema,
+	TaskPhaseSchema,
+	TaskProgressSchema,
 	TRANSPORT_PROTOCOL_VERSION,
 	WorkerStreamMessageSchema,
 } from '@/transport/protocol.js';
+import { createMockProjectConfig } from '../../helpers/factories.js';
 
 const WORKER_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
+const DISPATCH_ID = '44444444-4444-4444-8444-444444444444';
+
+/** The non-secret project-config slice a valid frame embeds. */
+const PROJECT_SLICE = (() => {
+	const { credentials: _credentials, ...rest } = createMockProjectConfig();
+	return rest;
+})();
+
+/** A minimal well-formed `task-assignment` frame for the union/round-trip tests. */
+const VALID_ASSIGNMENT = {
+	type: 'task-assignment' as const,
+	protocolVersion: TRANSPORT_PROTOCOL_VERSION,
+	dispatchId: DISPATCH_ID,
+	phase: 'planning' as const,
+	taskId: '17',
+	projectConfig: PROJECT_SLICE,
+	targetBranch: 'issue-17',
+	systemPrompt: 'Do the thing.',
+	target: { cli: 'claude' as const },
+};
 
 describe('transport protocol schemas', () => {
 	describe('HandshakeRequestSchema', () => {
@@ -108,13 +135,125 @@ describe('transport protocol schemas', () => {
 	});
 
 	describe('WorkerStreamMessageSchema (worker→cloud union)', () => {
+		const RUN_ID = '66666666-6666-4666-8666-666666666666';
+
 		it('parses a heartbeat frame', () => {
 			const parsed = WorkerStreamMessageSchema.parse({ type: 'heartbeat', fencingToken: 5 });
 			expect(parsed.type).toBe('heartbeat');
 		});
 
+		it('parses a task-assignment-ack frame', () => {
+			const frame = { type: 'task-assignment-ack', dispatchId: DISPATCH_ID, duplicate: false };
+			expect(WorkerStreamMessageSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('parses a batched stream-log frame', () => {
+			const frame = {
+				type: 'stream-log' as const,
+				dispatchId: DISPATCH_ID,
+				runId: RUN_ID,
+				lines: [
+					{
+						stream: 'stdout' as const,
+						content: 'working…\n',
+						emittedAt: '2026-07-24T12:00:00.000Z',
+					},
+					{ stream: 'stderr' as const, content: 'warn\n', emittedAt: '2026-07-24T12:00:00.100Z' },
+				],
+			};
+			expect(WorkerStreamMessageSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('rejects a stream-log frame with no lines', () => {
+			expect(
+				StreamLogSchema.safeParse({ type: 'stream-log', dispatchId: DISPATCH_ID, lines: [] })
+					.success,
+			).toBe(false);
+		});
+
+		it('parses a task-progress frame for each state', () => {
+			for (const state of ['running', 'branch-provisioned'] as const) {
+				const frame = {
+					type: 'task-progress' as const,
+					dispatchId: DISPATCH_ID,
+					phase: 'implementation' as const,
+					taskId: '17',
+					state,
+				};
+				expect(TaskProgressSchema.parse(frame)).toEqual(frame);
+			}
+		});
+
+		it('round-trips a succeeded task-execution-result', () => {
+			const frame = {
+				type: 'task-execution-result' as const,
+				dispatchId: DISPATCH_ID,
+				runId: RUN_ID,
+				status: 'succeeded' as const,
+				phase: 'planning' as const,
+				taskId: '17',
+				exitCode: 0,
+				signal: null,
+				timedOut: false,
+				durationMs: 1234,
+			};
+			expect(TaskExecutionResultSchema.parse(frame)).toEqual(frame);
+			expect(WorkerStreamMessageSchema.parse(frame).type).toBe('task-execution-result');
+		});
+
+		it('round-trips a deferred task-execution-result carrying the retry hint', () => {
+			const frame = {
+				type: 'task-execution-result' as const,
+				dispatchId: DISPATCH_ID,
+				status: 'deferred' as const,
+				phase: 'implementation' as const,
+				taskId: '17',
+				retryDelayMs: 360_000,
+				resumable: true,
+				failureKind: 'rate-limit',
+				reason: 'rate limited',
+			};
+			expect(TaskExecutionResultSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('round-trips a failed, cancelled task-execution-result', () => {
+			const frame = {
+				type: 'task-execution-result' as const,
+				dispatchId: DISPATCH_ID,
+				status: 'failed' as const,
+				phase: 'review' as const,
+				taskId: '17',
+				error: 'boom',
+				cancelled: true,
+			};
+			expect(TaskExecutionResultSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('rejects an unknown execution-result status', () => {
+			expect(
+				TaskExecutionResultSchema.safeParse({
+					type: 'task-execution-result',
+					dispatchId: DISPATCH_ID,
+					status: 'partial',
+					phase: 'review',
+					taskId: '17',
+				}).success,
+			).toBe(false);
+		});
+
+		it('rejects a task-assignment-ack missing its duplicate flag', () => {
+			expect(
+				TaskAssignmentAckSchema.safeParse({ type: 'task-assignment-ack', dispatchId: DISPATCH_ID })
+					.success,
+			).toBe(false);
+		});
+
 		it('rejects a control-plane frame carried the wrong direction', () => {
 			expect(WorkerStreamMessageSchema.safeParse({ type: 'heartbeat-ack' }).success).toBe(false);
+			expect(WorkerStreamMessageSchema.safeParse({ type: 'disconnect', reason: 'x' }).success).toBe(
+				false,
+			);
+			expect(WorkerStreamMessageSchema.safeParse(VALID_ASSIGNMENT).success).toBe(false);
 		});
 	});
 
@@ -139,6 +278,75 @@ describe('transport protocol schemas', () => {
 		it('rejects a worker→cloud frame carried the wrong direction', () => {
 			expect(
 				ControlPlaneMessageSchema.safeParse({ type: 'heartbeat', fencingToken: 1 }).success,
+			).toBe(false);
+		});
+
+		it('discriminates a task-assignment frame to TaskAssignmentSchema', () => {
+			const parsed = ControlPlaneMessageSchema.parse(VALID_ASSIGNMENT);
+			expect(parsed.type).toBe('task-assignment');
+		});
+	});
+
+	describe('TaskPhaseSchema', () => {
+		it('accepts the six worker-runnable phases', () => {
+			for (const phase of [
+				'planning',
+				'implementation',
+				'review',
+				'respond-to-review',
+				'respond-to-ci',
+				'resolve-conflicts',
+			]) {
+				expect(TaskPhaseSchema.safeParse(phase).success).toBe(true);
+			}
+		});
+
+		it('rejects an unknown phase', () => {
+			expect(TaskPhaseSchema.safeParse('deploy').success).toBe(false);
+		});
+	});
+
+	describe('TaskAssignmentSchema', () => {
+		it('round-trips a full valid frame', () => {
+			const frame = {
+				...VALID_ASSIGNMENT,
+				runId: '55555555-5555-4555-8555-555555555555',
+				customPrompt: 'extra project instructions',
+				timeoutMs: 600_000,
+				agentSessionId: 'sess-1',
+				resumeSession: true,
+				workItem: {
+					id: 'PVTI_1',
+					title: 'Do it',
+					description: 'body',
+					url: 'https://github.com/jkwiecien/swarm/issues/17',
+					labels: [{ id: 'LA_1', name: 'swarm' }],
+					assignees: [],
+				},
+			};
+			expect(TaskAssignmentSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('strips a credentials key from an embedded config rather than storing it', () => {
+			const withSecret = {
+				...VALID_ASSIGNMENT,
+				projectConfig: { ...PROJECT_SLICE, credentials: { implementer: 'x' } },
+			};
+			// `.omit` produces a strict-less object schema, so an extra `credentials`
+			// key is ignored rather than stored — the parsed slice carries none.
+			const parsed = TaskAssignmentSchema.parse(withSecret);
+			expect('credentials' in parsed.projectConfig).toBe(false);
+		});
+
+		it('rejects an empty system prompt', () => {
+			expect(
+				TaskAssignmentSchema.safeParse({ ...VALID_ASSIGNMENT, systemPrompt: '' }).success,
+			).toBe(false);
+		});
+
+		it('rejects a non-UUID dispatchId', () => {
+			expect(
+				TaskAssignmentSchema.safeParse({ ...VALID_ASSIGNMENT, dispatchId: 'nope' }).success,
 			).toBe(false);
 		});
 	});

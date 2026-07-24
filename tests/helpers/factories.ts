@@ -27,6 +27,7 @@ import {
 	type GitHubProjectsParsedEvent,
 	GitHubProjectsParsedEventSchema,
 } from '@/router/adapters/github-projects.js';
+import type { BuildTaskAssignmentInput } from '@/transport/assignment.js';
 
 /**
  * `runAgentCli` options with the two required fields defaulted. `RunAgentCliOptions`
@@ -201,4 +202,28 @@ export function createMockProjectConfig(overrides: Partial<ProjectConfig> = {}):
 		},
 		...overrides,
 	});
+}
+
+/**
+ * A `buildTaskAssignment` input (`src/transport/assignment.ts`). Defaults to a
+ * planning-phase assignment carrying a `workItem`; pass a `phase` + `pr` (and
+ * drop `workItem`) via overrides to exercise the SCM-driven phases. Returns a
+ * plain object — `BuildTaskAssignmentInput` is an interface, not a schema shape
+ * — and carries the FULL project config so a test can assert the builder strips
+ * its `credentials`.
+ */
+export function createMockTaskAssignmentInput(
+	overrides: Partial<BuildTaskAssignmentInput> = {},
+): BuildTaskAssignmentInput {
+	return {
+		dispatchId: '44444444-4444-4444-8444-444444444444',
+		project: createMockProjectConfig(),
+		phase: 'planning',
+		taskId: '17',
+		targetBranch: 'issue-17',
+		systemPrompt: 'You are the SWARM planning agent. Do the thing.',
+		target: { cli: 'claude' },
+		workItem: createMockWorkItem(),
+		...overrides,
+	};
 }
