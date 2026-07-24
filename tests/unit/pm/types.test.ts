@@ -73,10 +73,10 @@ class InMemoryPMProvider implements PMProvider {
 		return commentId;
 	}
 
-	async findComment(id: string, bodyPrefix: string): Promise<string | undefined> {
+	async findComment(id: string, marker: string): Promise<string | undefined> {
 		await this.getWorkItem(id);
 		const list = this.comments.get(id) ?? [];
-		const found = list.find((c) => c.body.startsWith(bodyPrefix));
+		const found = list.find((c) => c.body.includes(marker));
 		return found?.id;
 	}
 

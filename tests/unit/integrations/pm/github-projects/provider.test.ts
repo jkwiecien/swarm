@@ -9,11 +9,13 @@ const createLabel = vi.fn();
 const addLabels = vi.fn();
 const getIssue = vi.fn();
 const listComments = vi.fn();
+const paginate = vi.fn();
 const request = vi.fn();
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	getScopedClient: () => ({
 		graphql,
 		request,
+		paginate,
 		issues: {
 			createComment,
 			create: createIssue,
@@ -71,6 +73,7 @@ describe('GitHubProjectsPMProvider', () => {
 		addLabels.mockReset();
 		getIssue.mockReset();
 		listComments.mockReset();
+		paginate.mockReset();
 		request.mockReset();
 	});
 
@@ -385,18 +388,19 @@ describe('GitHubProjectsPMProvider', () => {
 	});
 
 	describe('findComment', () => {
-		it('returns comment ID if a comment starts with the given prefix', async () => {
+		const MARKER = '<!-- swarm-planning-delivery:run-42 -->';
+
+		it('returns the ID of the comment containing the marker, scanning all pages', async () => {
 			graphql.mockResolvedValue({ node: ITEM_NODE });
-			listComments.mockResolvedValue({
-				data: [
-					{ id: 111, body: 'some unrelated comment' },
-					{ id: 222, body: '## 🗺️ Proposed implementation plan\n1. Do the thing' },
-				],
-			});
+			paginate.mockResolvedValue([
+				{ id: 111, body: 'some unrelated comment' },
+				{ id: 222, body: `## 🗺️ Proposed implementation plan\n1. Do the thing\n\n${MARKER}` },
+			]);
 
-			const id = await provider.findComment('PVTI_x', '## 🗺️ Proposed implementation plan');
+			const id = await provider.findComment('PVTI_x', MARKER);
 
-			expect(listComments).toHaveBeenCalledWith({
+			// All pages are scanned via octokit's paginate, not a single listComments page.
+			expect(paginate).toHaveBeenCalledWith(listComments, {
 				owner: 'jkwiecien',
 				repo: 'swarm',
 				issue_number: 10,
@@ -405,13 +409,25 @@ describe('GitHubProjectsPMProvider', () => {
 			expect(id).toBe('222');
 		});
 
-		it('returns undefined if no comment starts with the given prefix', async () => {
+		it('finds a marker that lies beyond the first 100 comments', async () => {
 			graphql.mockResolvedValue({ node: ITEM_NODE });
-			listComments.mockResolvedValue({
-				data: [{ id: 111, body: 'some unrelated comment' }],
-			});
+			// paginate() flattens every page; the matching comment sits well past page 1
+			// (index 120), which a single-page read would have missed.
+			const comments = Array.from({ length: 150 }, (_, i) => ({
+				id: 1000 + i,
+				body: i === 120 ? `plan\n\n${MARKER}` : `unrelated ${i}`,
+			}));
+			paginate.mockResolvedValue(comments);
 
-			const id = await provider.findComment('PVTI_x', '## 🗺️ Proposed implementation plan');
+			const id = await provider.findComment('PVTI_x', MARKER);
+			expect(id).toBe('1120');
+		});
+
+		it('returns undefined if no comment contains the marker', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			paginate.mockResolvedValue([{ id: 111, body: 'some unrelated comment' }]);
+
+			const id = await provider.findComment('PVTI_x', MARKER);
 			expect(id).toBeUndefined();
 		});
 
@@ -419,9 +435,9 @@ describe('GitHubProjectsPMProvider', () => {
 			graphql.mockResolvedValue({
 				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
 			});
-			const id = await provider.findComment('PVTI_draft', '## 🗺️ Proposed implementation plan');
+			const id = await provider.findComment('PVTI_draft', MARKER);
 			expect(id).toBeUndefined();
-			expect(listComments).not.toHaveBeenCalled();
+			expect(paginate).not.toHaveBeenCalled();
 		});
 	});
 

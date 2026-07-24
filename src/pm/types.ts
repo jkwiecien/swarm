@@ -194,10 +194,14 @@ export interface PMProvider {
 	addComment(id: string, text: string): Promise<string>;
 
 	/**
-	 * Find an existing comment on the backing Issue/PR of a work item by its prefix.
-	 * Returns the comment's ID if found, else undefined.
+	 * Find an existing comment on the backing Issue/PR of a work item by a unique
+	 * `marker` substring (e.g. a per-delivery idempotency marker), scanning *all*
+	 * comment pages — not just the first — so a marker beyond page 1 is still found.
+	 * Returns the matching comment's ID if found, else undefined. Callers pass a
+	 * marker specific enough that at most one comment can contain it, so a match is
+	 * unambiguous.
 	 */
-	findComment(id: string, bodyPrefix: string): Promise<string | undefined>;
+	findComment(id: string, marker: string): Promise<string | undefined>;
 
 	/**
 	 * Create a new work item on the board (a fresh backing Issue added to the

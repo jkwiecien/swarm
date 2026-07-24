@@ -121,7 +121,7 @@ function makeDeps() {
 		getWorkItem: vi.fn(),
 		listWorkItems: vi.fn(),
 		addComment: vi.fn<(id: string, text: string) => Promise<string>>(async () => 'comment-1'),
-		findComment: vi.fn<(id: string, bodyPrefix: string) => Promise<string | undefined>>(
+		findComment: vi.fn<(id: string, marker: string) => Promise<string | undefined>>(
 			async () => undefined,
 		),
 		moveWorkItem: vi.fn(async () => {}),
@@ -884,6 +884,96 @@ describe('runPlanningPhase', () => {
 		);
 		expect(deps.pm.addLabel).not.toHaveBeenCalled();
 	});
+
+	// Per-delivery idempotency marker (issue #384 re-review): the plan-comment
+	// checkpoint keys on *this* run's marker, not the shared "Proposed implementation
+	// plan" heading, so a retry of the same delivery reuses its own comment while a
+	// later replan (a fresh run row) posts anew and re-runs its split.
+	describe('plan-comment delivery marker', () => {
+		it('a new delivery posts its own plan (with its marker) and runs its split, ignoring an older delivery comment', async () => {
+			splitExists = true;
+			splitContents = JSON.stringify({
+				mainTask: { title: 'First slice', description: 'Just the API' },
+				subTasks: [
+					{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Build it.' },
+				],
+			});
+			const deps = makeDeps();
+			// An older delivery ('run-A') left a plan comment behind; this is a fresh
+			// delivery ('run-B'). Only run-A's marker resolves — run-B's must not.
+			deps.pm.findComment.mockImplementation(async (_id, marker) =>
+				marker.includes('run-A') ? 'old-comment' : undefined,
+			);
+
+			await runPlanningPhase({ ...deps, runId: 'run-B', autoAdvance: true });
+
+			// The lookup used *this* delivery's marker, not the generic heading.
+			expect(deps.pm.findComment).toHaveBeenCalledWith(
+				'PVTI_item18',
+				'<!-- swarm-planning-delivery:run-B -->',
+			);
+			// The new plan is posted (not suppressed by the older comment) and carries run-B's marker.
+			const planComment = deps.pm.addComment.mock.calls.find((c) => c[0] === 'PVTI_item18')?.[1];
+			expect(planComment).toContain('<!-- swarm-planning-delivery:run-B -->');
+			// And the split work still runs for the fresh delivery.
+			expect(deps.pm.createWorkItem).toHaveBeenCalled();
+			expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_item18', 'planned');
+		});
+
+		it('a retry of the same delivery reuses its prior comment: no duplicate post, no re-split, and the label is re-applied', async () => {
+			splitExists = true;
+			splitContents = JSON.stringify({
+				mainTask: { title: 'First slice', description: 'Just the API' },
+				subTasks: [
+					{ title: 'Second slice', description: 'The UI', plan: '# UI plan\n\n1. Build it.' },
+				],
+			});
+			const deps = makeDeps();
+			// The prior attempt of THIS delivery already posted its comment (found by its
+			// own marker); the retry re-applies the label after a first attempt failed at it.
+			deps.pm.findComment.mockImplementation(async (_id, marker) =>
+				marker.includes('run-A') ? 'existing-comment' : undefined,
+			);
+
+			const result = await runPlanningPhase({ ...deps, runId: 'run-A', autoAdvance: true });
+
+			// The prior comment is reused verbatim — nothing is re-posted and the split is not re-run.
+			expect(deps.pm.addComment).not.toHaveBeenCalled();
+			expect(deps.pm.createWorkItem).not.toHaveBeenCalled();
+			expect(result.commentId).toBe('existing-comment');
+			// The status move and the previously-failed label are (idempotently) re-applied.
+			expect(deps.pm.moveWorkItem).toHaveBeenCalledWith('PVTI_item18', 'todo');
+			expect(deps.pm.addLabel).toHaveBeenCalledWith('PVTI_item18', 'planned');
+		});
+
+		it('preplanned child: a retry reuses its prior comment while a fresh delivery posts anew', async () => {
+			// Retry — this delivery's marker resolves to its prior comment.
+			const retry = makeDeps();
+			retry.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
+			retry.pm.findComment.mockImplementation(async (_id, marker) =>
+				marker.includes('run-A') ? 'existing-preplan-comment' : undefined,
+			);
+			const retryResult = await runPlanningPhase({ ...retry, runId: 'run-A' });
+			expect(retry.pm.findComment).toHaveBeenCalledWith(
+				'PVTI_child',
+				'<!-- swarm-planning-delivery:run-A -->',
+			);
+			expect(retry.pm.addComment).not.toHaveBeenCalled();
+			expect(retryResult.commentId).toBe('existing-preplan-comment');
+			expect(retry.pm.addLabel).toHaveBeenCalledWith('PVTI_child', 'planned');
+
+			// Fresh delivery ('run-B') — an older delivery's comment must not suppress it.
+			const fresh = makeDeps();
+			fresh.workItem = preplannedChild('# Reused plan\n\nImplement the UI slice.');
+			fresh.pm.findComment.mockImplementation(async (_id, marker) =>
+				marker.includes('run-A') ? 'old-preplan-comment' : undefined,
+			);
+			await runPlanningPhase({ ...fresh, runId: 'run-B' });
+			const posted = fresh.pm.addComment.mock.calls.find((c) => c[0] === 'PVTI_child')?.[1];
+			expect(posted).toContain('<!-- swarm-planning-delivery:run-B -->');
+			expect(fresh.pm.addLabel).toHaveBeenCalledWith('PVTI_child', 'planned');
+		});
+	});
 });
 
 describe('buildPlanningPrompt', () => {
@@ -960,5 +1050,12 @@ describe('planCommentBody', () => {
 	it('says the item is moving automatically when autoAdvance is on', () => {
 		const body = planCommentBody('step one', true);
 		expect(body).toMatch(/moving to \*\*ToDo\*\* automatically/);
+	});
+
+	it('appends a per-delivery marker when a delivery id is given, and omits it otherwise', () => {
+		expect(planCommentBody('step one', false, 'run-42')).toContain(
+			'<!-- swarm-planning-delivery:run-42 -->',
+		);
+		expect(planCommentBody('step one')).not.toContain('swarm-planning-delivery');
 	});
 });

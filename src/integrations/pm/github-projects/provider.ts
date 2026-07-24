@@ -371,7 +371,7 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		});
 	}
 
-	async findComment(id: string, bodyPrefix: string): Promise<string | undefined> {
+	async findComment(id: string, marker: string): Promise<string | undefined> {
 		const resolved = await this.resolveItem(id);
 		const { owner, repo, contentNumber } = resolved;
 		if (!owner || !repo || contentNumber == null) {
@@ -379,14 +379,18 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		}
 		return this.run(async () => {
 			const client = getScopedClient();
-			// Only the first page (100 comments) is scanned, consistent with listBlockers
-			const { data: comments } = await client.issues.listComments({
+			// Scan *all* comment pages, not just the first 100: the marker of an older
+			// delivery can sit beyond page 1, and missing it would post a duplicate on a
+			// retry. Mirrors the SCM idempotent-comment path (`postIdempotentPullRequestComment`,
+			// src/integrations/scm/github/client.ts). Match the marker as a substring —
+			// it lives at the comment's tail, not its start.
+			const comments = await client.paginate(client.issues.listComments, {
 				owner,
 				repo,
 				issue_number: contentNumber,
 				per_page: 100,
 			});
-			const found = comments.find((c) => c.body?.startsWith(bodyPrefix));
+			const found = comments.find((c) => c.body?.includes(marker));
 			return found ? String(found.id) : undefined;
 		});
 	}
