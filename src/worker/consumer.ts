@@ -63,8 +63,9 @@ import {
 import { capabilityFor, DEFAULT_MODEL_PER_CLI, type ReasoningLevel } from '../harness/models.js';
 import { discoverCliQuotas } from '../harness/quota-discovery.js';
 import { createGitHubProjectsProvider } from '../integrations/pm/github-projects/provider.js';
+import type { GitHubPersona } from '../integrations/scm/github/personas.js';
 import { GitHubSCMIntegration } from '../integrations/scm/github/scm-integration.js';
-import { isSingleUserMode } from '../lib/env.js';
+import { getControlPlaneUrl, isSingleUserMode, optionalEnv } from '../lib/env.js';
 import { describeError } from '../lib/errors.js';
 import { logger } from '../lib/logger.js';
 import { DependencyBlockedError } from '../pipeline/dependency-guard.js';
@@ -101,7 +102,8 @@ import {
 	SwarmJobSchema,
 } from '../queue/jobs.js';
 import { priorityFor } from '../queue/producer.js';
-import { DeliveryDeferredError } from '../scm/delivery.js';
+import { DeliveryDeferredError, type ScmDeliveryProvider } from '../scm/delivery.js';
+import { createTransportScmDeliveryProvider } from '../scm/transport-delivery.js';
 import type { TriggerRegistry } from '../triggers/registry.js';
 import {
 	buildConflictResolutionKey,
@@ -1046,6 +1048,35 @@ function logAgentRouting(
  * types, but all carry the agent run (`.agent`); the optional fields below are
  * the ones the worker (and the transport back-channel) read off the result.
  */
+/**
+ * Resolve the SCM delivery provider for a PR-driven phase, choosing the delivery
+ * mode in one place (ADR-002 §2). In **control-plane delivery mode** — a
+ * federated worker with both `SWARM_CONTROL_PLANE_URL` and
+ * `SWARM_WORKER_CREDENTIAL` set — the metadata-only calls (`submitReview` /
+ * `postComment`) travel up the transport to the router's server-side delivery
+ * API, which performs them under the per-project reviewer PAT; the
+ * source-carrying / attribution ops (commit identity, find/create PR, push) stay
+ * local via the in-process delegate, keeping the operator's own token
+ * worker-side. Otherwise — the **local host worker**, the default — it returns
+ * `undefined`, so the phase builds today's in-process provider itself, lazily,
+ * byte-for-byte unchanged; single-user mode and the same-machine worker are
+ * unaffected.
+ */
+export async function resolveScmDelivery(
+	project: ProjectConfig,
+	persona: GitHubPersona,
+): Promise<ScmDeliveryProvider | undefined> {
+	const controlPlaneUrl = getControlPlaneUrl();
+	const workerCredential = optionalEnv('SWARM_WORKER_CREDENTIAL', '').trim();
+	if (!controlPlaneUrl || !workerCredential) return undefined;
+	return createTransportScmDeliveryProvider({
+		controlPlaneUrl,
+		workerCredential,
+		projectId: project.id,
+		localDelegate: await new GitHubSCMIntegration().deliveryProvider(project, persona),
+	});
+}
+
 export interface PhaseRunResult {
 	agent: AgentCliResult;
 	/**
@@ -1111,6 +1142,12 @@ export interface AssignedPhaseInputs {
 	/** resolve-conflicts only. */
 	baseBranch?: string;
 	baseSha?: string;
+	/**
+	 * review / respond-to-review only: the resolved control-plane SCM delivery
+	 * provider (ADR-002 §2, {@link resolveScmDelivery}), or `undefined` to use
+	 * the phase's own in-process delegate.
+	 */
+	delivery?: ScmDeliveryProvider;
 }
 
 /**
@@ -1195,6 +1232,7 @@ export async function runAssignedPhase(inputs: AssignedPhaseInputs): Promise<Pha
 				model,
 				reasoning,
 				customPrompt,
+				delivery: inputs.delivery,
 				...session,
 				timeoutMs,
 				signal,
@@ -1223,6 +1261,7 @@ export async function runAssignedPhase(inputs: AssignedPhaseInputs): Promise<Pha
 				model,
 				reasoning,
 				customPrompt,
+				delivery: inputs.delivery,
 				...session,
 				timeoutMs,
 				signal,
@@ -1290,7 +1329,7 @@ export async function runAssignedPhase(inputs: AssignedPhaseInputs): Promise<Pha
  * {@link runAssignedPhase} switch. `signal` (the worker's shutdown signal) is
  * threaded through so a graceful shutdown kills any in-flight agent CLI.
  */
-function runPhase(
+async function runPhase(
 	trigger: TriggerResult,
 	project: ProjectConfig,
 	resolution: PhaseResolution,
@@ -1347,7 +1386,12 @@ function runPhase(
 				onBranchProvisioned: markImplementationBranchProvisioned,
 			});
 		case 'review':
-			return runAssignedPhase({ ...base, prNumber: trigger.prNumber, headSha: trigger.headSha });
+			return runAssignedPhase({
+				...base,
+				prNumber: trigger.prNumber,
+				headSha: trigger.headSha,
+				delivery: await resolveScmDelivery(project, 'reviewer'),
+			});
 		case 'respond-to-review':
 			return runAssignedPhase({
 				...base,
@@ -1355,6 +1399,7 @@ function runPhase(
 				prBranch: trigger.prBranch,
 				reviewId: trigger.reviewId,
 				headSha: trigger.headSha,
+				delivery: await resolveScmDelivery(project, 'implementer'),
 			});
 		case 'respond-to-ci':
 			return runAssignedPhase({

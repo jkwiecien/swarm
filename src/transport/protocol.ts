@@ -355,3 +355,53 @@ export const ControlPlaneMessageSchema = z.discriminatedUnion('type', [
 	TaskAssignmentSchema,
 ]);
 export type ControlPlaneMessage = z.infer<typeof ControlPlaneMessageSchema>;
+
+/**
+ * Control-plane SCM metadata delivery frames (ADR-002 §2). The metadata-only
+ * SCM delivery calls — submit a review, post a PR comment — move server-side so
+ * the per-project reviewer PAT stays on the router and never reaches a worker: a
+ * federated worker sends only the verdict + comment body + PR number up the
+ * transport, and the router performs the GitHub write under that PAT (the review
+ * still lands as a genuine GitHub review, keeping the `pull_request_review`
+ * respond-to-review trigger working — PROJECT.md §5.4).
+ *
+ * These are **HTTP request/response** frames — carried by the router's
+ * `POST /worker/delivery/*` routes exactly as the handshake rides
+ * `POST /worker/session` — so they are deliberately *not* added to the WebSocket
+ * `WorkerStreamMessageSchema`/`ControlPlaneMessageSchema` unions above (those
+ * stay the handshake/heartbeat control stream). The fields carry no GitHub
+ * vocabulary (ai/RULES.md §2) so a second SCM provider can reuse the same wire.
+ * `protocolVersion` handshakes exactly as the session handshake does: a mismatch
+ * is a clean 400 rather than a silent misparse.
+ */
+export const SubmitReviewDeliveryRequestSchema = z.object({
+	projectId: z.string().min(1),
+	prNumber: z.number().int().positive(),
+	verdict: z.enum(['approve', 'request-changes', 'comment']),
+	body: z.string().min(1),
+	deliveryId: z.string().min(1),
+	protocolVersion: z.number().int(),
+});
+export type SubmitReviewDeliveryRequest = z.infer<typeof SubmitReviewDeliveryRequestSchema>;
+
+/** `POST /worker/delivery/review` success body — the created review's id. */
+export const SubmitReviewDeliveryResponseSchema = z.object({
+	reviewId: z.number().int().positive(),
+});
+export type SubmitReviewDeliveryResponse = z.infer<typeof SubmitReviewDeliveryResponseSchema>;
+
+/** `POST /worker/delivery/pr-comment` request body — a top-level PR comment. */
+export const PostCommentDeliveryRequestSchema = z.object({
+	projectId: z.string().min(1),
+	prNumber: z.number().int().positive(),
+	body: z.string().min(1),
+	deliveryId: z.string().min(1),
+	protocolVersion: z.number().int(),
+});
+export type PostCommentDeliveryRequest = z.infer<typeof PostCommentDeliveryRequestSchema>;
+
+/** `POST /worker/delivery/pr-comment` success body — the created comment's id. */
+export const PostCommentDeliveryResponseSchema = z.object({
+	commentId: z.number().int().positive(),
+});
+export type PostCommentDeliveryResponse = z.infer<typeof PostCommentDeliveryResponseSchema>;
