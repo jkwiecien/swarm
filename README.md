@@ -9,7 +9,10 @@ on the developer's machine.
 The MVP runs a local router, Redis/Postgres stack, host worker, and an API server
 that serves the dashboard SPA.
 GitHub reaches the router through a public HTTPS webhook endpoint, usually via a
-Cloudflare Tunnel. The long-term architecture and protocol are documented in
+Cloudflare Tunnel. The router also exposes an authenticated worker-transport
+endpoint (`POST /worker/session` + a `GET /worker/stream` WebSocket) so a remote
+worker can establish and heartbeat its session over that same tunnel (ADR-003).
+The long-term architecture and protocol are documented in
 [`PROJECT.md`](./PROJECT.md); this README is the shortest path to a working
 checkout.
 
