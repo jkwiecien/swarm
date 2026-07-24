@@ -1,0 +1,124 @@
+/**
+ * Pure builder for the `TaskAssignment` cloud→worker frame
+ * (`./protocol.ts`). It assembles the frame from a resolved dispatch and is the
+ * single place the **secret boundary** is enforced: it accepts the *full*
+ * `ProjectConfig` and derives the non-secret slice itself
+ * (`toNonSecretProjectConfig`), so no caller can route credential references
+ * around it onto the wire.
+ *
+ * Everything is a pure function of its inputs — the target branch and system
+ * prompt arrive already resolved/composed by the caller (the control plane —
+ * phase 4) — and the assembled frame is validated against
+ * `TaskAssignmentSchema` before it is returned, so a malformed assembly fails
+ * loudly at this seam rather than silently on the wire.
+ *
+ * Purely additive: nothing imports this yet, so the running in-process pipeline
+ * is untouched.
+ */
+
+import { toNonSecretProjectConfig } from '../config/project-config-slice.js';
+import type { AgentTarget, ProjectConfig } from '../config/schema.js';
+import type { WorkItem } from '../pm/types.js';
+import {
+	type AssignedWorkItem,
+	type TaskAssignment,
+	TaskAssignmentSchema,
+	type TaskPhase,
+	TRANSPORT_PROTOCOL_VERSION,
+} from './protocol.js';
+
+/** Session-threading / resume fields, grouped as the worker phase runner consumes them. */
+export interface TaskAssignmentSession {
+	agentSessionId?: string;
+	resumeSession?: boolean;
+	resumeDelivery?: boolean;
+	implementationBranchProvisioned?: boolean;
+}
+
+/** PR coordinates for the SCM-driven phases (review / respond-to-* / resolve-conflicts). */
+export interface TaskAssignmentPr {
+	prNumber: string;
+	prBranch?: string;
+	headSha?: string;
+	/** Only respond-to-review carries a submitted review to answer. */
+	reviewId?: string;
+	/** Only resolve-conflicts carries the base branch/SHA it rebases onto. */
+	baseBranch?: string;
+	baseSha?: string;
+}
+
+/**
+ * Everything `buildTaskAssignment` needs. `project` is the FULL config — the
+ * builder strips secrets itself. `workItem` and `pr` are the per-phase inputs
+ * (mirroring `TriggerResult`): planning/implementation pass `workItem`; the PR
+ * phases pass `pr`.
+ */
+export interface BuildTaskAssignmentInput {
+	dispatchId: string;
+	runId?: string;
+	/** FULL project config — the builder derives the non-secret slice from it. */
+	project: ProjectConfig;
+	phase: TaskPhase;
+	taskId: string;
+	/** Resolved by the caller (phase 4). */
+	targetBranch: string;
+	/** Composed by the caller (phase 4). */
+	systemPrompt: string;
+	customPrompt?: string;
+	target: AgentTarget;
+	timeoutMs?: number;
+	session?: TaskAssignmentSession;
+	workItem?: WorkItem;
+	pr?: TaskAssignmentPr;
+}
+
+/** Map a PM `WorkItem` to the transport's serialization subset (`AssignedWorkItem`). */
+function toAssignedWorkItem(workItem: WorkItem): AssignedWorkItem {
+	return {
+		id: workItem.id,
+		title: workItem.title,
+		description: workItem.description,
+		url: workItem.url,
+		status: workItem.status,
+		statusId: workItem.statusId,
+		labels: workItem.labels.map((label) => ({
+			id: label.id,
+			name: label.name,
+			color: label.color,
+		})),
+		assignees: workItem.assignees.map((assignee) => ({
+			handle: assignee.handle,
+			displayName: assignee.displayName,
+			providerId: assignee.providerId,
+		})),
+	};
+}
+
+/**
+ * Build a validated `TaskAssignment` from a resolved dispatch. The returned
+ * frame carries the non-secret project-config slice only — never a persona token
+ * or credential reference. Throws (via `TaskAssignmentSchema.parse`) if the
+ * assembly is malformed, so a bad frame never reaches the wire.
+ */
+export function buildTaskAssignment(input: BuildTaskAssignmentInput): TaskAssignment {
+	const assignment = {
+		type: 'task-assignment' as const,
+		protocolVersion: TRANSPORT_PROTOCOL_VERSION,
+		dispatchId: input.dispatchId,
+		runId: input.runId,
+		phase: input.phase,
+		taskId: input.taskId,
+		// The secret boundary: derive the non-secret slice from the full config here.
+		projectConfig: toNonSecretProjectConfig(input.project),
+		targetBranch: input.targetBranch,
+		systemPrompt: input.systemPrompt,
+		customPrompt: input.customPrompt,
+		target: input.target,
+		timeoutMs: input.timeoutMs,
+		...input.session,
+		workItem: input.workItem ? toAssignedWorkItem(input.workItem) : undefined,
+		...input.pr,
+	};
+	// Validate before returning so a bad assembly fails at the seam, not on the wire.
+	return TaskAssignmentSchema.parse(assignment);
+}
