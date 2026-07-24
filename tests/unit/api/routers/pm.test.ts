@@ -73,7 +73,12 @@ describe('pmRouter', () => {
 	});
 
 	describe('listProviders', () => {
-		it('returns only registry identity and declared capabilities', async () => {
+		it('returns registry identity and declared capabilities to a projectAdmin member', async () => {
+			// A non-instance-admin caller so `assertProjectAccess` actually consults
+			// project membership rather than short-circuiting on `instanceAdmin` — this
+			// proves an ordinary user with a `projectAdmin` membership reaches the metadata.
+			const memberCaller = pmRouter.createCaller({ user: ORDINARY_USER });
+			vi.mocked(getMembership).mockResolvedValue(membershipFor('projectAdmin'));
 			vi.mocked(listPMProviders).mockReturnValue([
 				// biome-ignore lint/suspicious/noExplicitAny: only the read fields matter here
 				{
@@ -83,9 +88,10 @@ describe('pmRouter', () => {
 				} as any,
 			]);
 
-			await expect(caller.listProviders({ projectId: 'swarm' })).resolves.toEqual([
+			await expect(memberCaller.listProviders({ projectId: 'swarm' })).resolves.toEqual([
 				{ id: 'github-projects', label: 'GitHub Projects', discovery: ['containers', 'states'] },
 			]);
+			expect(listPMProviders).toHaveBeenCalledOnce();
 		});
 
 		it('hides existence from a non-member (NOT_FOUND, not FORBIDDEN)', async () => {
