@@ -8,12 +8,12 @@
  * `HandshakeRequest`/`HandshakeResponse`/`Heartbeat` — so a later gRPC engine can
  * adopt the same vocabulary without renaming.
  *
- * This phase (ADR-003 §1) defines only the subset the transport needs to stand
- * up an authenticated session and keep its `worker_sessions` lease live:
- * handshake in both directions, plus the heartbeat/ack/disconnect control
- * frames. The split-delivery frames — `TaskAssignment` / `TaskExecutionResult` /
- * `StreamLog` (PROJECT.md §3) — join the two unions below in the split-delivery
- * phase (ADR-003 §2); they are deliberately absent here.
+ * The session subset (ADR-003 §1) stands up an authenticated session and keeps
+ * its `worker_sessions` lease live: handshake in both directions, plus the
+ * heartbeat/ack/disconnect control frames. Split delivery (ADR-003 §2) then
+ * adds the `TaskAssignment` cloud→worker frame below; the back-channel frames it
+ * pairs with — `TaskExecutionResult` / `StreamLog` (PROJECT.md §3) — join the
+ * worker→cloud union in a later split-delivery slice and are absent here.
  *
  * Capabilities are the harness's `AgentCli` vocabulary
  * (`../harness/agent-cli.ts`), never a parallel CLI enum — the same rule the
@@ -21,8 +21,10 @@
  */
 
 import { z } from 'zod';
-
+import { NonSecretProjectConfigSchema } from '../config/project-config-slice.js';
+import { AgentTargetSchema } from '../config/schema.js';
 import { AgentCliSchema } from '../harness/agent-cli.js';
+import type { TriggerPhase } from '../triggers/types.js';
 
 /**
  * Transport protocol version, sent in both handshake directions. A mismatch is
@@ -113,6 +115,99 @@ export const DisconnectSchema = z.object({
 export type Disconnect = z.infer<typeof DisconnectSchema>;
 
 /**
+ * The worker-runnable pipeline phases, keyed so the object literal must name
+ * *exactly* the `TriggerPhase` members (`../triggers/types.ts`): a missing phase
+ * or an extra one both fail to type-check here, so this transport enum and the
+ * pipeline's phase union can never drift apart. Consumed by `TaskPhaseSchema`
+ * below (via `Object.keys`), so it is not dead code.
+ */
+const TASK_PHASE_KEYS: Record<TriggerPhase, true> = {
+	planning: true,
+	implementation: true,
+	review: true,
+	'respond-to-review': true,
+	'respond-to-ci': true,
+	'resolve-conflicts': true,
+};
+
+/** The transport's Zod mirror of `TriggerPhase`, built from the parity map above. */
+export const TaskPhaseSchema = z.enum(
+	Object.keys(TASK_PHASE_KEYS) as [TriggerPhase, ...TriggerPhase[]],
+);
+export type TaskPhase = z.infer<typeof TaskPhaseSchema>;
+
+/**
+ * The transport's serialization view of a PM `WorkItem` (`../pm/types.ts`) — the
+ * fields a planning/implementation phase reads on the worker, as a Zod schema (a
+ * `WorkItem` is a plain interface, so it has no schema of its own). Deliberately
+ * a tight subset: a field a future phase needs on the worker must be added here
+ * too. Nothing on a `WorkItem` is secret, so this drops nothing sensitive.
+ */
+export const AssignedWorkItemSchema = z.object({
+	id: z.string().min(1),
+	title: z.string(),
+	description: z.string(),
+	url: z.string(),
+	status: z.string().optional(),
+	statusId: z.string().optional(),
+	labels: z.array(z.object({ id: z.string(), name: z.string(), color: z.string().optional() })),
+	assignees: z.array(
+		z.object({
+			handle: z.string(),
+			displayName: z.string().optional(),
+			providerId: z.string().optional(),
+		}),
+	),
+});
+export type AssignedWorkItem = z.infer<typeof AssignedWorkItemSchema>;
+
+/**
+ * Cloud→worker frame assigning one pipeline phase to a connected worker. It
+ * carries everything the worker's phase runner needs to execute and settle the
+ * dispatch idempotently: the work-item payload (or PR coordinates, per phase),
+ * the already-resolved target branch, the already-composed system prompt, the
+ * routing `target`, and the NON-SECRET project-config slice — never a persona
+ * token or a credential reference.
+ *
+ * The secret boundary is enforced by the builder (`./assignment.ts`), which
+ * derives `projectConfig` from the full config itself; this schema simply types
+ * the wire shape. `targetBranch` and `systemPrompt` arrive already computed (the
+ * control plane composes them — phase 4), so this frame is a pure data carrier.
+ */
+export const TaskAssignmentSchema = z.object({
+	type: z.literal('task-assignment'),
+	protocolVersion: z.number().int(),
+	dispatchId: z.string().uuid(),
+	runId: z.string().uuid().optional(),
+	phase: TaskPhaseSchema,
+	taskId: z.string().min(1),
+	projectConfig: NonSecretProjectConfigSchema,
+	targetBranch: z.string().min(1),
+	systemPrompt: z.string().min(1),
+	customPrompt: z.string().optional(),
+	target: AgentTargetSchema,
+	timeoutMs: z.number().int().positive().optional(),
+	// Session threading / resume — mirrors the `session` object `runPhase`
+	// assembles and the resume fields on `SwarmJob` (`src/worker/consumer.ts`).
+	agentSessionId: z.string().optional(),
+	resumeSession: z.boolean().optional(),
+	resumeDelivery: z.boolean().optional(),
+	implementationBranchProvisioned: z.boolean().optional(),
+	// Phase-specific inputs — mirror `TriggerResult` (`src/triggers/types.ts`):
+	// planning/implementation carry `workItem`; the PR phases carry the PR
+	// coordinates, with `reviewId` only for respond-to-review and
+	// `baseBranch`/`baseSha` only for resolve-conflicts.
+	workItem: AssignedWorkItemSchema.optional(),
+	prNumber: z.string().optional(),
+	prBranch: z.string().optional(),
+	headSha: z.string().optional(),
+	reviewId: z.string().optional(),
+	baseBranch: z.string().optional(),
+	baseSha: z.string().optional(),
+});
+export type TaskAssignment = z.infer<typeof TaskAssignmentSchema>;
+
+/**
  * Every worker→cloud stream frame, discriminated on `type`. Only `heartbeat`
  * exists this phase; `TaskExecutionResult`/`StreamLog` (PROJECT.md §3) join here
  * in the split-delivery phase (ADR-003 §2).
@@ -121,12 +216,15 @@ export const WorkerStreamMessageSchema = z.discriminatedUnion('type', [Heartbeat
 export type WorkerStreamMessage = z.infer<typeof WorkerStreamMessageSchema>;
 
 /**
- * Every cloud→worker stream frame, discriminated on `type`. Only the
- * lease-liveness control frames exist this phase; `TaskAssignment` (PROJECT.md
- * §3) joins here in the split-delivery phase (ADR-003 §2).
+ * Every cloud→worker stream frame, discriminated on `type`: the lease-liveness
+ * control frames plus `TaskAssignment` (PROJECT.md §3), which lands here in the
+ * split-delivery phase (ADR-003 §2). The back-channel frames it depends on —
+ * `TaskExecutionResult`/`StreamLog` on the worker→cloud union above — remain
+ * later split-delivery work.
  */
 export const ControlPlaneMessageSchema = z.discriminatedUnion('type', [
 	HeartbeatAckSchema,
 	DisconnectSchema,
+	TaskAssignmentSchema,
 ]);
 export type ControlPlaneMessage = z.infer<typeof ControlPlaneMessageSchema>;

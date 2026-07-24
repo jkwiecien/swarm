@@ -7,12 +7,35 @@ import {
 	HandshakeResponseSchema,
 	HeartbeatAckSchema,
 	HeartbeatSchema,
+	TaskAssignmentSchema,
+	TaskPhaseSchema,
 	TRANSPORT_PROTOCOL_VERSION,
 	WorkerStreamMessageSchema,
 } from '@/transport/protocol.js';
+import { createMockProjectConfig } from '../../helpers/factories.js';
 
 const WORKER_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = '33333333-3333-4333-8333-333333333333';
+const DISPATCH_ID = '44444444-4444-4444-8444-444444444444';
+
+/** The non-secret project-config slice a valid frame embeds. */
+const PROJECT_SLICE = (() => {
+	const { credentials: _credentials, ...rest } = createMockProjectConfig();
+	return rest;
+})();
+
+/** A minimal well-formed `task-assignment` frame for the union/round-trip tests. */
+const VALID_ASSIGNMENT = {
+	type: 'task-assignment' as const,
+	protocolVersion: TRANSPORT_PROTOCOL_VERSION,
+	dispatchId: DISPATCH_ID,
+	phase: 'planning' as const,
+	taskId: '17',
+	projectConfig: PROJECT_SLICE,
+	targetBranch: 'issue-17',
+	systemPrompt: 'Do the thing.',
+	target: { cli: 'claude' as const },
+};
 
 describe('transport protocol schemas', () => {
 	describe('HandshakeRequestSchema', () => {
@@ -139,6 +162,75 @@ describe('transport protocol schemas', () => {
 		it('rejects a worker→cloud frame carried the wrong direction', () => {
 			expect(
 				ControlPlaneMessageSchema.safeParse({ type: 'heartbeat', fencingToken: 1 }).success,
+			).toBe(false);
+		});
+
+		it('discriminates a task-assignment frame to TaskAssignmentSchema', () => {
+			const parsed = ControlPlaneMessageSchema.parse(VALID_ASSIGNMENT);
+			expect(parsed.type).toBe('task-assignment');
+		});
+	});
+
+	describe('TaskPhaseSchema', () => {
+		it('accepts the six worker-runnable phases', () => {
+			for (const phase of [
+				'planning',
+				'implementation',
+				'review',
+				'respond-to-review',
+				'respond-to-ci',
+				'resolve-conflicts',
+			]) {
+				expect(TaskPhaseSchema.safeParse(phase).success).toBe(true);
+			}
+		});
+
+		it('rejects an unknown phase', () => {
+			expect(TaskPhaseSchema.safeParse('deploy').success).toBe(false);
+		});
+	});
+
+	describe('TaskAssignmentSchema', () => {
+		it('round-trips a full valid frame', () => {
+			const frame = {
+				...VALID_ASSIGNMENT,
+				runId: '55555555-5555-4555-8555-555555555555',
+				customPrompt: 'extra project instructions',
+				timeoutMs: 600_000,
+				agentSessionId: 'sess-1',
+				resumeSession: true,
+				workItem: {
+					id: 'PVTI_1',
+					title: 'Do it',
+					description: 'body',
+					url: 'https://github.com/jkwiecien/swarm/issues/17',
+					labels: [{ id: 'LA_1', name: 'swarm' }],
+					assignees: [],
+				},
+			};
+			expect(TaskAssignmentSchema.parse(frame)).toEqual(frame);
+		});
+
+		it('strips a credentials key from an embedded config rather than storing it', () => {
+			const withSecret = {
+				...VALID_ASSIGNMENT,
+				projectConfig: { ...PROJECT_SLICE, credentials: { implementer: 'x' } },
+			};
+			// `.omit` produces a strict-less object schema, so an extra `credentials`
+			// key is ignored rather than stored — the parsed slice carries none.
+			const parsed = TaskAssignmentSchema.parse(withSecret);
+			expect('credentials' in parsed.projectConfig).toBe(false);
+		});
+
+		it('rejects an empty system prompt', () => {
+			expect(
+				TaskAssignmentSchema.safeParse({ ...VALID_ASSIGNMENT, systemPrompt: '' }).success,
+			).toBe(false);
+		});
+
+		it('rejects a non-UUID dispatchId', () => {
+			expect(
+				TaskAssignmentSchema.safeParse({ ...VALID_ASSIGNMENT, dispatchId: 'nope' }).success,
 			).toBe(false);
 		});
 	});
