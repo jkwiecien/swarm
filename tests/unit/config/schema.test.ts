@@ -110,6 +110,18 @@ describe('ProjectConfigSchema', () => {
 		});
 	});
 
+	it('accepts the gemini-3.6-flash antigravity model via the normal cli/model/reasoning path', () => {
+		const project = createMockProjectConfig({
+			agents: { planning: { cli: 'antigravity', model: 'gemini-3.6-flash', reasoning: 'high' } },
+		});
+		expect(project.agents?.planning).toEqual({
+			cli: 'antigravity',
+			model: 'gemini-3.6-flash',
+			reasoning: 'high',
+			targets: [{ cli: 'antigravity', model: 'gemini-3.6-flash', reasoning: 'high' }],
+		});
+	});
+
 	it('accepts an explicit per-phase reasoning level supported by the model', () => {
 		const project = createMockProjectConfig({
 			agents: { planning: { cli: 'claude', model: 'sonnet', reasoning: 'high' } },

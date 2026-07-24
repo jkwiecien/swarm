@@ -65,6 +65,11 @@ describe('reasoningChoicesFor', () => {
 			'medium',
 			'high',
 		]);
+		expect(reasoningChoicesFor('antigravity', 'gemini-3.6-flash')).toEqual([
+			'low',
+			'medium',
+			'high',
+		]);
 		expect(reasoningChoicesFor('antigravity', 'gemini-3.1-pro')).toEqual(['low', 'high']);
 		expect(reasoningChoicesFor('antigravity', 'claude-sonnet-4.6')).toEqual([]);
 		expect(reasoningChoicesFor('antigravity', 'gpt-oss-120b')).toEqual([]);
@@ -104,6 +109,16 @@ describe('resolveModelLaunch', () => {
 		});
 	});
 
+	it('folds gemini-3.6-flash reasoning into the exact agy --model variant string', () => {
+		expect(resolveModelLaunch('antigravity', 'gemini-3.6-flash', 'high')).toEqual({
+			model: 'Gemini 3.6 Flash (High)',
+			providerArgs: [],
+		});
+		expect(resolveModelLaunch('antigravity', 'gemini-3.6-flash', undefined).model).toBe(
+			'Gemini 3.6 Flash (Medium)',
+		);
+	});
+
 	it('falls back to the antigravity model default variant when reasoning is omitted', () => {
 		expect(resolveModelLaunch('antigravity', 'gemini-3.5-flash', undefined).model).toBe(
 			'Gemini 3.5 Flash (Medium)',
@@ -135,6 +150,10 @@ describe('splitAntigravityModel / normalizeModelSelection', () => {
 			model: 'gemini-3.5-flash',
 			reasoning: 'high',
 		});
+		expect(splitAntigravityModel('Gemini 3.6 Flash (Low)')).toEqual({
+			model: 'gemini-3.6-flash',
+			reasoning: 'low',
+		});
 		expect(splitAntigravityModel('Claude Opus 4.6 (Thinking)')).toEqual({
 			model: 'claude-opus-4.6',
 		});
@@ -165,5 +184,6 @@ describe('capabilityFor', () => {
 		expect(capabilityFor('claude', 'sonnet')?.defaultReasoning).toBe('high');
 		expect(capabilityFor('codex', 'gpt-5.6-terra')?.defaultReasoning).toBe('medium');
 		expect(capabilityFor('antigravity', 'gemini-3.5-flash')?.defaultReasoning).toBe('medium');
+		expect(capabilityFor('antigravity', 'gemini-3.6-flash')?.defaultReasoning).toBe('medium');
 	});
 });

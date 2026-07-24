@@ -153,6 +153,18 @@ const ANTIGRAVITY_CAPABILITIES: readonly ModelCapability[] = [
 	},
 	{
 		cli: 'antigravity',
+		id: 'gemini-3.6-flash',
+		label: 'Gemini 3.6 Flash',
+		reasoningChoices: ['low', 'medium', 'high'],
+		defaultReasoning: 'medium',
+		variantByReasoning: {
+			low: 'Gemini 3.6 Flash (Low)',
+			medium: 'Gemini 3.6 Flash (Medium)',
+			high: 'Gemini 3.6 Flash (High)',
+		},
+	},
+	{
+		cli: 'antigravity',
 		id: 'gemini-3.1-pro',
 		label: 'Gemini 3.1 Pro',
 		reasoningChoices: ['low', 'high'],
