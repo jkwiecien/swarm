@@ -56,6 +56,7 @@ import {
 	WorkerStreamMessageSchema,
 	WS_CLOSE,
 } from '../transport/protocol.js';
+import { deregisterConnection, registerConnection } from './worker-connections.js';
 
 // The application-defined WebSocket close codes are part of the wire contract, so
 // they live in the protocol module (the single source of truth for every frame)
@@ -324,22 +325,26 @@ export function registerWorkerTransport(
 		return c.json(result.json, result.status);
 	});
 
+	// Resolve the worker once at upgrade and return its id (not just a boolean) so
+	// the socket handlers can key the connected-worker registry by it. `undefined`
+	// means the upgrade is not authenticated.
 	async function authenticateUpgrade(
 		deps: WorkerTransportDeps,
 		credential: string | undefined,
 		fencingToken: number,
 		ttlMs: number,
-	): Promise<boolean> {
-		if (!credential || Number.isNaN(fencingToken)) return false;
+	): Promise<string | undefined> {
+		if (!credential || Number.isNaN(fencingToken)) return undefined;
 		try {
 			const worker = await deps.resolveWorkerByCredential(credential);
-			if (!worker) return false;
-			return deps.validateFencingToken(worker.id, fencingToken, ttlMs);
+			if (!worker) return undefined;
+			const valid = await deps.validateFencingToken(worker.id, fencingToken, ttlMs);
+			return valid ? worker.id : undefined;
 		} catch (err) {
 			logger.error('worker transport upgrade authentication failed', {
 				error: err instanceof Error ? err.message : String(err),
 			});
-			return false;
+			return undefined;
 		}
 	}
 
@@ -354,17 +359,25 @@ export function registerWorkerTransport(
 			const fencingToken = fencingTokenStr ? Number.parseInt(fencingTokenStr, 10) : NaN;
 			const ttlMs = deps.resolveHeartbeatTtlMs();
 
-			const authenticated = await authenticateUpgrade(deps, credential, fencingToken, ttlMs);
+			// The resolved worker id when authenticated, else `undefined`. Checked
+			// directly in each handler (rather than a separate boolean) so TypeScript
+			// narrows it to `string` past the guard — the registry keys on it.
+			const workerId = await authenticateUpgrade(deps, credential, fencingToken, ttlMs);
 			const safeCredential = credential ?? '';
 
 			return {
 				onOpen(_evt, ws) {
-					if (!authenticated) {
+					if (workerId === undefined) {
 						ws.close(WS_CLOSE.UNAUTHORIZED, 'unauthorized');
+						return;
 					}
+					// Record this socket as the live transport for the worker so the control
+					// plane can push to it. A prior socket for the same worker is superseded
+					// (a newer daemon wins — see `registerConnection`).
+					registerConnection(workerId, ws);
 				},
 				async onMessage(evt, ws) {
-					if (!authenticated) {
+					if (workerId === undefined) {
 						ws.close(WS_CLOSE.UNAUTHORIZED, 'unauthorized');
 						return;
 					}
@@ -375,18 +388,28 @@ export function registerWorkerTransport(
 							frameToString(evt.data),
 						);
 						applyStreamAction(ws, action);
+						// A `disconnect`/`close` action closes the socket, so drop it from the
+						// registry now rather than waiting for the async `onClose`. Identity-
+						// checked, so it can't evict a socket that has since been replaced.
+						if (action.action !== 'ack') {
+							deregisterConnection(workerId, ws);
+						}
 					} catch (err) {
 						logger.error('worker transport stream onMessage failed', {
 							error: err instanceof Error ? err.message : String(err),
 						});
 						ws.close(WS_CLOSE.LEASE_LOST, 'heartbeat processing failed');
+						deregisterConnection(workerId, ws);
 					}
 				},
-				async onClose() {
-					// Free the lease promptly on a graceful disconnect rather than waiting
-					// out the TTL. An ungraceful drop with no prior heartbeat still expires
-					// via the TTL — the existing mechanism. Best-effort: log, don't throw.
-					if (!authenticated || !credential) return;
+				async onClose(_evt, ws) {
+					if (workerId === undefined || !credential) return;
+					// Drop this socket from the connected-worker registry (identity-checked,
+					// so a stale close can't evict a newer socket), then free the lease
+					// promptly rather than waiting out the TTL. An ungraceful drop with no
+					// prior heartbeat still expires via the TTL — the existing mechanism.
+					// Best-effort: log, don't throw.
+					deregisterConnection(workerId, ws);
 					try {
 						await deps.releaseSession(credential, fencingToken);
 					} catch (err) {
@@ -395,7 +418,10 @@ export function registerWorkerTransport(
 						});
 					}
 				},
-				onError(evt) {
+				onError(evt, ws) {
+					// Deregister on a socket error too, so a connection that errors out
+					// without a clean close doesn't linger in the registry.
+					if (workerId !== undefined) deregisterConnection(workerId, ws);
 					logger.warn('worker transport stream error', {
 						error: evt instanceof ErrorEvent ? evt.message : String(evt),
 					});
