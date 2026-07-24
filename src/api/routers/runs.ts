@@ -40,6 +40,7 @@ import {
 import { type SwarmJob, SwarmJobSchema } from '../../queue/jobs.js';
 import { priorityFor, removePendingJobById } from '../../queue/producer.js';
 import {
+	deriveDispatchPhaseHint,
 	deriveQueuedPhaseHint,
 	type QueuedPhaseHint,
 	type QueuedRun,
@@ -254,6 +255,46 @@ function alreadyRetrying(): TRPCError {
 		code: 'CONFLICT',
 		message: 'This run is already retrying. Refresh to see its current status.',
 	});
+}
+
+/**
+ * Cancel the *other* fresh board dispatches for one card while putting it back
+ * (issue #374). A single board-card interaction fans out into several dispatches
+ * for the same card — the two `projects_v2_item` webhooks a drag fires
+ * (`reordered` + `edited`) and the synthetic Planning→Implementation
+ * self-enqueue — which the queue view folds into one row. Putting the item back
+ * means none of them should fire, so its duplicates are cancelled here rather
+ * than left to no-op one by one at claim time (and reappear as a stale queue
+ * row). Cancel-only and best-effort: it never touches a dispatch that already
+ * owns a run (`runId` — a deferred/resuming run), and a sibling that was just
+ * claimed simply fails its conditional cancel.
+ *
+ * Its filter mirrors the queue view's fold (`boardGroupKey` in
+ * `dashboard/src/lib/queued-runs.ts`) exactly: only *unresolved* board
+ * dispatches (phase hint still `board`) are folded into the put-back row, so a
+ * sibling whose worker-resolved phase is already `planning`/`implementation`
+ * renders on its own row and must not be silently cancelled here.
+ */
+async function cancelDuplicateBoardDispatches(
+	projectId: string,
+	workItemNodeId: string,
+	keepDispatchId: string,
+): Promise<void> {
+	const siblings = await listWaitingDispatches(projectId);
+	const duplicates = siblings.filter(
+		(sibling) =>
+			sibling.id !== keepDispatchId &&
+			!sibling.runId &&
+			sibling.jobPayload.type === 'github-projects' &&
+			sibling.jobPayload.event.itemNodeId === workItemNodeId &&
+			deriveDispatchPhaseHint(sibling) === 'board',
+	);
+	for (const duplicate of duplicates) {
+		await cancelDispatchAndWake(
+			duplicate.id,
+			'Put back to Backlog from the dashboard (duplicate board dispatch)',
+		).catch(() => null);
+	}
 }
 
 /**
@@ -768,6 +809,12 @@ export const runsRouter = router({
 					code: 'PRECONDITION_FAILED',
 					message: `Dispatch "${input.jobId}" was picked up while putting it back — refresh to see its run.`,
 				});
+			}
+
+			// Putting a board item back must silence its duplicate dispatches too
+			// (issue #374), before the single card move below.
+			if (jobData.type === 'github-projects') {
+				await cancelDuplicateBoardDispatches(project.id, workItemNodeId, dispatch.id);
 			}
 
 			try {

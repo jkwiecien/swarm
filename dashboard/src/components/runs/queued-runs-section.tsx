@@ -22,26 +22,43 @@ import { RunStatusBadge } from './run-status-badge.js';
 
 /**
  * Phase content for one queued row, shared by the desktop table cell and the
- * mobile card so their wording and review-gate diagnostics stay identical.
+ * mobile card so their wording, review-gate diagnostics, and board-duplicate
+ * count (issue #374) stay identical. A review-gate group lists its folded
+ * source events; a board-duplicate group shows the phase plus how many queued
+ * events for the card were collapsed into this one row; every other row is just
+ * its phase label.
  */
 function QueuedPhaseContent({ row }: { row: QueuedDisplayRow }) {
 	const item = row.representative;
-	if (!row.isReviewGateGroup) {
-		return <span className="font-semibold text-zinc-100">{queuedPhaseLabel(item.phaseHint)}</span>;
+	if (row.isReviewGateGroup) {
+		return (
+			<div className="flex flex-col gap-1">
+				<span className="font-semibold text-zinc-100">{REVIEW_GATE_GROUP_LABEL}</span>
+				<span className="text-[11px] font-normal text-zinc-400">
+					{row.sourceEvents.length} source events
+				</span>
+				<ul className="space-y-0.5 font-mono text-[11px] font-normal text-zinc-500">
+					{row.sourceEvents.map((event) => (
+						<li key={event.jobId}>{reviewGateSourceEventLabel(event)}</li>
+					))}
+				</ul>
+			</div>
+		);
 	}
-	return (
-		<div className="flex flex-col gap-1">
-			<span className="font-semibold text-zinc-100">{REVIEW_GATE_GROUP_LABEL}</span>
-			<span className="text-[11px] font-normal text-zinc-400">
-				{row.sourceEvents.length} source events
-			</span>
-			<ul className="space-y-0.5 font-mono text-[11px] font-normal text-zinc-500">
-				{row.sourceEvents.map((event) => (
-					<li key={event.jobId}>{reviewGateSourceEventLabel(event)}</li>
-				))}
-			</ul>
-		</div>
+	const phaseLabel = (
+		<span className="font-semibold text-zinc-100">{queuedPhaseLabel(item.phaseHint)}</span>
 	);
+	if (row.boardDuplicateCount > 0) {
+		return (
+			<div className="flex flex-col gap-1">
+				{phaseLabel}
+				<span className="text-[11px] font-normal text-zinc-400">
+					{row.boardDuplicateCount + 1} queued events for this card
+				</span>
+			</div>
+		);
+	}
+	return phaseLabel;
 }
 
 /** Task / ID reference for one queued row, shared by the table cell and the card. */
