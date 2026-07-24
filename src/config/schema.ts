@@ -37,7 +37,7 @@ function isKnownModel(cli: AgentCli | undefined, model: string): boolean {
 	if (cli === 'antigravity' || cli === undefined) {
 		return (
 			(ANTIGRAVITY_MODEL_SLUGS as readonly string[]).includes(model) ||
-			model in LEGACY_ANTIGRAVITY_DISPLAY_STRINGS
+			Object.hasOwn(LEGACY_ANTIGRAVITY_DISPLAY_STRINGS, model)
 		);
 	}
 	return false;

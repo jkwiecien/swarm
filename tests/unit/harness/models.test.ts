@@ -174,6 +174,12 @@ describe('splitAntigravityModel / normalizeModelSelection', () => {
 		expect(splitAntigravityModel('gemini-3.5-flash')).toBeNull();
 	});
 
+	it('does not treat an Object.prototype name as a recognized display string', () => {
+		for (const proto of ['toString', 'constructor', 'hasOwnProperty', '__proto__', 'valueOf']) {
+			expect(splitAntigravityModel(proto)).toBeNull();
+		}
+	});
+
 	it('round-trips every slug back to the same launch slug', () => {
 		for (const slug of ANTIGRAVITY_MODEL_SLUGS) {
 			const split = splitAntigravityModel(slug);

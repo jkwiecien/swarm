@@ -309,7 +309,12 @@ export function splitAntigravityModel(
 			if (variant === model) return { model: cap.id, reasoning: level as ReasoningLevel };
 		}
 	}
-	const legacy = LEGACY_ANTIGRAVITY_DISPLAY_STRINGS[model];
+	// `Object.hasOwn` (not `model in …` / a bare lookup) so an inherited
+	// `Object.prototype` name (`"toString"`, `"constructor"`, …) in a config value
+	// can't masquerade as a known display string.
+	const legacy = Object.hasOwn(LEGACY_ANTIGRAVITY_DISPLAY_STRINGS, model)
+		? LEGACY_ANTIGRAVITY_DISPLAY_STRINGS[model]
+		: undefined;
 	return legacy ? { ...legacy } : null;
 }
 
