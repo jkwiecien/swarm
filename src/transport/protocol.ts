@@ -33,6 +33,25 @@ import { AgentCliSchema } from '../harness/agent-cli.js';
 export const TRANSPORT_PROTOCOL_VERSION = 1;
 
 /**
+ * Application-defined WebSocket close codes (the 4000–4999 range reserved for
+ * private use) the `/worker/stream` transport uses. Part of the wire contract, so
+ * they live here alongside the frame schemas: the router
+ * (`../router/worker-transport.ts`) closes with them and the worker client
+ * (`./worker-client.ts`) classifies a close by them — `UNAUTHORIZED` is fatal (a
+ * fresh handshake won't fix a rejected credential/token), while `LEASE_LOST` and
+ * `MALFORMED_FRAME` are recoverable by reconnecting (a fresh handshake re-acquires
+ * the lease with a bumped fencing token).
+ */
+export const WS_CLOSE = {
+	/** A frame did not parse as a known worker→cloud message. */
+	MALFORMED_FRAME: 4400,
+	/** The upgrade carried no credential or one that resolves to no worker. */
+	UNAUTHORIZED: 4401,
+	/** A heartbeat could not refresh the lease — lost, expired, or superseded. */
+	LEASE_LOST: 4408,
+} as const;
+
+/**
  * Optional, best-effort host-health telemetry a worker may attach to a
  * heartbeat — the transport equivalent of PROJECT.md §3's `Heartbeat` fields.
  * Purely advisory for now (nothing in this phase consumes it); every field is

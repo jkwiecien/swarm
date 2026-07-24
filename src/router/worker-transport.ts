@@ -54,24 +54,17 @@ import {
 	HandshakeRequestSchema,
 	TRANSPORT_PROTOCOL_VERSION,
 	WorkerStreamMessageSchema,
+	WS_CLOSE,
 } from '../transport/protocol.js';
+
+// The application-defined WebSocket close codes are part of the wire contract, so
+// they live in the protocol module (the single source of truth for every frame)
+// alongside the frame schemas — re-exported here for this module's existing
+// consumers/tests.
+export { WS_CLOSE };
 
 /** `upgradeWebSocket` handle produced by `createNodeWebSocket` (typed via its return). */
 type UpgradeWebSocket = ReturnType<typeof createNodeWebSocket>['upgradeWebSocket'];
-
-/**
- * Application-defined WebSocket close codes (the 4000–4999 range reserved for
- * private use). Each maps a transport-level refusal to a distinct code so the
- * daemon can tell an auth failure from a malformed frame from a lost lease.
- */
-export const WS_CLOSE = {
-	/** A frame did not parse as a known worker→cloud message. */
-	MALFORMED_FRAME: 4400,
-	/** The upgrade carried no credential or one that resolves to no worker. */
-	UNAUTHORIZED: 4401,
-	/** A heartbeat could not refresh the lease — lost, expired, or superseded. */
-	LEASE_LOST: 4408,
-} as const;
 
 /** Human-readable disconnect reason when a heartbeat can no longer refresh the lease. */
 const LEASE_LOST_REASON =

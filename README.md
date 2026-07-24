@@ -103,6 +103,22 @@ the worker's own cap across every project it serves; a project's **Maximum
 Concurrent Jobs** setting bounds it further per project. See
 [`docs/configuration.md`](docs/configuration.md).
 
+For a worker on a **different machine** from the router, run the remote transport
+client instead of (or alongside) the in-process worker:
+
+```bash
+SWARM_CONTROL_PLANE_URL=https://<your-tunnel> \
+SWARM_WORKER_CREDENTIAL=<from `swarm workers register`> \
+npm run dev:worker:connect        # remote worker: connect over the tunnel, heartbeat
+```
+
+This client holds **only** the credential and the control-plane URL — no
+`DATABASE_URL`/`REDIS_URL`. It performs the `/worker/session` handshake (declaring
+the CLIs it can run), keeps its session live over the `/worker/stream` WebSocket,
+and reconnects with backoff (ADR-003 §1). It is **additive**: the same-machine
+`npm run dev:worker` path above is unchanged. See
+[`docs/cloudflare-tunnel.md`](docs/cloudflare-tunnel.md#remote-worker-transport-worker).
+
 Open <http://localhost:5173>. For a compiled self-hosted dashboard, run
 `npm run start:api` and open <http://localhost:3101> instead.
 
