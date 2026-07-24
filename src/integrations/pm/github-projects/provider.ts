@@ -371,6 +371,30 @@ export class GitHubProjectsPMProvider implements PMProvider {
 		});
 	}
 
+	async findComment(id: string, marker: string): Promise<string | undefined> {
+		const resolved = await this.resolveItem(id);
+		const { owner, repo, contentNumber } = resolved;
+		if (!owner || !repo || contentNumber == null) {
+			return undefined;
+		}
+		return this.run(async () => {
+			const client = getScopedClient();
+			// Scan *all* comment pages, not just the first 100: the marker of an older
+			// delivery can sit beyond page 1, and missing it would post a duplicate on a
+			// retry. Mirrors the SCM idempotent-comment path (`postIdempotentPullRequestComment`,
+			// src/integrations/scm/github/client.ts). Match the marker as a substring —
+			// it lives at the comment's tail, not its start.
+			const comments = await client.paginate(client.issues.listComments, {
+				owner,
+				repo,
+				issue_number: contentNumber,
+				per_page: 100,
+			});
+			const found = comments.find((c) => c.body?.includes(marker));
+			return found ? String(found.id) : undefined;
+		});
+	}
+
 	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
 		const [owner, repo] = this.project.repo.split('/');
 		const { projectId, statusFieldId, statusOptions } = this.project.githubProjects;
@@ -457,6 +481,26 @@ export class GitHubProjectsPMProvider implements PMProvider {
 			});
 		});
 		logger.debug('pm: updated work item', { itemId: id });
+	}
+
+	async addLabel(id: string, name: string): Promise<void> {
+		// Labels live on the backing Issue, not the board card — resolve it first
+		// (its own scoped run), mirroring addComment/updateWorkItem's two-step shape.
+		const { owner, repo, contentNumber } = await this.resolveItem(id);
+		if (!owner || !repo || contentNumber == null) {
+			throw new Error(
+				`Cannot label item '${id}': it has no backing Issue to label (likely a draft item)`,
+			);
+		}
+		await this.run(async () => {
+			const client = getScopedClient();
+			// Create the label if missing (reusing the same helper createWorkItem uses),
+			// then apply it. issues.addLabels is additive and idempotent — re-adding an
+			// already-present label neither duplicates it nor errors.
+			await ensureLabel(owner, repo, name);
+			await client.issues.addLabels({ owner, repo, issue_number: contentNumber, labels: [name] });
+		});
+		logger.debug('pm: applied label', { itemId: id, label: name });
 	}
 
 	async listBlockers(id: string): Promise<WorkItemBlocker[]> {

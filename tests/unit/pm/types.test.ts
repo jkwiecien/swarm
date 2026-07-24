@@ -33,6 +33,7 @@ class InMemoryPMProvider implements PMProvider {
 	private readonly items: Map<string, WorkItem>;
 	private readonly statusOptions: Record<string, string>;
 	private nextCommentId = 1;
+	private readonly comments = new Map<string, Array<{ id: string; body: string }>>();
 
 	constructor(items: WorkItem[], statusOptions: Record<string, string> = {}) {
 		this.items = new Map(items.map((item) => [item.id, item]));
@@ -62,10 +63,21 @@ class InMemoryPMProvider implements PMProvider {
 		this.items.set(id, { ...item, statusId: this.statusOptions[status] });
 	}
 
-	async addComment(id: string, _text: string): Promise<string> {
+	async addComment(id: string, text: string): Promise<string> {
 		// Presence check mirrors the real adapter resolving the backing Issue/PR.
 		await this.getWorkItem(id);
-		return `comment-${this.nextCommentId++}`;
+		const commentId = `comment-${this.nextCommentId++}`;
+		const list = this.comments.get(id) ?? [];
+		list.push({ id: commentId, body: text });
+		this.comments.set(id, list);
+		return commentId;
+	}
+
+	async findComment(id: string, marker: string): Promise<string | undefined> {
+		await this.getWorkItem(id);
+		const list = this.comments.get(id) ?? [];
+		const found = list.find((c) => c.body.includes(marker));
+		return found?.id;
 	}
 
 	async createWorkItem(input: CreateWorkItemInput): Promise<WorkItem> {
@@ -90,6 +102,14 @@ class InMemoryPMProvider implements PMProvider {
 			...(patch.title !== undefined ? { title: patch.title } : {}),
 			...(patch.description !== undefined ? { description: patch.description } : {}),
 		});
+	}
+
+	async addLabel(id: string, name: string): Promise<void> {
+		const item = await this.getWorkItem(id);
+		// De-duped by name, mirroring the real adapter's idempotent addLabels —
+		// re-applying an existing label neither duplicates it nor errors.
+		if (item.labels.some((l) => l.name === name)) return;
+		this.items.set(id, { ...item, labels: [...item.labels, { id: name, name }] });
 	}
 
 	readonly supportsDependencies = true;
@@ -203,6 +223,15 @@ describe('PMProvider contract', () => {
 			title: 'New',
 			description: 'Old body',
 		});
+	});
+
+	it('addLabel applies a label and is idempotent on re-application', async () => {
+		const item = createMockWorkItem({ labels: [] });
+		const provider = new InMemoryPMProvider([item]);
+		await provider.addLabel(item.id, 'planned');
+		await provider.addLabel(item.id, 'planned'); // re-applying must not duplicate or throw
+		const labels = (await provider.getWorkItem(item.id)).labels;
+		expect(labels.map((l) => l.name)).toEqual(['planned']);
 	});
 
 	it('carries provider-neutral assignees, and reports none as an empty array', async () => {

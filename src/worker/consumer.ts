@@ -1120,6 +1120,11 @@ function runPhase(
 				maxConcerns: project.pipeline?.planning?.maxConcerns,
 				timeoutMs: overrides.timeoutMs,
 				signal,
+				// The run-row id anchors the plan comment's per-delivery idempotency
+				// marker (planning.ts `planDeliveryMarker`): stable across a retry of
+				// this run, fresh for a later replan, so a retry reuses its comment
+				// while a replan posts anew.
+				runId,
 				...session,
 				runAgent,
 			});

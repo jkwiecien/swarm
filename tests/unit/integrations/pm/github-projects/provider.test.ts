@@ -6,13 +6,16 @@ const createIssue = vi.fn();
 const updateIssue = vi.fn();
 const getLabel = vi.fn();
 const createLabel = vi.fn();
+const addLabels = vi.fn();
 const getIssue = vi.fn();
 const listComments = vi.fn();
+const paginate = vi.fn();
 const request = vi.fn();
 vi.mock('@/integrations/scm/github/client.js', () => ({
 	getScopedClient: () => ({
 		graphql,
 		request,
+		paginate,
 		issues: {
 			createComment,
 			create: createIssue,
@@ -21,6 +24,7 @@ vi.mock('@/integrations/scm/github/client.js', () => ({
 			listComments,
 			getLabel,
 			createLabel,
+			addLabels,
 		},
 	}),
 }));
@@ -66,8 +70,10 @@ describe('GitHubProjectsPMProvider', () => {
 		updateIssue.mockReset();
 		getLabel.mockReset();
 		createLabel.mockReset();
+		addLabels.mockReset();
 		getIssue.mockReset();
 		listComments.mockReset();
+		paginate.mockReset();
 		request.mockReset();
 	});
 
@@ -381,6 +387,60 @@ describe('GitHubProjectsPMProvider', () => {
 		});
 	});
 
+	describe('findComment', () => {
+		const MARKER = '<!-- swarm-planning-delivery:run-42 -->';
+
+		it('returns the ID of the comment containing the marker, scanning all pages', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			paginate.mockResolvedValue([
+				{ id: 111, body: 'some unrelated comment' },
+				{ id: 222, body: `## 🗺️ Proposed implementation plan\n1. Do the thing\n\n${MARKER}` },
+			]);
+
+			const id = await provider.findComment('PVTI_x', MARKER);
+
+			// All pages are scanned via octokit's paginate, not a single listComments page.
+			expect(paginate).toHaveBeenCalledWith(listComments, {
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				issue_number: 10,
+				per_page: 100,
+			});
+			expect(id).toBe('222');
+		});
+
+		it('finds a marker that lies beyond the first 100 comments', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			// paginate() flattens every page; the matching comment sits well past page 1
+			// (index 120), which a single-page read would have missed.
+			const comments = Array.from({ length: 150 }, (_, i) => ({
+				id: 1000 + i,
+				body: i === 120 ? `plan\n\n${MARKER}` : `unrelated ${i}`,
+			}));
+			paginate.mockResolvedValue(comments);
+
+			const id = await provider.findComment('PVTI_x', MARKER);
+			expect(id).toBe('1120');
+		});
+
+		it('returns undefined if no comment contains the marker', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			paginate.mockResolvedValue([{ id: 111, body: 'some unrelated comment' }]);
+
+			const id = await provider.findComment('PVTI_x', MARKER);
+			expect(id).toBeUndefined();
+		});
+
+		it('returns undefined when the item has no backing Issue (draft)', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			const id = await provider.findComment('PVTI_draft', MARKER);
+			expect(id).toBeUndefined();
+			expect(paginate).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('createWorkItem', () => {
 		it('creates the Issue, adds it to the board, sets its status, and applies labels', async () => {
 			getLabel.mockResolvedValue({ data: {} }); // label already exists
@@ -496,6 +556,48 @@ describe('GitHubProjectsPMProvider', () => {
 				'no backing Issue',
 			);
 			expect(updateIssue).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('addLabel', () => {
+		it('applies an existing label without recreating it', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			getLabel.mockResolvedValue({ data: {} }); // label already exists
+			addLabels.mockResolvedValue({ data: [] });
+
+			await provider.addLabel('PVTI_x', 'planned');
+
+			expect(createLabel).not.toHaveBeenCalled();
+			expect(addLabels).toHaveBeenCalledWith({
+				owner: 'jkwiecien',
+				repo: 'swarm',
+				issue_number: 10,
+				labels: ['planned'],
+			});
+		});
+
+		it('creates the label when it does not yet exist, then applies it', async () => {
+			graphql.mockResolvedValue({ node: ITEM_NODE });
+			getLabel.mockRejectedValue({ status: 404 });
+			createLabel.mockResolvedValue({ data: {} });
+			addLabels.mockResolvedValue({ data: [] });
+
+			await provider.addLabel('PVTI_x', 'planned');
+
+			expect(createLabel).toHaveBeenCalledWith(
+				expect.objectContaining({ owner: 'jkwiecien', repo: 'swarm', name: 'planned' }),
+			);
+			expect(addLabels).toHaveBeenCalledWith(
+				expect.objectContaining({ issue_number: 10, labels: ['planned'] }),
+			);
+		});
+
+		it('throws when the item has no backing Issue (draft)', async () => {
+			graphql.mockResolvedValue({
+				node: { id: 'PVTI_draft', content: { __typename: 'DraftIssue' }, fieldValueByName: null },
+			});
+			await expect(provider.addLabel('PVTI_draft', 'planned')).rejects.toThrow('no backing Issue');
+			expect(addLabels).not.toHaveBeenCalled();
 		});
 	});
 

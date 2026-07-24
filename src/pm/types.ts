@@ -194,6 +194,16 @@ export interface PMProvider {
 	addComment(id: string, text: string): Promise<string>;
 
 	/**
+	 * Find an existing comment on the backing Issue/PR of a work item by a unique
+	 * `marker` substring (e.g. a per-delivery idempotency marker), scanning *all*
+	 * comment pages — not just the first — so a marker beyond page 1 is still found.
+	 * Returns the matching comment's ID if found, else undefined. Callers pass a
+	 * marker specific enough that at most one comment can contain it, so a match is
+	 * unambiguous.
+	 */
+	findComment(id: string, marker: string): Promise<string | undefined>;
+
+	/**
 	 * Create a new work item on the board (a fresh backing Issue added to the
 	 * project) in the given status, and return it. Planning's task-splitting uses
 	 * this to spawn the sibling tasks a too-large item decomposes into.
@@ -210,6 +220,20 @@ export interface PMProvider {
 	 * becomes after a split — the split "can even change [its] name".
 	 */
 	updateWorkItem(id: string, patch: UpdateWorkItemPatch): Promise<void>;
+
+	/**
+	 * Apply a label (by name) to a work item's backing Issue/PR. Idempotent —
+	 * re-applying an existing label is a no-op, neither duplicating it nor
+	 * erroring — and the label is created if it does not yet exist. Provider-
+	 * agnostic: `name` is a label *name*, and both ensuring the label exists and
+	 * applying it are the adapter's job, so a future Jira/Linear provider
+	 * implements the same method (widen-the-interface, ai/RULES.md §2). Planning
+	 * completion uses this to mark an item `planned` (issue #384); labels are
+	 * otherwise read-only on {@link WorkItem} and settable only at creation
+	 * ({@link CreateWorkItemInput.labels}), so this is the missing post-creation
+	 * label-write capability.
+	 */
+	addLabel(id: string, name: string): Promise<void>;
 
 	/**
 	 * Whether this provider models work-item assignees at all. `false` for a
